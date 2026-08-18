@@ -184,7 +184,7 @@ def _coverage(lay_units, chains, tol: float = 3.0):
         return None
     samples = []
     for c in chains:
-        s, _ = _sample_polyline(np.asarray(c.pts), step=4.0, max_n=100000)
+        s, _ = _sample_polyline(np.asarray(c.pts), step=2.0, max_n=100000)
         if len(s):
             samples.append(s)
     if not samples:
@@ -192,8 +192,12 @@ def _coverage(lay_units, chains, tol: float = 3.0):
     tree = cKDTree(np.vstack(samples))
     covered = total = 0.0
     for u in lay_units:
-        mid = u.pts[len(u.pts) // 2]
-        d, _ = tree.query(mid, distance_upper_bound=tol)
+        # a decoration counts as covered when any part of it touches the
+        # emitted chain: fence X's drawn as offset halves have midpoints
+        # ~half a leg off the centerline, but an endpoint at the X center
+        # sits ON the line
+        probes = (u.pts[len(u.pts) // 2], u.pts[0], u.pts[-1])
+        d = min(tree.query(p, distance_upper_bound=tol)[0] for p in probes)
         total += u.length
         if np.isfinite(d):
             covered += u.length

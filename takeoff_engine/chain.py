@@ -322,6 +322,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     words: optional page text words as (x0, y0, x1, y1, text) tuples for
     dash-text-dash bridging.
     """
+    units = list(units)  # local copy: X-mark repair appends synthetic units
     by_style = defaultdict(list)
     for idx, u in enumerate(units):
         # near-white strokes are invisible on paper: masking/whiteout, not
@@ -348,6 +349,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             cid += 1
 
         dash_cand = [i for i in plain if units[i].length <= DASH_MAX_LEN and not units[i].closed]
+        dash_cand = _strip_x_marks(units, dash_cand)
         solid_cand = [i for i in plain if units[i].length > DASH_MAX_LEN or units[i].closed]
 
         # stipple textures: fields of thousands of dots (concrete/gravel
@@ -532,6 +534,88 @@ def _tpl_gap(lc) -> float:
         return float(lc.dash_signature.rsplit("g", 1)[1])
     except (IndexError, ValueError):
         return 0.0
+
+
+def _strip_x_marks(units: list, idxs: list) -> list:
+    """Fence-style X decorations: two short strokes crossing at their
+    midpoints, riding ON a carrier line (—x—x—x—). The legs share the
+    carrier's style, so they enter the dash pool and (a) break the carrier
+    chain where links compete and (b) get swallowed into chains, corrupting
+    the cadence class. An X is unambiguous geometry — near-identical
+    midpoints, crossing angle, similar short lengths — so strip legs before
+    matching. The carrier dashes then chain straight through, and every X
+    center still sits on the emitted chain (coverage keeps crediting them).
+    Only fires when the group has >= 3 X's: lone crossings elsewhere are
+    left for the normal junk defenses."""
+    from scipy.spatial import cKDTree
+
+    cand = [i for i in idxs
+            if 3.0 <= units[i].length <= 24.0 and len(units[i].pts) <= 4]
+    if len(cand) < 6:
+        return idxs
+    mids = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2.0 for i in cand])
+    vecs = np.array([units[i].pts[-1] - units[i].pts[0] for i in cand])
+    lens = np.array([units[i].length for i in cand])
+    vecs = vecs / np.maximum(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-9)
+    tree = cKDTree(mids)
+    pairs = []
+    for a, b in tree.query_pairs(6.5):
+        # CAD fences draw the X either as two strokes crossing at their
+        # midpoints (mid distance ~0) or as two offset halves (~0.7 x leg
+        # length apart); both are one decoration
+        mid_d = float(np.hypot(*(mids[a] - mids[b])))
+        if max(lens[a], lens[b]) > 1.8 * min(lens[a], lens[b]):
+            continue
+        cosang = abs(float(vecs[a] @ vecs[b]))
+        if cosang > 0.87:  # < ~30 deg apart: parallel strokes, not an X
+            continue
+        pairs.append((mid_d, a, b))
+    pairs.sort()
+    used: set = set()
+    legs: set = set()
+    centers = []
+    for _, a, b in pairs:
+        if a in used or b in used:
+            continue
+        used.update((a, b))
+        legs.update((cand[a], cand[b]))
+        centers.append((mids[a] + mids[b]) / 2.0)
+    if len(centers) < 3:
+        return idxs
+    kept = [i for i in idxs if i not in legs]
+
+    # X's with a carrier line under them are done - the carrier chains
+    # straight through the gap the legs occupied. But some fence stretches
+    # are X-ONLY (no connecting dashes drawn): rebuild the carrier as
+    # synthetic dashes at each stranded X center, aimed at its nearest
+    # fellow X, so the normal matcher chains them at the X cadence.
+    ref = units[idxs[0]]
+    kept_mids = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2.0
+                          for i in kept]) if kept else np.empty((0, 2))
+    kt = cKDTree(kept_mids) if len(kept_mids) else None
+    ctr = np.asarray(centers)
+    ct = cKDTree(ctr)
+    dnn, _ = ct.query(ctr, k=2)
+    spacing = float(np.median(dnn[:, 1]))
+    if not np.isfinite(spacing) or spacing < 6.0 or spacing > 120.0:
+        return kept
+    half = min(spacing * 0.35, 14.0)
+    for i, c in enumerate(ctr):
+        if kt is not None:
+            d, _ = kt.query(c, distance_upper_bound=spacing * 0.8)
+            if np.isfinite(d):
+                continue  # a real carrier stroke is nearby
+        d2, j2 = ct.query(c, k=2)
+        if not np.isfinite(d2[1]) or d2[1] > 2.2 * spacing:
+            continue  # stranded singleton, don't invent a line
+        v = ctr[j2[1]] - c
+        v = v / max(float(np.hypot(*v)), 1e-9)
+        pts = np.array([c - v * half, c + v * half])
+        kept.append(len(units))
+        units.append(StrokeUnit(
+            pts=pts, color=ref.color, width=ref.width,
+            layer=ref.layer, dashes=ref.dashes, closed=False))
+    return kept
 
 
 def _dedup_twins(units: list, idxs: list) -> list:
