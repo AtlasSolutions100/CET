@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Takeoff Line Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <header>
@@ -53,6 +53,8 @@
       <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach">&#10230;</button>
       <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
       <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
+      <span class="tk-sep"></span>
+      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (toggle for bold uniform strokes)">&#9781;</button>
       <span id="selInfo" class="tk-info"></span>
       <span id="measureInfo" hidden></span>
     </div>
@@ -60,6 +62,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

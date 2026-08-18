@@ -40,6 +40,7 @@ const state = {
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // "measure" | "extend" | null
   measurePts: [],
+  faithful: true,           // draw each line with its true pattern + weight
   gen: 0,                   // bumped per document/page switch; stale async
                             // callbacks compare against it and bail out
   selPt: null,              // index of the selected vertex on state.selected
@@ -509,13 +510,18 @@ function draw() {
       const hot = state.hot === sid;
       const sel = state.selected === ch.chain_id;
       ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
-      ctx.lineWidth = (sel ? 4.5 : hot ? 3.4 : 1.8) / k;
+      // real plotted weight, floored so a hairline stays visible zoomed out
+      const wPt = Math.max(ch.width || 0.35, 0.35) * f;
+      ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
+      const da = state.faithful ? dashArray(ch.dash_signature) : null;
+      ctx.setLineDash(da ? da.map(v => v * f) : []);
       ctx.beginPath();
       const pts = ch.points;
       ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
       ctx.stroke();
     }
+    ctx.setLineDash([]);
   }
   // vertex handles on the selected line
   if (state.selected !== null && state.result) {
@@ -554,6 +560,39 @@ function draw() {
     }
   }
   ctx.restore();
+}
+
+// Turn a detected cadence ("d9.0 d42.3 g9.0", "native 3 3") into a canvas
+// dash array, so a property line is DRAWN as a property line instead of a
+// uniform solid stroke in a colour. Lengths are in pt and get scaled into
+// the image-pixel space the canvas draws in.
+const dashCache = new Map();
+function dashArray(sig) {
+  if (dashCache.has(sig)) return dashCache.get(sig);
+  let out = null;
+  if (sig && sig !== "solid" && sig !== "misc") {
+    const toks = String(sig).split(/\s+/);
+    if (toks[0] === "native") {
+      const nums = toks.slice(1).map(parseFloat).filter(v => isFinite(v) && v > 0);
+      out = nums.length ? nums : null;
+    } else {
+      const ds = [], gs = [];
+      for (const t of toks) {
+        const v = parseFloat(t.slice(1));
+        if (!isFinite(v)) continue;
+        if (t[0] === "d") ds.push(v);
+        else if (t[0] === "g") gs.push(v);
+      }
+      if (ds.length) {
+        const gap = gs.length ? gs[0] : Math.max(ds[0] * 0.5, 2);
+        ds.sort((a, b) => b - a);   // longest mark first, as the legend reads
+        out = [];
+        for (const d of ds) out.push(Math.max(d, 0.4), Math.max(gap, 0.4));
+      }
+    }
+  }
+  dashCache.set(sig, out);
+  return out;
 }
 
 const styleColorCache = new Map();
@@ -787,6 +826,13 @@ $("sepBtn").onclick = () => {
   state.chainLabels.set(ch.chain_id, name.trim());
   updateSelBar(ch);
   afterEdit(`"${name.trim()}" now has its own itemized row`);
+};
+
+$("faithfulBtn").onclick = () => {
+  state.faithful = !state.faithful;
+  $("faithfulBtn").classList.toggle("active", state.faithful);
+  setStatus(state.faithful ? "drawing true line patterns" : "drawing bold uniform strokes");
+  draw();
 };
 
 $("measureBtn").onclick = () => {
