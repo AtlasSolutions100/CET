@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Takeoff Line Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header>
@@ -46,21 +46,20 @@
   <section id="stage">
     <canvas id="view"></canvas>
     <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
-    <div id="selBar" class="sel-bar" hidden>
-      <span id="selInfo"></span>
-      <button id="splitBtn" title="Cut this line in two at the clicked spot — then delete the piece you don't want (e.g. over a door opening)">✂ Split here</button>
-      <button id="extendBtn" title="Click a point on the sheet to extend this line's nearest end to it">⟶ Extend</button>
-      <button id="sepBtn" title="Give this one line its own name and price row, separate from its group">⬚ Separate</button>
-      <button id="removeBtn">Remove (⌫)</button>
-    </div>
     <div class="toolkit">
-      <button id="measureBtn" title="Click two or more points on the sheet to measure footage at the detected scale">📏 Measure</button>
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (Esc to finish)">&#128207;</button>
+      <span class="tk-sep"></span>
+      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it">&#9986;</button>
+      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach">&#10230;</button>
+      <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
+      <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
+      <span id="selInfo" class="tk-info"></span>
       <span id="measureInfo" hidden></span>
     </div>
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

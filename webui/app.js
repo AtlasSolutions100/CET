@@ -40,6 +40,10 @@ const state = {
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // "measure" | "extend" | null
   measurePts: [],
+  gen: 0,                   // bumped per document/page switch; stale async
+                            // callbacks compare against it and bail out
+  selPt: null,              // index of the selected vertex on state.selected
+  dragPt: false,
   legendNames: [],          // trade names read off a dedicated legend sheet
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
@@ -63,7 +67,9 @@ async function openPath(path) {
   const r = await fetch("/api/open-path", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
   if (!r.ok) return setStatus(`could not open (${r.status})`, "err");
   const j = await r.json();
+  state.gen++;
   state.job = j.job_id; state.kinds = j.kinds; state.result = null;
+  state.legendNames = []; $("legendVocab").innerHTML = "";
   $("docName").textContent = j.name;
   const sel = $("pageSel");
   sel.innerHTML = "";
@@ -79,32 +85,50 @@ async function openPath(path) {
 $("pageSel").onchange = () => selectPage(+$("pageSel").value);
 
 async function selectPage(p) {
+  // Everything below is async. Without a generation token a slow image or
+  // result from the PREVIOUS document lands after the switch and paints
+  // itself over the current one - which is how a Belle Farms sheet ended up
+  // under another plan with the old itemised takeoff still listed.
+  const gen = ++state.gen;
   state.page = p; state.result = null; state.isolate = null;
-  renderStyles(); fitOnLoad();
+  state.img = null;
+  state.selected = null; state.selPt = null;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  $("aiBanner").hidden = true;
+  updateSelBar(null);
+  renderStyles(); renderChips(); renderLegend(); renderItemized(); fitOnLoad();
   const img = new Image();
-  img.onload = () => { state.img = img; fitView(); draw(); };
+  img.onload = () => {
+    if (gen !== state.gen) return;   // a later page won the race
+    state.img = img; fitView(); draw();
+  };
   img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`);
   // reuse a finished result if the server has one
   const st = await (await fetch(`/api/job/${state.job}/page/${p}/status`)).json();
-  if (st.status === "done") loadResult();
+  if (gen !== state.gen) return;
+  if (st.status === "done") loadResult(gen);
 }
 
 $("detectBtn").onclick = async () => {
   await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
   setStatus("detecting…", "busy");
-  poll();
+  poll(state.gen);
 };
-async function poll() {
+async function poll(gen = state.gen) {
+  if (gen !== state.gen) return;   // document/page changed under us
   const j = await (await fetch(`/api/job/${state.job}/page/${state.page}/status`)).json();
-  if (j.status === "running") return setTimeout(poll, 900);
+  if (gen !== state.gen) return;
+  if (j.status === "running") return setTimeout(() => poll(gen), 900);
   if (j.status && j.status.startsWith("error")) return setStatus(j.status, "err");
-  if (j.status === "done") { setStatus("done"); loadResult(); }
+  if (j.status === "done") { setStatus("done"); loadResult(gen); }
 }
 
-async function loadResult() {
+async function loadResult(gen = state.gen) {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/result`);
-  if (!r.ok) return;
-  state.result = await r.json();
+  if (!r.ok || gen !== state.gen) return;
+  const parsed = await r.json();
+  if (gen !== state.gen) return;
+  state.result = parsed;
   state.include = new Map(); state.labels = new Map();
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
@@ -493,6 +517,24 @@ function draw() {
       ctx.stroke();
     }
   }
+  // vertex handles on the selected line
+  if (state.selected !== null && state.result) {
+    const f2 = IMG_DPI / 72;
+    const sel = state.result.chains.find(c => c.chain_id === state.selected);
+    if (sel && !state.excluded.has(sel.chain_id)) {
+      const rad = 3.5 / k;
+      sel.points.forEach((q, i) => {
+        const on = i === state.selPt;
+        ctx.beginPath();
+        ctx.arc(q[0] * f2, q[1] * f2, on ? rad * 1.9 : rad, 0, Math.PI * 2);
+        ctx.fillStyle = on ? "#ffd400" : "#ffffff";
+        ctx.fill();
+        ctx.lineWidth = 1.2 / k;
+        ctx.strokeStyle = on ? "#8a6d00" : "#ff00cc";
+        ctx.stroke();
+      });
+    }
+  }
   if (state.measurePts.length) {
     const f = IMG_DPI / 72;
     ctx.strokeStyle = "#b3369a";
@@ -533,17 +575,45 @@ function cssColor(c) {
 let panning = null;
 let downAt = null;
 cv.addEventListener("mousedown", (e) => {
+  const v = vertexAt(e);
+  if (v !== null) {           // grab the handle rather than pan the sheet
+    state.selPt = v;
+    state.dragPt = true;
+    updateSelBar(chainById(state.selected));
+    draw();
+    return;
+  }
   panning = { x: e.clientX, y: e.clientY };
   downAt = { x: e.clientX, y: e.clientY };
   cv.classList.add("panning");
 });
 addEventListener("mousemove", (e) => {
+  if (state.dragPt) {
+    const ch = chainById(state.selected);
+    if (ch && state.selPt !== null) {
+      const m = ch.custom ? ch : materialize(ch);
+      if (m !== ch) { state.selected = m.chain_id; }
+      m.points[state.selPt] = ptFromEvent(e);
+      draw();
+    }
+    return;
+  }
   if (!panning) return;
   state.view.x += e.clientX - panning.x; state.view.y += e.clientY - panning.y;
   panning = { x: e.clientX, y: e.clientY };
   draw();
 });
 addEventListener("mouseup", (e) => {
+  if (state.dragPt) {
+    state.dragPt = false;
+    const ch = chainById(state.selected);
+    if (ch) {
+      ch.length_pt = polyLen(ch.points);
+      updateSelBar(ch);
+      afterEdit(`point moved — line now ${fmtLen(ch.length_pt)}`);
+    }
+    return;
+  }
   cv.classList.remove("panning");
   const wasClick = panning && downAt &&
     Math.abs(e.clientX - downAt.x) < 4 && Math.abs(e.clientY - downAt.y) < 4;
@@ -551,13 +621,33 @@ addEventListener("mouseup", (e) => {
   if (wasClick && state.result && state.img) handleCanvasClick(e);
 });
 
-function handleCanvasClick(e) {
+function ptFromEvent(e) {
   const r = cv.getBoundingClientRect();
   const { x, y, k } = state.view;
   const f = IMG_DPI / 72;
-  // click position in pt coordinates
-  const px = ((e.clientX - r.left) - x) / k / f;
-  const py = ((e.clientY - r.top) - y) / k / f;
+  return [((e.clientX - r.left) - x) / k / f, ((e.clientY - r.top) - y) / k / f];
+}
+
+// index of the selected line's vertex under the cursor, or null
+function vertexAt(e) {
+  if (state.selected === null) return null;
+  const ch = chainById(state.selected);
+  if (!ch) return null;
+  const [px, py] = ptFromEvent(e);
+  const f = IMG_DPI / 72;
+  const tol = 7 / state.view.k / f + 1.5;
+  let best = null, bestD = tol;
+  ch.points.forEach((q, i) => {
+    const d = Math.hypot(px - q[0], py - q[1]);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
+
+function handleCanvasClick(e) {
+  const [px, py] = ptFromEvent(e);
+  const { k } = state.view;
+  const f = IMG_DPI / 72;
   if (state.tool === "measure") {
     state.measurePts.push([px, py]);
     updateMeasureInfo();
@@ -566,6 +656,15 @@ function handleCanvasClick(e) {
   }
   if (state.tool === "extend" && state.selected !== null) {
     extendTo(px, py);
+    return;
+  }
+  // clicking a vertex of the already-selected line picks THAT point, so a
+  // single bad kink can be removed without discarding the whole line
+  const v = vertexAt(e);
+  if (v !== null) {
+    state.selPt = state.selPt === v ? null : v;
+    updateSelBar(chainById(state.selected));
+    draw();
     return;
   }
   const tolPt = 6 / k / f * 4 + 1.5; // generous when zoomed out
@@ -581,6 +680,7 @@ function handleCanvasClick(e) {
     }
   }
   state.selected = best && state.selected !== best.chain_id ? best.chain_id : null;
+  state.selPt = null;
   state.clickPt = state.selected !== null ? [px, py] : null;
   updateSelBar(best && state.selected !== null ? best : null);
   draw();
@@ -718,19 +818,42 @@ function distToSeg(px, py, a, b) {
 }
 
 function updateSelBar(ch) {
-  const bar = $("selBar");
-  if (!ch) { bar.hidden = true; return; }
+  for (const id of ["splitBtn", "extendBtn", "sepBtn"]) $(id).disabled = !ch;
+  $("removeBtn").disabled = !ch;
+  if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
   const label = state.chainLabels.get(ch.chain_id) ||
     state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}`;
-  bar.hidden = false;
+  const pt = state.selPt !== null
+    ? ` · point ${state.selPt + 1}/${ch.points.length} selected`
+    : ` · ${ch.points.length} points`;
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}${pt}`;
+}
+
+function deleteVertex() {
+  const ch = chainById(state.selected);
+  if (!ch || state.selPt === null) return false;
+  if (ch.points.length <= 3) {
+    setStatus("too few points left — remove the whole line instead", "err");
+    return true;
+  }
+  const m = materialize(ch);
+  const before = polyLen(m.points);
+  m.points.splice(state.selPt, 1);
+  const after = polyLen(m.points);
+  m.length_pt = m.length_pt * (after / Math.max(before, 1e-9));
+  state.selected = m.chain_id;
+  state.selPt = Math.min(state.selPt, m.points.length - 1);
+  updateSelBar(m);
+  afterEdit(`point removed — line now ${fmtLen(m.length_pt)}`);
+  return true;
 }
 
 function removeSelected() {
   if (state.selected === null) return;
+  if (deleteVertex()) return;   // a picked point goes first, not the line
   state.excluded.add(state.selected);
-  state.selected = null;
+  state.selected = null; state.selPt = null;
   updateSelBar(null);
   setStatus(`${state.excluded.size} line(s) removed`);
   $("restoreBtn").hidden = state.excluded.size === 0;
@@ -768,7 +891,9 @@ addEventListener("keydown", (e) => {
       state.tool = null;
       setStatus("");
     }
-    state.selected = null; updateSelBar(null); draw();
+    if (state.selPt !== null) { state.selPt = null; updateSelBar(chainById(state.selected)); }
+    else { state.selected = null; updateSelBar(null); }
+    draw();
   }
 });
 cv.addEventListener("wheel", (e) => {

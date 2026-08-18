@@ -1422,19 +1422,78 @@ def _merge_into(a, b, a_end, b_end, text):
     a.label_texts.extend(b.label_texts)
 
 
+def _cadence_vec(sig: str):
+    """Numeric cadence of a signature, or None when it has no measured
+    numbers (solid / native dash arrays / misc), which are matched exactly."""
+    ds, gs = [], []
+    for tok in sig.split():
+        if tok[:1] in "dg":
+            try:
+                v = float(tok[1:])
+            except ValueError:
+                return None
+            (ds if tok[0] == "d" else gs).append(v)
+    if not ds and not gs:
+        return None
+    return (tuple(sorted(ds)), tuple(sorted(gs)))
+
+
+def _cadence_close(a, b, tol: float = 0.35) -> bool:
+    if a is None or b is None:
+        return False
+    if len(a[0]) != len(b[0]) or len(a[1]) != len(b[1]):
+        return False
+    for xa, xb in zip(a[0] + a[1], b[0] + b[1]):
+        lo, hi = sorted((xa, xb))
+        if hi > lo * (1.0 + tol) + 1.5:
+            return False
+    return True
+
+
 def _assign_styles(chains: list) -> None:
     """Group chains into user-facing line styles: same class + color + weight
     class + similar signature -> one style id, ready for the classify/approve
-    UI. Buckets are deliberately coarse: the reviewer wants 'storm drain
-    dashed' once, not five widths of it - and exact width/signature stay on
-    every chain for anyone who needs them."""
-    styles = {}
+    UI.
+
+    Cadence is CLUSTERED within a family rather than quantised onto fixed
+    bins. Fixed bins put a boundary somewhere, and one physical line whose
+    measured dash wanders across it lands in two different checkboxes: the
+    Oncor property boundary split at 42.3pt vs 44.0pt, so ticking "the
+    property line" silently dropped a third of the ring, including a whole
+    corner. Same colour, weight, layer and class plus a dash pattern within
+    ~35% is one line as far as the estimator is concerned.
+    """
+    fams = defaultdict(list)
     for c in chains:
-        key = (c.klass, c.color, _weight_class(c.width), c.layer,
-               _sig_bucket(c.dash_signature))
-        if key not in styles:
-            styles[key] = len(styles)
-        c.style_id = styles[key]
+        fams[(c.klass, c.color, _weight_class(c.width), c.layer)].append(c)
+
+    styles: dict = {}
+    for fam, cs in fams.items():
+        sigs = sorted({c.dash_signature for c in cs})
+        vecs = [_cadence_vec(sg) for sg in sigs]
+        parent = list(range(len(sigs)))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for i in range(len(sigs)):
+            for j in range(i + 1, len(sigs)):
+                if _cadence_close(vecs[i], vecs[j]):
+                    ri, rj = find(i), find(j)
+                    if ri != rj:
+                        parent[ri] = rj
+        # signatures with no measured numbers keep exact-match grouping
+        cluster = {}
+        for i, sg in enumerate(sigs):
+            cluster[sg] = f"c{find(i)}" if vecs[i] is not None else sg
+        for c in cs:
+            key = (fam, cluster[c.dash_signature])
+            if key not in styles:
+                styles[key] = len(styles)
+            c.style_id = styles[key]
 
     # roll one-off short chains into a per-class misc bucket: 58 singleton
     # styles is review noise, and a lone 100pt oddball is something the
