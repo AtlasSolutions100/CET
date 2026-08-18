@@ -14,7 +14,7 @@ import pymupdf
 
 from .chain import build_chains
 from .classify_page import classify_page
-from .extract import extract_strokes
+from .extract import extract_strokes, page_words
 from .overlay import render_overlay
 
 
@@ -29,7 +29,7 @@ def run_page(doc: pymupdf.Document, page_no: int, out_dir: Path, dpi: int, stem:
         units = extract_raster_units(page, words_out=words)
     else:
         units = extract_strokes(page)
-        words = page.get_text("words")
+        words = page_words(page)
         if pc.kind == "hybrid":
             from .raster import extract_hybrid_image_units
 

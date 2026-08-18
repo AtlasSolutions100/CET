@@ -17,7 +17,7 @@ import pymupdf
 
 from .chain import build_chains
 from .classify_page import classify_page
-from .extract import extract_strokes
+from .extract import extract_strokes, page_words
 from .overlay import render_overlay
 
 
@@ -71,7 +71,7 @@ def main():
                             from .raster import extract_hybrid_image_units
 
                             units.extend(extract_hybrid_image_units(page))
-                        chains = build_chains(units, words=page.get_text("words"))
+                        chains = build_chains(units, words=page_words(page))
                     counts = Counter(c.klass for c in chains)
                     row.update({
                         "units": len(units), "chains": len(chains),

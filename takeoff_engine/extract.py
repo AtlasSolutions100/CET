@@ -46,6 +46,34 @@ class StrokeUnit:
         return v / n if n > 1e-9 else np.array([1.0, 0.0])
 
 
+def page_words(page) -> list:
+    """Text words in the SAME coordinate space as extract_strokes output.
+
+    page.get_text("words") reports UNROTATED page coordinates, while stroke
+    geometry is mapped through page.rotation_matrix into display space. On a
+    /Rotate 90|180|270 sheet the two therefore disagree, and every
+    word-driven rule - legend rows, dash-text bridging, text-box demotion -
+    silently matches the wrong part of the page. Verified by rendering: on a
+    270 sheet the raw box for "PROPOSED" lands on unrelated linework while
+    the mapped box lands exactly on "PROPOSED BUILDING".
+
+    OCR words need no correction - they come from get_pixmap, which is
+    already rotation-aware.
+    """
+    words = page.get_text("words")
+    if not page.rotation:
+        return words
+    rot = page.rotation_matrix
+    out = []
+    for w in words:
+        a = pymupdf.Point(w[0], w[1]) * rot
+        b = pymupdf.Point(w[2], w[3]) * rot
+        x0, x1 = sorted((a.x, b.x))
+        y0, y1 = sorted((a.y, b.y))
+        out.append((x0, y0, x1, y1) + tuple(w[4:]))
+    return out
+
+
 def _bezier_points(p0, p1, p2, p3, n=8) -> list:
     t = np.linspace(0, 1, n + 1)[1:]
     pts = []

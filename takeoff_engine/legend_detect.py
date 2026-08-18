@@ -116,7 +116,110 @@ def read_legend(words: list, chains: list) -> dict:
     return {"entries": entries, "style_labels": style_labels}
 
 
-def _sample_in_strip(chains: list, x0: float, x1: float, cy: float):
+def read_legend_sheet(words: list, chains: list) -> list:
+    """Read a DEDICATED legend sheet (e.g. "C1.1 LEGEND & NOTES").
+
+    Different problem from an inline legend box: here the legend is a tall
+    column running most of the sheet height with dozens of rows, often with
+    separate PROPOSED and EXISTING sample columns per label. So this does
+    not anchor on the word "LEGEND" (which also appears in notes, and whose
+    420pt neighbourhood misses most of the column). It anchors on the
+    structure instead: many label rows, stacked vertically, each with a flat
+    horizontal sample bar in a left-aligned strip beside it.
+
+    Returns fingerprints for cross-sheet matching - the style ids here are
+    meaningless on other sheets, so what transfers is (class, colour,
+    weight, cadence).
+    """
+    rows = defaultdict(list)
+    for w in words:
+        t = str(w[4]).strip()
+        if not t:
+            continue
+        rows[round(((w[1] + w[3]) / 2) / ROW_TOL)].append(w)
+
+    cands = []
+    for _, ws in sorted(rows.items()):
+        ws.sort(key=lambda w: w[0])
+        kept = []
+        for w in ws:
+            t = str(w[4]).strip()
+            dup = any(str(k[4]).strip().upper() == t.upper()
+                      and min(w[2], k[2]) - max(w[0], k[0]) > 0.5 * (w[2] - w[0])
+                      for k in kept)
+            if not dup:
+                kept.append(w)
+        # A legend sheet is laid out in COLUMNS - notes on the left, legend
+        # on the right - so a page-wide row mixes them. Split the row where
+        # a wide horizontal gap separates columns, or the "label" becomes a
+        # note sentence and the sample strip is searched hundreds of pt away
+        # from the actual legend.
+        runs, run = [], [kept[0]]
+        for prev, w in zip(kept, kept[1:]):
+            if w[0] - prev[2] > 34.0:
+                runs.append(run)
+                run = [w]
+            else:
+                run.append(w)
+        runs.append(run)
+
+        for rw in runs:
+            label = " ".join(str(w[4]).strip() for w in rw).strip()
+            if not (3 <= len(label) <= 48):
+                continue
+            if not any(ch.isalpha() for ch in label):
+                continue
+            x0 = rw[0][0]
+            cy = float(np.mean([(w[1] + w[3]) / 2 for w in rw]))
+            for strip_w in (SAMPLE_W, SAMPLE_W * 0.45):
+                s = _sample_in_strip(chains, x0 - strip_w, x0 - 4.0, cy,
+                                     min_span=30.0)
+                if s is not None:
+                    cands.append({"label": label, "x0": x0, "cy": cy, **s})
+                    break
+
+    if len(cands) < 8:
+        return []  # a handful of bar-beside-text rows is a table, not a legend
+
+    # a legend column is left-aligned: keep the dominant label-x cluster so
+    # rows from tables elsewhere on the sheet cannot join in
+    xs = np.array([c["x0"] for c in cands])
+    best, keep = 0, []
+    for c in cands:
+        near = [d for d in cands if abs(d["x0"] - c["x0"]) <= 26.0]
+        if len(near) > best:
+            best, keep = len(near), near
+    if len(keep) < 8:
+        return []
+    out, seen = [], set()
+    for c in sorted(keep, key=lambda c: c["cy"]):
+        key = (c["label"].upper(), round(c["cy"] / 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+# Cross-sheet AUTO-LABELLING BY GEOMETRY WAS TRIED AND REJECTED.
+# Matching a plan style to a legend row on (class, weight, colour, cadence)
+# looks reasonable and is wrong often enough to be dangerous. Scored against
+# the CAD layer names as ground truth it put "STORM SEWER" on P1-FENCE and
+# "SANITARY SEWER" on the water, gas, firewater and storm-swale runs - the
+# legend holds exactly one dash-text row, so every dash-text style on the
+# plan matched it. Tightening to rows with a legend-unique fingerprint made
+# it worse (18 labels, ~10 wrong), because legend-side uniqueness does not
+# make the plan's line that feature.
+#
+# What separates GAS LINE from WATER LINE is the letter printed inline, and
+# an exploded glyph does not yield the letter. So the legend sheet is used as
+# a VOCABULARY the reviewer picks from (read_legend_sheet above), never as an
+# automatic label - a confident wrong trade name on billable footage is the
+# one failure the estimator cannot catch by eye.
+
+
+def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
+                     min_span: float | None = None):
     """Characterize the linework inside the legend row's sample strip.
     A legend sample is a HORIZONTAL bar spanning most of the strip -
     leader lines and stray marks near note text don't qualify."""
@@ -139,10 +242,11 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float):
     by_style = defaultdict(list)
     for c in cands:
         by_style[c.style_id].append(c)
+    need = min_span if min_span is not None else 0.45 * (x1 - x0)
     hits = []
     for cs in by_style.values():
         allx = np.concatenate([np.asarray(c.pts)[:, 0] for c in cs])
-        if float(allx.max() - allx.min()) < 0.45 * (x1 - x0):
+        if float(allx.max() - allx.min()) < need:
             continue
         hits.extend(cs)
     if not hits:

@@ -40,6 +40,7 @@ const state = {
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // "measure" | "extend" | null
   measurePts: [],
+  legendNames: [],          // trade names read off a dedicated legend sheet
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   aiUndo: null,             // snapshot taken before applying AI focus
@@ -146,6 +147,7 @@ function renderStyles() {
     main.className = "style-main";
     const lab = document.createElement("input");
     lab.className = "style-label"; lab.value = state.labels.get(s.style_id) ?? "";
+    if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => state.labels.set(s.style_id, lab.value);
     const meta = document.createElement("div");
@@ -406,6 +408,35 @@ $("approveBtn").onclick = async () => {
   const rl = $("reportLink");
   rl.href = url(`/api/job/${state.job}/report.pdf`);
   rl.hidden = false;
+};
+
+// ---------- legend sheet vocabulary ----------
+async function loadLegendVocab(path) {
+  const r = await fetch(`/api/job/${state.job}/legend-sheet`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: path || null }),
+  });
+  if (!r.ok) return setStatus("could not read a legend sheet", "err");
+  const j = await r.json();
+  state.legendNames = j.names || [];
+  const dl = $("legendVocab");
+  dl.innerHTML = "";
+  for (const n of state.legendNames) {
+    const o = document.createElement("option");
+    o.value = n;
+    dl.appendChild(o);
+  }
+  renderStyles();
+  setStatus(state.legendNames.length
+    ? `${state.legendNames.length} names from the legend sheet — pick them in any label box`
+    : "no legend sheet found in this document");
+}
+$("legendBtn").onclick = () => {
+  const p = prompt("Legend sheet PDF path (blank = search this document):",
+                   $("legendPath").value || "");
+  if (p === null) return;
+  $("legendPath").value = p;
+  loadLegendVocab(p.trim());
 };
 
 // ---------- canvas ----------

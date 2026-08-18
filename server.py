@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
-from takeoff_engine.extract import extract_strokes
+from takeoff_engine.extract import extract_strokes, page_words
 from takeoff_engine.legend_detect import read_legend
 from takeoff_engine.scale_detect import detect_scale
 
@@ -192,7 +192,7 @@ def _detect_worker(job_id: str, page: int):
             units = extract_raster_units(pg, words_out=words)
         else:
             units = extract_strokes(pg)
-            words = pg.get_text("words")
+            words = page_words(pg)
             has_layers = any(u.layer for u in units[:300])
             if pc.text_chars < 1500 and not has_layers:
                 # sparse text + no CAD layers = exploded annotations with no
@@ -394,6 +394,51 @@ def approve(job_id: str, page: int, body: ApproveBody):
     out.write_text(json.dumps(export, indent=1))
     return JSONResponse({"exported": len(elements), "file": str(out),
                          "items": items})
+
+
+class LegendSheetBody(BaseModel):
+    # optional: a separate legend PDF. Packages are often split one sheet
+    # per file, so the legend may not be a page of the plan being reviewed.
+    path: str | None = None
+
+
+@app.post("/api/job/{job_id}/legend-sheet")
+def legend_sheet(job_id: str, body: LegendSheetBody):
+    """Read a dedicated legend sheet ("C1.1 LEGEND & NOTES") and return the
+    trade names it defines, as a vocabulary for the reviewer to pick from.
+
+    Deliberately NOT applied automatically: see legend_detect for why
+    matching these to styles by geometry produces confident wrong labels."""
+    from takeoff_engine.legend_detect import read_legend_sheet
+
+    job = JOBS.get(job_id) or _404()
+    src = Path(body.path).expanduser() if body.path else Path(job["path"])
+    if not src.exists():
+        raise HTTPException(404, f"not found: {src}")
+    doc = pymupdf.open(src)
+    best: list = []
+    scanned = []
+    for i in range(doc.page_count):
+        pg = doc[i]
+        txt = pg.get_text()[:4000].upper()
+        if "LEGEND" not in txt:
+            continue
+        scanned.append(i)
+        words = page_words(pg)
+        chains = build_chains(extract_strokes(pg), words=words)
+        ent = read_legend_sheet(words, chains)
+        if len(ent) > len(best):
+            best = ent
+    doc.close()
+    names, seen = [], set()
+    for e in best:
+        n = e["label"].strip()
+        if n.upper() in seen:
+            continue
+        seen.add(n.upper())
+        names.append(n)
+    return JSONResponse({"source": str(src), "pages_scanned": scanned,
+                         "names": names, "count": len(names)})
 
 
 @app.get("/api/job/{job_id}/page/{page}/elements")

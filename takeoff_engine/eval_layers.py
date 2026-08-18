@@ -23,7 +23,7 @@ from collections import defaultdict
 import pymupdf
 
 from .chain import build_chains, _sig_bucket
-from .extract import extract_strokes
+from .extract import extract_strokes, page_words
 
 TEXTURAL_HINTS = ("HATCH", "-LBL", "TEXT")
 
@@ -41,7 +41,7 @@ def is_textural(layer: str) -> bool:
 
 def eval_page(page: pymupdf.Page):
     units = extract_strokes(page)
-    chains = build_chains(units, words=page.get_text("words"))
+    chains = build_chains(units, words=page_words(page))
 
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
                                      "styles": defaultdict(float), "n_chains": 0})
@@ -89,7 +89,7 @@ def main():
     doc = pymupdf.open(args.pdf)
     page = doc[args.page]
     units = extract_strokes(page)
-    chains = build_chains(units, words=page.get_text("words"))
+    chains = build_chains(units, words=page_words(page))
     audit = phantom_span_audit(chains, units)
     print(f"PHANTOM-SPAN AUDIT: {len(audit['bad'])} of {audit['n']} emitted lines "
           f"sit on far less ink than their own pattern implies")

@@ -12,7 +12,7 @@ import pymupdf
 
 from .chain import build_chains
 from .eval_layers import class_metrics
-from .extract import extract_strokes
+from .extract import extract_strokes, page_words
 from .overlay import render_overlay
 from .scale_detect import detect_scale
 from .text_detect import ocr_words
@@ -29,7 +29,7 @@ DASHED = {"dash1", "dash2", "dash3", "dash-text"}
 
 
 def words_for(page, units):
-    words = list(page.get_text("words"))
+    words = list(page_words(page))
     if len(page.get_text()) < 1500 and not any(u.layer for u in units[:300]):
         pix = page.get_pixmap(matrix=pymupdf.Matrix(150 / 72, 150 / 72),
                               colorspace="rgb")

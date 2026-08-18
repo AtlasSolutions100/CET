@@ -17,6 +17,8 @@
   <button id="detectBtn" hidden>Detect lines</button>
   <div id="status" class="status"></div>
   <button id="aiBtn" hidden>AI analyze</button>
+  <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
+  <input id="legendPath" type="hidden">
 </header>
 <div id="aiBanner" class="ai-banner" hidden></div>
 <main>
@@ -58,6 +60,7 @@
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
+<datalist id="legendVocab"></datalist>
 <script src="app.js?v=3"></script>
 </body>
 </html>
