@@ -122,12 +122,86 @@ def _choose(cands: list[ScaleCandidate]) -> ScaleCandidate | None:
     return sorted(cands, key=lambda c: (-c.near_scale_keyword, -c.count))[0]
 
 
+_TICK = re.compile(r"^(\d{1,4})\s*[\'’]?$")
+
+
+def graphic_scale_bar(words: list) -> ScaleCandidate | None:
+    """Measure a GRAPHIC SCALE bar - the drawn ruler with tick labels.
+
+    Some sheets state no ratio anywhere; they print a bar labelled 0 / 50' /
+    100' and expect you to measure it. That leaves quantities stuck in points
+    with no way to price them, so read it directly: find the numeric tick
+    labels sitting on one horizontal line near the words GRAPHIC SCALE and
+    divide feet by the paper distance between the first and last.
+
+    Label boxes are used at their CENTRE, since a tick label is centred on
+    the tick it marks.
+    """
+    ws = [w for w in words if str(w[4]).strip()]
+    heads = [w for w in ws if str(w[4]).strip().upper().startswith("GRAPHIC")]
+    for h in heads:
+        hy = (h[1] + h[3]) / 2
+        hx = (h[0] + h[2]) / 2
+        near = [w for w in ws
+                if abs(((w[1] + w[3]) / 2) - hy) < 90
+                and abs(((w[0] + w[2]) / 2) - hx) < 320]
+        ticks = []
+        for w in near:
+            m = _TICK.match(str(w[4]).strip())
+            if m:
+                ticks.append((float(m.group(1)),
+                              (w[0] + w[2]) / 2, (w[1] + w[3]) / 2))
+        if len(ticks) < 3:
+            continue
+        # the ticks of one bar share a row
+        rows: dict = {}
+        for v, cx, cy in ticks:
+            rows.setdefault(round(cy / 9), []).append((v, cx))
+        for _, row in sorted(rows.items(), key=lambda kv: -len(kv[1])):
+            if len(row) < 3:
+                continue
+            row.sort(key=lambda t: t[1])
+            (v0, x0), (v1, x1) = row[0], row[-1]
+            dft, dpt = abs(v1 - v0), abs(x1 - x0)
+            if dft <= 0 or dpt <= 4:
+                continue
+            ft_per_inch = 72.0 * dft / dpt
+            if not (1.0 <= ft_per_inch <= 600.0):
+                continue
+            # Engineering scales are round numbers; measuring label centres
+            # lands a hair off (50.06). Snap only when the reading is already
+            # within 2.5% of a standard, so a genuinely odd bar is reported
+            # as measured rather than forced onto a value it is not.
+            for std in (10, 20, 30, 40, 50, 60, 80, 100, 200):
+                if abs(ft_per_inch - std) <= 0.025 * std:
+                    ft_per_inch = float(std)
+                    break
+            return ScaleCandidate(
+                text=f'graphic bar {v0:g}-{v1:g} ft over {dpt:.1f}pt '
+                     f'(1" = {ft_per_inch:.0f}\')',
+                ft_per_paper_inch=ft_per_inch,
+                near_scale_keyword=True)
+    return None
+
+
 def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True) -> ScaleResult:
     text = page.get_text()
     cands = _scan(text)
     nts = bool(_NTS.search(text))
     if cands:
         return ScaleResult(_choose(cands), cands, nts, "text")
+
+    # No stated ratio: try the drawn GRAPHIC SCALE bar off the text layer
+    # before paying for OCR. Its tick labels ("0", "50'", "100'") are real
+    # text on most CAD sheets, and OCR mangles them ("100'" -> "00").
+    try:
+        from .extract import page_words
+
+        bar = graphic_scale_bar(page_words(page))
+        if bar:
+            return ScaleResult(bar, [bar], nts, "graphic-bar")
+    except Exception:
+        pass
 
     if ocr_if_needed:
         try:
@@ -146,6 +220,9 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True) -> ScaleResult:
             nts = nts or bool(_NTS.search(ocr_text))
             if cands:
                 return ScaleResult(_choose(cands), cands, nts, "ocr")
+            bar = graphic_scale_bar(words)
+            if bar:
+                return ScaleResult(bar, [bar], nts, "graphic-bar")
         except Exception:
             pass
 
