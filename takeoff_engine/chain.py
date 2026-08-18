@@ -473,6 +473,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         chains.extend(merged)
 
     chains = _stitch_across_styles(chains)
+    chains = _join_chain_ends(chains)
 
     if words:
         chains = _bridge_text(chains, words)
@@ -838,6 +839,154 @@ def _stitch_across_styles(chains: list) -> list:
             if cands[k] is not base:
                 consumed.add(id(cands[k]))
         out.append(base)
+    return [c for c in chains if id(c) not in consumed]
+
+
+def _end_dir(pts: np.ndarray, end: int, lookback: float = 14.0) -> np.ndarray:
+    """Outward unit direction at a chain endpoint, averaged over the last
+    `lookback` pt of polyline so one short dash can't skew it."""
+    seq = pts if end == 1 else pts[::-1]
+    tip = seq[-1]
+    ref = seq[0]
+    acc = 0.0
+    for k in range(len(seq) - 1, 0, -1):
+        acc += float(np.hypot(*(seq[k] - seq[k - 1])))
+        ref = seq[k - 1]
+        if acc >= lookback:
+            break
+    v = tip - ref
+    n = float(np.hypot(*v))
+    return v / n if n > 1e-9 else np.array([1.0, 0.0])
+
+
+def _join_chain_ends(chains: list) -> list:
+    """Rejoin one physical line that survived detection as several chains.
+
+    Two causes, one cure:
+      * VERTICES - a property boundary turns 90 deg. The cadence matcher
+        caps turn angle (rightly: that is what stops a line jumping onto a
+        neighbour), so every corner ends a chain. The client's milestones
+        ask for vertex/intersection handling explicitly.
+      * LINK COMPETITION - an endpoint may take only ONE link, so where
+        several dashes crowd a junction the winner can be the wrong one and
+        a perfectly collinear continuation is left stranded.
+
+    Guarded so unrelated features cannot fuse: identical colour, weight
+    class and layer; comparable cadence; the join may not double back; and
+    an endpoint with more than one candidate partner is left alone, because
+    a T-junction is a genuine ambiguity rather than a join.
+    """
+    cands = [c for c in chains
+             if c.klass.startswith("dash") and len(c.pts) >= 2
+             and c.length >= 25.0]
+    if len(cands) < 2:
+        return chains
+    from scipy.spatial import cKDTree
+
+    groups = defaultdict(list)
+    for k, c in enumerate(cands):
+        groups[(c.color, _weight_class(c.width), c.layer)].append(k)
+
+    ok_links = []
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        eps, meta = [], []
+        for k in members:
+            c = cands[k]
+            for end in (0, 1):
+                eps.append(c.pts[-1] if end == 1 else c.pts[0])
+                meta.append((k, end))
+        eps = np.asarray(eps, dtype=float)
+        tree = cKDTree(eps)
+
+        def _cad(k):
+            c = cands[k]
+            return (c.ink or c.length) / max(c.n_dashes, 1)
+
+        cand_by_ep = defaultdict(list)  # endpoint -> [(turn, dist, other)]
+        for a, b in tree.query_pairs(56.0):
+            ka, ea = meta[a]
+            kb, eb = meta[b]
+            if ka == kb:
+                continue
+            da, db = _cad(ka), _cad(kb)
+            if max(da, db) > 1.8 * min(da, db) + 3.0:
+                continue
+            # how far one repeat of the pattern can carry the line past the
+            # last mark before the break
+            reach = 1.3 * (max(da, db) + max(_tpl_gap(cands[ka]),
+                                             _tpl_gap(cands[kb])))
+            reach = float(min(max(reach, 12.0), 56.0))
+            d = float(np.hypot(*(eps[a] - eps[b])))
+            if d > reach:
+                continue
+            va = _end_dir(np.asarray(cands[ka].pts), ea)
+            vb = _end_dir(np.asarray(cands[kb].pts), eb)
+            # 0 deg = straight continuation, 180 = folding back on itself
+            turn = float(np.degrees(np.arccos(np.clip(-(va @ vb), -1.0, 1.0))))
+            if turn > 100.0:
+                continue
+            # neither line may travel BACKWARDS to reach the other. Where a
+            # line runs PAST a branch (a T-junction whose stem is already
+            # part of this chain), the far endpoint still lands within reach
+            # at a plausible turn, and joining it doubles the line back on
+            # itself - a visible spike carrying phantom length. Sideways is
+            # fine, since a genuine corner's gap can be perpendicular.
+            gap = eps[b] - eps[a]
+            gn = float(np.hypot(*gap))
+            if gn > 1e-6:
+                gdir = gap / gn
+                if (va @ gdir) < -0.35 or (vb @ -gdir) < -0.35:
+                    continue
+            cand_by_ep[a].append((turn, d, b))
+            cand_by_ep[b].append((turn, d, a))
+
+        def _preferred(ep):
+            """The one partner this endpoint clearly belongs to, or None.
+
+            A single candidate is unambiguous. Where several chains meet,
+            only a clear straight continuation wins: at a real T-junction
+            the through-line reads ~0 deg while the branch turns sharply,
+            so requiring that separation joins the through-line and leaves
+            the branch alone instead of guessing between them."""
+            lst = sorted(cand_by_ep[ep])
+            if not lst:
+                return None
+            if len(lst) == 1:
+                return lst[0][2]
+            best, second = lst[0], lst[1]
+            if best[0] <= 25.0 and second[0] >= best[0] + 40.0:
+                return best[2]
+            return None
+
+        used = set()
+        for ep in sorted(cand_by_ep):
+            other = _preferred(ep)
+            if other is None or ep in used or other in used:
+                continue
+            if _preferred(other) != ep:
+                continue  # must be mutual
+            used.update((ep, other))
+            ka, ea = meta[ep]
+            kb, eb = meta[other]
+            ok_links.append((ka, ea, kb, eb))
+
+    if not ok_links:
+        return chains
+    consumed = set()
+    for seq in _walk_chains(cands, list(range(len(cands))), ok_links):
+        if len(seq) < 2:
+            continue
+        pts, member_lens, gaps = _chain_geometry(cands, seq)
+        base = max((cands[k] for k, _ in seq), key=lambda c: c.length)
+        base.pts = pts
+        base.length = float(sum(member_lens) + sum(gaps))
+        base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
+        base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
+        for k, _ in seq:
+            if cands[k] is not base:
+                consumed.add(id(cands[k]))
     return [c for c in chains if id(c) not in consumed]
 
 
