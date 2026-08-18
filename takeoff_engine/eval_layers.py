@@ -34,6 +34,8 @@ def is_textural(layer: str) -> bool:
     centerline, while 'P1-PVMT-CORR' (leaf ends in -CORR) is corridor
     surface texture."""
     leaf = (layer or "").split("|")[-1].upper()
+    if "NO HATCH" in leaf or "NOHATCH" in leaf:
+        return False  # a layer named for NOT being hatch carries real linework
     return any(h in leaf for h in TEXTURAL_HINTS) or leaf.endswith("-CORR")
 
 

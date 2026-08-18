@@ -486,7 +486,20 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     # dashed/solid classes - the review UI shows them as their own group
     for c in chains:
         lay = (c.layer or "").upper()
-        if lay and any(h in lay for h in ("TEXT", "-LBL", "HATCH")):
+        if not lay:
+            continue
+        # "E1-MISC (NO HATCH)" is a layer for geometry that is explicitly
+        # NOT hatch - a plain substring test demotes real linework on it
+        is_hatch = "HATCH" in lay and "NO HATCH" not in lay \
+            and "NOHATCH" not in lay
+        if is_hatch:
+            # a HATCH layer is decoration at ANY size. Solid hatch is often
+            # exported as a triangulated mesh of hairline closed triangles,
+            # and those tile an area, so the mesh spans hundreds of pt and
+            # escapes the size gate below - emitting fill as solid linework
+            # with wholly phantom footage.
+            c.klass = "annotation"
+        elif any(h in lay for h in ("TEXT", "-LBL")):
             # firms put real linework on "TEXT" layers (IMEG's drainage
             # boundaries live on P6-TEXT-STORM). A long structured chain is
             # linework wherever it lives; only short/scribbly geometry on
