@@ -37,6 +37,36 @@ SAMPLES_DIR = (ROOT / ".." / "TakeoffPro AI").resolve()
 
 app = FastAPI(title="Takeoff Detection Service")
 
+# Optional site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic
+# auth on every request (username is ignored). Meant for exposing the
+# review UI through a tunnel for remote demos.
+_UI_PASSWORD = __import__("os").environ.get("TAKEOFF_UI_PASSWORD")
+if _UI_PASSWORD:
+    import base64 as _b64
+    import secrets as _secrets
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import Response as _StarResponse
+
+    class _BasicAuth(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            hdr = request.headers.get("authorization", "")
+            ok = False
+            if hdr.startswith("Basic "):
+                try:
+                    creds = _b64.b64decode(hdr[6:]).decode()
+                    ok = _secrets.compare_digest(
+                        creds.split(":", 1)[1], _UI_PASSWORD)
+                except Exception:
+                    ok = False
+            if not ok:
+                return _StarResponse(
+                    "password required", status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="takeoff"'})
+            return await call_next(request)
+
+    app.add_middleware(_BasicAuth)
+
 # job_id -> {"path": str, "pages": int, "status": {page: "running"|"done"|"error:..."}}
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
