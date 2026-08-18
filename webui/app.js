@@ -1,11 +1,32 @@
 "use strict";
-// if the page was opened as http://user:pass@host, relative URLs inherit
-// the credentials and fetch()/img loads refuse them; re-base to the origin
-if (location.username || location.password) {
-  const b = document.createElement("base");
-  b.href = location.origin + "/";
-  document.head.appendChild(b);
-}
+// If the page was opened as http://user:pass@host (how people reach a
+// password-protected demo link), every relative URL inherits the
+// credentials and fetch() refuses to construct such a Request. Chrome
+// scrubs location.href but NOT document.baseURI, which is what relative
+// URLs actually resolve against - so test baseURI, not location.
+(() => {
+  let dirty = false;
+  try {
+    const b = new URL(document.baseURI);
+    dirty = !!(b.username || b.password);
+  } catch (e) { /* opaque base */ }
+  if (!dirty) return;
+  const tag = document.createElement("base");
+  tag.href = location.origin + "/";
+  document.head.appendChild(tag);
+  // A <base> tag alone is not enough: the credentials live in the document
+  // base URL that fetch() resolves against, so absolutise root-relative
+  // API paths explicitly. Everything in this app requests "/api/...".
+  const raw = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    if (typeof input === "string" && input.startsWith("/")) {
+      input = location.origin + input;
+    }
+    return raw(input, init);
+  };
+})();
+// resolve a same-origin path for src/href, immune to a credentialed base
+const url = (p) => location.origin + p;
 const $ = (id) => document.getElementById(id);
 const IMG_DPI = 130; // must match /image endpoint default
 
@@ -19,6 +40,9 @@ const state = {
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // "measure" | "extend" | null
   measurePts: [],
+  ai: null,                 // last page-analyst result
+  aiWhy: new Map(),         // style_id -> {keep, why, label}
+  aiUndo: null,             // snapshot taken before applying AI focus
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -58,7 +82,7 @@ async function selectPage(p) {
   renderStyles(); fitOnLoad();
   const img = new Image();
   img.onload = () => { state.img = img; fitView(); draw(); };
-  img.src = `/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`;
+  img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`);
   // reuse a finished result if the server has one
   const st = await (await fetch(`/api/job/${state.job}/page/${p}/status`)).json();
   if (st.status === "done") loadResult();
@@ -84,6 +108,8 @@ async function loadResult() {
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
   $("restoreBtn").hidden = true;
@@ -129,6 +155,12 @@ function renderStyles() {
 
     const badge = document.createElement("span");
     badge.className = `badge ${s.class}`; badge.textContent = s.class;
+
+    const ai = state.aiWhy.get(s.style_id);
+    if (ai) {
+      row.classList.add(ai.keep ? "ai-keep" : "ai-drop");
+      row.title = (ai.keep ? "AI: measure this — " : "AI: not takeoff — ") + (ai.why || "");
+    }
 
     row.append(cb, sw, main, badge);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
@@ -251,11 +283,16 @@ function renderItemized() {
   }
 }
 
-// ---------- AI page analyst ----------
+// ---------- AI page analyst + auto-focus ----------
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
 $("aiBtn").onclick = async () => {
   const banner = $("aiBanner");
   banner.hidden = false;
-  banner.textContent = "Analyzing page with AI…";
+  banner.textContent = "Reading the sheet with AI…";
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/analyze`, { method: "POST" });
   if (!r.ok) {
     banner.textContent = r.status === 503
@@ -264,13 +301,81 @@ $("aiBtn").onclick = async () => {
     return;
   }
   const j = await r.json();
-  const legend = (j.inline_legend || []).map(l => `${l.symbol} = ${l.meaning}`).join("; ");
-  banner.innerHTML =
-    `<b>${j.purpose || ""}</b>` +
-    (j.takeoff_focus ? ` · <b>Measure:</b> ${j.takeoff_focus.join(", ")}` : "") +
-    (j.ignore ? ` · <b>Ignore:</b> ${j.ignore.join(", ")}` : "") +
-    (legend ? ` · <b>Sheet legend:</b> ${legend}` : "");
+  state.ai = j;
+  // per-style reasoning, surfaced on the style rows themselves
+  state.aiWhy = new Map();
+  for (const f of j.focus || []) state.aiWhy.set(f.style_id, { keep: true, why: f.why, label: f.label });
+  for (const i of j.ignore || []) state.aiWhy.set(i.style_id, { keep: false, why: i.why });
+  renderAiBanner();
+  renderStyles();
 };
+
+function renderAiBanner() {
+  const banner = $("aiBanner"), j = state.ai;
+  if (!j) { banner.hidden = true; return; }
+  banner.hidden = false;
+  const legend = (j.inline_legend || [])
+    .map(l => `${esc(l.symbol)} = ${esc(l.meaning)}`).join("; ");
+  const focus = j.focus || [];
+  const names = focus.map(f => esc(f.label || ("style " + f.style_id))).join(", ");
+  let html = `<b>${esc(j.purpose)}</b>`;
+  if (j.discipline) html += ` <span class="ai-dim">(${esc(j.discipline)})</span>`;
+  if (focus.length) html += `<br><b>Measure here:</b> ${names}`;
+  if (legend) html += `<br><b>Sheet legend:</b> ${legend}`;
+  html += `<br><span class="ai-dim">${esc(j._provider || "")}`;
+  if (j.confidence) html += ` · confidence ${esc(j.confidence)}`;
+  if (j._invalid_style_ids) html += ` · ${j._invalid_style_ids} suggestion(s) ignored as unknown styles`;
+  html += `</span>`;
+  banner.innerHTML = html;
+
+  if (focus.length) {
+    const ids = new Set(focus.map(f => f.style_id));
+    const offCount = [...state.include.keys()].filter(k => !ids.has(k)).length;
+    const bar = document.createElement("div");
+    bar.className = "ai-actions";
+    const apply = document.createElement("button");
+    apply.id = "aiApplyBtn";
+    apply.textContent = `Focus on these ${focus.length} line type${focus.length > 1 ? "s" : ""}`;
+    apply.title = `Turns ON ${focus.length} style(s) and turns OFF ${offCount}. Nothing is deleted — you can undo.`;
+    apply.onclick = () => applyAiFocus(focus);
+    bar.appendChild(apply);
+    const note = document.createElement("span");
+    note.className = "ai-dim";
+    note.textContent = `suggestion only — turns off ${offCount} other style${offCount === 1 ? "" : "s"}, undoable`;
+    bar.appendChild(note);
+    if (state.aiUndo) {
+      const undo = document.createElement("button");
+      undo.textContent = "Undo";
+      undo.onclick = undoAiFocus;
+      bar.appendChild(undo);
+    }
+    banner.appendChild(bar);
+  }
+}
+
+function applyAiFocus(focus) {
+  // snapshot first: this only flips checkboxes, so it must be reversible
+  state.aiUndo = {
+    include: new Map(state.include),
+    labels: new Map(state.labels),
+  };
+  const ids = new Set(focus.map(f => f.style_id));
+  for (const k of state.include.keys()) state.include.set(k, ids.has(k));
+  for (const f of focus) {
+    if (f.label) state.labels.set(f.style_id, f.label);
+  }
+  setStatus(`AI focus applied — ${ids.size} line type(s) kept`);
+  renderAiBanner(); renderStyles(); renderChips(); renderItemized(); draw();
+}
+
+function undoAiFocus() {
+  if (!state.aiUndo) return;
+  state.include = new Map(state.aiUndo.include);
+  state.labels = new Map(state.aiUndo.labels);
+  state.aiUndo = null;
+  setStatus("AI focus undone");
+  renderAiBanner(); renderStyles(); renderChips(); renderItemized(); draw();
+}
 
 $("approveBtn").onclick = async () => {
   const labels = {};
@@ -296,10 +401,10 @@ $("approveBtn").onclick = async () => {
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : ""));
   const a = $("dlLink");
-  a.href = `/api/job/${state.job}/page/${state.page}/elements`;
+  a.href = url(`/api/job/${state.job}/page/${state.page}/elements`);
   a.hidden = false;
   const rl = $("reportLink");
-  rl.href = `/api/job/${state.job}/report.pdf`;
+  rl.href = url(`/api/job/${state.job}/report.pdf`);
   rl.hidden = false;
 };
 

@@ -75,4 +75,10 @@ canvas#view.panning { cursor: grabbing; }
 .links-bar { display: flex; gap: 14px; padding: 0 12px 10px; }
 .links-bar a { color: var(--accent); font-size: 12px; }
 #aiBtn { background: #6d4fc3; border-color: #6d4fc3; color: #fff; }
-.ai-banner { background: #241d38; border-bottom: 1px solid #493a75; padding: 8px 16px; font-size: 12px; color: #cfc6ec; }
+.ai-banner { background: #241d38; border-bottom: 1px solid #493a75; padding: 8px 16px; font-size: 12px; color: #cfc6ec; line-height: 1.6; }
+.ai-banner b { color: #efe9ff; }
+.ai-dim { color: #9b8fc4; }
+.ai-actions { display: flex; gap: 10px; align-items: center; margin-top: 7px; }
+#aiApplyBtn { background: #6d4fc3; border-color: #6d4fc3; color: #fff; font-weight: 600; }
+.style-row.ai-keep { box-shadow: inset 3px 0 0 #7fd6a4; }
+.style-row.ai-drop { box-shadow: inset 3px 0 0 #6b5f8a; }

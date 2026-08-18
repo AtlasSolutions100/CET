@@ -70,6 +70,44 @@ if _UI_PASSWORD:
 # job_id -> {"path": str, "pages": int, "status": {page: "running"|"done"|"error:..."}}
 JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
+REGISTRY = JOBS_DIR / "registry.json"
+
+
+def _save_registry() -> None:
+    """Jobs live in memory, but detection results live on disk - so without
+    this a service restart answers 'unknown job' for work that is sitting
+    right there, and the page has to be detected again."""
+    try:
+        REGISTRY.write_text(json.dumps(
+            {jid: {"path": j["path"], "pages": j["pages"]}
+             for jid, j in JOBS.items()}, indent=1))
+    except OSError:
+        pass
+
+
+def _load_registry() -> None:
+    if not REGISTRY.exists():
+        return
+    try:
+        saved = json.loads(REGISTRY.read_text())
+    except (OSError, ValueError):
+        return
+    for jid, j in saved.items():
+        if not Path(j.get("path", "")).exists():
+            continue  # the PDF moved; a stale entry would fail confusingly
+        status = {}
+        d = JOBS_DIR / jid
+        if d.is_dir():
+            for f in d.glob("p*_result.json"):
+                try:
+                    status[int(f.name[1:].split("_")[0])] = "done"
+                except ValueError:
+                    continue
+        JOBS[jid] = {"path": j["path"], "pages": j.get("pages", 0),
+                     "status": status}
+
+
+_load_registry()
 
 
 def _job_dir(job_id: str) -> Path:
@@ -102,6 +140,7 @@ def _register(path: Path) -> dict:
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[job_id] = {"path": str(path), "pages": doc.page_count, "status": {}}
+        _save_registry()
     kinds = []
     for p in range(doc.page_count):
         kinds.append(classify_page(doc[p]).kind)
@@ -514,25 +553,60 @@ def analyze_page(job_id: str, page: int):
     img_b64 = base64.standard_b64encode(pix.tobytes("jpeg")).decode()
     text = pg.get_text()[:3000]
 
-    styles_ctx = ""
+    styles_ctx = "(run Detect first - no styles known yet)"
+    legend_ctx = ""
+    known_ids: set = set()
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if rf.exists():
         res = json.loads(rf.read_text())
-        styles_ctx = "\n".join(
-            f'- style {st["style_id"]}: {st["class"]}, {st["n"]} lines, '
-            f'{st["length_pt"]:.0f}pt, label "{st["suggested_label"]}"'
-            for st in res["styles"][:20])
+        det = res.get("scale") or {}
+        ft_per_in = det.get("ft_per_paper_inch")
+        rows = []
+        for st in res["styles"][:28]:
+            known_ids.add(int(st["style_id"]))
+            col = st.get("color")
+            hexcol = ("#%02x%02x%02x" % tuple(int(c * 255) for c in col)) \
+                if col else "n/a"
+            qty = (f'{st["length_pt"] / 72.0 * ft_per_in:,.0f} ft'
+                   if ft_per_in else f'{st["length_pt"]:,.0f} pt')
+            rows.append(
+                f'- style_id {st["style_id"]}: class={st["class"]}, '
+                f'{st["n"]} lines, {qty}, colour {hexcol}, '
+                f'width {st.get("width")}, pattern "{st.get("signature")}", '
+                f'current label "{st["suggested_label"]}"')
+        if rows:
+            styles_ctx = "\n".join(rows)
+        if res.get("legend"):
+            legend_ctx = ("\n\nLegend rows the detector already read off this "
+                          "sheet:\n" + "\n".join(
+                              f'- "{e.get("label")}" -> style_id '
+                              f'{e.get("sample_style")}'
+                              for e in res["legend"]))
 
     prompt = (
-        "You are helping a construction estimator do a quantity takeoff "
-        "from this plan sheet. Sheet text (excerpt):\n" + text +
-        "\n\nDetected line styles:\n" + styles_ctx +
-        "\n\nAnswer in strict JSON with keys: purpose (one sentence: what "
-        "this sheet is for), discipline (short), takeoff_focus (array of "
-        "short strings: which linework an estimator should measure, "
-        "referencing style ids when possible), ignore (array of short "
-        "strings), inline_legend (array of {symbol, meaning} for any "
-        "legend defined on the sheet itself)."
+        "You are helping a construction estimator do a quantity takeoff from "
+        "this plan sheet. Decide WHAT THIS SHEET IS FOR, then which of the "
+        "detected line styles an estimator should actually measure on it.\n\n"
+        "Sheet text (excerpt):\n" + text +
+        "\n\nDetected line styles (these style_id values are the only ones "
+        "that exist - never invent one):\n" + styles_ctx + legend_ctx +
+        "\n\nGuidance: a sheet usually has ONE job, and most linework on it "
+        "is context rather than takeoff. A shear-wall plan means only the "
+        "shear walls get measured; a roof plan means only roof framing. "
+        "Title blocks, grid lines, dimension strings, leaders, hatching and "
+        "match lines are never takeoff. Put a style in focus only if this "
+        "sheet's purpose is what that line represents; if you are unsure "
+        "about a style, leave it out of both lists.\n\n"
+        "Reply with STRICT JSON only, no prose outside it, with keys:\n"
+        '  purpose: one sentence on what this sheet is for\n'
+        '  discipline: short string\n'
+        '  focus: array of {"style_id": int, "label": "short trade name for '
+        'this line", "why": "short reason"}\n'
+        '  ignore: array of style_id ints only, no objects\n'
+        '  inline_legend: array of {"symbol": ..., "meaning": ...} for any '
+        'legend defined on the sheet itself\n'
+        '  confidence: "high" | "medium" | "low"\n'
+        'Keep every "why" under 12 words so the reply is not truncated.'
     )
 
     name, base, key, model = provider
@@ -541,7 +615,7 @@ def analyze_page(job_id: str, page: int):
 
         client = anthropic.Anthropic()
         msg = client.messages.create(
-            model=model, max_tokens=700,
+            model=model, max_tokens=2000,
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64",
                  "media_type": "image/jpeg", "data": img_b64}},
@@ -552,7 +626,7 @@ def analyze_page(job_id: str, page: int):
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}",
                      "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 700,
+            json={"model": model, "max_tokens": 2000,
                   "messages": [{"role": "user", "content": [
                       {"type": "image_url", "image_url": {
                           "url": f"data:image/jpeg;base64,{img_b64}"}},
@@ -563,10 +637,61 @@ def analyze_page(job_id: str, page: int):
                                      f"{r.text[:200]}")
         raw = r.json()["choices"][0]["message"]["content"]
 
+    parsed = None
     try:
         parsed = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
     except Exception:
-        parsed = {"purpose": raw[:400]}
+        # a reply cut off by the token limit leaves unbalanced JSON; recover
+        # the fields that did arrive rather than dumping raw text at the user
+        for closer in ("]}", "}]}", '"}]}'):
+            try:
+                cut = raw.rindex(",")
+                parsed = json.loads(raw[raw.index("{"):cut] + closer)
+                parsed["_truncated"] = True
+                break
+            except Exception:
+                continue
+    if not isinstance(parsed, dict):
+        parsed = {"purpose": "The model did not return usable JSON.",
+                  "_unparsed": raw[:300]}
+
+    # The UI turns focus/ignore into checkbox state, so a hallucinated
+    # style_id would hide real linework from the takeoff. Keep only ids the
+    # detector actually produced, and say plainly how many were discarded
+    # rather than quietly shrinking the list.
+    def _clean(items):
+        out, dropped = [], 0
+        for it in items if isinstance(items, list) else []:
+            # focus arrives as objects, ignore as bare style_id ints
+            if isinstance(it, (int, float)) or (
+                    isinstance(it, str) and it.strip().lstrip("-").isdigit()):
+                it = {"style_id": it}
+            if not isinstance(it, dict):
+                dropped += 1
+                continue
+            try:
+                sid = int(it.get("style_id"))
+            except (TypeError, ValueError):
+                dropped += 1
+                continue
+            if known_ids and sid not in known_ids:
+                dropped += 1
+                continue
+            row = {"style_id": sid}
+            for k in ("label", "why"):
+                if it.get(k):
+                    row[k] = str(it[k])[:120]
+            out.append(row)
+        return out, dropped
+
+    focus, drop_f = _clean(parsed.get("focus"))
+    ignore, drop_i = _clean(parsed.get("ignore"))
+    seen = {f["style_id"] for f in focus}
+    ignore = [i for i in ignore if i["style_id"] not in seen]  # focus wins
+    parsed["focus"] = focus
+    parsed["ignore"] = ignore
+    parsed["_invalid_style_ids"] = drop_f + drop_i
+    parsed["_known_style_ids"] = len(known_ids)
     parsed["_provider"] = f"{name}:{model}"
     return JSONResponse(parsed)
 
