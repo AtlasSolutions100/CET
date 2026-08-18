@@ -135,17 +135,25 @@ def list_samples():
     return out[:80]
 
 
-def _register(path: Path) -> dict:
+def _register(path: Path, classify: bool = True) -> dict:
+    """classify=False skips per-page vector/raster classification, which
+    reads every drawing on every page. Rasterisation callers do not need it,
+    and on a large package it dominates the cost of simply opening the file."""
     doc = pymupdf.open(path)
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[job_id] = {"path": str(path), "pages": doc.page_count, "status": {}}
         _save_registry()
-    kinds = []
+    kinds, sizes = [], []
     for p in range(doc.page_count):
-        kinds.append(classify_page(doc[p]).kind)
+        kinds.append(classify_page(doc[p]).kind if classify else "unknown")
+        r = doc[p].rect
+        sizes.append([round(r.width, 2), round(r.height, 2)])
     doc.close()
-    return {"job_id": job_id, "pages": len(kinds), "kinds": kinds, "name": Path(path).name}
+    # sizes let a caller compute exact raster pixel dimensions without
+    # decoding an image (a 36x24in sheet at 300dpi is 78 megapixels)
+    return {"job_id": job_id, "pages": len(kinds), "kinds": kinds,
+            "sizes": sizes, "name": Path(path).name}
 
 
 @app.post("/api/open-path")
@@ -157,10 +165,10 @@ def open_path(body: OpenPathBody):
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile):
+async def upload(file: UploadFile, classify: int = 1):
     dest = JOBS_DIR / f"upload_{uuid.uuid4().hex[:8]}_{file.filename}"
     dest.write_bytes(await file.read())
-    return _register(dest)
+    return _register(dest, classify=bool(classify))
 
 
 @app.get("/api/job/{job_id}/page/{page}/image")
