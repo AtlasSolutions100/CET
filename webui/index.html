@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Takeoff Line Review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">Takeoff <span>Line Review</span></div>
+  <select id="sampleSel"><option value="">Open sample plan…</option></select>
+  <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
+  <button id="openBtn">Open</button>
+  <div id="docName" class="doc-name"></div>
+  <select id="pageSel" hidden></select>
+  <button id="detectBtn" hidden>Detect lines</button>
+  <div id="status" class="status"></div>
+  <button id="aiBtn" hidden>AI analyze</button>
+</header>
+<div id="aiBanner" class="ai-banner" hidden></div>
+<main>
+  <aside id="sidebar">
+    <div id="colorChips" class="color-chips"></div>
+    <div id="legendBox" class="legend-box" hidden></div>
+    <div class="side-head">
+      <h2>Detected line styles</h2>
+      <div class="side-actions">
+        <button id="allBtn" class="mini">all</button>
+        <button id="noneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="styleList" class="style-list"></div>
+    <div class="takeoff-head"><h2>Itemized takeoff</h2></div>
+    <div id="itemized" class="itemized"></div>
+    <div class="approve-bar">
+      <button id="approveBtn" disabled>Approve &amp; export</button>
+    </div>
+    <div class="links-bar">
+      <a id="dlLink" hidden download>elements.json</a>
+      <a id="reportLink" hidden>Report PDF (all approved pages)</a>
+    </div>
+  </aside>
+  <section id="stage">
+    <canvas id="view"></canvas>
+    <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
+    <div id="selBar" class="sel-bar" hidden>
+      <span id="selInfo"></span>
+      <button id="removeBtn">Remove line (⌫)</button>
+    </div>
+    <button id="restoreBtn" class="restore-btn" hidden>Restore removed</button>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
