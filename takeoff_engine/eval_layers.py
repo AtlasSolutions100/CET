@@ -87,7 +87,18 @@ def main():
     args = ap.parse_args()
 
     doc = pymupdf.open(args.pdf)
-    rows = eval_page(doc[args.page])
+    page = doc[args.page]
+    units = extract_strokes(page)
+    chains = build_chains(units, words=page.get_text("words"))
+    audit = phantom_span_audit(chains, units)
+    print(f"PHANTOM-SPAN AUDIT: {len(audit['bad'])} of {audit['n']} emitted lines "
+          f"sit on far less ink than their own pattern implies")
+    for c, meas, exp in sorted(audit["bad"], key=lambda x: -x[0].length)[:10]:
+        print(f"   {c.klass:9} len={c.length:8.0f} on-ink={meas:6.1%} "
+              f"expected={exp:6.1%} sig='{c.dash_signature}' "
+              f"layer='{(c.layer or '(none)')[:28]}'")
+    print()
+    rows = eval_page(page)
     line_rows = [r for r in rows if not r["textural"]]
     if line_rows:
         tot = sum(r["unit_ink"] for r in line_rows)
@@ -99,10 +110,6 @@ def main():
         tag = " [tex]" if r["textural"] else ""
         print(f"{r['layer'][:46]:46} {r['unit_ink']:8.0f} {r['recall']:7.1%} "
               f"{r['purity']:7.1%} {r['n_chains']:5}  {r['dom'][:38]}{tag}")
-
-
-if __name__ == "__main__":
-    main()
 
 
 # --- per-class milestone metrics -------------------------------------------
@@ -210,6 +217,56 @@ def _coverage(lay_units, chains, tol: float = 3.0):
     return covered / total if total else None
 
 
+def phantom_span_audit(chains: list, units: list, min_len: float = 150.0,
+                       tol: float = 1.2, slack: float = 0.65) -> dict:
+    """Does every emitted line actually sit on ink the drawing contains?
+
+    This is the money check: a chain that spans open paper reports footage
+    for material nobody has to buy. It catches the two ways that happens -
+    joining marks across empty space, and welding a line to something it
+    only passed near - and it is independent of the layer-based metrics, so
+    it still works on PDFs with no CAD layers at all.
+
+    Each chain is scored against ITS OWN cadence, not a flat threshold: a
+    dashed line's polyline crosses its own gaps, so `d18 g36` legitimately
+    sits on ink only a third of the time, while a solid line should be on
+    ink throughout. `ink / length` is that expectation, so a chain is only
+    flagged when it covers far less ink than its own pattern implies.
+
+    Returns {"n": audited, "bad": [(chain, measured, expected)]}.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    from .chain import _sample_polyline
+
+    ink = []
+    for u in units:
+        if u.color and min(u.color) > 0.92:
+            continue
+        s, _ = _sample_polyline(np.asarray(u.pts), step=1.0, max_n=20000)
+        if len(s):
+            ink.append(s)
+    if not ink:
+        return {"n": 0, "bad": []}
+    tree = cKDTree(np.vstack(ink))
+    audited, bad = 0, []
+    for c in chains:
+        if c.klass == "annotation" or c.length < min_len:
+            continue
+        audited += 1
+        s, _ = _sample_polyline(np.asarray(c.pts), step=2.0, max_n=40000)
+        if not len(s):
+            continue
+        d, _ = tree.query(s, distance_upper_bound=tol)
+        frac = float(np.isfinite(d).mean())
+        expect = (c.ink / c.length) if (c.ink and c.length) else 1.0
+        expect = min(max(expect, 0.05), 1.0)
+        if frac < slack * expect:
+            bad.append((c, frac, expect))
+    return {"n": audited, "bad": bad}
+
+
 def print_class_metrics(m: dict) -> None:
     print(f"\n{'class':10} {'chains':>7} {'ink':>9} {'precision':>10}")
     for k, s in m["per_class"].items():
@@ -220,3 +277,7 @@ def print_class_metrics(m: dict) -> None:
         for lay, s in m["truth_layers"].items():
             cov = f"{s['coverage']:.1%}" if s.get("coverage") is not None else "-"
             print(f"{lay[:46]:46} {s['want']:7} {s['class_acc']:10.1%} {s['recall']:8.1%} {cov:>9}")
+
+
+if __name__ == "__main__":
+    main()
