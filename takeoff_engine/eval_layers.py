@@ -111,9 +111,13 @@ TRUTH_CLASSES = {
     "O-SURFACE-EXISTING COMBINED": "dash1",
     "24007215.01-X-SITE|E3-LOTS": "dash1",
     "24007215.01-X-SITE|P1-FENCE": "dash1",
-    "24007215.01-X-SITE|P2-WATER-LINE": "dash1",
-    "24007215.01-X-SITE|P2-STORM-SWALE": "dash1",
-    "24007215.01-X-SITE|P2-FIREWATER-LINE": "dash1",
+    # utility runs carry a repeating inline mark in every gap - verified by
+    # rendering each one: water "- W -", firewater "- FW -", storm swale a
+    # flow chevron "- > -" (see _mark_glyph_text_chains for why letters and
+    # symbols share one class)
+    "24007215.01-X-SITE|P2-WATER-LINE": "dash-text",
+    "24007215.01-X-SITE|P2-STORM-SWALE": "dash-text",
+    "24007215.01-X-SITE|P2-FIREWATER-LINE": "dash-text",
     "24007215.01-X-SITE|P1-PVMT-CL": "dash2",
 }
 

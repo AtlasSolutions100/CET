@@ -333,6 +333,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
     chains: list[LineChain] = []
     cid = 0
+    glyph_blobs: list = []
 
     for (color, width, layer), idxs in by_style.items():
         idxs = _dedup_twins(units, idxs)
@@ -349,6 +350,10 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             cid += 1
 
         dash_cand = [i for i in plain if units[i].length <= DASH_MAX_LEN and not units[i].closed]
+        _glyphs, _blobs = _glyph_blobs(units, dash_cand)
+        if _glyphs:
+            dash_cand = [i for i in dash_cand if i not in _glyphs]
+            glyph_blobs.extend(_blobs)
         dash_cand = _strip_x_marks(units, dash_cand)
         solid_cand = [i for i in plain if units[i].length > DASH_MAX_LEN or units[i].closed]
 
@@ -472,6 +477,9 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     if words:
         chains = _bridge_text(chains, words)
 
+    # exploded-glyph labels drawn inline (no text layer to bridge across)
+    _mark_glyph_text_chains(chains, glyph_blobs)
+
     # chains on annotation layers (hatch fills, text, labels) are real
     # geometry but not takeoff linework; demote so they can't pollute the
     # dashed/solid classes - the review UI shows them as their own group
@@ -534,6 +542,143 @@ def _tpl_gap(lc) -> float:
         return float(lc.dash_signature.rsplit("g", 1)[1])
     except (IndexError, ValueError):
         return 0.0
+
+
+def _glyph_blobs(units: list, idxs: list) -> tuple:
+    """Exploded inline text labels (- FW - FW -, - SD - SD -).
+
+    CAD explodes annotation text into vector strokes, so on these pages
+    there is no text-layer word to bridge across: the letters land in the
+    dash pool and get chained AS dashes (a 'W' becomes a 23pt 'dash', and
+    the real line's class is read off letterforms). The giveaway is that a
+    letter stroke is a FOLDED path inside a small box - its path length far
+    exceeds its bounding diagonal - which no real dash ever is.
+
+    Returns (glyph_indices, blobs) where each blob is (cx, cy, token).
+    """
+    from scipy.spatial import cKDTree
+
+    seeds = []
+    for i in idxs:
+        u = units[i]
+        if len(u.pts) < 3 or not (2.0 <= u.length <= 40.0):
+            continue
+        bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+        diag = float(np.hypot(*bb))
+        if diag > 15.0 or diag <= 0:
+            continue
+        if diag / u.length > 0.78:  # nearly straight = a dash, not a letter
+            continue
+        seeds.append(i)
+    if len(seeds) < 3:
+        return set(), []
+
+    # group letter strokes into label blobs, absorbing short straight
+    # strokes nearby (the 'I' of a word, the crossbar of an 'F')
+    short = [i for i in idxs
+             if i not in set(seeds) and units[i].length <= 9.0]
+    centers = np.array([units[i].pts.mean(axis=0) for i in seeds])
+    tree = cKDTree(centers)
+    parent = list(range(len(seeds)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b in tree.query_pairs(9.0):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    groups = defaultdict(list)
+    for k, i in enumerate(seeds):
+        groups[find(k)].append(i)
+
+    short_c = np.array([units[i].pts.mean(axis=0) for i in short]) \
+        if short else np.empty((0, 2))
+    short_tree = cKDTree(short_c) if len(short_c) else None
+
+    blobs, glyphs = [], set()
+    raw = []
+    for members in groups.values():
+        pts = np.vstack([units[i].pts for i in members])
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        if float(np.hypot(*(hi - lo))) > 20.0:
+            continue  # too big to be an inline label
+        mem = list(members)
+        if short_tree is not None:
+            c = (lo + hi) / 2.0
+            for k in short_tree.query_ball_point(c, 10.0):
+                mem.append(short[k])
+        pts = np.vstack([units[i].pts for i in mem])
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        size = float(np.hypot(*(hi - lo)))
+        if size > 22.0:
+            continue
+        raw.append((mem, (lo + hi) / 2.0, size, len(mem)))
+    if len(raw) < 3:
+        return set(), []
+
+    # a real inline label REPEATS: same stroke count, same size. A one-off
+    # folded blob is an arrowhead or a symbol, and stripping it here would
+    # be guesswork
+    sig = Counter((n, round(size / 3.0)) for _, _, size, n in raw)
+    common = {k for k, v in sig.items() if v >= 3}
+    if not common:
+        return set(), []
+    for mem, ctr, size, n in raw:
+        key = (n, round(size / 3.0))
+        if key not in common:
+            continue
+        glyphs.update(mem)
+        blobs.append((float(ctr[0]), float(ctr[1]), f"#{n}{key[1]}"[:4],
+                      _style_key(units[mem[0]])))
+    return glyphs, blobs
+
+
+def _mark_glyph_text_chains(chains: list, blobs: list) -> None:
+    """A dashed line whose gaps repeatedly hold an exploded glyph IS a
+    dash-text line (milestone 2), even with no text layer to bridge across.
+
+    Class definition, since it decides what the metric scores: "dash-text"
+    means a dashed line carrying a REPEATING INLINE MARK in its gaps. The
+    mark is usually a utility letter code (- W -, - G -, - FW -), and
+    sometimes a direction symbol (the storm swale's flow chevron). We
+    cannot OCR an exploded glyph reliably, so the class deliberately does
+    not claim to distinguish letters from symbols - both are the same
+    takeoff geometry and the same detection problem.
+    """
+    from scipy.spatial import cKDTree
+
+    if not blobs:
+        return
+    # an inline label belongs to ITS OWN line: same layer, colour and
+    # weight. Without this a line merely PASSING near unrelated symbols
+    # (fence crossing vegetation ticks) gets read as dash-text.
+    by_style = defaultdict(list)
+    for b in blobs:
+        by_style[b[3]].append(b)
+    for c in chains:
+        if not c.klass.startswith("dash") or c.length < 30.0:
+            continue
+        mine = by_style.get((c.color, round(c.width or 0.0, 1), c.layer))
+        if not mine or len(mine) < 3:
+            continue
+        samples, _ = _sample_polyline(np.asarray(c.pts), step=2.0, max_n=40000)
+        if not len(samples):
+            continue
+        tree = cKDTree(np.array([[b[0], b[1]] for b in mine]))
+        hits = set()
+        for k in cKDTree(samples).query_ball_tree(tree, 4.0):
+            hits.update(k)
+        if len(hits) < 3:
+            continue
+        toks = Counter(mine[h][2] for h in hits)
+        top, n_top = toks.most_common(1)[0]
+        if n_top >= 3 and c.length / n_top <= 400.0:
+            c.klass = "dash-text"
+            c.label_texts = [top] * n_top
 
 
 def _strip_x_marks(units: list, idxs: list) -> list:
