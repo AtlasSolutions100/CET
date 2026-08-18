@@ -53,6 +53,9 @@ canvas#view.panning { cursor: grabbing; }
 .sel-bar span { color: var(--text); font-weight: 600; }
 #removeBtn { background: #b3362c; border-color: #b3362c; color: #fff; font-weight: 700; }
 .restore-btn { position: absolute; right: 16px; bottom: 16px; }
+.toolkit { position: absolute; left: 16px; top: 16px; display: flex; gap: 8px; align-items: center; }
+#measureBtn.active { background: #b3369a; border-color: #b3369a; color: #fff; }
+#measureInfo { background: var(--panel); border: 1px solid #b3369a; border-radius: 6px; padding: 5px 10px; font-weight: 700; color: #f0a6e2; }
 
 .color-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px 0; }
 .color-chip { width: 22px; height: 22px; border-radius: 5px; border: 2px solid rgba(255,255,255,.35); cursor: pointer; }

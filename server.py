@@ -282,6 +282,12 @@ class ApproveBody(BaseModel):
     excluded_chain_ids: list[int] = []
     # label -> unit price per linear foot (optional, for itemization)
     prices: dict[str, float] = {}
+    # chains created by review-UI edits (split / extend): full geometry,
+    # replacing originals the client puts in excluded_chain_ids
+    added_chains: list[dict] = []
+    # chain_id -> label override ("separate from group": same style, its
+    # own itemized row)
+    chain_labels: dict[int, str] = {}
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -293,8 +299,9 @@ def approve(job_id: str, page: int, body: ApproveBody):
     scale = body.image_dpi / 72.0
     elements = []
     excluded = set(body.excluded_chain_ids)
-    for ch in res["chains"]:
-        label = body.labels.get(ch["style_id"])
+    for ch in list(res["chains"]) + list(body.added_chains):
+        label = body.chain_labels.get(ch["chain_id"]) \
+            or body.labels.get(ch["style_id"])
         if label is None or ch["chain_id"] in excluded:
             continue
         color = ch.get("color")

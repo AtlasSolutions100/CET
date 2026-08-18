@@ -1,4 +1,11 @@
 "use strict";
+// if the page was opened as http://user:pass@host, relative URLs inherit
+// the credentials and fetch()/img loads refuse them; re-base to the origin
+if (location.username || location.password) {
+  const b = document.createElement("base");
+  b.href = location.origin + "/";
+  document.head.appendChild(b);
+}
 const $ = (id) => document.getElementById(id);
 const IMG_DPI = 130; // must match /image endpoint default
 
@@ -7,6 +14,11 @@ const state = {
   img: null, result: null,
   include: new Map(), labels: new Map(), isolate: null, hot: null,
   selected: null, excluded: new Set(),
+  chainLabels: new Map(),   // chain_id -> label override (separate-from-group)
+  nextChainId: 1,           // ids for chains created by edits
+  clickPt: null,            // last click position on the selected chain (pt)
+  tool: null,               // "measure" | "extend" | null
+  measurePts: [],
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -70,6 +82,11 @@ async function loadResult() {
   state.result = await r.json();
   state.include = new Map(); state.labels = new Map();
   state.selected = null; state.excluded = new Set();
+  state.chainLabels = new Map(); state.clickPt = null;
+  state.tool = null; state.measurePts = [];
+  state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
+  $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
+  $("restoreBtn").hidden = true;
   for (const s of state.result.styles) {
     state.include.set(s.style_id, s.class !== "solid" ? true : s.length_pt > 500);
     state.labels.set(s.style_id, s.suggested_label);
@@ -189,7 +206,8 @@ function renderItemized() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
-    const label = state.labels.get(ch.style_id) || "unlabeled";
+    const label = state.chainLabels.get(ch.chain_id) ||
+      state.labels.get(ch.style_id) || "unlabeled";
     const t = totals.get(label) || { count: 0, pt: 0 };
     t.count += 1; t.pt += ch.length_pt;
     totals.set(label, t);
@@ -241,7 +259,7 @@ $("aiBtn").onclick = async () => {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/analyze`, { method: "POST" });
   if (!r.ok) {
     banner.textContent = r.status === 503
-      ? "AI analysis needs ANTHROPIC_API_KEY set on the detection service."
+      ? "AI analysis needs an LLM key (XAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) on the detection service."
       : "AI analysis failed (" + r.status + ")";
     return;
   }
@@ -261,8 +279,16 @@ $("approveBtn").onclick = async () => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ labels, image_dpi: 300,
       excluded_chain_ids: [...state.excluded],
+      added_chains: state.result.chains
+        .filter(c => c.custom && !state.excluded.has(c.chain_id))
+        .map(c => ({ chain_id: c.chain_id, style_id: c.style_id,
+          class: c.class, color: c.color, length_pt: c.length_pt,
+          points: c.points })),
+      chain_labels: Object.fromEntries(
+        [...state.chainLabels].filter(([id]) => !state.excluded.has(id))),
       prices: Object.fromEntries(
-        Object.values(labels).map(l => [l, parseFloat(localStorage.getItem(priceKey(l)) || "") || 0])
+        [...Object.values(labels), ...state.chainLabels.values()]
+          .map(l => [l, parseFloat(localStorage.getItem(priceKey(l)) || "") || 0])
           .filter(([, v]) => v > 0 ? true : false)
       ) }),
   });
@@ -331,6 +357,24 @@ function draw() {
       ctx.stroke();
     }
   }
+  if (state.measurePts.length) {
+    const f = IMG_DPI / 72;
+    ctx.strokeStyle = "#b3369a";
+    ctx.fillStyle = "#b3369a";
+    ctx.lineWidth = 2 / k;
+    ctx.setLineDash([7 / k, 5 / k]);
+    ctx.beginPath();
+    ctx.moveTo(state.measurePts[0][0] * f, state.measurePts[0][1] * f);
+    for (let i = 1; i < state.measurePts.length; i++)
+      ctx.lineTo(state.measurePts[i][0] * f, state.measurePts[i][1] * f);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const p of state.measurePts) {
+      ctx.beginPath();
+      ctx.arc(p[0] * f, p[1] * f, 4 / k, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
   ctx.restore();
 }
 
@@ -378,6 +422,16 @@ function handleCanvasClick(e) {
   // click position in pt coordinates
   const px = ((e.clientX - r.left) - x) / k / f;
   const py = ((e.clientY - r.top) - y) / k / f;
+  if (state.tool === "measure") {
+    state.measurePts.push([px, py]);
+    updateMeasureInfo();
+    draw();
+    return;
+  }
+  if (state.tool === "extend" && state.selected !== null) {
+    extendTo(px, py);
+    return;
+  }
   const tolPt = 6 / k / f * 4 + 1.5; // generous when zoomed out
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
@@ -391,8 +445,131 @@ function handleCanvasClick(e) {
     }
   }
   state.selected = best && state.selected !== best.chain_id ? best.chain_id : null;
-  updateSelBar(best && state.selected ? best : null);
+  state.clickPt = state.selected !== null ? [px, py] : null;
+  updateSelBar(best && state.selected !== null ? best : null);
   draw();
+}
+
+// ---------- line toolkit: split / extend / separate / measure ----------
+function chainById(id) {
+  return state.result.chains.find(c => c.chain_id === id) || null;
+}
+function polyLen(ps) {
+  let L = 0;
+  for (let i = 1; i < ps.length; i++)
+    L += Math.hypot(ps[i][0] - ps[i-1][0], ps[i][1] - ps[i-1][1]);
+  return L;
+}
+// editing an original detection = exclude it and work on a copy, so the
+// server export sees the edit (copy travels in added_chains)
+function materialize(ch) {
+  if (ch.custom) return ch;
+  state.excluded.add(ch.chain_id);
+  const clone = JSON.parse(JSON.stringify(ch));
+  clone.chain_id = state.nextChainId++;
+  clone.custom = true;
+  if (state.chainLabels.has(ch.chain_id))
+    state.chainLabels.set(clone.chain_id, state.chainLabels.get(ch.chain_id));
+  state.result.chains.push(clone);
+  return clone;
+}
+function afterEdit(msg) {
+  $("restoreBtn").hidden = false;
+  setStatus(msg);
+  renderItemized();
+  draw();
+}
+
+function splitSelected() {
+  const ch = state.selected !== null && chainById(state.selected);
+  if (!ch || !state.clickPt) return;
+  const pts = ch.points;
+  // nearest point on the chain to where the user clicked
+  let bi = 1, bq = null, bd = Infinity;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const dx = b[0]-a[0], dy = b[1]-a[1], L2 = dx*dx + dy*dy;
+    let t = L2 ? ((state.clickPt[0]-a[0])*dx + (state.clickPt[1]-a[1])*dy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const q = [a[0]+t*dx, a[1]+t*dy];
+    const d = Math.hypot(state.clickPt[0]-q[0], state.clickPt[1]-q[1]);
+    if (d < bd) { bd = d; bi = i; bq = q; }
+  }
+  const ptsA = pts.slice(0, bi).concat([bq]);
+  const ptsB = [bq].concat(pts.slice(bi));
+  if (polyLen(ptsA) < 0.5 || polyLen(ptsB) < 0.5)
+    return setStatus("click further from the end of the line to split it");
+  const full = polyLen(pts) || 1;
+  const mk = (p) => {
+    const c = JSON.parse(JSON.stringify(ch));
+    c.chain_id = state.nextChainId++;
+    c.custom = true;
+    c.points = p;
+    c.length_pt = ch.length_pt * polyLen(p) / full;
+    if (state.chainLabels.has(ch.chain_id))
+      state.chainLabels.set(c.chain_id, state.chainLabels.get(ch.chain_id));
+    state.result.chains.push(c);
+    return c;
+  };
+  if (ch.custom)
+    state.result.chains.splice(state.result.chains.indexOf(ch), 1);
+  else
+    state.excluded.add(ch.chain_id);
+  mk(ptsA); mk(ptsB);
+  state.selected = null; state.clickPt = null;
+  updateSelBar(null);
+  afterEdit("split into 2 lines — click the piece you don't want and press ⌫");
+}
+$("splitBtn").onclick = splitSelected;
+
+$("extendBtn").onclick = () => {
+  if (state.selected === null) return;
+  state.tool = "extend";
+  setStatus("click where the line should extend to (Esc cancels)", "busy");
+};
+function extendTo(px, py) {
+  const ch = materialize(chainById(state.selected));
+  const pts = ch.points;
+  const dFirst = Math.hypot(px - pts[0][0], py - pts[0][1]);
+  const dLast = Math.hypot(px - pts[pts.length-1][0], py - pts[pts.length-1][1]);
+  if (dFirst < dLast) pts.unshift([px, py]); else pts.push([px, py]);
+  ch.length_pt += Math.min(dFirst, dLast);
+  state.selected = ch.chain_id;
+  state.tool = null;
+  updateSelBar(ch);
+  afterEdit(`extended by ${fmtLen(Math.min(dFirst, dLast))}`);
+}
+
+$("sepBtn").onclick = () => {
+  const ch = state.selected !== null && chainById(state.selected);
+  if (!ch) return;
+  const current = state.chainLabels.get(ch.chain_id) ||
+    state.labels.get(ch.style_id) || "";
+  const name = prompt("Name for this line (its own row + price):",
+    current ? current + " — separated" : "separated line");
+  if (!name) return;
+  state.chainLabels.set(ch.chain_id, name.trim());
+  updateSelBar(ch);
+  afterEdit(`"${name.trim()}" now has its own itemized row`);
+};
+
+$("measureBtn").onclick = () => {
+  const on = state.tool === "measure";
+  state.tool = on ? null : "measure";
+  if (on) { state.measurePts = []; $("measureInfo").hidden = true; }
+  $("measureBtn").classList.toggle("active", !on);
+  setStatus(on ? "" : "measure: click points on the sheet; Esc to finish");
+  draw();
+};
+function updateMeasureInfo() {
+  const info = $("measureInfo");
+  if (state.measurePts.length < 2) { info.hidden = true; return; }
+  const pt = polyLen(state.measurePts);
+  const sc = state.result && state.result.scale;
+  info.textContent = sc
+    ? `${(pt / 72 * sc.ft_per_paper_inch).toFixed(1)} ft`
+    : fmtLen(pt);
+  info.hidden = false;
 }
 
 function distToSeg(px, py, a, b) {
@@ -408,8 +585,9 @@ function updateSelBar(ch) {
   const bar = $("selBar");
   if (!ch) { bar.hidden = true; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
-  $("selInfo").textContent =
-    `${ch.class} · ${state.labels.get(ch.style_id) || (st && st.suggested_label) || ""} · ${fmtLen(ch.length_pt)}`;
+  const label = state.chainLabels.get(ch.chain_id) ||
+    state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}`;
   bar.hidden = false;
 }
 
@@ -425,6 +603,13 @@ function removeSelected() {
 }
 $("removeBtn").onclick = removeSelected;
 $("restoreBtn").onclick = () => {
+  if (state.result.chains.some(c => c.custom) || state.chainLabels.size) {
+    // splits/extends replaced originals; a clean reload is the only
+    // honest undo (relabels of styles are reloaded from suggestions too)
+    setStatus("resetting edits…", "busy");
+    loadResult();
+    return;
+  }
   state.excluded.clear();
   $("restoreBtn").hidden = true;
   setStatus("removed lines restored");
@@ -437,7 +622,18 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     removeSelected();
   }
-  if (e.key === "Escape") { state.selected = null; updateSelBar(null); draw(); }
+  if (e.key === "Escape") {
+    if (state.tool === "measure") {
+      state.tool = null; state.measurePts = [];
+      $("measureBtn").classList.remove("active");
+      $("measureInfo").hidden = true;
+      setStatus("");
+    } else if (state.tool === "extend") {
+      state.tool = null;
+      setStatus("");
+    }
+    state.selected = null; updateSelBar(null); draw();
+  }
 });
 cv.addEventListener("wheel", (e) => {
   e.preventDefault();

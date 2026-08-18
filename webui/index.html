@@ -46,9 +46,16 @@
     <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
     <div id="selBar" class="sel-bar" hidden>
       <span id="selInfo"></span>
-      <button id="removeBtn">Remove line (⌫)</button>
+      <button id="splitBtn" title="Cut this line in two at the clicked spot — then delete the piece you don't want (e.g. over a door opening)">✂ Split here</button>
+      <button id="extendBtn" title="Click a point on the sheet to extend this line's nearest end to it">⟶ Extend</button>
+      <button id="sepBtn" title="Give this one line its own name and price row, separate from its group">⬚ Separate</button>
+      <button id="removeBtn">Remove (⌫)</button>
     </div>
-    <button id="restoreBtn" class="restore-btn" hidden>Restore removed</button>
+    <div class="toolkit">
+      <button id="measureBtn" title="Click two or more points on the sheet to measure footage at the detected scale">📏 Measure</button>
+      <span id="measureInfo" hidden></span>
+    </div>
+    <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
 <script src="app.js"></script>
