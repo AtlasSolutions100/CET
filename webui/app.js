@@ -56,7 +56,7 @@ const state = {
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   measureMode: new Map(),   // style_id -> "object" (absent = line footage)
-  autoAi: localStorage.getItem("core-autoai") !== "off",  // detect pipeline runs AI
+  autoAi: localStorage.getItem("core-autoai") === "on",   // OPT-IN: detect stays deterministic
   seedLabels: new Map(),    // style_id -> the default we seeded (AI may replace)
   aiAuto: false,            // this page's verdicts were auto-applied
   aiUndo: null,             // snapshot taken before applying AI focus
@@ -83,6 +83,7 @@ async function openPath(path) {
   state.job = j.job_id; state.kinds = j.kinds; state.result = null;
   state.legendNames = []; $("legendVocab").innerHTML = "";
   $("docName").textContent = j.name;
+  state.docName = j.name;
   const sel = $("pageSel");
   sel.innerHTML = "";
   j.kinds.forEach((k, i) => {
@@ -165,9 +166,10 @@ async function loadResult(gen = state.gen) {
     state.labels.set(s.style_id, s.suggested_label);
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
+  memApply();   // the reviewer's saved decisions win over seeds, every load
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
-  document.getElementById("aiBtn").hidden = state.autoAi;
-  if (state.autoAi) runAnalyze(true);
+  document.getElementById("aiBtn").hidden = false;
+  if (state.autoAi) runAnalyze(true);   // opt-in power mode only
   const sc = state.result.scale;
   setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
     (sc ? ` · scale ${sc.text} (${sc.source})` : " · no scale found"));
@@ -273,6 +275,13 @@ function styleObjects(sid) {
       const frac = flags.filter(Boolean).length / runs.length;
       if (frac >= 0.15 && frac <= 0.9)
         runs = runs.filter((_, i) => flags[i]);
+      // a pool that's mostly OFF the bands on a sheet that HAS bands is
+      // annotation (zone rectangles, dimension strings) - keep whatever
+      // does sit on a band, or nothing measurable remains and we keep all
+      else if (frac > 0 && frac < 0.15) {
+        const kept2 = runs.filter((_, i) => flags[i]);
+        if (kept2.length) runs = kept2;
+      }
     }
   }
   if (!runs.length) return [];
@@ -453,7 +462,9 @@ function renderStyles() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
-    cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
+    cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked);
+      localStorage.setItem(docKey() + "::inc::" + styleFp(s), cb.checked ? "1" : "0");
+      renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
     // linework by PATTERN (the flat chip caused every "legend shows a
@@ -472,6 +483,7 @@ function renderStyles() {
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
+      memSave(s);   // decisions persist: same label on every future load
       clearTimeout(lab._t);   // itemized + legend regroup as you type
       lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
     };
@@ -489,9 +501,12 @@ function renderStyles() {
     mm.title = "How this line type is priced: LF = footage, EA = count each piece";
     mm.onclick = (e) => {
       e.stopPropagation();
-      if (state.measureMode.get(s.style_id) === "object")
+      if (state.measureMode.get(s.style_id) === "object") {
         state.measureMode.delete(s.style_id);
-      else state.measureMode.set(s.style_id, "object");
+        const lab = (state.labels.get(s.style_id) || "").trim().toUpperCase();
+        if (lab) localStorage.removeItem("measure::" + lab);
+      } else state.measureMode.set(s.style_id, "object");
+      memSave(s);
       renderStyles(); renderItemized(); renderMiniLegend(); draw();
     };
 
@@ -579,6 +594,49 @@ function renderChips() {
 
 // ---------- live itemized takeoff ----------
 function priceKey(label) { return "price:" + label; }
+// ---------- style memory: the reviewer's decisions ARE the takeoff -------
+// Deterministic consistency: once a style is labeled / set to EA, that
+// decision is stored against (document, style fingerprint) and reapplies
+// identically on every restart, redetect, and reopen. No model involved.
+function docKey() {
+  return "doc::" + (state.docName || "unknown");
+}
+function styleFp(st) {
+  return [st.class, Math.round((st.width || 0) * 2) / 2,
+          cssColor(st.color), st.signature].join("|");
+}
+function memSave(st) {
+  const label = (state.labels.get(st.style_id) || "").trim();
+  const measure = state.measureMode.get(st.style_id) === "object" ? "object" : "";
+  const k = docKey() + "::" + styleFp(st);
+  if (label || measure)
+    localStorage.setItem(k, JSON.stringify({ label, measure }));
+  else localStorage.removeItem(k);
+  // label-level measure memory travels ACROSS documents: "shear wall" set
+  // to EA once means shear walls count as objects everywhere
+  if (label && measure)
+    localStorage.setItem("measure::" + label.toUpperCase(), measure);
+}
+function memApply() {
+  if (!state.result) return;
+  for (const st of state.result.styles) {
+    const inc = localStorage.getItem(docKey() + "::inc::" + styleFp(st));
+    if (inc !== null) state.include.set(st.style_id, inc === "1");
+    const raw = localStorage.getItem(docKey() + "::" + styleFp(st));
+    if (raw) {
+      try {
+        const m = JSON.parse(raw);
+        if (m.label) state.labels.set(st.style_id, m.label);
+        if (m.measure === "object")
+          state.measureMode.set(st.style_id, "object");
+      } catch (e) {}
+    }
+    const lab = (state.labels.get(st.style_id) || "").trim().toUpperCase();
+    if (lab && localStorage.getItem("measure::" + lab) === "object")
+      state.measureMode.set(st.style_id, "object");
+  }
+}
+
 // ---------- trade grouping (boss roadmap: takeoff organized by trade) ----
 const TRADES = ["Earthwork & Grading", "Wet Utilities", "Dry Utilities",
                 "Paving & Concrete", "Structures", "Fencing & Sitework", "General"];
@@ -1444,14 +1502,23 @@ function draw() {
   // run) so a counted object reads as an object, not a continuous line
   if (state.result) {
     const f2 = IMG_DPI / 72;
+    // pool object styles by LABEL: the boxes drawn are the components
+    // counted - one wall drawn with two pens is one box, and a mostly-
+    // annotation style gets cleaned by the pool's fill signal
+    const pools = new Map();
     for (const s2 of state.result.styles) {
       if (state.measureMode.get(s2.style_id) !== "object") continue;
       if (state.isolate !== null && s2.style_id !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(s2.style_id)) continue;
-      ctx.strokeStyle = cssColor(s2.color);
+      const lab = (state.labels.get(s2.style_id) || "#" + s2.style_id);
+      if (!pools.has(lab)) pools.set(lab, { color: s2.color, sids: [] });
+      pools.get(lab).sids.push(s2.style_id);
+    }
+    for (const pool of pools.values()) {
+      ctx.strokeStyle = cssColor(pool.color);
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
-      for (const comp of styleObjects(s2.style_id)) {
+      for (const comp of styleObjects(pool.sids)) {
         // ONE box per counted object: dominant direction from the longest
         // run, extent from every member point - display equals count
         const main = comp.runs.reduce((a, b) => (b.len > a.len ? b : a));
