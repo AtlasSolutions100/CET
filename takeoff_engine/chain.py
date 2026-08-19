@@ -1313,10 +1313,14 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                     # merged geometry, but it is a continuous line, not a
                     # cadence
                     pts_len = float(sum(member_lens) + sum(gaps))
+                    t_ink = 0.0
+                    for k, _ in seq:
+                        kind, payload = meta[k]
+                        t_ink += float(payload[0].ink or payload[0].length) \
+                            if kind == "chain" else float(units[payload].length)
                     out.append(LineChain(cid, pts, "solid", color, width,
                                          pts_len, len(seq), "solid",
-                                         layer=layer,
-                                         ink=float(sum(member_lens))))
+                                         layer=layer, ink=t_ink))
                     cid += 1
                     consumed.update(k for k, _ in seq)
                     continue
@@ -1335,9 +1339,20 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                     dls.append(units[payload].length)
                     n_dashes += 1
             klass, sig = _classify_cadence(dls, [g for g in gaps if g > 0.5] or gaps)
+            # ink = actual stroke, never gap: a merged CHAIN member's
+            # length includes its gaps, and summing member lengths as ink
+            # made a d10 g30 pattern claim 96% ink - which poisoned the
+            # phantom-span audit's expectation (the long-standing 'ink
+            # accounting' flags on Oncor p2/p4)
+            true_ink = 0.0
+            for k, _ in seq:
+                kind, payload = meta[k]
+                if kind == "chain":
+                    true_ink += float(payload[0].ink or payload[0].length)
+                else:
+                    true_ink += float(units[payload].length)
             out.append(LineChain(cid, pts, klass, color, width, total_len,
-                                 n_dashes, sig, layer=layer,
-                                 ink=float(sum(member_lens))))
+                                 n_dashes, sig, layer=layer, ink=true_ink))
             cid += 1
             consumed.update(k for k, _ in seq)
 
