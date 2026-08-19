@@ -864,73 +864,180 @@ def _merge_twin_strokes(units: list) -> list:
 
     drop: set = set()
     merged: dict = {}
-    for idxs in by_key.values():
-        if len(idxs) < 2:
+    for idxs_all in by_key.values():
+        if len(idxs_all) < 2:
             continue
-        n = len(idxs)
-        P0 = np.array([units[i].pts[0] for i in idxs], dtype=float)
-        P1 = np.array([units[i].pts[-1] for i in idxs], dtype=float)
-        L = np.array([units[i].length for i in idxs], dtype=float)
-        D = np.array([units[i].direction() for i in idxs], dtype=float)
-        mids = (P0 + P1) / 2.0
-        tree = cKDTree(mids)
-        # a double-drawn stroke is a PAIR; a stipple/hatch field is a CROWD.
-        # Crowded units cannot be twins and pairing them explodes the pair
-        # count into the millions on textured sheets (this was 15s of a 20s
-        # build on Oncor p4), so they are excluded up front.
-        crowd = tree.query_ball_point(mids, 5.0, return_length=True)
-        calm = np.nonzero(crowd <= 6)[0]
-        if len(calm) < 2:
+        # ITERATE to a fixpoint: CAD redraws can stack the same mark 30-60
+        # deep (layered xrefs replotted), and one pairwise pass only halves
+        # a stack - 32 copies left 16 overlapping marks that chained into
+        # in-place tangles and got pruned wholesale, taking real lines and
+        # the legend swatch down with them.
+        idxs = list(idxs_all)
+        for _round in range(8):
+            if len(idxs) < 2:
+                break
+            P0 = np.array([units[i].pts[0] for i in idxs], dtype=float)
+            P1 = np.array([units[i].pts[-1] for i in idxs], dtype=float)
+            L = np.array([units[i].length for i in idxs], dtype=float)
+            D = np.array([units[i].direction() for i in idxs], dtype=float)
+            mids = (P0 + P1) / 2.0
+            tree = cKDTree(mids)
+            # a double-drawn stroke is a PAIR; a stipple/hatch field is a
+            # CROWD. Crowded units cannot be twins and pairing them explodes
+            # the pair count into the millions on textured sheets, so they
+            # are excluded up front. Stacked REDRAWS thin out each round, so
+            # marks crowded by their own copies become pairable as the
+            # stack collapses.
+            # crowd = DISTINCT nearby marks. Coincident copies (a stack of
+            # redraws at the same spot) must not count, or a 32-deep stack
+            # reads as a crowd and gets excluded from the very pairing that
+            # would collapse it.
+            near5 = tree.query_ball_point(mids, 5.0, return_length=True)
+            near0 = tree.query_ball_point(mids, 0.8, return_length=True)
+            calm = np.nonzero((near5 - near0) <= 6)[0]
+            if len(calm) < 2:
+                break
+            sub = cKDTree(mids[calm])
+            pairs = sub.query_pairs(4.5, output_type="ndarray")
+            if len(pairs) == 0:
+                break
+            pairs = calm[pairs]
+            pa, pb = pairs[:, 0], pairs[:, 1]
+            # all guards vectorised; the python loop only sees survivors
+            ok = np.abs(L[pa] - L[pb]) <= np.maximum(
+                0.6, 0.08 * np.maximum(L[pa], L[pb]))
+            ok &= np.abs(np.einsum("ij,ij->i", D[pa], D[pb])) >= 0.996
+            d_same = np.maximum(np.hypot(*(P0[pa] - P0[pb]).T),
+                                np.hypot(*(P1[pa] - P1[pb]).T))
+            d_rev = np.maximum(np.hypot(*(P0[pa] - P1[pb]).T),
+                               np.hypot(*(P1[pa] - P0[pb]).T))
+            # endpoint-identity tolerance scales with mark size: a DOT's
+            # direction is noise, so tiny marks merge only when truly
+            # coincident (a dot twin cannot be told from the next dot
+            # along a dotted line any other way)
+            thr = np.clip(0.35 * np.maximum(L[pa], L[pb]), 0.6, 4.4)
+            ok &= np.minimum(d_same, d_rev) <= thr
+            if not ok.any():
+                break
+            same_first = d_same <= d_rev
+            made = False
+            for k in np.nonzero(ok)[0]:
+                ia, ib = idxs[int(pa[k])], idxs[int(pb[k])]
+                if ia in drop or ib in drop:
+                    continue
+                ua, ub = units[ia], units[ib]
+                # keep the FATTER stroke of a mixed-width pair - that is
+                # the printed appearance; equal widths keep the longer one
+                if abs((ua.width or 0) - (ub.width or 0)) > 0.05:
+                    keep, gone = (ia, ib) if (ua.width or 0) >= (ub.width or 0) \
+                        else (ib, ia)
+                else:
+                    keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
+                uk, ug = units[keep], units[gone]
+                nvec = uk.direction()
+                dm = ug.pts.mean(axis=0) - uk.pts.mean(axis=0)
+                off = abs(float(nvec[0] * dm[1] - nvec[1] * dm[0]))
+                # midline is the truthful centerline of the printed line
+                if len(uk.pts) == len(ug.pts):
+                    gp = ug.pts if bool(same_first[k]) else ug.pts[::-1]
+                    uk.pts = (uk.pts + gp) / 2.0
+                    uk._dir = None
+                merged.setdefault(id(uk), off)
+                drop.add(gone)
+                made = True
+            idxs = [i for i in idxs if i not in drop]
+            if not made:
+                break
+
+        # subsegment copies: a shorter mark lying ON a longer collinear
+        # mark's path is a redraw/knockout duplicate, not linework of its
+        # own (equal-length pairing can never catch a clipped copy)
+        if len(idxs) >= 2:
+            P0 = np.array([units[i].pts[0] for i in idxs], dtype=float)
+            P1 = np.array([units[i].pts[-1] for i in idxs], dtype=float)
+            L = np.array([units[i].length for i in idxs], dtype=float)
+            mids = (P0 + P1) / 2.0
+            tree = cKDTree(mids)
+            order = np.argsort(-L)
+            for oi in order:
+                i = idxs[int(oi)]
+                if i in drop or L[oi] < 3.0:
+                    continue
+                a, b = P0[oi], P1[oi]
+                ab = b - a
+                L2 = float(ab @ ab)
+                if L2 < 1e-9:
+                    continue
+                for kk in tree.query_ball_point(mids[oi], float(L[oi])):
+                    j = idxs[int(kk)]
+                    if j == i or j in drop:
+                        continue
+                    if L[kk] > 0.9 * L[oi]:
+                        continue  # near-equal: pair logic's job, not ours
+                    ok_pts = True
+                    for q in (P0[kk], P1[kk]):
+                        t = max(0.0, min(1.0, float((q - a) @ ab) / L2))
+                        if float(np.hypot(*(q - (a + t * ab)))) > 1.8:
+                            ok_pts = False
+                            break
+                    if ok_pts:
+                        drop.add(j)
+
+    # Pattern-filled markers: a "dot" or square marker is often plotted as
+    # a dense cluster of micro-strokes (32 hatch strokes inside a 2.5pt
+    # box on Oncor p4). Those clusters chain into in-place tangles that
+    # the junk pruner rightly kills - taking the dot, and with it the
+    # dash-dot pattern it belongs to. Collapse each cluster to ONE
+    # synthetic mark spanning its envelope.
+    from collections import defaultdict as _dd
+    by_key2 = _dd(list)
+    for i, u in enumerate(units):
+        if i in drop or u.length >= 5.0 or len(u.pts) > 6:
             continue
-        sub = cKDTree(mids[calm])
-        pairs = sub.query_pairs(4.5, output_type="ndarray")
-        if len(pairs) == 0:
+        k = _style_key(u)
+        by_key2[(k[0], k[2])].append(i)
+    for idxs2 in by_key2.values():
+        if len(idxs2) < 6:
             continue
-        pairs = calm[pairs]
-        pa, pb = pairs[:, 0], pairs[:, 1]
-        # all guards vectorised; the python loop below only sees survivors
-        ok = np.abs(L[pa] - L[pb]) <= np.maximum(
-            0.6, 0.08 * np.maximum(L[pa], L[pb]))
-        ok &= np.abs(np.einsum("ij,ij->i", D[pa], D[pb])) >= 0.996
-        d_same = np.maximum(np.hypot(*(P0[pa] - P0[pb]).T),
-                            np.hypot(*(P1[pa] - P1[pb]).T))
-        d_rev = np.maximum(np.hypot(*(P0[pa] - P1[pb]).T),
-                           np.hypot(*(P1[pa] - P0[pb]).T))
-        # endpoint-identity tolerance scales with mark size. A DOT's
-        # direction is noise, so the perpendicular-offset math cannot tell
-        # a bold twin from the NEXT DOT ALONG A DOTTED LINE - Oncor p4's
-        # FEMA boundary (dots 2.7pt apart) was getting every other dot
-        # eaten and the survivors re-widthed, which also split the
-        # property-line family across two width groups. Tiny marks only
-        # merge when truly coincident.
-        thr = np.clip(0.35 * np.maximum(L[pa], L[pb]), 0.6, 4.4)
-        ok &= np.minimum(d_same, d_rev) <= thr
-        if not ok.any():
-            continue
-        same_first = d_same <= d_rev
-        for k in np.nonzero(ok)[0]:
-            ia, ib = idxs[int(pa[k])], idxs[int(pb[k])]
-            if ia in drop or ib in drop:
+        mids2 = np.array([units[i].pts.mean(axis=0) for i in idxs2])
+        t2 = cKDTree(mids2)
+        parent = list(range(len(idxs2)))
+
+        def _find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        for a, b in t2.query_pairs(3.0):
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[ra] = rb
+        groups2 = _dd(list)
+        for k2, i2 in enumerate(idxs2):
+            groups2[_find(k2)].append(i2)
+        for members in groups2.values():
+            if len(members) < 6:
                 continue
-            ua, ub = units[ia], units[ib]
-            # keep the FATTER stroke of a mixed-width pair - that is the
-            # printed appearance; equal widths keep the longer one
-            if abs((ua.width or 0) - (ub.width or 0)) > 0.05:
-                keep, gone = (ia, ib) if (ua.width or 0) >= (ub.width or 0) \
-                    else (ib, ia)
+            pts = np.vstack([units[i].pts for i in members])
+            lo, hi = pts.min(axis=0), pts.max(axis=0)
+            diag = float(np.hypot(*(hi - lo)))
+            if diag > 9.0:
+                continue  # bigger than any marker dot: not a filled point
+            keep = max(members, key=lambda i: units[i].length)
+            uk = units[keep]
+            span = hi - lo
+            if span[0] >= span[1]:
+                uk.pts = np.array([[lo[0], (lo[1] + hi[1]) / 2],
+                                   [hi[0], (lo[1] + hi[1]) / 2]])
             else:
-                keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
-            uk, ug = units[keep], units[gone]
-            nvec = uk.direction()
-            dm = ug.pts.mean(axis=0) - uk.pts.mean(axis=0)
-            off = abs(float(nvec[0] * dm[1] - nvec[1] * dm[0]))
-            # midline is the truthful centerline of the printed line
-            if len(uk.pts) == len(ug.pts):
-                gp = ug.pts if bool(same_first[k]) else ug.pts[::-1]
-                uk.pts = (uk.pts + gp) / 2.0
-                uk._dir = None
-            merged.setdefault(id(uk), off)
-            drop.add(gone)
+                uk.pts = np.array([[(lo[0] + hi[0]) / 2, lo[1]],
+                                   [(lo[0] + hi[0]) / 2, hi[1]]])
+            uk.length = float(max(span))
+            uk.width = round(max(float(min(span)), uk.width or 0.0), 1)
+            uk._dir = None
+            for i in members:
+                if i != keep:
+                    drop.add(i)
 
     # Printed footprint = stroke width + offset, but the style key groups on
     # exact width, and raw per-pair offsets wobble (0.5..3pt along one same

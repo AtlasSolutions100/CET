@@ -269,7 +269,7 @@ def _detect_worker(job_id: str, page: int):
                 words_legend += _ocr(_img2, px_to_pt=72.0 / 150)
             except Exception:
                 pass
-        legend = read_legend(words_legend, chains)
+        legend = read_legend(words_legend, chains, units=units)
         _legend_labels.update(legend["style_labels"])
         for st in style_list:
             if st["style_id"] in _legend_labels:

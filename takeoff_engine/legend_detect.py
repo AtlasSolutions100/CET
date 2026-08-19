@@ -18,7 +18,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from .chain import _weight_class
+from .chain import _classify_cadence, _weight_class
 
 # legend geometry (pt): how far below LEGEND to look, label row grouping,
 # and the sample strip to the left of each label
@@ -29,7 +29,7 @@ SAMPLE_W = 240.0
 SAMPLE_H = 7.0
 
 
-def read_legend(words: list, chains: list) -> dict:
+def read_legend(words: list, chains: list, units: list | None = None) -> dict:
     """Returns {"entries": [...], "style_labels": {style_id: label}}."""
     seen = set()
     deduped = []
@@ -84,6 +84,12 @@ def read_legend(words: list, chains: list) -> dict:
             x0 = ws[0][0]
             cy = float(np.mean([(w[1] + w[3]) / 2 for w in ws]))
             sample = _sample_in_strip(chains, x0 - SAMPLE_W, x0 - 4.0, cy)
+            if sample is None and units is not None:
+                # swatches are tiny and often fail to chain (pattern-filled
+                # bars, touching marks); the RAW strip marks still spell the
+                # cadence out - read it directly and join to a style by
+                # measured geometry below
+                sample = _sample_from_units(units, x0 - SAMPLE_W, x0 - 4.0, cy)
             if sample is None:
                 continue
             entries.append({"label": label, **sample})
@@ -100,6 +106,34 @@ def read_legend(words: list, chains: list) -> dict:
     by_style_count: dict = defaultdict(int)
     for c in chains:
         by_style_count[c.style_id] += 1
+    # unit-derived samples have no chained style: join by measured geometry
+    # (class family + weight + colour + dash length within tolerance)
+    reps: dict = {}
+    for c in chains:
+        r = reps.setdefault(c.style_id, c)
+        if c.length > r.length:
+            reps[c.style_id] = c
+    for e in entries:
+        if e.get("sample_style") is not None:
+            continue
+        best = None
+        for sid, r in reps.items():
+            if not r.klass.startswith("dash") or r.klass != e["klass"]:
+                continue
+            if _weight_class(r.width) != e["weight"]:
+                continue
+            if e["color"] and r.color and \
+                    max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
+                continue
+            rd = (r.ink or r.length) / max(r.n_dashes, 1)
+            lo, hi = sorted([e["avg_dash"], rd])
+            if hi > 1.9 * lo + 3.0:
+                continue
+            cand = sum(c2.length for c2 in chains if c2.style_id == sid)
+            if best is None or cand > best[1]:
+                best = (sid, cand)
+        if best is not None:
+            e["sample_style"] = best[0]
     for e in entries:
         distinctive = (
             e["klass"].startswith("dash")
@@ -112,7 +146,8 @@ def read_legend(words: list, chains: list) -> dict:
         if not e["klass"].startswith("dash") \
                 and by_style_count[e["sample_style"]] > 25:
             continue  # solid bucket too big to be one legend feature
-        style_labels.setdefault(e["sample_style"], e["label"])
+        if e["sample_style"] is not None:
+            style_labels.setdefault(e["sample_style"], e["label"])
     return {"entries": entries, "style_labels": style_labels}
 
 
@@ -216,6 +251,38 @@ def read_legend_sheet(words: list, chains: list) -> list:
 # a VOCABULARY the reviewer picks from (read_legend_sheet above), never as an
 # automatic label - a confident wrong trade name on billable footage is the
 # one failure the estimator cannot catch by eye.
+
+
+def _sample_from_units(units: list, x0: float, x1: float, cy: float):
+    """Cadence of a legend swatch read straight from its raw marks."""
+    strip = [u for u in units
+             if x0 < float(u.pts[:, 0].mean()) < x1
+             and abs(float(u.pts[:, 1].mean()) - cy) <= SAMPLE_H
+             and u.length >= 1.0 and not u.closed]
+    if len(strip) < 3:
+        return None
+    strip.sort(key=lambda u: float(u.pts[:, 0].min()))
+    lens = [float(u.length) for u in strip]
+    gaps = []
+    for a, b in zip(strip, strip[1:]):
+        gaps.append(max(float(b.pts[:, 0].min() - a.pts[:, 0].max()), 0.0))
+    span = float(strip[-1].pts[:, 0].max() - strip[0].pts[:, 0].min())
+    if span < 30.0:
+        return None
+    klass, _sig = _classify_cadence(lens, [g for g in gaps if g > 0.5] or gaps)
+    if not klass.startswith("dash"):
+        # several distinct marks with real gaps IS a dash pattern even if
+        # the classifier defaults solid on tiny samples
+        klass = "dash2" if len(set(round(v / 4) for v in lens)) >= 2 else "dash1"
+    wmax = max((u.width or 0.0) for u in strip)
+    col = strip[int(np.argmax([u.length for u in strip]))].color
+    return {
+        "klass": klass,
+        "color": col,
+        "weight": _weight_class(wmax),
+        "avg_dash": float(np.median(lens)),
+        "sample_style": None,
+    }
 
 
 def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,

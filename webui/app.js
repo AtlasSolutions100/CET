@@ -221,6 +221,17 @@ function renderLegend() {
   box.appendChild(head);
   for (const e of state.result.legend) {
     const sid = e.sample_style;
+    if (sid === null || sid === undefined) {
+      // the legend NAMES this line type but no detected style matches yet -
+      // show it honestly as found-but-unmatched instead of hiding it
+      const chip = document.createElement("button");
+      chip.className = "legend-chip";
+      chip.style.opacity = "0.55";
+      chip.textContent = e.label + " (not matched)";
+      chip.title = "Read from the legend, but no detected line style matches its geometry yet";
+      box.appendChild(chip);
+      continue;
+    }
     const applied = (state.labels.get(sid) || "").startsWith(e.label);
     const chip = document.createElement("button");
     chip.className = "legend-chip" + (applied ? " applied" : "");
