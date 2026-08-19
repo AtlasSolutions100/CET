@@ -139,9 +139,10 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
   state.ew = null; state.hotChain = null; state.extraItems = [];
-  state.tr = null;
+  state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("trPanel").hidden = true; $("trBtn").hidden = false;
+  $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
@@ -347,6 +348,7 @@ const SECTIONS = [
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewActions"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
+  ["symHead", ["symRows", "symHint"]],
 ];
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
@@ -575,6 +577,56 @@ $("trCalc").onclick = () => {
   if (backfill > 0) state.extraItems.push({ label: `Backfill (${name})`, qty: cy(backfill), unit: "CY" });
   renderItemized();
 };
+
+// ---------- symbol counter ----------
+$("symClose").onclick = () => { $("symPanel").hidden = true; state.symMarks = null; draw(); };
+$("symBtn").onclick = async () => {
+  const panel = $("symPanel");
+  if (!panel.hidden) { panel.hidden = true; state.symMarks = null; draw(); return; }
+  panel.hidden = false;
+  if (!state.sym) {
+    $("symRows").innerHTML = '<div class="ew-hint">scanning for repeated shapes…</div>';
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/symbols/suggest`);
+    if (!r.ok) { $("symRows").textContent = "scan failed (" + r.status + ")"; return; }
+    state.sym = (await r.json()).groups;
+  }
+  renderSym();
+};
+
+function renderSym() {
+  const box = $("symRows");
+  box.innerHTML = "";
+  if (!state.sym || !state.sym.length) {
+    box.innerHTML = '<div class="ew-hint">no repeated closed shapes found on this page</div>';
+    return;
+  }
+  state.sym.forEach((g, k) => {
+    const row = document.createElement("div");
+    row.className = "sym-row";
+    const meta = document.createElement("div");
+    meta.className = "sym-meta";
+    meta.textContent = `${g.w}×${g.h}pt · ×${g.n}`;
+    const name = document.createElement("input");
+    name.placeholder = "name it (e.g. WINDOW)";
+    name.name = "sym-name-" + k;
+    name.value = g.name || "";
+    name.oninput = () => { g.name = name.value; };
+    const add = document.createElement("button");
+    add.className = "add"; add.textContent = "Add";
+    add.onclick = () => {
+      const label = (g.name || "").trim();
+      if (!label) { setStatus("name the symbol first", "err"); return; }
+      state.extraItems = state.extraItems.filter(it => it.label !== label);
+      state.extraItems.push({ label, qty: g.n, unit: "EA" });
+      setStatus(`${label} × ${g.n} added to takeoff`);
+      renderItemized();
+    };
+    row.append(meta, name, add);
+    row.onmouseenter = () => { state.symMarks = g.centers; draw(); };
+    row.onmouseleave = () => { state.symMarks = null; draw(); };
+    box.appendChild(row);
+  });
+}
 
 // ---------- AI page analyst + auto-focus ----------
 function esc(s) {
@@ -809,6 +861,17 @@ function draw() {
         ctx.strokeStyle = on ? "#8a6d00" : "#ff00cc";
         ctx.stroke();
       });
+    }
+  }
+  // symbol-instance markers from the Count panel
+  if (state.symMarks && state.symMarks.length) {
+    const f3 = IMG_DPI / 72;
+    ctx.strokeStyle = "#a64dff";
+    ctx.lineWidth = 2.2 / k;
+    for (const c of state.symMarks) {
+      ctx.beginPath();
+      ctx.arc(c[0] * f3, c[1] * f3, 11 / k, 0, Math.PI * 2);
+      ctx.stroke();
     }
   }
   if (state.measurePts.length) {

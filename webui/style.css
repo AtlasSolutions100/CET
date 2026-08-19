@@ -117,3 +117,10 @@ canvas#view.panning { cursor: grabbing; }
 .tr-grid input, .tr-grid select { width: 100%; padding: 3px 6px; font-size: 12px; }
 .tr-rules { font-size: 11px; color: var(--dim); }
 .tr-rule { display: grid; grid-template-columns: 1fr 66px 1fr 66px; gap: 5px; align-items: center; padding: 2px 0; }
+
+#symBtn { background: #5a2b6e; border-color: #5a2b6e; color: #fff; }
+.sym-row { display: grid; grid-template-columns: 90px 1fr 60px; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 6px; }
+.sym-row:hover { background: #262b34; }
+.sym-row input { width: 100%; padding: 3px 6px; font-size: 12px; }
+.sym-row .add { font-size: 11px; padding: 3px 8px; background: #5a2b6e; border-color: #5a2b6e; color: #fff; }
+.sym-meta { color: var(--dim); font-size: 11px; }

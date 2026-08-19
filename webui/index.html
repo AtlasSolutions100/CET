@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Takeoff Line Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <header>
@@ -19,6 +19,7 @@
   <button id="aiBtn" hidden>AI analyze</button>
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
   <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
+  <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
   <input id="legendPath" type="hidden">
 </header>
@@ -50,6 +51,14 @@
         <button id="trCalc">Calculate trench</button>
         <span id="trResult" class="ew-result"></span>
       </div>
+    </div>
+    <div id="symPanel" class="ew-panel" hidden>
+      <div class="side-head" id="symHead"><h2>Count symbols</h2>
+        <button id="symClose" class="mini">close</button></div>
+      <div class="ew-hint" id="symHint">Every repeated shape found on the sheet. Hover a row to see
+        every instance marked; name it and Add to put "&times; N EA" in the takeoff. The count comes
+        from geometry, so it is checkable - the name is yours.</div>
+      <div id="symRows" class="ew-rows"></div>
     </div>
     <div class="side-head" id="stylesHead">
       <h2>Detected line styles</h2>
@@ -88,6 +97,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

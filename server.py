@@ -850,4 +850,41 @@ def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     return JSONResponse(result)
 
 
+@app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
+def symbols_suggest(job_id: str, page: int):
+    """Repeated congruent small shapes on the page - the countable symbols
+    (grid bubbles, fixtures, window/door glyphs). Geometry does the finding
+    and counting so the number is verifiable; the human (or the AI's
+    inline-legend read) supplies the NAME."""
+    import numpy as np
+
+    job = JOBS.get(job_id) or _404()
+    doc = pymupdf.open(job["path"])
+    units = extract_strokes(doc[page])
+    doc.close()
+    groups: dict = {}
+    for u in units:
+        if not u.closed or not (4.0 <= u.length <= 160.0):
+            continue
+        bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+        w, h = float(bb[0]), float(bb[1])
+        if max(w, h) > 45.0 or max(w, h) < 2.0:
+            continue
+        key = (round(w), round(h), round(u.length / 4.0))
+        c = (u.pts.min(axis=0) + u.pts.max(axis=0)) / 2.0
+        groups.setdefault(key, []).append([round(float(c[0]), 1),
+                                           round(float(c[1]), 1)])
+    out = []
+    for (w, h, _), centers in groups.items():
+        # a symbol repeats; also drop coincident duplicates (drawn twice)
+        uniq = []
+        for c in centers:
+            if all(abs(c[0]-d[0]) > 2 or abs(c[1]-d[1]) > 2 for d in uniq):
+                uniq.append(c)
+        if len(uniq) >= 3:
+            out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
+    out.sort(key=lambda g: -g["n"])
+    return {"groups": out[:15]}
+
+
 app.mount("/", StaticFiles(directory=ROOT / "webui", html=True), name="ui")
