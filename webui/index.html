@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Takeoff Line Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <header>
@@ -17,6 +17,7 @@
   <button id="detectBtn" hidden>Detect lines</button>
   <div id="status" class="status"></div>
   <button id="aiBtn" hidden>AI analyze</button>
+  <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
   <input id="legendPath" type="hidden">
 </header>
@@ -25,6 +26,18 @@
   <aside id="sidebar">
     <div id="colorChips" class="color-chips"></div>
     <div id="legendBox" class="legend-box" hidden></div>
+    <div id="ewPanel" class="ew-panel" hidden>
+      <div class="side-head"><h2>Earthwork — assign contours</h2>
+        <button id="ewClose" class="mini">close</button></div>
+      <div class="ew-hint">Each row is a contour with the elevation read off the sheet.
+        Set which surface it belongs to; fix any elevation the sheet reader got wrong.
+        Volumes only compute where both surfaces overlap.</div>
+      <div id="ewRows" class="ew-rows"></div>
+      <div class="ew-actions">
+        <button id="ewCalc">Calculate cut &amp; fill</button>
+        <span id="ewResult" class="ew-result"></span>
+      </div>
+    </div>
     <div class="side-head">
       <h2>Detected line styles</h2>
       <div class="side-actions">
@@ -62,6 +75,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

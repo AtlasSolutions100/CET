@@ -46,6 +46,9 @@ const state = {
   selPt: null,              // index of the selected vertex on state.selected
   dragPt: false,
   legendNames: [],          // trade names read off a dedicated legend sheet
+  ew: null,                 // earthwork panel state {rows, result}
+  hotChain: null,           // chain highlighted from a calculator row
+  extraItems: [],           // calculator outputs: {label, qty, unit}
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   aiUndo: null,             // snapshot taken before applying AI focus
@@ -135,6 +138,8 @@ async function loadResult(gen = state.gen) {
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  state.ew = null; state.hotChain = null; state.extraItems = [];
+  $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
@@ -302,6 +307,25 @@ function renderItemized() {
     row.append(lab, cnt, q, pin, e);
     box.appendChild(row);
   }
+  for (const it of state.extraItems) {
+    const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
+    const ext = price ? it.qty * price : null;
+    if (ext) grand += ext;
+    const row = document.createElement("div");
+    row.className = "item-row";
+    const lab = document.createElement("div");
+    lab.className = "lab"; lab.title = it.label; lab.textContent = it.label;
+    const cnt = document.createElement("div"); cnt.textContent = it.unit;
+    const q = document.createElement("div"); q.textContent = it.qty.toLocaleString();
+    const pin = document.createElement("input");
+    pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+    if (price) pin.value = price;
+    pin.oninput = () => { localStorage.setItem(priceKey(it.label), pin.value); renderItemized(); };
+    const e = document.createElement("div");
+    e.textContent = ext ? ext.toFixed(0) : "—";
+    row.append(lab, cnt, q, pin, e);
+    box.appendChild(row);
+  }
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";
@@ -309,6 +333,97 @@ function renderItemized() {
     box.appendChild(row);
   }
 }
+
+// ---------- earthwork calculator ----------
+$("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; draw(); };
+$("ewBtn").onclick = async () => {
+  const panel = $("ewPanel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!state.ew) {
+    $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
+    if (!r.ok) { $("ewRows").textContent = "run Detect first"; return; }
+    const j = await r.json();
+    const ws = j.suggestions.map(s => s.width || 0).sort((a, b) => a - b);
+    const wmed = ws.length ? ws[Math.floor(ws.length / 2)] : 0;
+    state.ew = {
+      rows: j.suggestions.map(s => ({
+        chain_id: s.chain_id, z: s.z, width: s.width || 0, dist: s.dist,
+        // default split by stroke weight - existing plots lighter than
+        // proposed on most grading sheets; every row is user-flippable
+        surface: (s.width || 0) <= wmed ? "existing" : "proposed",
+      })),
+      result: null,
+    };
+  }
+  renderEw();
+};
+
+function renderEw() {
+  const box = $("ewRows");
+  box.innerHTML = "";
+  if (!state.ew || !state.ew.rows.length) {
+    box.innerHTML = '<div class="ew-hint">No elevation labels found near contours on this page. ' +
+      'Elevations can still be assigned by selecting lines and using Separate, then entering values here later.</div>';
+    return;
+  }
+  for (const row of state.ew.rows) {
+    const div = document.createElement("div");
+    div.className = "ew-row";
+    const z = document.createElement("input");
+    z.className = "z"; z.type = "number"; z.step = "0.1"; z.value = row.z;
+    z.oninput = () => { row.z = parseFloat(z.value); };
+    const meta = document.createElement("div");
+    meta.className = "ew-meta";
+    meta.textContent = `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"], [null, "skip"]]) {
+      const b = document.createElement("button");
+      b.textContent = lab;
+      if (row.surface === key) b.className = key === "existing" ? "on-ex" : key === "proposed" ? "on-pr" : "";
+      if (row.surface === key && key === null) b.style.opacity = "1";
+      b.onclick = () => { row.surface = key; renderEw(); };
+      seg.appendChild(b);
+    }
+    div.append(z, meta, seg);
+    div.onmouseenter = () => { state.hotChain = row.chain_id; draw(); };
+    div.onmouseleave = () => { state.hotChain = null; draw(); };
+    box.appendChild(div);
+  }
+}
+
+$("ewCalc").onclick = async () => {
+  if (!state.ew) return;
+  const body = {
+    existing: state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z))
+      .map(r => ({ chain_id: r.chain_id, z: r.z })),
+    proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
+      .map(r => ({ chain_id: r.chain_id, z: r.z })),
+    cell_ft: 2.0,
+  };
+  $("ewResult").textContent = "calculating…";
+  const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    $("ewResult").textContent = e.detail || ("failed (" + r.status + ")");
+    return;
+  }
+  const j = await r.json();
+  state.ew.result = j;
+  $("ewResult").innerHTML =
+    `<b>cut ${j.cut_yd3.toLocaleString()} CY</b> · <b>fill ${j.fill_yd3.toLocaleString()} CY</b>` +
+    ` · net ${j.net_yd3.toLocaleString()} CY over ${Number(j.area_sf).toLocaleString()} SF`;
+  // land the volumes in the itemised takeoff like any other priced row
+  state.extraItems = state.extraItems.filter(it => !/^(Cut|Fill) \(earthwork\)/.test(it.label));
+  if (j.cut_yd3 > 0) state.extraItems.push({ label: "Cut (earthwork)", qty: j.cut_yd3, unit: "CY" });
+  if (j.fill_yd3 > 0) state.extraItems.push({ label: "Fill (earthwork)", qty: j.fill_yd3, unit: "CY" });
+  renderItemized();
+};
 
 // ---------- AI page analyst + auto-focus ----------
 function esc(s) {
@@ -418,6 +533,10 @@ $("approveBtn").onclick = async () => {
           points: c.points })),
       chain_labels: Object.fromEntries(
         [...state.chainLabels].filter(([id]) => !state.excluded.has(id))),
+      extra_items: state.extraItems.map(it => ({
+        ...it,
+        unit_price: parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null,
+      })),
       prices: Object.fromEntries(
         [...Object.values(labels), ...state.chainLabels.values()]
           .map(l => [l, parseFloat(localStorage.getItem(priceKey(l)) || "") || 0])
@@ -507,7 +626,7 @@ function draw() {
       if (state.excluded.has(ch.chain_id)) continue;
       if (state.isolate !== null && sid !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(sid)) continue;
-      const hot = state.hot === sid;
+      const hot = state.hot === sid || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
       ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
       // real plotted weight, floored so a hairline stays visible zoomed out

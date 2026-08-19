@@ -335,6 +335,10 @@ class ApproveBody(BaseModel):
     # chain_id -> label override ("separate from group": same style, its
     # own itemized row)
     chain_labels: dict[int, str] = {}
+    # calculator results (earthwork CY, trench bedding, symbol counts...):
+    # [{label, qty, unit, unit_price?}] - they price and report like any
+    # other takeoff row, they just are not linear footage
+    extra_items: list[dict] = []
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -396,6 +400,25 @@ def approve(job_id: str, page: int, body: ApproveBody):
             "length_ft": round(ft, 1) if ft is not None else None,
             "unit_price": price,
             "extended": round(ft * price, 2) if (ft is not None and price) else None,
+        })
+    for ex in body.extra_items:
+        try:
+            qty = round(float(ex.get("qty", 0)), 1)
+        except (TypeError, ValueError):
+            continue
+        label = str(ex.get("label", "")).strip()[:80]
+        if not label or qty <= 0:
+            continue
+        price = ex.get("unit_price")
+        try:
+            price = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price = None
+        items.append({
+            "label": label, "count": 1, "length_ft": None,
+            "qty": qty, "unit": str(ex.get("unit", ""))[:8] or "EA",
+            "unit_price": price,
+            "extended": round(qty * price, 2) if price else None,
         })
     export["items"] = items
     out = _job_dir(job_id) / f"p{page}_elements.json"
@@ -519,14 +542,16 @@ def report_pdf(job_id: str):
                 y = 60
             tp.insert_text((50, y), str(it["label"])[:52], fontsize=9)
             tp.insert_text((300, y), str(it["count"]), fontsize=9)
-            tp.insert_text((360, y), f'{it["length_ft"]:,}' if it["length_ft"] is not None else "-", fontsize=9)
+            _q = it["length_ft"] if it["length_ft"] is not None else it.get("qty")
+            _u = "" if it["length_ft"] is not None else (" " + it.get("unit", "")).rstrip()
+            tp.insert_text((360, y), f"{_q:,}{_u}" if _q is not None else "-", fontsize=9)
             tp.insert_text((440, y), f'{it["unit_price"]:.2f}' if it.get("unit_price") else "-", fontsize=9)
             tp.insert_text((500, y), f'{it["extended"]:,.2f}' if it.get("extended") else "-", fontsize=9)
             if it.get("extended"):
                 page_total += it["extended"]
             g = grand.setdefault(it["label"], {"count": 0, "ft": 0.0, "ext": 0.0})
             g["count"] += it["count"]
-            g["ft"] += it["length_ft"] or 0.0
+            g["ft"] += it["length_ft"] or 0.0  # summary totals stay footage-only
             g["ext"] += it.get("extended") or 0.0
             y += 13
         if page_total:
