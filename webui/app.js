@@ -192,7 +192,11 @@ function renderStyles() {
     lab.value = state.labels.get(s.style_id) ?? "";
     if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
     lab.onclick = (e) => e.stopPropagation();
-    lab.oninput = () => state.labels.set(s.style_id, lab.value);
+    lab.oninput = () => {
+      state.labels.set(s.style_id, lab.value);
+      clearTimeout(lab._t);   // itemized regroups by trade as you type
+      lab._t = setTimeout(renderItemized, 350);
+    };
     const meta = document.createElement("div");
     meta.className = "style-meta";
     meta.textContent = `${s.n} lines · ${fmtLen(s.length_pt)} · ${s.signature}`;
@@ -284,6 +288,31 @@ function renderChips() {
 
 // ---------- live itemized takeoff ----------
 function priceKey(label) { return "price:" + label; }
+// ---------- trade grouping (boss roadmap: takeoff organized by trade) ----
+const TRADES = ["Earthwork & Grading", "Wet Utilities", "Dry Utilities",
+                "Paving & Concrete", "Structures", "Fencing & Sitework", "General"];
+function tradeKey(label) { return "trade::" + label.trim().toUpperCase(); }
+function tradeFor(label) {
+  const saved = localStorage.getItem(tradeKey(label));
+  if (saved && TRADES.includes(saved)) return saved;
+  const L = label.toUpperCase();
+  const has = (...ws) => ws.some(w => L.includes(w));
+  if (has("CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO", "SLOPE",
+          "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL")) return "Earthwork & Grading";
+  if (has("WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
+          "HYDRANT", "MANHOLE", "CULVERT", "IRRIG", "FORCE", "CLEANOUT",
+          "TRENCH", "VALVE", "WELL", "FIREWATER")) return "Wet Utilities";
+  if (has("ELECTRIC", "TELEPHONE", "GAS", "FIBER", "CABLE", "COMM", "POWER",
+          "CONDUIT", "LIGHT", "OHP")) return "Dry Utilities";
+  if (has("PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
+          "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF")) return "Paving & Concrete";
+  if (has("FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
+          "BEAM", "COLUMN", "MASONRY")) return "Structures";
+  if (has("FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
+          "SILT", "PROPERTY", "EASEMENT", "SETBACK")) return "Fencing & Sitework";
+  return "General";
+}
+
 function renderItemized() {
   const box = $("itemized");
   box.innerHTML = "";
@@ -306,51 +335,77 @@ function renderItemized() {
     (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
   box.appendChild(head);
   let grand = 0;
-  const rows = [...totals.entries()].sort((a, b) => b[1].pt - a[1].pt);
-  for (const [label, t] of rows) {
-    const qty = ftPerIn ? t.pt / 72 * ftPerIn : t.pt;
-    const price = parseFloat(localStorage.getItem(priceKey(label)) || "") || null;
-    const ext = ftPerIn && price ? qty * price : null;
-    if (ext) grand += ext;
-    const row = document.createElement("div");
-    row.className = "item-row";
-    const lab = document.createElement("div");
-    lab.className = "lab"; lab.title = label; lab.textContent = label;
-    const cnt = document.createElement("div"); cnt.textContent = t.count;
-    const q = document.createElement("div");
-    q.textContent = qty >= 1000 ? (qty/1000).toFixed(1) + "k" : qty.toFixed(1);
-    const pin = document.createElement("input");
-    pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
-    pin.name = "price-" + label;
-    if (price) pin.value = price;
-    pin.oninput = () => {
-      localStorage.setItem(priceKey(label), pin.value);
-      renderItemized();
-    };
-    const e = document.createElement("div");
-    e.textContent = ext ? ext.toFixed(0) : "—";
-    row.append(lab, cnt, q, pin, e);
-    box.appendChild(row);
+  // one flat list: measured line families + calculator items, then group
+  const items = [...totals.entries()].map(([label, t]) => ({
+    label, cnt: String(t.count),
+    qty: ftPerIn ? t.pt / 72 * ftPerIn : t.pt,
+    qtyText: null, priced: !!ftPerIn,
+  }));
+  for (const it of state.extraItems)
+    items.push({ label: it.label, cnt: it.unit, qty: it.qty,
+                 qtyText: it.qty.toLocaleString(), priced: true });
+  const byTrade = new Map();
+  for (const it of items) {
+    const tr = tradeFor(it.label);
+    if (!byTrade.has(tr)) byTrade.set(tr, []);
+    byTrade.get(tr).push(it);
   }
-  for (const it of state.extraItems) {
-    const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
-    const ext = price ? it.qty * price : null;
-    if (ext) grand += ext;
-    const row = document.createElement("div");
-    row.className = "item-row";
-    const lab = document.createElement("div");
-    lab.className = "lab"; lab.title = it.label; lab.textContent = it.label;
-    const cnt = document.createElement("div"); cnt.textContent = it.unit;
-    const q = document.createElement("div"); q.textContent = it.qty.toLocaleString();
-    const pin = document.createElement("input");
-    pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
-    pin.name = "price-" + it.label;
-    if (price) pin.value = price;
-    pin.oninput = () => { localStorage.setItem(priceKey(it.label), pin.value); renderItemized(); };
-    const e = document.createElement("div");
-    e.textContent = ext ? ext.toFixed(0) : "—";
-    row.append(lab, cnt, q, pin, e);
-    box.appendChild(row);
+  for (const tr of TRADES) {
+    const group = byTrade.get(tr);
+    if (!group) continue;
+    group.sort((a, b) => b.qty - a.qty);
+    let sub = 0, subQty = 0;
+    for (const it of group) {
+      const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
+      it.price = price;
+      it.ext = it.priced && price ? it.qty * price : null;
+      if (it.ext) sub += it.ext;
+      if (it.cnt !== "EA") subQty += it.qty;
+    }
+    grand += sub;
+    const th = document.createElement("div");
+    th.className = "trade-head";
+    const qtyStr = subQty >= 1000 ? (subQty/1000).toFixed(1) + "k" : subQty.toFixed(0);
+    th.innerHTML = `<span>${tr}</span><span class="t-sub">` +
+      (ftPerIn ? `${qtyStr} ft` : `${qtyStr} pt`) +
+      (sub ? ` · $${sub.toFixed(0)}` : "") + `</span>`;
+    box.appendChild(th);
+    for (const it of group) {
+      const row = document.createElement("div");
+      row.className = "item-row";
+      const lab = document.createElement("div");
+      lab.className = "lab"; lab.title = it.label;
+      lab.textContent = it.label;
+      const pick = document.createElement("select");
+      pick.className = "trade-pick"; pick.name = "trade-" + it.label;
+      for (const t2 of TRADES) {
+        const o = document.createElement("option");
+        o.value = t2; o.textContent = t2; o.selected = t2 === tr;
+        pick.appendChild(o);
+      }
+      pick.onchange = () => {
+        localStorage.setItem(tradeKey(it.label), pick.value);
+        renderItemized();
+      };
+      lab.appendChild(document.createElement("br"));
+      lab.appendChild(pick);
+      const cnt = document.createElement("div"); cnt.textContent = it.cnt;
+      const q = document.createElement("div");
+      q.textContent = it.qtyText ||
+        (it.qty >= 1000 ? (it.qty/1000).toFixed(1) + "k" : it.qty.toFixed(1));
+      const pin = document.createElement("input");
+      pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+      pin.name = "price-" + it.label;
+      if (it.price) pin.value = it.price;
+      pin.oninput = () => {
+        localStorage.setItem(priceKey(it.label), pin.value);
+        renderItemized();
+      };
+      const e = document.createElement("div");
+      e.textContent = it.ext ? it.ext.toFixed(0) : "—";
+      row.append(lab, cnt, q, pin, e);
+      box.appendChild(row);
+    }
   }
   if (grand) {
     const row = document.createElement("div");
@@ -748,6 +803,9 @@ $("approveBtn").onclick = async () => {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ labels, image_dpi: 300,
+      trades: Object.fromEntries(
+        [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]
+          .filter(Boolean).map(l => [l, tradeFor(l)])),
       excluded_chain_ids: [...state.excluded],
       added_chains: state.result.chains
         .filter(c => c.custom && !state.excluded.has(c.chain_id))

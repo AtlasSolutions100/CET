@@ -1,21 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 * { box-sizing: border-box; margin: 0; }
 /* any CSS display rule beats the hidden attribute; make hidden always win
    (this is why the earthwork panel's close button "did nothing") */
 [hidden] { display: none !important; }
 :root {
-  --bg: #14161a; --panel: #1d2026; --line: #2c313a; --text: #e6e9ee;
-  --dim: #9aa3b0; --accent: #4f8ff7; --ok: #35b26b;
+  /* CORE by Work Optional: ink/paper editorial + forest green, dark chrome */
+  --bg: #131511; --panel: #1b1e1a; --line: #2b2f2a; --text: #e8ebe6;
+  --dim: #98a29a; --accent: #3fa873; --accent-deep: #1f5c3e; --ok: #3fa873;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
-body { font: 13px/1.45 -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body { font: 13px/1.45 "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.brand { font-weight: 700; font-size: 15px; margin-right: 6px; }
-.brand span { color: var(--accent); }
+.brand { font-family: var(--mono); font-weight: 600; font-size: 16px;
+  letter-spacing: .14em; margin-right: 6px; }
+.brand .brand-o { color: var(--accent); }
+.brand .brand-sub { display: block; font-size: 8.5px; font-weight: 500;
+  letter-spacing: .22em; color: var(--dim); margin-top: -1px; }
 select, input, button { background: #262a32; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: inherit; }
 input#pathInput { width: 240px; }
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
 button:disabled { opacity: .45; cursor: default; }
-#detectBtn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+header button, .status, .side-head h2 { font-family: var(--mono);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+#detectBtn { background: var(--accent-deep); border-color: var(--accent);
+  color: #fff; font-weight: 600; }
 .doc-name { color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { color: var(--dim); }
 .status.busy { color: var(--accent); }
@@ -124,3 +133,16 @@ canvas#view.panning { cursor: grabbing; }
 .sym-row input { width: 100%; padding: 3px 6px; font-size: 12px; }
 .sym-row .add { font-size: 11px; padding: 3px 8px; background: #5a2b6e; border-color: #5a2b6e; color: #fff; }
 .sym-meta { color: var(--dim); font-size: 11px; }
+
+/* ---------- itemized takeoff, by trade ---------- */
+.trade-head { display: flex; align-items: baseline; justify-content: space-between;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .14em; color: var(--accent);
+  border-top: 1px solid var(--line); margin-top: 8px; padding: 8px 8px 3px; }
+.trade-head .t-sub { color: var(--dim); font-weight: 500; letter-spacing: .06em; }
+.item-row .lab { border-bottom: 1px dotted var(--line); }
+.item-row select.trade-pick { font-family: var(--mono); font-size: 9.5px;
+  padding: 1px 2px; background: transparent; border: none; color: var(--dim);
+  max-width: 100%; cursor: pointer; }
+.item-row select.trade-pick:hover { color: var(--accent); }
+.item-row.total { font-family: var(--mono); letter-spacing: .08em; }

@@ -329,6 +329,9 @@ class ApproveBody(BaseModel):
     excluded_chain_ids: list[int] = []
     # label -> unit price per linear foot (optional, for itemization)
     prices: dict[str, float] = {}
+    # label -> trade division (Earthwork & Grading, Wet Utilities, ...) as
+    # grouped in the review UI; carried through to export/report rows
+    trades: dict[str, str] = {}
     # chains created by review-UI edits (split / extend): full geometry,
     # replacing originals the client puts in excluded_chain_ids
     added_chains: list[dict] = []
@@ -397,6 +400,7 @@ def approve(job_id: str, page: int, body: ApproveBody):
         price = body.prices.get(label)
         items.append({
             "label": label, "count": t["count"],
+            "trade": body.trades.get(label),
             "length_ft": round(ft, 1) if ft is not None else None,
             "unit_price": price,
             "extended": round(ft * price, 2) if (ft is not None and price) else None,
@@ -416,10 +420,15 @@ def approve(job_id: str, page: int, body: ApproveBody):
             price = None
         items.append({
             "label": label, "count": 1, "length_ft": None,
+            "trade": body.trades.get(label),
             "qty": qty, "unit": str(ex.get("unit", ""))[:8] or "EA",
             "unit_price": price,
             "extended": round(qty * price, 2) if price else None,
         })
+    trade_rank = {t: i for i, t in enumerate((
+        "Earthwork & Grading", "Wet Utilities", "Dry Utilities",
+        "Paving & Concrete", "Structures", "Fencing & Sitework", "General"))}
+    items.sort(key=lambda it: (trade_rank.get(it.get("trade"), 99),))
     export["items"] = items
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))

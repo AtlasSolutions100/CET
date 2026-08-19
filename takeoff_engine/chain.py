@@ -198,7 +198,9 @@ def _match_links(units: list, idxs: list, gap_max: float, ang_tol_deg: float) ->
     keep2 = _topk(a) & _topk(b)
     a, b, score = a[keep2], b[keep2], score[keep2]
 
-    order = np.argsort(score)
+    # stable sort: equal-score candidates accept in pair-index order, never
+    # in whatever tie order the sort algorithm happens to emit
+    order = np.argsort(score, kind="stable")
     used = np.zeros(2 * n, dtype=bool)
     links = []
     idx_arr = np.asarray(idxs)
@@ -657,7 +659,9 @@ def _glyph_blobs(units: list, idxs: list) -> tuple:
             a = parent[a]
         return a
 
-    for a, b in tree.query_pairs(9.0):
+    # sorted: query_pairs returns a python set; union order must not follow
+    # its hash-dependent iteration order
+    for a, b in sorted(tree.query_pairs(9.0)):
         ra, rb = find(a), find(b)
         if ra != rb:
             parent[ra] = rb
@@ -744,7 +748,9 @@ def _mark_glyph_text_chains(chains: list, blobs: list) -> None:
             hits.update(k)
         if len(hits) < 3:
             continue
-        toks = Counter(mine[h][2] for h in hits)
+        # sorted: most_common breaks count ties by insertion order, which
+        # must not inherit the set's iteration order
+        toks = Counter(mine[h][2] for h in sorted(hits))
         top, n_top = toks.most_common(1)[0]
         if n_top >= 3 and c.length / n_top <= 400.0:
             c.klass = "dash-text"
@@ -902,6 +908,9 @@ def _merge_twin_strokes(units: list) -> list:
             if len(pairs) == 0:
                 break
             pairs = calm[pairs]
+            # greedy accepts below resolve conflicts first-come: pin the
+            # order to unit index, not the KD-tree's emission order
+            pairs = pairs[np.lexsort((pairs[:, 1], pairs[:, 0]))]
             pa, pb = pairs[:, 0], pairs[:, 1]
             # all guards vectorised; the python loop only sees survivors
             ok = np.abs(L[pa] - L[pb]) <= np.maximum(
@@ -1006,7 +1015,8 @@ def _merge_twin_strokes(units: list) -> list:
             L = np.array([units[i].length for i in idxs], dtype=float)
             mids = (P0 + P1) / 2.0
             tree = cKDTree(mids)
-            order = np.argsort(-L)
+            # stable: equal-length marks sweep in index order every run
+            order = np.argsort(-L, kind="stable")
             for oi in order:
                 i = idxs[int(oi)]
                 if i in drop or L[oi] < 3.0:
@@ -1056,7 +1066,7 @@ def _merge_twin_strokes(units: list) -> list:
                 parent[a] = parent[parent[a]]
                 a = parent[a]
             return a
-        for a, b in t2.query_pairs(3.0):
+        for a, b in sorted(t2.query_pairs(3.0)):
             ra, rb = _find(a), _find(b)
             if ra != rb:
                 parent[ra] = rb
@@ -1165,7 +1175,7 @@ def _merge_twin_strokes(units: list) -> list:
     # absorbed marks stay in the CALLER's list (eval uses it as the recall
     # denominator) - tag them so metrics know their ink lives on in a
     # survivor instead of scoring a genuinely double-drawn layer at 50%
-    for i in drop:
+    for i in sorted(drop):
         units[i]._absorbed = True
     if not drop:
         return units
@@ -1328,7 +1338,7 @@ def _join_chain_ends(chains: list) -> list:
             return (va @ gdir) >= 0.86 and (vb @ -gdir) >= 0.86
 
         cand_by_ep = defaultdict(list)  # endpoint -> [(turn, dist, other)]
-        for a, b in tree.query_pairs(56.0):
+        for a, b in sorted(tree.query_pairs(56.0)):
             ka, ea = meta[a]
             kb, eb = meta[b]
             if ka == kb:
@@ -1684,7 +1694,8 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
                 ep = c.pts[end]
                 best = None
                 # marks whose MIDPOINT is within reach+half a long mark
-                for k in ftree.query_ball_point(ep, reach + 0.7 * DASH_MAX_LEN):
+                # (sorted: distance ties pick the lowest index every run)
+                for k in sorted(ftree.query_ball_point(ep, reach + 0.7 * DASH_MAX_LEN)):
                     i = free[k]
                     if i in used:
                         continue
@@ -1967,7 +1978,9 @@ def _bridge_text(chains: list, words: list) -> list:
                 c = dashed[k // 2]
                 if c.chain_id not in merged_away:
                     chain_set[c.chain_id] = c
-            cs = list(chain_set.values())
+            # merge order pinned to chain_id, not KD-tree emission order:
+            # which chain absorbs which decides the fix-point path
+            cs = sorted(chain_set.values(), key=lambda c: c.chain_id)
             for ai in range(len(cs)):
                 a = cs[ai]
                 if a.chain_id in merged_away:
