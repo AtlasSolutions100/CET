@@ -44,6 +44,18 @@ _PAT_KEYWORD = re.compile(
     re.X,
 )
 
+# OCR word order can put the ratio BEFORE the keyword ('1" 10' SCALE:' on
+# the C4.x grading plans): same relaxed body, keyword trailing. Degree
+# signs stand in for foot marks in OCR output, so they count as ticks.
+_PAT_KEYWORD_PRE = re.compile(
+    r"""(?i)(?P<paper>\d+(?:/\d+)?)\s*["”″]\s*
+        (?:[=:\-]\s*){0,2}
+        (?P<feet>\d+)\s*['’′°º]?\s*
+        (?:-\s*(?P<inches>\d+)\s*["”″]?\s*)?
+        scale\b""",
+    re.X,
+)
+
 
 @dataclass
 class ScaleCandidate:
@@ -110,6 +122,8 @@ def _scan(text: str) -> list[ScaleCandidate]:
         ctx = text[max(0, m.start() - 30): m.start()]
         add(m, bool(re.search(r"(?i)scale", ctx)))
     for m in _PAT_KEYWORD.finditer(text):
+        add(m, True)
+    for m in _PAT_KEYWORD_PRE.finditer(text):
         add(m, True)
     return list(found.values())
 
