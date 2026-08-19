@@ -148,7 +148,12 @@ async function loadResult(gen = state.gen) {
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
   $("restoreBtn").hidden = true;
   for (const s of state.result.styles) {
-    state.include.set(s.style_id, s.class !== "solid" ? true : s.length_pt > 500);
+    const white = s.color && Math.min(...s.color) > 0.92;
+    // white-over-wash linework is real but faint existing-conditions data;
+    // it starts OFF so it never surprises the takeoff - one click turns a
+    // family on when the estimator wants it
+    state.include.set(s.style_id,
+      white ? false : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
   }
   renderStyles(); renderChips(); renderLegend(); renderItemized(); draw();
@@ -952,10 +957,12 @@ function styleColor(sid) {
   return styleColorCache.get(sid);
 }
 function cssColor(c) {
-  if (!c) return "#e6b800";
+  if (!c) return "#8f959e";
   const [r, g, b] = c.map(v => Math.round(v * 255));
-  // near-white detected colors would vanish on the dimmed sheet
-  if (r > 225 && g > 225 && b > 225) return "#e6b800";
+  // near-white linework (white-over-wash contours) would vanish on the
+  // dimmed sheet; draw it as the faint grey it visually is - NEVER as a
+  // loud fallback colour, which read as random phantom lines
+  if (r > 225 && g > 225 && b > 225) return "#a7adb6";
   return `rgb(${r},${g},${b})`;
 }
 
