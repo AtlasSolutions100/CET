@@ -40,10 +40,16 @@ class StrokeUnit:
         return self.pts[-1]
 
     def direction(self) -> np.ndarray:
-        """Overall unit direction start->end (chord, not arc)."""
-        v = self.pts[-1] - self.pts[0]
-        n = np.hypot(*v)
-        return v / n if n > 1e-9 else np.array([1.0, 0.0])
+        """Overall unit direction start->end (chord, not arc). Cached:
+        chaining asks ~500k times per heavy sheet. Anything that mutates
+        pts (twin midline averaging) must clear _dir."""
+        d = getattr(self, "_dir", None)
+        if d is None:
+            v = self.pts[-1] - self.pts[0]
+            n = np.hypot(*v)
+            d = v / n if n > 1e-9 else np.array([1.0, 0.0])
+            self._dir = d
+        return d
 
 
 def page_words(page) -> list:

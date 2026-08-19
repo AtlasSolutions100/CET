@@ -337,7 +337,9 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     glyph_blobs: list = []
 
     for (color, width, layer), idxs in by_style.items():
-        idxs = _dedup_twins(units, idxs)
+        # twin removal happens globally in _merge_twin_strokes above; the
+        # old per-group _dedup_twins pass is a strict subset of it and was
+        # 17s of a 25s build on textured sheets
         native_dashed = [i for i in idxs if units[i].dashes and units[i].dashes != "[] 0"]
         plain = [i for i in idxs if i not in set(native_dashed)]
 
@@ -813,26 +815,44 @@ def _merge_twin_strokes(units: list) -> list:
     for idxs in by_key.values():
         if len(idxs) < 2:
             continue
-        mids = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2
-                         for i in idxs])
+        n = len(idxs)
+        P0 = np.array([units[i].pts[0] for i in idxs], dtype=float)
+        P1 = np.array([units[i].pts[-1] for i in idxs], dtype=float)
+        L = np.array([units[i].length for i in idxs], dtype=float)
+        D = np.array([units[i].direction() for i in idxs], dtype=float)
+        mids = (P0 + P1) / 2.0
         tree = cKDTree(mids)
-        for a, b in tree.query_pairs(4.5, output_type="ndarray"):
-            ia, ib = idxs[int(a)], idxs[int(b)]
+        # a double-drawn stroke is a PAIR; a stipple/hatch field is a CROWD.
+        # Crowded units cannot be twins and pairing them explodes the pair
+        # count into the millions on textured sheets (this was 15s of a 20s
+        # build on Oncor p4), so they are excluded up front.
+        crowd = tree.query_ball_point(mids, 5.0, return_length=True)
+        calm = np.nonzero(crowd <= 6)[0]
+        if len(calm) < 2:
+            continue
+        sub = cKDTree(mids[calm])
+        pairs = sub.query_pairs(4.5, output_type="ndarray")
+        if len(pairs) == 0:
+            continue
+        pairs = calm[pairs]
+        pa, pb = pairs[:, 0], pairs[:, 1]
+        # all guards vectorised; the python loop below only sees survivors
+        ok = np.abs(L[pa] - L[pb]) <= np.maximum(
+            0.6, 0.08 * np.maximum(L[pa], L[pb]))
+        ok &= np.abs(np.einsum("ij,ij->i", D[pa], D[pb])) >= 0.996
+        d_same = np.maximum(np.hypot(*(P0[pa] - P0[pb]).T),
+                            np.hypot(*(P1[pa] - P1[pb]).T))
+        d_rev = np.maximum(np.hypot(*(P0[pa] - P1[pb]).T),
+                           np.hypot(*(P1[pa] - P0[pb]).T))
+        ok &= np.minimum(d_same, d_rev) <= 4.4
+        if not ok.any():
+            continue
+        same_first = d_same <= d_rev
+        for k in np.nonzero(ok)[0]:
+            ia, ib = idxs[int(pa[k])], idxs[int(pb[k])]
             if ia in drop or ib in drop:
                 continue
             ua, ub = units[ia], units[ib]
-            if abs(ua.length - ub.length) > max(0.6, 0.08 * max(ua.length,
-                                                                ub.length)):
-                continue
-            da, db = ua.direction(), ub.direction()
-            if abs(float(da @ db)) < 0.996:
-                continue
-            d_same = max(float(np.hypot(*(ua.pts[0] - ub.pts[0]))),
-                         float(np.hypot(*(ua.pts[-1] - ub.pts[-1]))))
-            d_rev = max(float(np.hypot(*(ua.pts[0] - ub.pts[-1]))),
-                        float(np.hypot(*(ua.pts[-1] - ub.pts[0]))))
-            if min(d_same, d_rev) > 4.4:
-                continue
             # keep the FATTER stroke of a mixed-width pair - that is the
             # printed appearance; equal widths keep the longer one
             if abs((ua.width or 0) - (ub.width or 0)) > 0.05:
@@ -841,13 +861,14 @@ def _merge_twin_strokes(units: list) -> list:
             else:
                 keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
             uk, ug = units[keep], units[gone]
-            n = uk.direction()
+            nvec = uk.direction()
             dm = ug.pts.mean(axis=0) - uk.pts.mean(axis=0)
-            off = abs(float(n[0] * dm[1] - n[1] * dm[0]))
+            off = abs(float(nvec[0] * dm[1] - nvec[1] * dm[0]))
             # midline is the truthful centerline of the printed line
             if len(uk.pts) == len(ug.pts):
-                gp = ug.pts if d_same <= d_rev else ug.pts[::-1]
+                gp = ug.pts if bool(same_first[k]) else ug.pts[::-1]
                 uk.pts = (uk.pts + gp) / 2.0
+                uk._dir = None
             merged.setdefault(id(uk), off)
             drop.add(gone)
 
@@ -1324,6 +1345,8 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
             if i not in chained_units and units[i].length >= 2.0]
     if not free:
         return
+    fmid = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2 for i in free])
+    ftree = cKDTree(fmid)
     used: set = set()
     for c in group_chains:
         if not c.klass.startswith("dash") or c.n_dashes < 4:
@@ -1338,7 +1361,9 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
             for end in (0, -1):
                 ep = c.pts[end]
                 best = None
-                for i in free:
+                # marks whose MIDPOINT is within reach+half a long mark
+                for k in ftree.query_ball_point(ep, reach + 0.7 * DASH_MAX_LEN):
+                    i = free[k]
                     if i in used:
                         continue
                     u = units[i]
