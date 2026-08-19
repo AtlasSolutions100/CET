@@ -104,7 +104,7 @@ async function selectPage(p) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
   $("aiBanner").hidden = true;
   updateSelBar(null);
-  renderStyles(); renderChips(); renderLegend(); renderItemized(); fitOnLoad();
+  renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
     if (gen !== state.gen) return;   // a later page won the race
@@ -160,7 +160,7 @@ async function loadResult(gen = state.gen) {
       white ? false : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
   }
-  renderStyles(); renderChips(); renderLegend(); renderItemized(); draw();
+  renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   const sc = state.result.scale;
   setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
@@ -168,6 +168,74 @@ async function loadResult(gen = state.gen) {
 }
 
 // ---------- sidebar ----------
+// paint a style's REAL line sample onto a small canvas (retina 2x)
+function drawPatternSample(cnv, s, w, h) {
+  cnv.width = w; cnv.height = h;
+  const sctx = cnv.getContext("2d");
+  const rep = state.result.chains.find(c => c.style_id === s.style_id);
+  const tpl = rep && rep.template && rep.template.length >= 2
+    ? rep.template : dashArray(s.signature);
+  sctx.strokeStyle = cssColor(s.color);
+  sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
+  if (s.class !== "solid" && tpl && tpl.length >= 2) {
+    const span = tpl.reduce((a, b) => a + b, 0);
+    const k2 = span > 0 ? Math.min((w - 8) / span, 3.2) : 1;
+    sctx.setLineDash(tpl.map(v => Math.max(v * k2, 1.6)));
+  }
+  sctx.beginPath(); sctx.moveTo(4, h / 2); sctx.lineTo(w - 4, h / 2);
+  sctx.stroke();
+}
+
+// ---------- on-sheet mini legend ----------
+function renderMiniLegend() {
+  const box = $("miniLegend");
+  if (!state.result) { box.hidden = true; return; }
+  if (localStorage.getItem("core-minilegend") === "off") { box.hidden = true; return; }
+  box.hidden = false;
+  box.classList.toggle("collapsed",
+    localStorage.getItem("core-minilegend") === "min");
+  const rows = $("mlRows");
+  rows.innerHTML = "";
+  const vis = state.result.styles
+    .filter(st => state.include.get(st.style_id))
+    .sort((a, b) => b.length_pt - a.length_pt);
+  const sc = state.result.scale;
+  const ftPerIn = sc ? sc.ft_per_paper_inch : null;
+  for (const st of vis.slice(0, 8)) {
+    const row = document.createElement("div");
+    row.className = "ml-row" + (state.isolate === st.style_id ? " iso" : "");
+    const cnv = document.createElement("canvas");
+    cnv.className = "ml-swatch";
+    drawPatternSample(cnv, st, 80, 18);
+    const lab = document.createElement("span");
+    lab.className = "ml-lab";
+    lab.textContent = state.labels.get(st.style_id) || st.suggested_label
+      || `${st.class} · ${st.signature}`;
+    const ft = document.createElement("span");
+    ft.className = "ml-ft";
+    const q = ftPerIn ? st.length_pt / 72 * ftPerIn : st.length_pt;
+    ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
+      + (ftPerIn ? " ft" : " pt");
+    row.append(cnv, lab, ft);
+    row.onclick = () => {
+      state.isolate = state.isolate === st.style_id ? null : st.style_id;
+      renderMiniLegend(); draw();
+    };
+    rows.appendChild(row);
+  }
+  if (vis.length > 8) {
+    const more = document.createElement("div");
+    more.className = "ml-more";
+    more.textContent = `+ ${vis.length - 8} MORE IN SIDEBAR`;
+    rows.appendChild(more);
+  }
+}
+$("mlToggle").onclick = () => {
+  const min = localStorage.getItem("core-minilegend") === "min";
+  localStorage.setItem("core-minilegend", min ? "on" : "min");
+  renderMiniLegend();
+};
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -200,7 +268,7 @@ function renderStyles() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
-    cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked); renderStyles(); renderChips(); renderItemized(); draw(); };
+    cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
     // linework by PATTERN (the flat chip caused every "legend shows a
@@ -208,19 +276,7 @@ function renderStyles() {
     // signature-derived dashes otherwise.
     const sw = document.createElement("canvas");
     sw.className = "swatch-line";
-    sw.width = 92; sw.height = 20;   // 2x for retina, displayed 46x10
-    const sctx = sw.getContext("2d");
-    const rep = state.result.chains.find(c => c.style_id === s.style_id);
-    const tpl = rep && rep.template && rep.template.length >= 2
-      ? rep.template : dashArray(s.signature);
-    sctx.strokeStyle = cssColor(s.color);
-    sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
-    if (s.class !== "solid" && tpl && tpl.length >= 2) {
-      const span = tpl.reduce((a, b) => a + b, 0);
-      const k2 = span > 0 ? Math.min(84 / span, 3.2) : 1;   // >=1 repeat visible
-      sctx.setLineDash(tpl.map(v => Math.max(v * k2, 1.6)));
-    }
-    sctx.beginPath(); sctx.moveTo(4, 10); sctx.lineTo(88, 10); sctx.stroke();
+    drawPatternSample(sw, s, 92, 20);
 
     const main = document.createElement("div");
     main.className = "style-main";
@@ -231,8 +287,8 @@ function renderStyles() {
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
-      clearTimeout(lab._t);   // itemized regroups by trade as you type
-      lab._t = setTimeout(renderItemized, 350);
+      clearTimeout(lab._t);   // itemized + legend regroup as you type
+      lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
@@ -296,8 +352,8 @@ function renderLegend() {
 }
 
 $("styleSearch").oninput = () => renderStyles();
-$("allBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, true); renderStyles(); renderChips(); renderItemized(); draw(); };
-$("noneBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, false); renderStyles(); renderChips(); renderItemized(); draw(); };
+$("allBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, true); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
+$("noneBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, false); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
 // ---------- color bulk-toggle chips ----------
 function renderChips() {
@@ -1602,19 +1658,56 @@ $("restoreBtn").onclick = () => {
   renderItemized();
   draw();
 };
+function typing() {
+  const el = document.activeElement;
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+    || el.tagName === "SELECT" || el.isContentEditable);
+}
 addEventListener("keydown", (e) => {
-  if ((e.key === "Delete" || e.key === "Backspace") &&
-      document.activeElement.tagName !== "INPUT") {
+  // single-key review shortcuts; never while typing in a field
+  if (!typing() && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (e.key === "?") {
+      e.preventDefault();
+      $("kbdHelp").hidden = !$("kbdHelp").hidden;
+      return;
+    }
+    if (k === "m") { e.preventDefault(); $("measureBtn").click(); return; }
+    if (k === "f") { e.preventDefault(); $("faithfulBtn").click(); return; }
+    if (k === "l") {
+      e.preventDefault();
+      const off = localStorage.getItem("core-minilegend") === "off";
+      localStorage.setItem("core-minilegend", off ? "on" : "off");
+      renderMiniLegend();
+      return;
+    }
+    if (state.result && state.selected !== null) {
+      if (k === "s") { e.preventDefault(); $("splitBtn").click(); return; }
+      if (k === "x") { e.preventDefault(); $("cutSpanBtn").click(); return; }
+      if (k === "e") { e.preventDefault(); $("extendBtn").click(); return; }
+      if (k === "d") { e.preventDefault(); $("drawBtn").click(); return; }
+      if (k === "i") {
+        e.preventDefault();
+        const ch = chainById(state.selected);
+        if (ch) {
+          state.isolate = state.isolate === ch.style_id ? null : ch.style_id;
+          renderMiniLegend(); draw();
+        }
+        return;
+      }
+    }
+  }
+  if ((e.key === "Delete" || e.key === "Backspace") && !typing()) {
     e.preventDefault();
     removeSelected();
   }
-  if (e.key === "Enter" && state.tool === "drawline" &&
-      document.activeElement.tagName !== "INPUT") {
+  if (e.key === "Enter" && state.tool === "drawline" && !typing()) {
     e.preventDefault();
     finishDraw();
     return;
   }
   if (e.key === "Escape") {
+    if (!$("kbdHelp").hidden) { $("kbdHelp").hidden = true; return; }
     if (state.tool === "cutspan") {
       cancelCut();
       setStatus("cut cancelled");

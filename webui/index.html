@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
 <header>
@@ -83,18 +83,39 @@
   </aside>
   <section id="stage">
     <canvas id="view"></canvas>
+    <div id="miniLegend" class="mini-legend" hidden>
+      <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
+      <div id="mlRows" class="ml-rows"></div>
+    </div>
+    <div id="kbdHelp" class="kbd-help" hidden>
+      <div class="kh-title">Keyboard shortcuts</div>
+      <div class="kh-grid">
+        <kbd>M</kbd><span>Measure between points</span>
+        <kbd>S</kbd><span>Split selected line at last click</span>
+        <kbd>X</kbd><span>Cut a span out of selected line</span>
+        <kbd>E</kbd><span>Extend selected line</span>
+        <kbd>D</kbd><span>Draw new line in selected family</span>
+        <kbd>I</kbd><span>Isolate selected line's type (again to clear)</span>
+        <kbd>F</kbd><span>Faithful pattern rendering on/off</span>
+        <kbd>L</kbd><span>On-sheet legend on/off</span>
+        <kbd>&#9003;</kbd><span>Delete picked point, or whole line</span>
+        <kbd>Esc</kbd><span>Cancel tool / clear selection</span>
+        <kbd>?</kbd><span>This help</span>
+      </div>
+      <div class="kh-dim">Esc or ? closes</div>
+    </div>
     <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
     <div class="toolkit">
-      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (Esc to finish)">&#128207;</button>
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (M; Esc to finish)">&#128207;</button>
       <span class="tk-sep"></span>
-      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it">&#9986;</button>
-      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach">&#10230;</button>
-      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends">&#9988;</button>
-      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish">&#9998;</button>
+      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)">&#9986;</button>
+      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)">&#10230;</button>
+      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)">&#9988;</button>
+      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)">&#9998;</button>
       <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
       <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
       <span class="tk-sep"></span>
-      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (toggle for bold uniform strokes)">&#9781;</button>
+      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (F toggles bold uniform strokes)">&#9781;</button>
       <span id="selInfo" class="tk-info"></span>
       <span id="measureInfo" hidden></span>
     </div>
@@ -102,6 +123,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=19"></script>
+<script src="app.js?v=20"></script>
 </body>
 </html>
