@@ -44,6 +44,10 @@ const state = {
   gen: 0,                   // bumped per document/page switch; stale async
                             // callbacks compare against it and bail out
   selPt: null,              // index of the selected vertex on state.selected
+  cutA: null,               // first anchor of an in-progress cut-span
+  drawPts: [],              // vertices of the in-progress drawn line
+  drawSrc: null,            // chain_id whose family a drawn line joins
+  hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
@@ -923,6 +927,34 @@ function draw() {
       });
     }
   }
+  // cut-span first anchor
+  if (state.tool === "cutspan" && state.cutA) {
+    const f2 = IMG_DPI / 72;
+    ctx.beginPath();
+    ctx.arc(state.cutA.q[0] * f2, state.cutA.q[1] * f2, 5 / k, 0, Math.PI * 2);
+    ctx.fillStyle = "#e0245e"; ctx.fill();
+    ctx.lineWidth = 1.5 / k; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+  }
+  // in-progress drawn line
+  if (state.tool === "drawline" && state.drawPts.length) {
+    const f2 = IMG_DPI / 72;
+    ctx.beginPath();
+    ctx.moveTo(state.drawPts[0][0] * f2, state.drawPts[0][1] * f2);
+    for (let i = 1; i < state.drawPts.length; i++)
+      ctx.lineTo(state.drawPts[i][0] * f2, state.drawPts[i][1] * f2);
+    if (state.hoverPt) ctx.lineTo(state.hoverPt[0] * f2, state.hoverPt[1] * f2);
+    ctx.lineWidth = 2 / k;
+    ctx.setLineDash([6 / k, 4 / k]);
+    ctx.strokeStyle = "#ff00cc";
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of state.drawPts) {
+      ctx.beginPath();
+      ctx.arc(q[0] * f2, q[1] * f2, 3.5 / k, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = "#ff00cc"; ctx.stroke();
+    }
+  }
   // symbol-instance markers from the Count panel
   if (state.symMarks && state.symMarks.length) {
     const f3 = IMG_DPI / 72;
@@ -1009,7 +1041,9 @@ function cssColor(c) {
 let panning = null;
 let downAt = null;
 cv.addEventListener("mousedown", (e) => {
-  const v = vertexAt(e);
+  // while a click-tool is armed, clicks land IN the tool - a click on a
+  // vertex dot is a cut/draw/measure anchor, never a point-drag
+  const v = state.tool ? null : vertexAt(e);
   if (v !== null) {           // grab the handle rather than pan the sheet
     state.selPt = v;
     state.dragPt = true;
@@ -1030,6 +1064,11 @@ addEventListener("mousemove", (e) => {
       m.points[state.selPt] = ptFromEvent(e);
       draw();
     }
+    return;
+  }
+  if (state.tool === "drawline" && state.drawPts.length && !panning) {
+    state.hoverPt = ptFromEvent(e);
+    draw();
     return;
   }
   if (!panning) return;
@@ -1090,6 +1129,16 @@ function handleCanvasClick(e) {
   }
   if (state.tool === "extend" && state.selected !== null) {
     extendTo(px, py);
+    return;
+  }
+  if (state.tool === "cutspan" && state.selected !== null) {
+    cutSpanClick(px, py);
+    return;
+  }
+  if (state.tool === "drawline") {
+    state.drawPts.push([px, py]);
+    setStatus(`draw: ${state.drawPts.length} point(s) — double-click or Enter to finish`, "busy");
+    draw();
     return;
   }
   // clicking a vertex of the already-selected line picks THAT point, so a
@@ -1210,6 +1259,124 @@ function extendTo(px, py) {
   afterEdit(`extended by ${fmtLen(Math.min(dFirst, dLast))}`);
 }
 
+// nearest on-path position on a chain; snaps onto a vertex ("the dots")
+// when the click lands within snapTol of one
+function projectOnChain(ch, px, py, snapTol) {
+  const pts = ch.points;
+  let bi = 1, bq = null, bd = Infinity, arc = 0, bArc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i-1], b = pts[i];
+    const dx = b[0]-a[0], dy = b[1]-a[1], L2 = dx*dx + dy*dy;
+    let t = L2 ? ((px-a[0])*dx + (py-a[1])*dy) / L2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const q = [a[0]+t*dx, a[1]+t*dy];
+    const d = Math.hypot(px-q[0], py-q[1]);
+    const seg = Math.sqrt(L2);
+    if (d < bd) { bd = d; bi = i; bq = q; bArc = arc + t * seg; }
+    arc += seg;
+  }
+  if (snapTol) {
+    let vb = null, vd = snapTol, vArc = 0, run = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (i) run += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]);
+      const d = Math.hypot(px-pts[i][0], py-pts[i][1]);
+      if (d < vd) { vd = d; vb = i; vArc = run; }
+    }
+    if (vb !== null)
+      return { i: Math.max(1, vb), q: pts[vb].slice(), arc: vArc };
+  }
+  return { i: bi, q: bq, arc: bArc };
+}
+
+$("cutSpanBtn").onclick = () => {
+  if (state.selected === null) return;
+  state.tool = "cutspan"; state.cutA = null;
+  $("cutSpanBtn").classList.add("active");
+  setStatus("cut: click where the span to REMOVE starts (Esc cancels)", "busy");
+};
+function cancelCut() {
+  state.tool = null; state.cutA = null;
+  $("cutSpanBtn").classList.remove("active");
+}
+function cutSpanClick(px, py) {
+  const ch = chainById(state.selected);
+  if (!ch) { cancelCut(); return; }
+  const f = IMG_DPI / 72;
+  const hit = projectOnChain(ch, px, py, 7 / state.view.k / f + 1.5);
+  if (!state.cutA) {
+    state.cutA = hit;
+    setStatus("cut: now click where the span ends", "busy");
+    draw();
+    return;
+  }
+  let A = state.cutA, B = hit;
+  if (A.arc > B.arc) { const t = A; A = B; B = t; }
+  const pts = ch.points;
+  const full = polyLen(pts) || 1;
+  const sides = [pts.slice(0, A.i).concat([A.q]), [B.q].concat(pts.slice(B.i))]
+    .filter(p => polyLen(p) >= 0.5);
+  const removed = full - sides.reduce((t, p) => t + polyLen(p), 0);
+  if (removed < 0.5) {
+    cancelCut(); updateSelBar(ch); draw();
+    return setStatus("those two points touch — nothing to cut", "err");
+  }
+  const mk = (p) => {
+    const c = JSON.parse(JSON.stringify(ch));
+    c.chain_id = state.nextChainId++;
+    c.custom = true;
+    c.points = p;
+    c.length_pt = ch.length_pt * polyLen(p) / full;
+    if (state.chainLabels.has(ch.chain_id))
+      state.chainLabels.set(c.chain_id, state.chainLabels.get(ch.chain_id));
+    state.result.chains.push(c);
+  };
+  if (ch.custom)
+    state.result.chains.splice(state.result.chains.indexOf(ch), 1);
+  else
+    state.excluded.add(ch.chain_id);
+  sides.forEach(mk);
+  state.selected = null; state.selPt = null; state.clickPt = null;
+  cancelCut();
+  updateSelBar(null);
+  afterEdit(`cut ${fmtLen(removed)} out — ${sides.length} piece(s) remain`);
+}
+
+$("drawBtn").onclick = () => {
+  const ch = state.selected !== null && chainById(state.selected);
+  if (!ch)
+    return setStatus("select a line of the family to draw into, then hit draw", "err");
+  state.tool = "drawline"; state.drawPts = []; state.drawSrc = ch.chain_id;
+  state.hoverPt = null;
+  $("drawBtn").classList.add("active");
+  setStatus("draw: click points — double-click or Enter finishes, Esc backs up", "busy");
+};
+function cancelDraw() {
+  state.tool = null; state.drawPts = []; state.drawSrc = null; state.hoverPt = null;
+  $("drawBtn").classList.remove("active");
+}
+function finishDraw() {
+  const src = chainById(state.drawSrc);
+  const pts = [];
+  for (const q of state.drawPts)
+    if (!pts.length ||
+        Math.hypot(q[0]-pts[pts.length-1][0], q[1]-pts[pts.length-1][1]) > 0.5)
+      pts.push(q);
+  if (!src || pts.length < 2) {
+    cancelDraw(); draw();
+    return setStatus("draw cancelled — a line needs at least two points", "err");
+  }
+  const c = JSON.parse(JSON.stringify(src));  // inherits the family's style/pattern
+  c.chain_id = state.nextChainId++;
+  c.custom = true;
+  c.points = pts;
+  c.length_pt = polyLen(pts);
+  state.result.chains.push(c);
+  state.selected = c.chain_id; state.selPt = null;
+  cancelDraw();
+  updateSelBar(c);
+  afterEdit(`drew ${fmtLen(c.length_pt)} into the family`);
+}
+
 $("sepBtn").onclick = () => {
   const ch = state.selected !== null && chainById(state.selected);
   if (!ch) return;
@@ -1259,7 +1426,8 @@ function distToSeg(px, py, a, b) {
 }
 
 function updateSelBar(ch) {
-  for (const id of ["splitBtn", "extendBtn", "sepBtn"]) $(id).disabled = !ch;
+  for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn", "drawBtn"])
+    $(id).disabled = !ch;
   $("removeBtn").disabled = !ch;
   if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
@@ -1322,7 +1490,32 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     removeSelected();
   }
+  if (e.key === "Enter" && state.tool === "drawline" &&
+      document.activeElement.tagName !== "INPUT") {
+    e.preventDefault();
+    finishDraw();
+    return;
+  }
   if (e.key === "Escape") {
+    if (state.tool === "cutspan") {
+      cancelCut();
+      setStatus("cut cancelled");
+      draw();
+      return;
+    }
+    if (state.tool === "drawline") {
+      if (state.drawPts.length) {
+        state.drawPts.pop();
+        setStatus(state.drawPts.length
+          ? `draw: ${state.drawPts.length} point(s) — Esc again removes another`
+          : "all points removed — Esc again exits draw", "busy");
+      } else {
+        cancelDraw();
+        setStatus("draw cancelled");
+      }
+      draw();
+      return;
+    }
     if (state.tool === "measure") {
       state.tool = null; state.measurePts = [];
       $("measureBtn").classList.remove("active");
@@ -1336,6 +1529,10 @@ addEventListener("keydown", (e) => {
     else { state.selected = null; updateSelBar(null); }
     draw();
   }
+});
+cv.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  if (state.tool === "drawline") finishDraw();
 });
 cv.addEventListener("wheel", (e) => {
   e.preventDefault();
