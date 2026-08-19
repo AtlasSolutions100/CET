@@ -323,6 +323,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     dash-text-dash bridging.
     """
     units = list(units)  # local copy: X-mark repair appends synthetic units
+    units = _merge_twin_strokes(units)
     by_style = defaultdict(list)
     for idx, u in enumerate(units):
         # near-white strokes are invisible on paper: masking/whiteout, not
@@ -775,6 +776,111 @@ def _strip_x_marks(units: list, idxs: list) -> list:
             pts=pts, color=ref.color, width=ref.width,
             layer=ref.layer, dashes=ref.dashes, closed=False))
     return kept
+
+
+def _merge_twin_strokes(units: list) -> list:
+    """Collapse double-drawn strokes into ONE stroke with the weight they
+    actually PRINT at.
+
+    CAD bolds a line by drawing it twice, offset by a fraction of a point
+    up to ~3pt. Deduping the pair is not enough: the survivor keeps its
+    hairline width, lands in the hairline weight class, and then groups,
+    chains and legend-matches with genuine hairline junk - Oncor's PROPERTY
+    LINE (w=0.12 drawn twice, looks heavy on paper) came through at 35%
+    coverage and matched nothing in the legend this way. The pair IS one
+    logical stroke whose printed footprint is stroke width + offset, so
+    merge before style grouping: survivor takes the midline geometry and
+    the effective width, and the twin is dropped.
+
+    Guards mirror _dedup_twins: same style key, same length within 8%,
+    parallel within ~5 degrees, and both endpoints coincident (same or
+    reversed) - a twin is the same stroke drawn again, never a nearby
+    parallel feature like a curb pair.
+    """
+    from scipy.spatial import cKDTree
+
+    by_key = defaultdict(list)
+    for i, u in enumerate(units):
+        by_key[_style_key(u)].append(i)
+
+    drop: set = set()
+    merged: dict = {}
+    for idxs in by_key.values():
+        if len(idxs) < 2:
+            continue
+        mids = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2
+                         for i in idxs])
+        tree = cKDTree(mids)
+        for a, b in tree.query_pairs(4.5, output_type="ndarray"):
+            ia, ib = idxs[int(a)], idxs[int(b)]
+            if ia in drop or ib in drop:
+                continue
+            ua, ub = units[ia], units[ib]
+            if abs(ua.length - ub.length) > max(0.6, 0.08 * max(ua.length,
+                                                                ub.length)):
+                continue
+            da, db = ua.direction(), ub.direction()
+            if abs(float(da @ db)) < 0.996:
+                continue
+            d_same = max(float(np.hypot(*(ua.pts[0] - ub.pts[0]))),
+                         float(np.hypot(*(ua.pts[-1] - ub.pts[-1]))))
+            d_rev = max(float(np.hypot(*(ua.pts[0] - ub.pts[-1]))),
+                        float(np.hypot(*(ua.pts[-1] - ub.pts[0]))))
+            if min(d_same, d_rev) > 4.4:
+                continue
+            keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
+            uk, ug = units[keep], units[gone]
+            n = uk.direction()
+            dm = ug.pts.mean(axis=0) - uk.pts.mean(axis=0)
+            off = abs(float(n[0] * dm[1] - n[1] * dm[0]))
+            # midline is the truthful centerline of the printed line
+            if len(uk.pts) == len(ug.pts):
+                gp = ug.pts if d_same <= d_rev else ug.pts[::-1]
+                uk.pts = (uk.pts + gp) / 2.0
+            merged.setdefault(id(uk), off)
+            drop.add(gone)
+
+    # Printed footprint = stroke width + offset, but the style key groups on
+    # exact width, and raw per-pair offsets wobble (0.5..3pt along one same
+    # line) - encode each raw offset and one bold line scatters into many
+    # one-mark styles that can never form a cadence. All survivors of one
+    # base style share the population's MEDIAN offset instead.
+    if merged:
+        survivors = [u for i, u in enumerate(units) if i not in drop]
+        by_base = defaultdict(lambda: {"bumped": [], "rest": []})
+        for u in survivors:
+            k = _style_key(u)
+            if id(u) in merged and merged[id(u)] > 0.25:
+                by_base[k]["bumped"].append(u)
+            else:
+                by_base[k]["rest"].append(u)
+        for k, pop in by_base.items():
+            bumped = pop["bumped"]
+            if not bumped:
+                continue
+            bump = float(np.median([merged[id(u)] for u in bumped]))
+            for u in bumped:
+                u.width = round((u.width or 0.0) + bump, 1)
+            # One pattern can mix bolding styles: Oncor's property line
+            # draws its LONG marks as offset twins (2.15pt apart) but its
+            # SHORT marks as coincident duplicates or single strokes -
+            # without this they stay hairline, land in a different style
+            # group, and the cadence can never form. Any same-style mark
+            # sitting within gap range of TWO bumped marks (i.e. between
+            # them on the line, not merely near its end) inherits the
+            # printed weight.
+            short_rest = [u for u in pop["rest"] if u.length <= 30.0]
+            if short_rest:
+                bt = cKDTree(np.array([(u.pts[0] + u.pts[-1]) / 2
+                                       for u in bumped]))
+                for u in short_rest:
+                    hits = bt.query_ball_point((u.pts[0] + u.pts[-1]) / 2,
+                                               60.0)
+                    if len(hits) >= 2:
+                        u.width = round((u.width or 0.0) + bump, 1)
+    if not drop:
+        return units
+    return [u for i, u in enumerate(units) if i not in drop]
 
 
 def _dedup_twins(units: list, idxs: list) -> list:
