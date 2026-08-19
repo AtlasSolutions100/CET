@@ -848,7 +848,15 @@ def _merge_twin_strokes(units: list) -> list:
                             np.hypot(*(P1[pa] - P1[pb]).T))
         d_rev = np.maximum(np.hypot(*(P0[pa] - P1[pb]).T),
                            np.hypot(*(P1[pa] - P0[pb]).T))
-        ok &= np.minimum(d_same, d_rev) <= 4.4
+        # endpoint-identity tolerance scales with mark size. A DOT's
+        # direction is noise, so the perpendicular-offset math cannot tell
+        # a bold twin from the NEXT DOT ALONG A DOTTED LINE - Oncor p4's
+        # FEMA boundary (dots 2.7pt apart) was getting every other dot
+        # eaten and the survivors re-widthed, which also split the
+        # property-line family across two width groups. Tiny marks only
+        # merge when truly coincident.
+        thr = np.clip(0.35 * np.maximum(L[pa], L[pb]), 0.6, 4.4)
+        ok &= np.minimum(d_same, d_rev) <= thr
         if not ok.any():
             continue
         same_first = d_same <= d_rev
@@ -897,23 +905,57 @@ def _merge_twin_strokes(units: list) -> list:
             bump = float(np.median([merged[id(u)] for u in bumped]))
             for u in bumped:
                 u.width = round((u.width or 0.0) + bump, 1)
-            # One pattern can mix bolding styles: Oncor's property line
-            # draws its LONG marks as offset twins (2.15pt apart) but its
-            # SHORT marks as coincident duplicates or single strokes -
-            # without this they stay hairline, land in a different style
-            # group, and the cadence can never form. Any same-style mark
-            # sitting within gap range of TWO bumped marks (i.e. between
-            # them on the line, not merely near its end) inherits the
-            # printed weight.
-            short_rest = [u for u in pop["rest"] if u.length <= 30.0]
-            if short_rest:
-                bt = cKDTree(np.array([(u.pts[0] + u.pts[-1]) / 2
-                                       for u in bumped]))
-                for u in short_rest:
-                    hits = bt.query_ball_point((u.pts[0] + u.pts[-1]) / 2,
-                                               60.0)
-                    if len(hits) >= 2:
+            # One pattern can mix bolding styles - offset twins for the
+            # long marks, coincident duplicates or single strokes for the
+            # shorts and dots - and pairing only ever certifies part of a
+            # line. A partial bump SPLITS the line into two width groups
+            # (Oncor p4's property line bumped inside the FEMA band and
+            # stayed thin outside it - one line, two styles, neither
+            # chained fully). So the printed weight propagates to CLOSURE:
+            # bumped marks seed, any same-base-style mark within gap reach
+            # of TWO members joins, repeat until stable. Whole connected
+            # populations move together or not at all.
+            rest = [u for u in pop["rest"] if u.length <= 130.0]
+            family = list(bumped)
+            pending = rest
+            # frontier expansion: each round only marks near the NEWLY
+            # added members can join, so the family tree is rebuilt over a
+            # shrinking frontier instead of the whole population (a naive
+            # closure doubled build times on texture-heavy sheets)
+            frontier = family
+            fam_tree = None
+            for _ in range(8):
+                if not pending or not frontier:
+                    break
+                ft = cKDTree(np.array([(u.pts[0] + u.pts[-1]) / 2
+                                       for u in frontier]))
+                near = []
+                still = []
+                for u in pending:
+                    r = 60.0 + 0.6 * u.length
+                    if ft.query_ball_point((u.pts[0] + u.pts[-1]) / 2, r,
+                                           return_length=True) > 0:
+                        near.append(u)
+                    else:
+                        still.append(u)
+                if not near:
+                    break
+                if fam_tree is None or len(frontier) > 0:
+                    fam_tree = cKDTree(np.array([(u.pts[0] + u.pts[-1]) / 2
+                                                 for u in family]))
+                added = []
+                for u in near:
+                    r = 60.0 + 0.6 * u.length
+                    hits = fam_tree.query_ball_point(
+                        (u.pts[0] + u.pts[-1]) / 2, r, return_length=True)
+                    if hits >= 2:
                         u.width = round((u.width or 0.0) + bump, 1)
+                        added.append(u)
+                    else:
+                        still.append(u)
+                family += added
+                frontier = added
+                pending = still
     if not drop:
         return units
     return [u for i, u in enumerate(units) if i not in drop]
