@@ -328,7 +328,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     for idx, u in enumerate(units):
         # near-white strokes are invisible on paper: masking/whiteout, not
         # linework
-        if u.color and min(u.color) > 0.92:
+        if u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False):
             continue
         by_style[_style_key(u)].append(idx)
 

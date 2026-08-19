@@ -46,7 +46,7 @@ def eval_page(page: pymupdf.Page):
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
                                      "styles": defaultdict(float), "n_chains": 0})
     for u in units:
-        if u.color and min(u.color) > 0.92:
+        if u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False):
             continue  # invisible whiteout, excluded from scoring like in build
         per_layer[u.layer]["unit_ink"] += u.length
 
@@ -173,7 +173,7 @@ def class_metrics(chains, units) -> dict:
         good = sum((c.ink or c.length) for c in cs if c.klass == want)
         # ink recall against the layer's raw stroke ink
         lay_units = [u for u in units
-                     if u.layer == lay and not (u.color and min(u.color) > 0.92)]
+                     if u.layer == lay and not (u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False))]
         lay_ink = sum(u.length for u in lay_units)
         truth[lay] = {
             "want": want, "class_acc": good / total if total else None,
@@ -242,7 +242,7 @@ def phantom_span_audit(chains: list, units: list, min_len: float = 150.0,
 
     ink = []
     for u in units:
-        if u.color and min(u.color) > 0.92:
+        if u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False):
             continue
         s, _ = _sample_polyline(np.asarray(u.pts), step=1.0, max_n=20000)
         if len(s):

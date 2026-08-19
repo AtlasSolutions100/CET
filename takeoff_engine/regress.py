@@ -37,8 +37,13 @@ def cached_extract(pdf: str, page_no: int, use_cache: bool = True):
 
     pdf = str((Path(__file__).parent.parent / pdf).resolve()) \
         if not os.path.isabs(pdf) else pdf
+    # key on the EXTRACTOR's mtime too: cached units must not outlive the
+    # code that produced them (the cache would otherwise serve pre-fix
+    # geometry and the gate would silently test stale extraction)
+    ex_src = Path(__file__).parent / "extract.py"
     key = hashlib.sha1(
-        f"{pdf}|{page_no}|{os.path.getmtime(pdf)}".encode()).hexdigest()
+        f"{pdf}|{page_no}|{os.path.getmtime(pdf)}|{os.path.getmtime(ex_src)}"
+        .encode()).hexdigest()
     f = CACHE / f"{key}.pkl"
     if use_cache and f.exists():
         with open(f, "rb") as fh:

@@ -25,6 +25,9 @@ class StrokeUnit:
     dashes: str  # raw PDF dash string, "[] 0" means solid
     closed: bool = False
     layer: str = ""  # CAD layer (OCG) name when the PDF preserves it
+    on_fill: bool = False  # near-white stroke sitting on a darker fill
+                           # (white-over-wash is VISIBLE; white-on-paper is
+                           # whiteout and gets skipped downstream)
     length: float = field(init=False)
 
     def __post_init__(self):
@@ -195,6 +198,7 @@ def extract_strokes(page: pymupdf.Page) -> list[StrokeUnit]:
       output matches the rendered page and the text layer.
     """
     units: list[StrokeUnit] = []
+    fill_rects: list = []  # raw-space bboxes of non-white fills
     rot = page.rotation_matrix if page.rotation else None
     off_layers = {
         info["name"]
@@ -220,8 +224,14 @@ def extract_strokes(page: pymupdf.Page) -> list[StrokeUnit]:
                 rect = pymupdf.Rect(scissor) + (-PAD, -PAD, PAD, PAD)
             clip_stack.append((level, rect))
             continue
+        if "f" in ptype:
+            fc = path.get("fill")
+            # a fill DARKER than near-white creates contrast beneath any
+            # white stroke drawn over it (FEMA flood washes etc.)
+            if fc and min(fc) <= 0.9 and path.get("rect") is not None:
+                fill_rects.append(pymupdf.Rect(path["rect"]))
         if "s" not in ptype:
-            continue  # fills only; stroke units are what linework is made of
+            continue  # stroke units are what linework is made of
         if path.get("layer") in off_layers:
             continue
         clip = None
@@ -300,5 +310,32 @@ def extract_strokes(page: pymupdf.Page) -> list[StrokeUnit]:
                 flush()
                 current = seg
         flush()
+
+    # Near-white strokes over a darker fill are VISIBLE linework (Oncor p4
+    # draws its floodplain contours white over the FEMA wash - 26k pt of
+    # real line). Mark them so the downstream whiteout skip spares them;
+    # white on bare paper stays skipped. Fill rects are raw-space, so map
+    # them into display space the same way stroke geometry was.
+    # only OPEN strokes qualify: closed white shapes over a fill are label
+    # knockout frames (they masked text on the wash), and emitting them
+    # produced spiky phantom rectangles in the takeoff. The floodplain
+    # contours this exists for are open dash marks.
+    whites = [u for u in units
+              if u.color and min(u.color) > 0.92 and not u.closed]
+    if whites and fill_rects:
+        rects = []
+        for r in fill_rects:
+            if rot is not None:
+                r = pymupdf.Rect(r) * rot
+            r = pymupdf.Rect(r)
+            r.normalize()
+            rects.append((r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1))
+        R = np.asarray(rects)
+        for u in whites:
+            m = u.pts[len(u.pts) // 2]
+            hit = ((R[:, 0] <= m[0]) & (m[0] <= R[:, 2]) &
+                   (R[:, 1] <= m[1]) & (m[1] <= R[:, 3]))
+            if bool(hit.any()):
+                u.on_fill = True
 
     return units
