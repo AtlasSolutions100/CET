@@ -503,7 +503,11 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             # escapes the size gate below - emitting fill as solid linework
             # with wholly phantom footage.
             c.klass = "annotation"
-        elif any(h in lay for h in ("TEXT", "-LBL")):
+        elif any(h in lay for h in ("TEXT", "-LBL")) \
+                or lay.split("|")[-1].endswith("-CORR"):
+            # leaf -CORR = corridor surface texture (the xref PREFIX X-CORR
+            # carries real centerlines, hence the leaf test - same rule the
+            # metric uses in eval_layers.is_textural)
             # firms put real linework on "TEXT" layers (IMEG's drainage
             # boundaries live on P6-TEXT-STORM). A long structured chain is
             # linework wherever it lives; only short/scribbly geometry on

@@ -835,6 +835,8 @@ function draw() {
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
       ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
+      // selection recolors but keeps the true pattern - a solid magenta
+      // overlay reads as "this line became solid", which it has not
       const da = state.faithful ? dashArray(ch.dash_signature) : null;
       ctx.setLineDash(da ? da.map(v => v * f) : []);
       ctx.beginPath();
@@ -851,8 +853,15 @@ function draw() {
     const sel = state.result.chains.find(c => c.chain_id === state.selected);
     if (sel && !state.excluded.has(sel.chain_id)) {
       const rad = 3.5 / k;
+      // at low zoom a dense chain's handles overlap into a solid-looking
+      // bar (172 rings looked like "the line went solid"); thin them so
+      // on-screen spacing stays >= ~14px, always keeping the endpoints
+      // and the picked point
+      const screenLen = sel.length_pt * f2 * k;
+      const step = Math.max(1, Math.ceil(sel.points.length / Math.max(screenLen / 14, 1)));
       sel.points.forEach((q, i) => {
         const on = i === state.selPt;
+        if (!on && i !== 0 && i !== sel.points.length - 1 && i % step) return;
         ctx.beginPath();
         ctx.arc(q[0] * f2, q[1] * f2, on ? rad * 1.9 : rad, 0, Math.PI * 2);
         ctx.fillStyle = on ? "#ffd400" : "#ffffff";
