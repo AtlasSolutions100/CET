@@ -224,32 +224,62 @@ def read_legend_sheet(words: list, chains: list) -> list:
                 run.append(w)
         runs.append(run)
 
-        for rw in runs:
+        for ri, rw in enumerate(runs):
             label = " ".join(str(w[4]).strip() for w in rw).strip()
             if not (3 <= len(label) <= 48):
                 continue
             if not any(ch.isalpha() for ch in label):
                 continue
             x0 = rw[0][0]
+            x1 = rw[-1][2]
             cy = float(np.mean([(w[1] + w[3]) / 2 for w in rw]))
+            def _wordy(lo, hi):
+                # a sample cell holds at most a short inline token (- TV -);
+                # several words there means prose (an abbreviations table's
+                # definition column), never a line sample
+                n = 0
+                for ww in words:
+                    wx, wy = (ww[0] + ww[2]) / 2, (ww[1] + ww[3]) / 2
+                    if lo <= wx <= hi and abs(wy - cy) <= ROW_TOL:
+                        n += 1
+                return n > 2
+            found = None
             for strip_w in (SAMPLE_W, SAMPLE_W * 0.45):
-                s = _sample_in_strip(chains, x0 - strip_w, x0 - 4.0, cy,
-                                     min_span=30.0)
-                if s is not None:
-                    cands.append({"label": label, "x0": x0, "cy": cy, **s})
+                if _wordy(x0 - strip_w, x0 - 4.0):
+                    continue
+                found = _sample_in_strip(chains, x0 - strip_w, x0 - 4.0, cy,
+                                         min_span=30.0)
+                if found is not None:
                     break
+            if found is None:
+                # TABLE legends (DESCRIPTION | EXISTING | PROPOSED) put the
+                # sample to the RIGHT of the label; bound the strip by the
+                # next run on the row so a second table column's label can
+                # never be read as this row's sample
+                lim = runs[ri + 1][0][0] - 6.0 if ri + 1 < len(runs)                     else x1 + SAMPLE_W
+                hi = min(x1 + SAMPLE_W, lim)
+                if hi - x1 >= 24.0 and not _wordy(x1 + 4.0, hi):
+                    found = _sample_in_strip(chains, x1 + 4.0, hi, cy,
+                                             min_span=min(30.0, 0.5 * (hi - x1)))
+            if found is not None:
+                cands.append({"label": label, "x0": x0, "cy": cy, **found})
 
     if len(cands) < 8:
         return []  # a handful of bar-beside-text rows is a table, not a legend
 
-    # a legend column is left-aligned: keep the dominant label-x cluster so
-    # rows from tables elsewhere on the sheet cannot join in
-    xs = np.array([c["x0"] for c in cands])
-    best, keep = 0, []
+    # a legend column is left-aligned: keep every label-x cluster with
+    # enough rows to be a real column (multi-column TABLE legends have
+    # several), so stray bar-beside-text rows elsewhere cannot join in
+    keep, used = [], set()
     for c in cands:
+        if id(c) in used:
+            continue
         near = [d for d in cands if abs(d["x0"] - c["x0"]) <= 26.0]
-        if len(near) > best:
-            best, keep = len(near), near
+        if len(near) >= 8:
+            for d in near:
+                if id(d) not in used:
+                    used.add(id(d))
+                    keep.append(d)
     if len(keep) < 8:
         return []
     out, seen = [], set()

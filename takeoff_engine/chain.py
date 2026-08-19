@@ -1297,7 +1297,8 @@ def _join_chain_ends(chains: list) -> list:
     """
     cands = [c for c in chains
              if (c.klass.startswith("dash") or c.klass == "solid")
-             and len(c.pts) >= 2 and c.length >= 25.0]
+             and len(c.pts) >= 2 and c.length >= 25.0
+             and not _chain_closed(c)]
     if len(cands) < 2:
         return chains
     from scipy.spatial import cKDTree
@@ -1368,7 +1369,20 @@ def _join_chain_ends(chains: list) -> list:
                 label_bridge = (d <= 34.0 and turn <= 25.0
                                 and _collinear(va, vb, gdir))
                 kink_repair = (d <= 9.0 and turn <= 135.0)
-                if not (d <= reach and turn <= 100.0) \
+                # the turn between endpoint TANGENTS misses lateral
+                # offset: two parallel lines with staggered ends read as
+                # a straight continuation (turn 0) even when the gap runs
+                # 90 deg sideways, welding neighbouring strips into a Z.
+                # Charge the whole travel path instead: leave A along its
+                # tangent, traverse the gap, arrive at B along its tangent
+                # - the two bends together stay inside the same budget.
+                # Tiny gaps keep the plain rule (gap direction is noise).
+                path_turn = turn
+                if d >= 6.0 and gn > 1e-6:
+                    t1 = float(np.degrees(np.arccos(np.clip(va @ gdir, -1.0, 1.0))))
+                    t2 = float(np.degrees(np.arccos(np.clip((-vb) @ gdir, -1.0, 1.0))))
+                    path_turn = t1 + t2
+                if not (d <= reach and path_turn <= 100.0) \
                         and not label_bridge and not kink_repair:
                     continue
             if turn > 135.0:
@@ -1908,6 +1922,18 @@ def _classify_native(dash_str: str) -> tuple:
     return klass, sig
 
 
+def _chain_closed(c) -> bool:
+    """A chain whose polyline returns to its start is a COMPLETE feature
+    (footing rect, marker box, pond ring plotted as one dashed stroke). Its
+    endpoints coincide, so end-direction guards degenerate to zero-length
+    chords and silently pass - closed chains must be excluded from every
+    end-joining stage explicitly."""
+    pts = c.pts
+    if len(pts) < 4:
+        return False
+    return float(np.hypot(*(pts[0] - pts[-1]))) <= max(2.0, 0.02 * c.length)
+
+
 def _bridge_text(chains: list, words: list) -> list:
     """Merge dashed chains separated by an inline text label (e.g. - SD -).
 
@@ -1928,7 +1954,8 @@ def _bridge_text(chains: list, words: list) -> list:
     while changed:
         changed = False
         dashed = [c for c in chains
-                  if c.klass.startswith("dash") and c.chain_id not in merged_away]
+                  if c.klass.startswith("dash") and c.chain_id not in merged_away
+                  and not _chain_closed(c)]
         if len(dashed) < 2:
             break
         eps = np.array([c.pts[e] for c in dashed for e in (0, -1)])
@@ -2000,6 +2027,13 @@ def _text_between(a, b, words, gap_max):
             da = a.pts[-1] - a.pts[0] if a_end == 1 else a.pts[0] - a.pts[-1]
             na = np.hypot(*da)
             if na > 1e-9 and float(np.dot(da / na, g / dist)) < 0.71:
+                continue
+            # ... and the SAME for b: without this, the bridge glues onto a
+            # piece that faces AWAY and the merged line doubles back over
+            # the label - two phantom passes of the gap length
+            db = b.pts[-1] - b.pts[0] if b_end == 1 else b.pts[0] - b.pts[-1]
+            nb = np.hypot(*db)
+            if nb > 1e-9 and float(np.dot(db / nb, -g / dist)) < 0.71:
                 continue
             for w in words:
                 cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2

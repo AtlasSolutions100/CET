@@ -458,6 +458,22 @@ def legend_sheet(job_id: str, body: LegendSheetBody):
         words = page_words(pg)
         chains = build_chains(extract_strokes(pg), words=words)
         ent = read_legend_sheet(words, chains)
+        if len(ent) < 8:
+            # exploded-text legend sheets (GCHC/RPA): the row labels are
+            # vector strokes, not text - OCR the render and retry
+            try:
+                import numpy as _np
+                from takeoff_engine.text_detect import ocr_words
+                _pix = pg.get_pixmap(matrix=pymupdf.Matrix(200 / 72, 200 / 72),
+                                     colorspace="rgb")
+                _img = _np.frombuffer(_pix.samples, dtype=_np.uint8).reshape(
+                    _pix.height, _pix.width, 3)
+                ocr = ocr_words(_img, px_to_pt=72.0 / 200)
+                ent2 = read_legend_sheet(list(words) + ocr, chains)
+                if len(ent2) > len(ent):
+                    ent = ent2
+            except Exception:
+                pass
         if len(ent) > len(best):
             best = ent
     doc.close()
