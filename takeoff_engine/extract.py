@@ -370,25 +370,81 @@ def fill_boxes(page: pymupdf.Page) -> list:
 
 
 def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
-    """Quarter-circle door-swing arcs - the one universal opening symbol.
+    """Door-swing opening symbols: swing arcs corroborated by structure.
 
-    An arc unit: enough vertices, consistent curvature (points equidistant
-    from a fitted center), sweep 55-135 degrees, radius in door range
-    (1.5-6 ft when the scale is known; 8-80pt otherwise). Returns
-    [{cx, cy, r}] opening zones the takeoff must not measure through."""
-    out = []
+    A drafted door is a compass construction - a straight LEAF line from
+    the hinge plus an arc swept about that same hinge - so a bare arc is
+    never reported on its own. Every arc candidate must be corroborated by
+    its leaf line, or by a mirrored partner arc (a double door). That
+    corroboration is what keeps civil sheets clean: at 1"=30'-60' the
+    scaled door-radius window shrinks to a few pt and contour bends /
+    symbol fillets pass every per-arc gate. Measured 2026-08-19 (function
+    output, after dedupe): Oncor Cloudcrest p4 went 72 phantom openings ->
+    1 (a title-block logo glyph); Belle Farms ROAD GRADING 1of2 p1 went
+    103 -> 0; Belle Structural p1 went 6 -> 23, all 23 eyeballed real
+    (crops in out/verify/2026-08-19/double-doors/).
+
+    Arc candidate: >=5 vertices (Belle Structural p1 flattens 45-degree
+    door arcs to 6-pt polylines, 90-degree ones to 9-11 pt), open, points
+    equidistant from a fitted center, sweep 35-135 degrees, radius in door
+    range (1.25-6 ft when the scale is known; 8-80 pt otherwise).
+
+    Corroboration, either of:
+    - LEAF: a straight unit of length ~r joining the fitted center (the
+      hinge) to an arc endpoint - the drawn door leaf. Belle Structural p1
+      draws each leaf as two parallel strokes, both exactly length r.
+    - PAIR: a partner arc with matching radius whose center sits ~r1+r2
+      away, both arcs having an endpoint at the shared meeting point (the
+      closed leaves touch mid-opening) and bulging to the same side of the
+      hinge-hinge line. Measured on Belle Structural p1: three grand-hall
+      double doors, each two 45-degree arcs r=27pt with center distance
+      54.1pt = (r1+r2) within 0.1% and endpoint-to-meeting-point gap
+      0.0-0.1pt; the 90-degree main-entry pair (r=36pt) matches the same
+      template. The tight meeting-point gate is load-bearing: adjacent
+      section-callout bubbles on the same sheet (r=13.5/14.4pt) sit at
+      center distance 1.05x(r1+r2) but their arc endpoints miss the
+      meeting point by 14-27pt.
+
+    Returns [{cx, cy, r}] opening zones the takeoff must not measure
+    through."""
     if scale_ft_per_in:
-        r_lo, r_hi = (1.5 / scale_ft_per_in) * 72, (6.0 / scale_ft_per_in) * 72
+        # 1.25 ft radius floor (was 1.5): Belle Structural p1 restroom /
+        # office doors are r=24pt = 1.33 ft at the sheet's detected
+        # 1/4"=1'-0" scale (its title block also carries a 1/8" candidate,
+        # so the detected scale can sit 2x off on mixed-scale sheets) -
+        # the 1.5 ft floor missed 7 real doors there.
+        r_lo = (1.25 / scale_ft_per_in) * 72
+        r_hi = (6.0 / scale_ft_per_in) * 72
     else:
         r_lo, r_hi = 8.0, 80.0
+    # absolute paper-space floor: below ~1mm radius a swing symbol is not
+    # legible and nobody drafts one. Smallest real door measured across
+    # the corpus is r=10.8pt (C3.0/C4.0/C9.0 building doors at 1"=20');
+    # stroked title-block logo glyph bowls measure r=2.1-2.4pt (Oncor
+    # Cloudcrest, Kimley-Horn logo) and slipped through at 1"=50'.
+    r_lo = max(r_lo, 3.0)
+
+    # pass 1 - arc candidates
+    cands = []  # (cx, cy, r, end0, end1, arc midpoint)
     for u in units:
+        # arc length = r x sweep: with r in [r_lo, r_hi] and sweep in
+        # [35deg, 135deg] a door arc's length must sit in
+        # [0.611 r_lo, 2.356 r_hi] - widened to 0.55/2.5 for flattening
+        # slop. Only skips units the r/sweep gates would reject anyway,
+        # and spares the circle fit on every long contour polyline
+        # (Oncor p4: 5302 -> 1924 fits).
+        if not (0.55 * r_lo <= u.length <= 2.5 * r_hi):
+            continue
         p = np.asarray(u.pts, dtype=float)
-        if len(p) < 6 or u.closed:
+        if len(p) < 5 or u.closed:
             continue
         chord = float(np.hypot(*(p[-1] - p[0])))
-        # arc/chord: 60deg sweep = 1.047, 90deg = 1.111, 120deg = 1.209 -
-        # the gate must sit BELOW the shallowest door swing, above line noise
-        if chord < 1e-6 or u.length < 1.035 * chord:
+        # arc/chord: 90deg sweep = 1.111, 55deg = 1.039, 45deg = 1.026,
+        # 35deg = 1.016. The floor sits below the shallowest drawn leaf
+        # (Belle Structural p1 half-open doors sweep 45deg; measured
+        # arc/chord 1.0255 after polyline flattening) - corroboration, not
+        # this floor, now does the discriminating.
+        if chord < 1e-6 or u.length < 1.012 * chord:
             continue  # straight-ish, not an arc
         # fit center: perpendicular bisector intersection via least squares
         # (algebraic circle fit)
@@ -409,9 +465,93 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         vb = p[-1] - (cx, cy)
         sweep = float(np.degrees(np.arccos(np.clip(
             (va @ vb) / (np.hypot(*va) * np.hypot(*vb) + 1e-9), -1, 1))))
-        if not (55.0 <= sweep <= 135.0):
+        # 35deg floor: half-open doors are drawn at 45deg (Belle
+        # Structural p1) minus drafting slop; 135 cap keeps out callout
+        # bubbles' semicircle halves (measured 180deg on the same sheet).
+        if not (35.0 <= sweep <= 135.0):
             continue
-        out.append({"cx": round(cx, 1), "cy": round(cy, 1), "r": round(r, 1)})
+        cands.append((cx, cy, r, p[0], p[-1], p[len(p) // 2]))
+
+    if not cands:
+        return []
+
+    # pass 2 - straight-unit endpoints, the leaf-line pool (length
+    # pre-filtered to the door-leaf range to bound the search)
+    rows = []
+    for u in units:
+        p = u.pts
+        chord = float(np.hypot(*(p[-1] - p[0])))
+        if chord < 1e-6 or u.length > 1.02 * chord:
+            continue  # not straight enough to be a drawn leaf
+        if not (0.8 * r_lo <= u.length <= 1.2 * r_hi):
+            continue
+        rows.append((p[0][0], p[0][1], p[-1][0], p[-1][1], u.length))
+    E = np.asarray(rows) if rows else np.zeros((0, 5))
+
+    def leaf_ok(cx, cy, r, ends):
+        # length window 0.8-1.2r and summed endpoint tolerance
+        # max(1.5, 0.15r): measured leaves on Belle Structural p1 are
+        # length 0.95-1.00r with endpoint mismatch 0.03-2.98pt at
+        # r=24-27pt (the leaf is two parallel strokes ~2pt apart and the
+        # far stroke must still match).
+        if not len(E):
+            return False
+        lok = (E[:, 4] >= 0.8 * r) & (E[:, 4] <= 1.2 * r)
+        if not bool(lok.any()):
+            return False
+        tol = max(1.5, 0.15 * r)
+        for ex, ey in ends:
+            da = (np.hypot(E[:, 0] - cx, E[:, 1] - cy)
+                  + np.hypot(E[:, 2] - ex, E[:, 3] - ey))
+            db = (np.hypot(E[:, 2] - cx, E[:, 3] - cy)
+                  + np.hypot(E[:, 0] - ex, E[:, 1] - ey))
+            if bool((lok & (np.minimum(da, db) < tol)).any()):
+                return True
+        return False
+
+    def pair_ok(i):
+        cxi, cyi, ri, a0, a1, mi = cands[i]
+        for j, (cxj, cyj, rj, b0, b1, mj) in enumerate(cands):
+            if j == i:
+                continue
+            # leaf radii match within 15% (leaf-and-a-half doors are
+            # unequal; the measured pairs are exactly equal)
+            if abs(ri - rj) > 0.15 * max(ri, rj):
+                continue
+            d = float(np.hypot(cxj - cxi, cyj - cyi))
+            rsum = ri + rj
+            # hinges sit one opening apart: measured 1.000x(r1+r2) on all
+            # four Belle Structural p1 pairs; 8% slop for astragal gaps
+            if not (0.92 * rsum <= d <= 1.08 * rsum) or d < 1e-6:
+                continue
+            # meeting point: where the closed leaves touch, ri along the
+            # hinge-hinge line. Both arcs must END there - measured gap
+            # 0.0-0.1pt on real pairs, 14-27pt on the callout-bubble trap.
+            mx = cxi + (ri / d) * (cxj - cxi)
+            my = cyi + (ri / d) * (cyj - cyi)
+            tol = max(1.5, 0.05 * max(ri, rj))
+            if min(np.hypot(a0[0] - mx, a0[1] - my),
+                   np.hypot(a1[0] - mx, a1[1] - my)) > tol:
+                continue
+            if min(np.hypot(b0[0] - mx, b0[1] - my),
+                   np.hypot(b1[0] - mx, b1[1] - my)) > tol:
+                continue
+            # both leaves open into the same room: arc midpoints on the
+            # same side of the hinge-hinge line (measured: sides agree on
+            # every real pair; a fillet facing a fillet does not)
+            ux, uy = cxj - cxi, cyj - cyi
+            si = ux * (mi[1] - cyi) - uy * (mi[0] - cxi)
+            sj = ux * (mj[1] - cyi) - uy * (mj[0] - cxi)
+            if si == 0.0 or sj == 0.0 or (si > 0) != (sj > 0):
+                continue
+            return True
+        return False
+
+    out = []
+    for i, (cx, cy, r, e0, e1, _mid) in enumerate(cands):
+        if leaf_ok(cx, cy, r, (e0, e1)) or pair_ok(i):
+            out.append({"cx": round(cx, 1), "cy": round(cy, 1),
+                        "r": round(r, 1)})
     # dedupe coincident arcs (double-drawn swings)
     ded = []
     for o in out:
