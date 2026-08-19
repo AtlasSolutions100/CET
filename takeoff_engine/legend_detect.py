@@ -132,6 +132,32 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             cand = sum(c2.length for c2 in chains if c2.style_id == sid)
             if best is None or cand > best[1]:
                 best = (sid, cand)
+        if best is None:
+            # SECOND TIER: bold dashed lines often chain as individual
+            # SOLID bars (each long dash = one solid chain), so the dashed
+            # legend entry finds no dashed style. Match a solid style whose
+            # typical mark length fits the swatch's LONGEST bar, with
+            # matching colour and near weight - the sheet's own legend
+            # doing the matching, not a stored template.
+            want = e.get("max_dash") or e["avg_dash"]
+            for sid, r in reps.items():
+                if r.klass != "solid":
+                    continue
+                if abs(_weight_class(r.width) - e["weight"]) > 1:
+                    continue
+                if e["color"] and r.color and \
+                        max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
+                    continue
+                sib = [c for c in chains if c.style_id == sid]
+                if not (2 <= len(sib) <= 150):
+                    continue
+                med = float(np.median([c.length for c in sib]))
+                lo, hi = sorted([want, med])
+                if hi > 1.9 * lo + 3.0:
+                    continue
+                cand = sum(c.length for c in sib)
+                if best is None or cand > best[1]:
+                    best = (sid, cand)
         if best is not None:
             e["sample_style"] = best[0]
     for e in entries:
@@ -281,6 +307,7 @@ def _sample_from_units(units: list, x0: float, x1: float, cy: float):
         "color": col,
         "weight": _weight_class(wmax),
         "avg_dash": float(np.median(lens)),
+        "max_dash": float(max(lens)),
         "sample_style": None,
     }
 

@@ -1020,12 +1020,15 @@ def _merge_twin_strokes(units: list) -> list:
                 continue
             pts = np.vstack([units[i].pts for i in members])
             lo, hi = pts.min(axis=0), pts.max(axis=0)
-            diag = float(np.hypot(*(hi - lo)))
-            if diag > 9.0:
-                continue  # bigger than any marker dot: not a filled point
+            span = hi - lo
+            # a filled MARKER is dot-sized; a filled DASH is a thin
+            # elongated box (10x3 on the Oncor property line). Both are
+            # one printed mark. Anything thicker/larger is hatch texture
+            # and stays for the normal defenses.
+            if float(min(span)) > 4.5 or float(max(span)) > 60.0:
+                continue
             keep = max(members, key=lambda i: units[i].length)
             uk = units[keep]
-            span = hi - lo
             if span[0] >= span[1]:
                 uk.pts = np.array([[lo[0], (lo[1] + hi[1]) / 2],
                                    [hi[0], (lo[1] + hi[1]) / 2]])
