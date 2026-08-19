@@ -799,9 +799,13 @@ def _merge_twin_strokes(units: list) -> list:
     """
     from scipy.spatial import cKDTree
 
+    # pair on colour+layer only: CAD draws the same mark twice at DIFFERENT
+    # widths too (Oncor p4 legend: a 0.12 hairline under a 2.40 stroke), and
+    # keying on width would leave those pairs forever unmerged
     by_key = defaultdict(list)
     for i, u in enumerate(units):
-        by_key[_style_key(u)].append(i)
+        k = _style_key(u)
+        by_key[(k[0], k[2])].append(i)
 
     drop: set = set()
     merged: dict = {}
@@ -828,7 +832,13 @@ def _merge_twin_strokes(units: list) -> list:
                         float(np.hypot(*(ua.pts[-1] - ub.pts[0]))))
             if min(d_same, d_rev) > 4.4:
                 continue
-            keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
+            # keep the FATTER stroke of a mixed-width pair - that is the
+            # printed appearance; equal widths keep the longer one
+            if abs((ua.width or 0) - (ub.width or 0)) > 0.05:
+                keep, gone = (ia, ib) if (ua.width or 0) >= (ub.width or 0) \
+                    else (ib, ia)
+            else:
+                keep, gone = (ia, ib) if ua.length >= ub.length else (ib, ia)
             uk, ug = units[keep], units[gone]
             n = uk.direction()
             dm = ug.pts.mean(axis=0) - uk.pts.mean(axis=0)

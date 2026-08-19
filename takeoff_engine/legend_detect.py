@@ -242,7 +242,10 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
     by_style = defaultdict(list)
     for c in cands:
         by_style[c.style_id].append(c)
-    need = min_span if min_span is not None else 0.45 * (x1 - x0)
+    # A swatch bar is judged by its own plausible size, not by the strip's
+    # width: legends that park labels far from the bars (Oncor p4) make the
+    # strip wide, and 0.45x of wide rejected every genuine 38-98pt sample.
+    need = min_span if min_span is not None else min(0.45 * (x1 - x0), 34.0)
     hits = []
     for cs in by_style.values():
         allx = np.concatenate([np.asarray(c.pts)[:, 0] for c in cs])
