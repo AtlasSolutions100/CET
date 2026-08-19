@@ -138,11 +138,27 @@ def list_samples():
 def _register(path: Path, classify: bool = True) -> dict:
     """classify=False skips per-page vector/raster classification, which
     reads every drawing on every page. Rasterisation callers do not need it,
-    and on a large package it dominates the cost of simply opening the file."""
+    and on a large package it dominates the cost of simply opening the file.
+
+    Re-opening the SAME file (path + mtime) reuses its job: detect results,
+    images, and the pinned AI verdict all live in the job dir, and a takeoff
+    must come back identical when the same plan is opened twice."""
     doc = pymupdf.open(path)
+    mtime = round(path.stat().st_mtime, 2)
+    with JOBS_LOCK:
+        for jid, j in JOBS.items():
+            if j.get("path") == str(path) and j.get("mtime") == mtime:
+                kinds0 = j.get("kinds")
+                sizes0 = j.get("sizes")
+                if kinds0 and sizes0:
+                    doc.close()
+                    return {"job_id": jid, "pages": j["pages"],
+                            "kinds": kinds0, "sizes": sizes0,
+                            "name": Path(path).name}
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
-        JOBS[job_id] = {"path": str(path), "pages": doc.page_count, "status": {}}
+        JOBS[job_id] = {"path": str(path), "pages": doc.page_count,
+                        "mtime": mtime, "status": {}}
         _save_registry()
     kinds, sizes = [], []
     for p in range(doc.page_count):
@@ -150,6 +166,10 @@ def _register(path: Path, classify: bool = True) -> dict:
         r = doc[p].rect
         sizes.append([round(r.width, 2), round(r.height, 2)])
     doc.close()
+    with JOBS_LOCK:
+        JOBS[job_id]["kinds"] = kinds
+        JOBS[job_id]["sizes"] = sizes
+        _save_registry()
     # sizes let a caller compute exact raster pixel dimensions without
     # decoding an image (a 36x24in sheet at 300dpi is 78 megapixels)
     return {"job_id": job_id, "pages": len(kinds), "kinds": kinds,
@@ -649,12 +669,23 @@ class AnalyzeResponse(BaseModel):
 
 
 @app.post("/api/job/{job_id}/page/{page}/analyze")
-def analyze_page(job_id: str, page: int):
+def analyze_page(job_id: str, page: int, fresh: bool = False):
     """LLM page analyst: what is this sheet FOR, and which line styles
     matter for takeoff? Provider by available key, cheapest-first:
-    XAI_API_KEY (Grok) > GROQ_API_KEY > ANTHROPIC_API_KEY."""
+    XAI_API_KEY (Grok) > GROQ_API_KEY > ANTHROPIC_API_KEY.
+
+    The verdict is PINNED: one model read per page, cached on disk, stable
+    across restarts and re-detects - a takeoff must not change because the
+    same page was opened twice. fresh=1 re-reads the sheet."""
     import base64
     import os
+
+    _ai_cache = _job_dir(job_id) / f"p{page}_ai.json"
+    if not fresh and _ai_cache.exists():
+        try:
+            return JSONResponse(json.loads(_ai_cache.read_text()))
+        except Exception:
+            pass
 
     import requests as _rq
 
@@ -751,7 +782,7 @@ def analyze_page(job_id: str, page: int):
 
         client = anthropic.Anthropic()
         msg = client.messages.create(
-            model=model, max_tokens=2000,
+            model=model, max_tokens=2000, temperature=0,
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64",
                  "media_type": "image/jpeg", "data": img_b64}},
@@ -762,7 +793,7 @@ def analyze_page(job_id: str, page: int):
             f"{base}/chat/completions",
             headers={"Authorization": f"Bearer {key}",
                      "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 2000,
+            json={"model": model, "max_tokens": 2000, "temperature": 0,
                   "messages": [{"role": "user", "content": [
                       {"type": "image_url", "image_url": {
                           "url": f"data:image/jpeg;base64,{img_b64}"}},
@@ -835,6 +866,10 @@ def analyze_page(job_id: str, page: int):
     parsed["_invalid_style_ids"] = drop_f + drop_i
     parsed["_known_style_ids"] = len(known_ids)
     parsed["_provider"] = f"{name}:{model}"
+    try:
+        _ai_cache.write_text(json.dumps(parsed))
+    except Exception:
+        pass
     return JSONResponse(parsed)
 
 

@@ -1053,23 +1053,40 @@ async function runAnalyze(auto) {
   state.aiWhy = new Map();
   for (const f of j.focus || []) {
     state.aiWhy.set(f.style_id, { keep: true, why: f.why, label: f.label });
-    if (f.measure === "object") state.measureMode.set(f.style_id, "object");
+    // measure verdicts apply with the rest of the verdict: in auto mode
+    // only when the guardrail accepts (below); manually, right here
+    if (!auto && f.measure === "object")
+      state.measureMode.set(f.style_id, "object");
   }
   for (const i of j.ignore || []) state.aiWhy.set(i.style_id, { keep: false, why: i.why });
   if (auto && (j.focus || []).length) {
-    // pipeline mode: the model's read IS the first draft the reviewer sees.
-    // Focus flips checkboxes (snapshotted, undoable); model labels fill in
-    // ONLY where nothing (user, legend) named the style yet.
-    applyAiFocus(j.focus);
-    for (const f of j.focus) {
-      const cur = (state.labels.get(f.style_id) || "").trim();
-      const seed = (state.seedLabels.get(f.style_id) || "").trim();
-      // model names a focused style only where nobody better has: empty,
-      // or still carrying the seeded default; user & legend labels win
-      if (f.label && (!cur || (cur === seed && !seed.includes("(legend)"))))
-        state.labels.set(f.style_id, f.label);
+    // GUARDRAILS before the model's read becomes the takeoff:
+    // - annotation-smelling labels (note/legend/title/dim) never focus
+    // - the surviving set must cover a sane share of detected linework,
+    //   or the verdict downgrades to a suggestion banner (engine result
+    //   stays untouched). A wrong auto-takeoff is worse than a manual one.
+    const ANNOT = /\b(note|legend|title|border|callout|dimension|typ(ical)?)\b/i;
+    const focus = (j.focus || []).filter(f => !ANNOT.test(f.label || ""));
+    const byId = new Map(state.result.styles.map(st => [st.style_id, st]));
+    const inkOf = (arr) => arr.reduce(
+      (t, f) => t + ((byId.get(f.style_id) || {}).length_pt || 0), 0);
+    const totalInk = state.result.styles.reduce((t, st) => t + st.length_pt, 0);
+    const share = totalInk ? inkOf(focus) / totalInk : 0;
+    if (focus.length && share >= 0.12) {
+      applyAiFocus(focus);
+      for (const f of focus) {
+        const cur = (state.labels.get(f.style_id) || "").trim();
+        const seed = (state.seedLabels.get(f.style_id) || "").trim();
+        if (f.label && (!cur || (cur === seed && !seed.includes("(legend)"))))
+          state.labels.set(f.style_id, f.label);
+        if (f.measure === "object")
+          state.measureMode.set(f.style_id, "object");
+      }
+      state.aiAuto = true;
+    } else {
+      // suggestion-only: full banner with the Focus button, nothing applied
+      state.aiAuto = false;
     }
-    state.aiAuto = true;
     setStatus("");
   }
   renderAiBanner();
@@ -1099,6 +1116,17 @@ function renderAiBanner() {
       undo.onclick = () => { state.aiAuto = false; undoAiFocus(); };
       banner.appendChild(undo);
     }
+    const rr = document.createElement("button");
+    rr.className = "mini";
+    rr.textContent = "Re-read sheet";
+    rr.title = "Ask the AI to read this sheet again (verdict is otherwise pinned)";
+    rr.onclick = async () => {
+      const r2 = await fetch(
+        `/api/job/${state.job}/page/${state.page}/analyze?fresh=1`,
+        { method: "POST" });
+      if (r2.ok) { state.aiUndo && undoAiFocus(); runAnalyze(true); }
+    };
+    banner.appendChild(rr);
     const CALC = {
       earthwork: { btn: "ewBtn", label: "EARTHWORK" },
       trench:    { btn: "trBtn", label: "TRENCH" },
