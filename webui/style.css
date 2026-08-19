@@ -45,7 +45,7 @@ aside { width: 330px; background: var(--panel); border-right: 1px solid var(--li
 .side-head h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
 .mini { padding: 2px 8px; font-size: 11px; }
 .style-list { padding: 6px; }
-.style-row { display: grid; grid-template-columns: 16px 46px 1fr auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.style-row { display: grid; grid-template-columns: 16px 46px 1fr auto auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
 .style-row:hover, .style-row.hot { background: var(--hover); }
 .style-row.off { opacity: .38; }
 .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--swatch-line); }
@@ -199,3 +199,10 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   padding: 1px 6px; text-align: center; }
 .kh-dim { color: var(--dim); font-size: 10px; margin-top: 10px;
   font-family: var(--mono); letter-spacing: .06em; }
+
+/* LF / EA measure-mode toggle */
+.mm-toggle { font-family: var(--mono); font-size: 9px; font-weight: 600;
+  letter-spacing: .06em; padding: 1px 5px; border-radius: 4px;
+  background: transparent; border: 1px solid var(--line); color: var(--dim); }
+.mm-toggle.ea { background: var(--accent-deep); border-color: var(--accent);
+  color: #fff; }

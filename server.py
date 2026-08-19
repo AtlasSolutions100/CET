@@ -332,6 +332,9 @@ class ApproveBody(BaseModel):
     # label -> trade division (Earthwork & Grading, Wet Utilities, ...) as
     # grouped in the review UI; carried through to export/report rows
     trades: dict[str, str] = {}
+    # label -> number of discrete objects, for styles the reviewer measures
+    # as countable pieces (shear-wall segments, pads) instead of footage
+    object_counts: dict[str, int] = {}
     # chains created by review-UI edits (split / extend): full geometry,
     # replacing originals the client puts in excluded_chain_ids
     added_chains: list[dict] = []
@@ -398,13 +401,25 @@ def approve(job_id: str, page: int, body: ApproveBody):
     for label, t in sorted(totals.items(), key=lambda kv: -kv[1]["length_pt"]):
         ft = t["length_pt"] / 72.0 * ft_per_in if ft_per_in else None
         price = body.prices.get(label)
-        items.append({
-            "label": label, "count": t["count"],
-            "trade": body.trades.get(label),
-            "length_ft": round(ft, 1) if ft is not None else None,
-            "unit_price": price,
-            "extended": round(ft * price, 2) if (ft is not None and price) else None,
-        })
+        n_obj = body.object_counts.get(label)
+        if n_obj:
+            # priced per EACH: footage stays as reference, money follows count
+            items.append({
+                "label": label, "count": t["count"],
+                "trade": body.trades.get(label),
+                "length_ft": round(ft, 1) if ft is not None else None,
+                "qty": n_obj, "unit": "EA",
+                "unit_price": price,
+                "extended": round(n_obj * price, 2) if price else None,
+            })
+        else:
+            items.append({
+                "label": label, "count": t["count"],
+                "trade": body.trades.get(label),
+                "length_ft": round(ft, 1) if ft is not None else None,
+                "unit_price": price,
+                "extended": round(ft * price, 2) if (ft is not None and price) else None,
+            })
     for ex in body.extra_items:
         try:
             qty = round(float(ex.get("qty", 0)), 1)
@@ -704,10 +719,16 @@ def analyze_page(job_id: str, page: int):
         '  purpose: one sentence on what this sheet is for\n'
         '  discipline: short string\n'
         '  focus: array of {"style_id": int, "label": "short trade name for '
-        'this line", "why": "short reason"}\n'
+        'this line", "why": "short reason", "measure": "line" or "object"}\n'
+        '    measure="object" when the style marks DISCRETE COUNTABLE pieces '
+        'an estimator prices each (shear-wall segments, footing pads, beams, '
+        'fixtures); measure="line" for continuous runs priced per foot '
+        '(pipe, curb, fence, contours).\n'
         '  ignore: array of style_id ints only, no objects\n'
         '  inline_legend: array of {"symbol": ..., "meaning": ...} for any '
         'legend defined on the sheet itself\n'
+        '  page_modes: array from ["lines","objects","earthwork","trench",'
+        '"count"] - the measurement modes this sheet needs\n'
         '  confidence: "high" | "medium" | "low"\n'
         'Keep every "why" under 12 words so the reply is not truncated.'
     )
@@ -784,9 +805,15 @@ def analyze_page(job_id: str, page: int):
             for k in ("label", "why"):
                 if it.get(k):
                     row[k] = str(it[k])[:120]
+            if str(it.get("measure", "")).lower() == "object":
+                row["measure"] = "object"
             out.append(row)
         return out, dropped
 
+    _MODES = ("lines", "objects", "earthwork", "trench", "count")
+    pm = parsed.get("page_modes")
+    parsed["page_modes"] = [m for m in (pm if isinstance(pm, list) else [])
+                            if isinstance(m, str) and m in _MODES]
     focus, drop_f = _clean(parsed.get("focus"))
     ignore, drop_i = _clean(parsed.get("ignore"))
     seen = {f["style_id"] for f in focus}

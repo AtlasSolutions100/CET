@@ -55,6 +55,7 @@ const state = {
   extraItems: [],           // calculator outputs: {label, qty, unit}
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
+  measureMode: new Map(),   // style_id -> "object" (absent = line footage)
   aiUndo: null,             // snapshot taken before applying AI focus
   view: { x: 0, y: 0, k: 1 },
 };
@@ -101,7 +102,7 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map();
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
@@ -141,7 +142,7 @@ async function loadResult(gen = state.gen) {
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map();
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
@@ -168,6 +169,62 @@ async function loadResult(gen = state.gen) {
 }
 
 // ---------- sidebar ----------
+// ---------- object mode: discrete countable pieces --------------------
+// Split a chain into straight runs: cut at corners (an object like a
+// shear-wall segment is straight; the building turns, the object ends)
+// and at jumps far beyond the pattern's own rhythm (an opening between
+// two collinear segments). General geometry - no per-sheet templating.
+function chainRuns(ch) {
+  const pts = ch.points;
+  if (pts.length < 2) return [];
+  const tpl = ch.template && ch.template.length >= 2 ? ch.template : null;
+  const period = tpl ? tpl.reduce((a, b) => a + b, 0) : null;
+  const segs = [];
+  for (let i = 1; i < pts.length; i++)
+    segs.push(Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]));
+  const med = [...segs].sort((a, b) => a - b)[Math.floor(segs.length / 2)] || 1;
+  const jump = Math.max(period ? 2.2 * period : 0, 3 * med, 18);
+  const runs = [];
+  let run = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    let cut = segs[i-1] > jump;
+    if (!cut) {
+      const b = [pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]];
+      const lb = Math.hypot(...b);
+      if (lb > 1) {
+        // local turn catches sharp corners; deviation from the RUN's own
+        // direction catches corners a dashed polyline wraps GRADUALLY
+        // (tiny sub-40-degree steps that sum to 90) - objects are straight
+        if (i >= 2) {
+          const a = [pts[i-1][0]-pts[i-2][0], pts[i-1][1]-pts[i-2][1]];
+          const la = Math.hypot(...a);
+          if (la > 1)
+            cut = (a[0]*b[0] + a[1]*b[1]) / (la * lb) < 0.76;
+        }
+        if (!cut) {
+          const r0 = run[0];
+          const rv = [pts[i-1][0]-r0[0], pts[i-1][1]-r0[1]];
+          const lr = Math.hypot(...rv);
+          if (lr > 12)
+            cut = (rv[0]*b[0] + rv[1]*b[1]) / (lr * lb) < 0.76;
+        }
+      }
+    }
+    if (cut) { if (polyLen(run) >= 8) runs.push(run); run = [pts[i-1]]; }
+    run.push(pts[i]);
+  }
+  if (polyLen(run) >= 8) runs.push(run);
+  return runs;
+}
+function styleObjects(sid) {
+  const out = [];
+  for (const ch of state.result.chains) {
+    if (ch.style_id !== sid || state.excluded.has(ch.chain_id)) continue;
+    for (const r of chainRuns(ch)) out.push({ pts: r, len: polyLen(r) });
+  }
+  return out;
+}
+
 // paint a style's REAL line sample onto a small canvas (retina 2x)
 function drawPatternSample(cnv, s, w, h) {
   cnv.width = w; cnv.height = h;
@@ -297,6 +354,18 @@ function renderStyles() {
 
     const badge = document.createElement("span");
     badge.className = `badge ${s.class}`; badge.textContent = s.class;
+    const mm = document.createElement("button");
+    mm.className = "mm-toggle" +
+      (state.measureMode.get(s.style_id) === "object" ? " ea" : "");
+    mm.textContent = state.measureMode.get(s.style_id) === "object" ? "EA" : "LF";
+    mm.title = "How this line type is priced: LF = footage, EA = count each piece";
+    mm.onclick = (e) => {
+      e.stopPropagation();
+      if (state.measureMode.get(s.style_id) === "object")
+        state.measureMode.delete(s.style_id);
+      else state.measureMode.set(s.style_id, "object");
+      renderStyles(); renderItemized(); renderMiniLegend(); draw();
+    };
 
     const ai = state.aiWhy.get(s.style_id);
     if (ai) {
@@ -304,7 +373,7 @@ function renderStyles() {
       row.title = (ai.keep ? "AI: measure this — " : "AI: not takeoff — ") + (ai.why || "");
     }
 
-    row.append(cb, sw, main, badge);
+    row.append(cb, sw, main, mm, badge);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
     row.onmouseleave = () => { state.hot = null; draw(); };
     row.onclick = () => { state.isolate = state.isolate === s.style_id ? null : s.style_id; draw(); };
@@ -401,7 +470,8 @@ function tradeFor(label) {
   if (has("PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
           "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF")) return "Paving & Concrete";
   if (has("FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
-          "BEAM", "COLUMN", "MASONRY")) return "Structures";
+          "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST",
+          "TRUSS", "MOMENT FRAME")) return "Structures";
   if (has("FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
           "SILT", "PROPERTY", "EASEMENT", "SETBACK")) return "Fencing & Sitework";
   return "General";
@@ -419,8 +489,13 @@ function renderItemized() {
     if (!state.include.get(ch.style_id)) continue;
     const label = state.chainLabels.get(ch.chain_id) ||
       state.labels.get(ch.style_id) || "unlabeled";
-    const t = totals.get(label) || { count: 0, pt: 0 };
+    const t = totals.get(label) || { count: 0, pt: 0, objects: 0, objSids: new Set() };
     t.count += 1; t.pt += ch.length_pt;
+    if (state.measureMode.get(ch.style_id) === "object"
+        && !t.objSids.has(ch.style_id)) {
+      t.objSids.add(ch.style_id);
+      t.objects += styleObjects(ch.style_id).length;
+    }
     totals.set(label, t);
   }
   const head = document.createElement("div");
@@ -430,11 +505,13 @@ function renderItemized() {
   box.appendChild(head);
   let grand = 0;
   // one flat list: measured line families + calculator items, then group
-  const items = [...totals.entries()].map(([label, t]) => ({
-    label, cnt: String(t.count),
-    qty: ftPerIn ? t.pt / 72 * ftPerIn : t.pt,
-    qtyText: null, priced: !!ftPerIn,
-  }));
+  const items = [...totals.entries()].map(([label, t]) => t.objects
+    ? { label, cnt: "EA", qty: t.objects,
+        qtyText: String(t.objects), priced: true, isObj: true,
+        ft: ftPerIn ? t.pt / 72 * ftPerIn : null }
+    : { label, cnt: String(t.count),
+        qty: ftPerIn ? t.pt / 72 * ftPerIn : t.pt,
+        qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
     items.push({ label: it.label, cnt: it.unit, qty: it.qty,
                  qtyText: it.qty.toLocaleString(), priced: true });
@@ -448,21 +525,24 @@ function renderItemized() {
     const group = byTrade.get(tr);
     if (!group) continue;
     group.sort((a, b) => b.qty - a.qty);
-    let sub = 0, subQty = 0;
+    let sub = 0, subQty = 0, subEa = 0;
     for (const it of group) {
       const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
       it.price = price;
       it.ext = it.priced && price ? it.qty * price : null;
       if (it.ext) sub += it.ext;
-      if (it.cnt !== "EA") subQty += it.qty;
+      if (it.cnt === "EA") subEa += it.qty; else subQty += it.qty;
     }
     grand += sub;
     const th = document.createElement("div");
     th.className = "trade-head";
     const qtyStr = subQty >= 1000 ? (subQty/1000).toFixed(1) + "k" : subQty.toFixed(0);
+    const parts = [];
+    if (subQty) parts.push(ftPerIn ? `${qtyStr} ft` : `${qtyStr} pt`);
+    if (subEa) parts.push(`${subEa} EA`);
+    if (sub) parts.push(`$${sub.toFixed(0)}`);
     th.innerHTML = `<span>${tr}</span><span class="t-sub">` +
-      (ftPerIn ? `${qtyStr} ft` : `${qtyStr} pt`) +
-      (sub ? ` · $${sub.toFixed(0)}` : "") + `</span>`;
+      (parts.join(" · ") || "0") + `</span>`;
     box.appendChild(th);
     for (const it of group) {
       const row = document.createElement("div");
@@ -831,7 +911,10 @@ $("aiBtn").onclick = async () => {
   state.ai = j;
   // per-style reasoning, surfaced on the style rows themselves
   state.aiWhy = new Map();
-  for (const f of j.focus || []) state.aiWhy.set(f.style_id, { keep: true, why: f.why, label: f.label });
+  for (const f of j.focus || []) {
+    state.aiWhy.set(f.style_id, { keep: true, why: f.why, label: f.label });
+    if (f.measure === "object") state.measureMode.set(f.style_id, "object");
+  }
   for (const i of j.ignore || []) state.aiWhy.set(i.style_id, { keep: false, why: i.why });
   renderAiBanner();
   renderStyles();
@@ -910,6 +993,17 @@ $("approveBtn").onclick = async () => {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ labels, image_dpi: 300,
+      object_counts: Object.fromEntries((() => {
+        const oc = [];
+        for (const st of state.result.styles) {
+          if (state.measureMode.get(st.style_id) !== "object") continue;
+          if (!state.include.get(st.style_id)) continue;
+          const label = state.labels.get(st.style_id) || "unlabeled";
+          oc.push([label, (oc.find(x => x[0] === label) || [0, 0])[1]
+                   + styleObjects(st.style_id).length]);
+        }
+        return oc;
+      })()),
       trades: Object.fromEntries(
         [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]
           .filter(Boolean).map(l => [l, tradeFor(l)])),
@@ -1099,6 +1193,41 @@ function draw() {
         ctx.strokeStyle = on ? "#8a6d00" : "#ff00cc";
         ctx.stroke();
       });
+    }
+  }
+  // object-mode styles: box every discrete piece (rotated rect along the
+  // run) so a counted object reads as an object, not a continuous line
+  if (state.result) {
+    const f2 = IMG_DPI / 72;
+    for (const s2 of state.result.styles) {
+      if (state.measureMode.get(s2.style_id) !== "object") continue;
+      if (state.isolate !== null && s2.style_id !== state.isolate) continue;
+      if (state.isolate === null && !state.include.get(s2.style_id)) continue;
+      ctx.strokeStyle = cssColor(s2.color);
+      ctx.lineWidth = 1.4 / k;
+      ctx.setLineDash([]);
+      for (const ob of styleObjects(s2.style_id)) {
+        const a = ob.pts[0], b = ob.pts[ob.pts.length - 1];
+        const dx = b[0]-a[0], dy = b[1]-a[1];
+        const L = Math.hypot(dx, dy) || 1;
+        const ux = dx / L, uy = dy / L;
+        // half-width: the run's own lateral spread + padding
+        let w2 = 0;
+        for (const q of ob.pts) {
+          const off = Math.abs(-(q[0]-a[0])*uy + (q[1]-a[1])*ux);
+          if (off > w2) w2 = off;
+        }
+        w2 = (w2 + 3.5);
+        const pad = 3.0;
+        const c1 = [(a[0]-ux*pad+uy*w2)*f2, (a[1]-uy*pad-ux*w2)*f2];
+        const c2 = [(b[0]+ux*pad+uy*w2)*f2, (b[1]+uy*pad-ux*w2)*f2];
+        const c3 = [(b[0]+ux*pad-uy*w2)*f2, (b[1]+uy*pad+ux*w2)*f2];
+        const c4 = [(a[0]-ux*pad-uy*w2)*f2, (a[1]-uy*pad+ux*w2)*f2];
+        ctx.beginPath();
+        ctx.moveTo(...c1); ctx.lineTo(...c2); ctx.lineTo(...c3);
+        ctx.lineTo(...c4); ctx.closePath();
+        ctx.stroke();
+      }
     }
   }
   // cut-span first anchor
