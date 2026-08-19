@@ -1006,8 +1006,8 @@ def _join_chain_ends(chains: list) -> list:
     a T-junction is a genuine ambiguity rather than a join.
     """
     cands = [c for c in chains
-             if c.klass.startswith("dash") and len(c.pts) >= 2
-             and c.length >= 25.0]
+             if (c.klass.startswith("dash") or c.klass == "solid")
+             and len(c.pts) >= 2 and c.length >= 25.0]
     if len(cands) < 2:
         return chains
     from scipy.spatial import cKDTree
@@ -1033,28 +1033,55 @@ def _join_chain_ends(chains: list) -> list:
             c = cands[k]
             return (c.ink or c.length) / max(c.n_dashes, 1)
 
+        def _collinear(va, vb, gdir):
+            return (va @ gdir) >= 0.86 and (vb @ -gdir) >= 0.86
+
         cand_by_ep = defaultdict(list)  # endpoint -> [(turn, dist, other)]
         for a, b in tree.query_pairs(56.0):
             ka, ea = meta[a]
             kb, eb = meta[b]
             if ka == kb:
                 continue
-            da, db = _cad(ka), _cad(kb)
-            if max(da, db) > 1.8 * min(da, db) + 3.0:
-                continue
-            # how far one repeat of the pattern can carry the line past the
-            # last mark before the break
-            reach = 1.3 * (max(da, db) + max(_tpl_gap(cands[ka]),
-                                             _tpl_gap(cands[kb])))
-            reach = float(min(max(reach, 12.0), 56.0))
+            ca, cb = cands[ka], cands[kb]
+            both_solid = ca.klass == "solid" and cb.klass == "solid"
+            if (ca.klass == "solid") != (cb.klass == "solid"):
+                continue  # never join a solid to a dashed line
             d = float(np.hypot(*(eps[a] - eps[b])))
-            if d > reach:
-                continue
-            va = _end_dir(np.asarray(cands[ka].pts), ea)
-            vb = _end_dir(np.asarray(cands[kb].pts), eb)
+            va = _end_dir(np.asarray(ca.pts), ea)
+            vb = _end_dir(np.asarray(cb.pts), eb)
             # 0 deg = straight continuation, 180 = folding back on itself
             turn = float(np.degrees(np.arccos(np.clip(-(va @ vb), -1.0, 1.0))))
-            if turn > 100.0:
+            gap = eps[b] - eps[a]
+            gn = float(np.hypot(*gap))
+            gdir = gap / gn if gn > 1e-6 else va
+            if both_solid:
+                # Contours and other solids break two ways, with opposite
+                # geometry (measured on Oncor p4):
+                #  * an inline label interrupts the line: 20-34pt of blank
+                #    paper but the line continues STRAIGHT through it
+                #  * a sharp kink sheds a tiny piece: gap under ~9pt at a
+                #    hard angle
+                # Adjacent contours ending side by side have parallel
+                # same-direction tangents = turn ~180, so neither rule can
+                # fuse two different elevations.
+                ok = (d <= 9.0 and turn <= 135.0) or                      (d <= 34.0 and turn <= 25.0 and _collinear(va, vb, gdir))
+                if not ok:
+                    continue
+            else:
+                da, db = _cad(ka), _cad(kb)
+                if max(da, db) > 1.8 * min(da, db) + 3.0:
+                    continue
+                # how far one repeat of the pattern can carry the line past
+                # the last mark before the break
+                reach = 1.3 * (max(da, db) + max(_tpl_gap(ca), _tpl_gap(cb)))
+                reach = float(min(max(reach, 12.0), 56.0))
+                label_bridge = (d <= 34.0 and turn <= 25.0
+                                and _collinear(va, vb, gdir))
+                kink_repair = (d <= 9.0 and turn <= 135.0)
+                if not (d <= reach and turn <= 100.0) \
+                        and not label_bridge and not kink_repair:
+                    continue
+            if turn > 135.0:
                 continue
             # neither line may travel BACKWARDS to reach the other. Where a
             # line runs PAST a branch (a T-junction whose stem is already
@@ -1062,10 +1089,7 @@ def _join_chain_ends(chains: list) -> list:
             # at a plausible turn, and joining it doubles the line back on
             # itself - a visible spike carrying phantom length. Sideways is
             # fine, since a genuine corner's gap can be perpendicular.
-            gap = eps[b] - eps[a]
-            gn = float(np.hypot(*gap))
             if gn > 1e-6:
-                gdir = gap / gn
                 if (va @ gdir) < -0.35 or (vb @ -gdir) < -0.35:
                     continue
             cand_by_ep[a].append((turn, d, b))
