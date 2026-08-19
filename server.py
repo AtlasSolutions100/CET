@@ -275,12 +275,24 @@ def _detect_worker(job_id: str, page: int):
             if st["style_id"] in _legend_labels:
                 st["suggested_label"] = _legend_labels[st["style_id"]] + " (legend)"
         scale = detect_scale(pg).to_dict()
+        from takeoff_engine.extract import fill_boxes, door_swings
+        try:
+            fills = fill_boxes(pg)
+        except Exception:
+            fills = []
+        try:
+            openings = door_swings(
+                units, (scale or {}).get("ft_per_paper_inch"))
+        except Exception:
+            openings = []
         result = {
             "page": pc.to_dict(),
             "scale": scale,
             "legend": legend["entries"],
             "styles": style_list,
             "chains": [c.to_dict() for c in chains],
+            "fills": fills,
+            "openings": openings,
         }
         (_job_dir(job_id) / f"p{page}_result.json").write_text(json.dumps(result))
         job["status"][page] = "done"

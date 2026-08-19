@@ -339,3 +339,84 @@ def extract_strokes(page: pymupdf.Page) -> list[StrokeUnit]:
                 u.on_fill = True
 
     return units
+
+
+def fill_boxes(page: pymupdf.Page) -> list:
+    """Rotation-mapped bboxes of non-white fills, page coords.
+
+    Walls/objects on architectural plans are drawn as FILLED bands; leaders
+    and dimension strings are bare strokes. That contrast lets the reviewer
+    UI tell a wall face from an annotation drawn with the same pen."""
+    rot = page.rotation_matrix if page.rotation else None
+    out = []
+    for path in page.get_drawings():
+        if "f" not in (path.get("type") or ""):
+            continue
+        col = path.get("fill")
+        if col and min(col) > 0.92:
+            continue  # white fill = knockout, not a band
+        r = path.get("rect")
+        if r is None:
+            continue
+        if rot is not None:
+            r = pymupdf.Rect(r) * rot
+        r = pymupdf.Rect(r)
+        r.normalize()
+        if r.width < 1 and r.height < 1:
+            continue
+        out.append([round(r.x0, 1), round(r.y0, 1),
+                    round(r.x1, 1), round(r.y1, 1)])
+    return out
+
+
+def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
+    """Quarter-circle door-swing arcs - the one universal opening symbol.
+
+    An arc unit: enough vertices, consistent curvature (points equidistant
+    from a fitted center), sweep 55-135 degrees, radius in door range
+    (1.5-6 ft when the scale is known; 8-80pt otherwise). Returns
+    [{cx, cy, r}] opening zones the takeoff must not measure through."""
+    out = []
+    if scale_ft_per_in:
+        r_lo, r_hi = (1.5 / scale_ft_per_in) * 72, (6.0 / scale_ft_per_in) * 72
+    else:
+        r_lo, r_hi = 8.0, 80.0
+    for u in units:
+        p = np.asarray(u.pts, dtype=float)
+        if len(p) < 6 or u.closed:
+            continue
+        chord = float(np.hypot(*(p[-1] - p[0])))
+        # arc/chord: 60deg sweep = 1.047, 90deg = 1.111, 120deg = 1.209 -
+        # the gate must sit BELOW the shallowest door swing, above line noise
+        if chord < 1e-6 or u.length < 1.035 * chord:
+            continue  # straight-ish, not an arc
+        # fit center: perpendicular bisector intersection via least squares
+        # (algebraic circle fit)
+        A = np.column_stack([2 * p[:, 0], 2 * p[:, 1], np.ones(len(p))])
+        b = (p ** 2).sum(axis=1)
+        try:
+            sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        cx, cy = float(sol[0]), float(sol[1])
+        rr = np.hypot(p[:, 0] - cx, p[:, 1] - cy)
+        r = float(rr.mean())
+        if r < r_lo or r > r_hi:
+            continue
+        if float(rr.std()) > max(0.06 * r, 0.8):
+            continue  # not circular enough
+        va = p[0] - (cx, cy)
+        vb = p[-1] - (cx, cy)
+        sweep = float(np.degrees(np.arccos(np.clip(
+            (va @ vb) / (np.hypot(*va) * np.hypot(*vb) + 1e-9), -1, 1))))
+        if not (55.0 <= sweep <= 135.0):
+            continue
+        out.append({"cx": round(cx, 1), "cy": round(cy, 1), "r": round(r, 1)})
+    # dedupe coincident arcs (double-drawn swings)
+    ded = []
+    for o in out:
+        if any(abs(o["cx"] - d["cx"]) < 4 and abs(o["cy"] - d["cy"]) < 4
+               and abs(o["r"] - d["r"]) < 4 for d in ded):
+            continue
+        ded.append(o)
+    return ded

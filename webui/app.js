@@ -227,10 +227,53 @@ function styleObjects(sid) {
   // contiguous band: corners connect (a wall turning is one wall), real
   // openings split (a doorway gap is two walls), and the two drawn faces
   // of a double-line wall are one object, one footage.
-  const runs = [];
+  const opens = state.result.openings || [];
+  const splitAtOpenings = (pts) => {
+    // a doorway is a zone the takeoff never measures through: points
+    // inside any swing disk are cut out, splitting the run and trimming
+    // overshoot back to the opening edge
+    if (!opens.length) return [pts];
+    const parts = [];
+    let cur = [];
+    for (const q of pts) {
+      const inside = opens.some(o =>
+        Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.12);
+      if (inside) {
+        if (cur.length >= 2) parts.push(cur);
+        cur = [];
+      } else cur.push(q);
+    }
+    if (cur.length >= 2) parts.push(cur);
+    return parts;
+  };
+  let runs = [];
   for (const ch of state.result.chains) {
     if (!sids.has(ch.style_id) || state.excluded.has(ch.chain_id)) continue;
-    for (const r of chainRuns(ch)) runs.push({ pts: r, len: polyLen(r) });
+    for (const r of chainRuns(ch))
+      for (const part of splitAtOpenings(r))
+        runs.push({ pts: part, len: polyLen(part) });
+  }
+  if (!runs.length) return [];
+  // annotation riding the same pen: real object faces sit ON a fill band
+  // (walls are drawn filled); dimension strings and leaders are bare. Only
+  // applies when the style is visibly MIXED - unfilled plans keep all runs.
+  const fills = state.result.fills || [];
+  if (fills.length && fills.length < 3000) {
+    const sc0 = state.result.scale;
+    const maxSide = sc0 ? (2.5 / sc0.ft_per_paper_inch) * 72 : 30;
+    const bands = fills.filter(f =>
+      Math.min(f[2] - f[0], f[3] - f[1]) <= maxSide);
+    if (bands.length) {
+      const onFill = (r) => {
+        const m = r.pts[Math.floor(r.pts.length / 2)];
+        return bands.some(f => m[0] >= f[0] - 2 && m[0] <= f[2] + 2 &&
+                               m[1] >= f[1] - 2 && m[1] <= f[3] + 2);
+      };
+      const flags = runs.map(onFill);
+      const frac = flags.filter(Boolean).length / runs.length;
+      if (frac >= 0.15 && frac <= 0.9)
+        runs = runs.filter((_, i) => flags[i]);
+    }
   }
   if (!runs.length) return [];
   // touch tolerance: corners touch at ~0; the smallest door is ~30in, so
@@ -1381,30 +1424,46 @@ function draw() {
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
       for (const comp of styleObjects(s2.style_id)) {
-      for (const ob of comp.runs) {
-        ob.pts = ob.pts; // per-run box
-        const a = ob.pts[0], b = ob.pts[ob.pts.length - 1];
-        const dx = b[0]-a[0], dy = b[1]-a[1];
-        const L = Math.hypot(dx, dy) || 1;
-        const ux = dx / L, uy = dy / L;
-        // half-width: the run's own lateral spread + padding
-        let w2 = 0;
-        for (const q of ob.pts) {
-          const off = Math.abs(-(q[0]-a[0])*uy + (q[1]-a[1])*ux);
-          if (off > w2) w2 = off;
+        // ONE box per counted object: dominant direction from the longest
+        // run, extent from every member point - display equals count
+        const main = comp.runs.reduce((a, b) => (b.len > a.len ? b : a));
+        const a0 = main.pts[0], b0 = main.pts[main.pts.length - 1];
+        let ux = b0[0]-a0[0], uy = b0[1]-a0[1];
+        const L0 = Math.hypot(ux, uy) || 1;
+        ux /= L0; uy /= L0;
+        let uMin = Infinity, uMax = -Infinity, nMin = Infinity, nMax = -Infinity;
+        for (const r of comp.runs) {
+          for (const q of r.pts) {
+            const du = (q[0]-a0[0])*ux + (q[1]-a0[1])*uy;
+            const dn = -(q[0]-a0[0])*uy + (q[1]-a0[1])*ux;
+            if (du < uMin) uMin = du; if (du > uMax) uMax = du;
+            if (dn < nMin) nMin = dn; if (dn > nMax) nMax = dn;
+          }
         }
-        w2 = (w2 + 3.5);
         const pad = 3.0;
-        const c1 = [(a[0]-ux*pad+uy*w2)*f2, (a[1]-uy*pad-ux*w2)*f2];
-        const c2 = [(b[0]+ux*pad+uy*w2)*f2, (b[1]+uy*pad-ux*w2)*f2];
-        const c3 = [(b[0]+ux*pad-uy*w2)*f2, (b[1]+uy*pad+ux*w2)*f2];
-        const c4 = [(a[0]-ux*pad-uy*w2)*f2, (a[1]-uy*pad+ux*w2)*f2];
+        uMin -= pad; uMax += pad; nMin -= pad + 1; nMax += pad + 1;
+        const P = (u, n) => [(a0[0] + ux*u - uy*n) * f2,
+                             (a0[1] + uy*u + ux*n) * f2];
+        const c1 = P(uMin, nMin), c2 = P(uMax, nMin),
+              c3 = P(uMax, nMax), c4 = P(uMin, nMax);
         ctx.beginPath();
         ctx.moveTo(...c1); ctx.lineTo(...c2); ctx.lineTo(...c3);
         ctx.lineTo(...c4); ctx.closePath();
         ctx.stroke();
       }
+    }
+    // door/opening zones, faint - the takeoff never measures through these
+    const opens2 = state.result.openings || [];
+    if (opens2.length) {
+      ctx.setLineDash([3 / k, 3 / k]);
+      ctx.strokeStyle = "rgba(160,120,40,.55)";
+      ctx.lineWidth = 1 / k;
+      for (const o of opens2) {
+        ctx.beginPath();
+        ctx.arc(o.cx * f2, o.cy * f2, o.r * f2, 0, Math.PI * 2);
+        ctx.stroke();
       }
+      ctx.setLineDash([]);
     }
   }
   // cut-span first anchor
