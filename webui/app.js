@@ -222,10 +222,90 @@ function chainRuns(ch) {
   return runs;
 }
 function styleObjects(sid) {
-  const out = [];
+  const sids = Array.isArray(sid) ? new Set(sid) : new Set([sid]);
+  // straight runs are the DRAWING's pieces; an estimator's OBJECT is a
+  // contiguous band: corners connect (a wall turning is one wall), real
+  // openings split (a doorway gap is two walls), and the two drawn faces
+  // of a double-line wall are one object, one footage.
+  const runs = [];
   for (const ch of state.result.chains) {
-    if (ch.style_id !== sid || state.excluded.has(ch.chain_id)) continue;
-    for (const r of chainRuns(ch)) out.push({ pts: r, len: polyLen(r) });
+    if (!sids.has(ch.style_id) || state.excluded.has(ch.chain_id)) continue;
+    for (const r of chainRuns(ch)) runs.push({ pts: r, len: polyLen(r) });
+  }
+  if (!runs.length) return [];
+  // touch tolerance: corners touch at ~0; the smallest door is ~30in, so
+  // anything under ~1.2 ft of paper distance is the same object. Falls
+  // back to 14pt when the sheet has no scale.
+  const sc = state.result.scale;
+  const tol = sc ? (1.2 / sc.ft_per_paper_inch) * 72 : 14;
+  const dirOf = (r) => {
+    const a = r.pts[0], b = r.pts[r.pts.length - 1];
+    const L = Math.hypot(b[0]-a[0], b[1]-a[1]) || 1;
+    return [(b[0]-a[0]) / L, (b[1]-a[1]) / L];
+  };
+  const near = (a, b) => {
+    // same OBJECT = near AND parallel: the two faces of one wall, or its
+    // collinear continuation. A perpendicular touch (T-junction, corner)
+    // is a DIFFERENT object - that is how an estimator counts bands.
+    const da = dirOf(a), db = dirOf(b);
+    if (Math.abs(da[0]*db[0] + da[1]*db[1]) < 0.87) return false;
+    for (const p of [a.pts[0], a.pts[a.pts.length - 1]]) {
+      for (let i = 1; i < b.pts.length; i++) {
+        if (distToSeg(p[0], p[1], b.pts[i - 1], b.pts[i]) <= tol) return true;
+      }
+    }
+    return false;
+  };
+  const parent = runs.map((_, i) => i);
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (let i = 0; i < runs.length; i++)
+    for (let j = i + 1; j < runs.length; j++)
+      if (find(i) !== find(j) && (near(runs[i], runs[j]) || near(runs[j], runs[i])))
+        parent[find(i)] = find(j);
+  const comps = new Map();
+  runs.forEach((r, i) => {
+    const k = find(i);
+    if (!comps.has(k)) comps.set(k, []);
+    comps.get(k).push(r);
+  });
+  const out = [];
+  for (const members of comps.values()) {
+    // footage: drop parallel FACE ECHOES (the second drawn face of the
+    // same wall) - a run mostly alongside a longer kept run within a
+    // wall's thickness is the same wall, not more wall
+    members.sort((a, b) => b.len - a.len);
+    const kept = [];
+    for (const r of members) {
+      const mid = r.pts[Math.floor(r.pts.length / 2)];
+      const a = r.pts[0], b = r.pts[r.pts.length - 1];
+      const dx = b[0]-a[0], dy = b[1]-a[1];
+      const L = Math.hypot(dx, dy) || 1;
+      let echo = false;
+      for (const k of kept) {
+        const ka = k.pts[0], kb = k.pts[k.pts.length - 1];
+        const kdx = kb[0]-ka[0], kdy = kb[1]-ka[1];
+        const kL = Math.hypot(kdx, kdy) || 1;
+        const cos = Math.abs((dx*kdx + dy*kdy) / (L * kL));
+        if (cos < 0.92) continue;
+        let insideBoth = 0;
+        for (const q of [a, mid, b]) {
+          let dmin = Infinity;
+          for (let i = 1; i < k.pts.length; i++)
+            dmin = Math.min(dmin, distToSeg(q[0], q[1], k.pts[i-1], k.pts[i]));
+          if (dmin <= Math.max(tol, 12)) insideBoth++;
+        }
+        if (insideBoth >= 2) { echo = true; break; }
+      }
+      if (!echo) kept.push(r);
+    }
+    const len = kept.reduce((t, r) => t + r.len, 0);
+    // scraps below ~1.5 ft of wall are pattern debris, not an object
+    if (len < (sc ? (1.5 / sc.ft_per_paper_inch) * 72 : 12)) continue;
+    out.push({
+      runs: members,                       // every run, for the boxes
+      pts: members[0].pts,                 // representative
+      len,
+    });
   }
   return out;
 }
@@ -496,12 +576,13 @@ function renderItemized() {
       state.labels.get(ch.style_id) || "unlabeled";
     const t = totals.get(label) || { count: 0, pt: 0, objects: 0, objSids: new Set() };
     t.count += 1; t.pt += ch.length_pt;
-    if (state.measureMode.get(ch.style_id) === "object"
-        && !t.objSids.has(ch.style_id)) {
+    if (state.measureMode.get(ch.style_id) === "object")
       t.objSids.add(ch.style_id);
-      t.objects += styleObjects(ch.style_id).length;
-    }
     totals.set(label, t);
+  }
+  for (const t of totals.values()) {
+    if (t.objSids.size)
+      t.objects = styleObjects([...t.objSids]).length;
   }
   const head = document.createElement("div");
   head.className = "item-row head";
@@ -1086,15 +1167,16 @@ $("approveBtn").onclick = async () => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ labels, image_dpi: 300,
       object_counts: Object.fromEntries((() => {
-        const oc = [];
+        const pools = new Map();
         for (const st of state.result.styles) {
           if (state.measureMode.get(st.style_id) !== "object") continue;
           if (!state.include.get(st.style_id)) continue;
           const label = state.labels.get(st.style_id) || "unlabeled";
-          oc.push([label, (oc.find(x => x[0] === label) || [0, 0])[1]
-                   + styleObjects(st.style_id).length]);
+          if (!pools.has(label)) pools.set(label, []);
+          pools.get(label).push(st.style_id);
         }
-        return oc;
+        return [...pools.entries()].map(([l, sids]) =>
+          [l, styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(
         [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]
@@ -1298,7 +1380,9 @@ function draw() {
       ctx.strokeStyle = cssColor(s2.color);
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
-      for (const ob of styleObjects(s2.style_id)) {
+      for (const comp of styleObjects(s2.style_id)) {
+      for (const ob of comp.runs) {
+        ob.pts = ob.pts; // per-run box
         const a = ob.pts[0], b = ob.pts[ob.pts.length - 1];
         const dx = b[0]-a[0], dy = b[1]-a[1];
         const L = Math.hypot(dx, dy) || 1;
@@ -1319,6 +1403,7 @@ function draw() {
         ctx.moveTo(...c1); ctx.lineTo(...c2); ctx.lineTo(...c3);
         ctx.lineTo(...c4); ctx.closePath();
         ctx.stroke();
+      }
       }
     }
   }
