@@ -749,4 +749,80 @@ def analyze_page(job_id: str, page: int):
     return JSONResponse(parsed)
 
 
+class EarthworkBody(BaseModel):
+    # [{chain_id, z}] per surface, elevations in feet
+    existing: list[dict] = []
+    proposed: list[dict] = []
+    cell_ft: float = 2.0
+
+
+@app.get("/api/job/{job_id}/page/{page}/earthwork/suggest")
+def earthwork_suggest(job_id: str, page: int):
+    """Auto-pair elevation labels with the contours they sit on - a
+    suggestion list for the review UI, not a decision."""
+    from takeoff_engine.earthwork import suggest_elevations
+
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    res = json.loads(rf.read_text())
+    job = JOBS.get(job_id) or _404()
+    doc = pymupdf.open(job["path"])
+    words = page_words(doc[page])
+    doc.close()
+
+    class _C:  # minimal chain view over the stored result
+        def __init__(self, d):
+            import numpy as _np
+            self.chain_id = d["chain_id"]
+            self.pts = _np.asarray(d["points"], float)
+            self.length = d["length_pt"]
+            self.width = d.get("width")
+    chains = [_C(c) for c in res["chains"]]
+    sug = suggest_elevations(chains, words)
+    by_id = {c.chain_id: c for c in chains}
+    for r in sug:
+        w = by_id[r["chain_id"]].width
+        r["width"] = w
+    return {"suggestions": sug,
+            "scale": res.get("scale"),
+            "note": "confirm/edit in the UI; split into existing vs "
+                    "proposed before calculating"}
+
+
+@app.post("/api/job/{job_id}/page/{page}/earthwork")
+def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
+    """Cut & fill volumes between two labeled contour surfaces."""
+    import numpy as _np
+
+    from takeoff_engine.earthwork import Surface, cut_fill
+
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    res = json.loads(rf.read_text())
+    det = res.get("scale")
+    if not det:
+        raise HTTPException(400, "no scale on this page - calibrate first, "
+                                 "volumes need real-world units")
+    ft_per_pt = det["ft_per_paper_inch"] / 72.0
+    pts_by_id = {c["chain_id"]: _np.asarray(c["points"], float)
+                 for c in res["chains"]}
+
+    def build(name, rows):
+        surf = Surface(name)
+        for r in rows:
+            cid = int(r["chain_id"])
+            if cid in pts_by_id:
+                surf.contours.append((pts_by_id[cid], float(r["z"])))
+        return surf
+    result = cut_fill(build("existing", body.existing),
+                      build("proposed", body.proposed),
+                      ft_per_pt, cell_ft=body.cell_ft)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    result["ft_per_pt"] = round(ft_per_pt, 5)
+    return JSONResponse(result)
+
+
 app.mount("/", StaticFiles(directory=ROOT / "webui", html=True), name="ui")
