@@ -139,7 +139,9 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  state.tr = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
+  $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
@@ -176,7 +178,8 @@ function renderStyles() {
     const main = document.createElement("div");
     main.className = "style-main";
     const lab = document.createElement("input");
-    lab.className = "style-label"; lab.value = state.labels.get(s.style_id) ?? "";
+    lab.className = "style-label"; lab.name = "label-" + s.style_id;
+    lab.value = state.labels.get(s.style_id) ?? "";
     if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => state.labels.set(s.style_id, lab.value);
@@ -297,6 +300,7 @@ function renderItemized() {
     q.textContent = qty >= 1000 ? (qty/1000).toFixed(1) + "k" : qty.toFixed(1);
     const pin = document.createElement("input");
     pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+    pin.name = "price-" + label;
     if (price) pin.value = price;
     pin.oninput = () => {
       localStorage.setItem(priceKey(label), pin.value);
@@ -319,6 +323,7 @@ function renderItemized() {
     const q = document.createElement("div"); q.textContent = it.qty.toLocaleString();
     const pin = document.createElement("input");
     pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+    pin.name = "price-" + it.label;
     if (price) pin.value = price;
     pin.oninput = () => { localStorage.setItem(priceKey(it.label), pin.value); renderItemized(); };
     const e = document.createElement("div");
@@ -332,6 +337,29 @@ function renderItemized() {
     row.innerHTML = `<div>TOTAL</div><div></div><div></div><div></div><div>${grand.toFixed(0)}</div>`;
     box.appendChild(row);
   }
+}
+
+// ---------- collapsible sidebar sections ----------
+// every section header toggles the elements listed for it; state is
+// per-session only (a refresh reopens everything)
+const SECTIONS = [
+  ["stylesHead", ["styleList"]],
+  ["takeoffHead", ["itemized"]],
+  ["ewHead", ["ewRows", "ewHint", "ewActions"]],
+  ["trHead", ["trBody", "trHint", "trActions"]],
+];
+for (const [headId, contentIds] of SECTIONS) {
+  const head = document.getElementById(headId);
+  if (!head) continue;
+  const h2 = head.querySelector("h2");
+  if (!h2) continue;
+  h2.onclick = () => {
+    const closed = head.classList.toggle("closed");
+    for (const cid of contentIds) {
+      const el = document.getElementById(cid);
+      if (el) el.hidden = closed;
+    }
+  };
 }
 
 // ---------- earthwork calculator ----------
@@ -373,6 +401,7 @@ function renderEw() {
     div.className = "ew-row";
     const z = document.createElement("input");
     z.className = "z"; z.type = "number"; z.step = "0.1"; z.value = row.z;
+    z.name = "ew-z-" + row.chain_id;
     z.oninput = () => { row.z = parseFloat(z.value); };
     const meta = document.createElement("div");
     meta.className = "ew-meta";
@@ -422,6 +451,128 @@ $("ewCalc").onclick = async () => {
   state.extraItems = state.extraItems.filter(it => !/^(Cut|Fill) \(earthwork\)/.test(it.label));
   if (j.cut_yd3 > 0) state.extraItems.push({ label: "Cut (earthwork)", qty: j.cut_yd3, unit: "CY" });
   if (j.fill_yd3 > 0) state.extraItems.push({ label: "Fill (earthwork)", qty: j.fill_yd3, unit: "CY" });
+  renderItemized();
+};
+
+// ---------- pipe trench calculator ----------
+// Bedding rules from the underground-utilities spec discussed with the
+// client: clearance around the pipe grows with burial depth. Editable
+// because every jurisdiction's spec differs.
+const TR_DEFAULT_RULES = [
+  { to_ft: 2, clr_in: 6 },
+  { to_ft: 4, clr_in: 12 },
+  { to_ft: 99, clr_in: 18 },
+];
+
+$("trClose").onclick = () => { $("trPanel").hidden = true; state.hotChain = null; draw(); };
+$("trBtn").onclick = () => {
+  const panel = $("trPanel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!state.tr) {
+    state.tr = {
+      style_id: null, od_in: 6, d0_ft: 2, d1_ft: 8,
+      rules: TR_DEFAULT_RULES.map(r => ({ ...r })),
+    };
+  }
+  renderTr();
+};
+
+function renderTr() {
+  const box = $("trBody");
+  box.innerHTML = "";
+  if (!state.result) { box.textContent = "run Detect first"; return; }
+  const t = state.tr;
+  const grid = document.createElement("div");
+  grid.className = "tr-grid";
+
+  const mkLabel = (txt) => { const d = document.createElement("div"); d.textContent = txt; return d; };
+  const sel = document.createElement("select");
+  sel.name = "tr-style";
+  const opt0 = document.createElement("option");
+  opt0.value = ""; opt0.textContent = "— pick the pipe run —";
+  sel.appendChild(opt0);
+  for (const st of state.result.styles) {
+    if (!state.include.get(st.style_id)) continue;
+    const o = document.createElement("option");
+    o.value = st.style_id;
+    o.textContent = `${(state.labels.get(st.style_id) || st.suggested_label).slice(0, 30)} · ${st.n} lines`;
+    if (t.style_id === st.style_id) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => { t.style_id = sel.value === "" ? null : +sel.value; };
+  grid.append(mkLabel("Pipe run (line style)"), sel);
+
+  const num = (key, step) => {
+    const i = document.createElement("input");
+    i.type = "number"; i.step = step; i.value = t[key]; i.name = "tr-" + key;
+    i.oninput = () => { t[key] = parseFloat(i.value); };
+    return i;
+  };
+  grid.append(mkLabel("Pipe OD (inches)"), num("od_in", "0.5"));
+  grid.append(mkLabel("Invert depth at start (ft)"), num("d0_ft", "0.5"));
+  grid.append(mkLabel("Invert depth at end (ft)"), num("d1_ft", "0.5"));
+  box.appendChild(grid);
+
+  const rl = document.createElement("div");
+  rl.className = "tr-rules";
+  rl.textContent = "Bedding rules (per spec):";
+  box.appendChild(rl);
+  t.rules.forEach((r, k) => {
+    const row = document.createElement("div");
+    row.className = "tr-rule";
+    const a = document.createElement("input");
+    a.type = "number"; a.step = "0.5"; a.value = r.to_ft; a.name = `tr-to-${k}`;
+    a.oninput = () => { r.to_ft = parseFloat(a.value); };
+    const b = document.createElement("input");
+    b.type = "number"; b.step = "1"; b.value = r.clr_in; b.name = `tr-clr-${k}`;
+    b.oninput = () => { r.clr_in = parseFloat(b.value); };
+    const l1 = document.createElement("div"); l1.textContent = "to depth (ft)";
+    const l2 = document.createElement("div"); l2.textContent = "clearance (in)";
+    row.append(l1, a, l2, b);
+    box.appendChild(row);
+  });
+}
+
+$("trCalc").onclick = () => {
+  const t = state.tr;
+  if (!t || t.style_id === null) { $("trResult").textContent = "pick the pipe run first"; return; }
+  const sc = state.result.scale;
+  if (!sc) { $("trResult").textContent = "no scale on this page — volumes need feet"; return; }
+  const ftPerPt = sc.ft_per_paper_inch / 72.0;
+  const chains = state.result.chains.filter(c =>
+    c.style_id === t.style_id && !state.excluded.has(c.chain_id));
+  if (!chains.length) { $("trResult").textContent = "that style has no lines"; return; }
+  const odFt = t.od_in / 12.0;
+  const clrFt = (d) => {
+    for (const r of t.rules) if (d <= r.to_ft) return r.clr_in / 12.0;
+    return t.rules.length ? t.rules[t.rules.length - 1].clr_in / 12.0 : 0.5;
+  };
+  const N = 60;  // integration steps along each run
+  let dig = 0, bed = 0, runFt = 0;
+  for (const c of chains) {
+    const L = c.length_pt * ftPerPt;
+    runFt += L;
+    for (let i = 0; i < N; i++) {
+      const x = (i + 0.5) / N;
+      const d = t.d0_ft + (t.d1_ft - t.d0_ft) * x;   // invert depth here
+      const w = odFt + 2 * clrFt(d);                  // trench width here
+      dig += w * Math.max(d, 0) * (L / N);            // dig surface->invert
+      bed += w * (odFt + 2 * clrFt(d)) * (L / N);     // envelope around pipe
+    }
+  }
+  const pipeVol = Math.PI * (odFt / 2) ** 2 * runFt;
+  bed = Math.max(bed - pipeVol, 0);
+  const backfill = Math.max(dig - bed - pipeVol, 0);
+  const cy = (v) => Math.round(v / 27 * 10) / 10;
+  $("trResult").innerHTML =
+    `<b>dig ${cy(dig).toLocaleString()} CY</b> · <b>bedding ${cy(bed).toLocaleString()} CY</b>` +
+    ` · backfill ${cy(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
+  const name = (state.labels.get(t.style_id) || "pipe").slice(0, 40);
+  state.extraItems = state.extraItems.filter(it => !it.label.startsWith("Trench") && !it.label.startsWith("Bedding") && !it.label.startsWith("Backfill"));
+  if (dig > 0) state.extraItems.push({ label: `Trench excavation (${name})`, qty: cy(dig), unit: "CY" });
+  if (bed > 0) state.extraItems.push({ label: `Bedding gravel (${name})`, qty: cy(bed), unit: "CY" });
+  if (backfill > 0) state.extraItems.push({ label: `Backfill (${name})`, qty: cy(backfill), unit: "CY" });
   renderItemized();
 };
 

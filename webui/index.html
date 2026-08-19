@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Takeoff Line Review</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <header>
@@ -18,6 +18,7 @@
   <div id="status" class="status"></div>
   <button id="aiBtn" hidden>AI analyze</button>
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
+  <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
   <input id="legendPath" type="hidden">
 </header>
@@ -27,18 +28,30 @@
     <div id="colorChips" class="color-chips"></div>
     <div id="legendBox" class="legend-box" hidden></div>
     <div id="ewPanel" class="ew-panel" hidden>
-      <div class="side-head"><h2>Earthwork — assign contours</h2>
+      <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
         <button id="ewClose" class="mini">close</button></div>
-      <div class="ew-hint">Each row is a contour with the elevation read off the sheet.
+      <div class="ew-hint" id="ewHint">Each row is a contour with the elevation read off the sheet.
         Set which surface it belongs to; fix any elevation the sheet reader got wrong.
         Volumes only compute where both surfaces overlap.</div>
       <div id="ewRows" class="ew-rows"></div>
-      <div class="ew-actions">
+      <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
         <span id="ewResult" class="ew-result"></span>
       </div>
     </div>
-    <div class="side-head">
+    <div id="trPanel" class="ew-panel" hidden>
+      <div class="side-head" id="trHead"><h2>Pipe trench</h2>
+        <button id="trClose" class="mini">close</button></div>
+      <div class="ew-hint" id="trHint">Pick the pipe run, set its size and invert depths, and adjust the
+        bedding rules to the spec. Depth interpolates start&rarr;end along each line; trench width =
+        pipe OD + clearance each side, growing with depth per the rules.</div>
+      <div id="trBody" class="tr-body"></div>
+      <div class="ew-actions" id="trActions">
+        <button id="trCalc">Calculate trench</button>
+        <span id="trResult" class="ew-result"></span>
+      </div>
+    </div>
+    <div class="side-head" id="stylesHead">
       <h2>Detected line styles</h2>
       <div class="side-actions">
         <button id="allBtn" class="mini">all</button>
@@ -46,7 +59,7 @@
       </div>
     </div>
     <div id="styleList" class="style-list"></div>
-    <div class="takeoff-head"><h2>Itemized takeoff</h2></div>
+    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
     <div id="itemized" class="itemized"></div>
     <div class="approve-bar">
       <button id="approveBtn" disabled>Approve &amp; export</button>
@@ -75,6 +88,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>
