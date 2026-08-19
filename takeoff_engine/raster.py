@@ -61,8 +61,12 @@ def _deskew(img: np.ndarray, max_deg: float = 6.0):
                             minLineLength=120, maxLineGap=4)
     if lines is None or len(lines) < 8:
         return img, None
+    # OpenCV 5 returns (N, 4); OpenCV <=4 returned (N, 1, 4). Normalise:
+    # under (N, 4) the old "lines[:, 0]" silently became a column of x1
+    # scalars and the unpack below threw on every deskew-reaching page.
+    lines = lines.reshape(-1, 4)
     devs = []
-    for x1, y1, x2, y2 in lines[:, 0]:
+    for x1, y1, x2, y2 in lines:
         ang = np.degrees(np.arctan2(y2 - y1, x2 - x1))
         dev = (ang + 45) % 90 - 45  # deviation from nearest axis
         if abs(dev) <= max_deg:
