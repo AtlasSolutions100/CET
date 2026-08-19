@@ -1059,6 +1059,25 @@ def _merge_twin_strokes(units: list) -> list:
             continue
         mids2 = np.array([units[i].pts.mean(axis=0) for i in idxs2])
         t2 = cKDTree(mids2)
+        # crowd guard, same reasoning as the twin-pass calm filter above: a
+        # collapsible marker/dash cluster fits a 60x4.5 envelope, so no
+        # member can have more than a couple hundred distinct 3pt
+        # neighbours (corpus ceiling 172, one C8 hatch dash; the Oncor p4
+        # dot is 32 strokes). A stipple/hatch FIELD gives every mark
+        # THOUSANDS (CO3 Rifle p1: 126,677 marks averaging ~7,600 ->
+        # ~484M pairs, and query_pairs' set build holds the GIL while it
+        # eats tens of GB - the page hangs unkillably). The field's giant
+        # component would only die on the span gate below anyway, so count
+        # neighbours first (a count query materialises no pairs) and keep
+        # crowded marks out of the clustering entirely: they stay
+        # individual units for the normal junk defenses, and the fringe
+        # rejection at the bottom keeps calm field-edge marks from forming
+        # clusters the unguarded graph would have welded into the field.
+        # Cap 256 = 1.5x the corpus ceiling, ~30x under field density.
+        crowd = t2.query_ball_point(mids2, 3.0, return_length=True) - 1
+        calm2 = np.nonzero(crowd <= 256)[0]
+        if len(calm2) < 6:
+            continue
         parent = list(range(len(idxs2)))
 
         def _find(a):
@@ -1066,16 +1085,34 @@ def _merge_twin_strokes(units: list) -> list:
                 parent[a] = parent[parent[a]]
                 a = parent[a]
             return a
-        for a, b in sorted(t2.query_pairs(3.0)):
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[ra] = rb
+        pairs2 = cKDTree(mids2[calm2]).query_pairs(3.0, output_type="ndarray")
+        if len(pairs2):
+            pairs2 = calm2[pairs2]
+            # ascending (a, b): the exact order of the sorted() set
+            # iteration this replaces - union outcomes must not follow the
+            # KD-tree's emission order (accept-order pinning, b0bacf0)
+            pairs2 = pairs2[np.lexsort((pairs2[:, 1], pairs2[:, 0]))]
+            for a, b in pairs2.tolist():
+                ra, rb = _find(a), _find(b)
+                if ra != rb:
+                    parent[ra] = rb
         groups2 = _dd(list)
-        for k2, i2 in enumerate(idxs2):
-            groups2[_find(k2)].append(i2)
-        for members in groups2.values():
-            if len(members) < 6:
+        for k2 in range(len(idxs2)):
+            groups2[_find(k2)].append(k2)
+        has_crowd = len(calm2) < len(idxs2)
+        for loc in groups2.values():
+            if len(loc) < 6:
                 continue
+            # a component TOUCHING the crowd is the fringe of a texture
+            # field: unguarded, its members would have welded into the
+            # field's giant component and died on the span gate below, so
+            # reject it here too - the guard must not mint clusters the
+            # unguarded pass would never have collapsed. (Members are calm,
+            # so each ball probe returns at most cap+1 ids.)
+            if has_crowd and any(crowd[j] > 256 for k in loc
+                                 for j in t2.query_ball_point(mids2[k], 3.0)):
+                continue
+            members = [idxs2[k] for k in loc]
             pts = np.vstack([units[i].pts for i in members])
             lo, hi = pts.min(axis=0), pts.max(axis=0)
             span = hi - lo
