@@ -93,6 +93,52 @@ def _strip_field(lay_units) -> bool:
     return sp / sa > 0.25   # sideways-stacked: a line family stays < 0.05
 
 
+def _congruence_groups(lay_units):
+    """Group strokes by congruence key (bbox + length bucket) - the same
+    fingerprint symbols/suggest counts with. Returns {key: [units]}."""
+    groups = {}
+    for u in lay_units:
+        bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+        key = (round(float(bb[0])), round(float(bb[1])), round(u.length / 4.0))
+        groups.setdefault(key, []).append(u)
+    return groups
+
+
+def _symbolic_by_congruence(lay_units) -> bool:
+    """A symbol layer is REPEATED CONGRUENT small shapes (tree canopies,
+    fixtures, markers) - countable EA, not measurable LF. Symbolic when
+    >=50% of the layer's ink sits in congruent groups of >=3 repeats of
+    small shapes. Measured: GCHC TREES = congruent canopy glyphs; real
+    line layers (contours, walls) have near-zero congruent-repeat ink
+    because their mark lengths vary with geometry."""
+    if len(lay_units) < 6:
+        return False
+    total = sum(u.length for u in lay_units) or 1.0
+    rep_ink = 0.0
+    for key, us in _congruence_groups(lay_units).items():
+        w, h, _ = key
+        if len(us) >= 3 and 2 <= max(w, h) <= 45:
+            rep_ink += sum(u.length for u in us)
+    return rep_ink / total >= 0.5
+
+
+def _scatter_glyphs(lay_units) -> bool:
+    """Grass/riprap tick texture: dozens of repeats of the SAME tiny open
+    mark scattered across the sheet. Measured: GCHC GRASS = 768 strokes,
+    median 3.4pt, congruent in a handful of groups; dashed lines never
+    congregate at such tiny lengths in >=20-repeat congruent groups
+    because dash length tracks the pattern, not a glyph template."""
+    tiny = [u for u in lay_units if u.length < 8.0]
+    if len(tiny) < 40:
+        return False
+    total = sum(u.length for u in lay_units) or 1.0
+    rep_ink = 0.0
+    for key, us in _congruence_groups(tiny).items():
+        if len(us) >= 20:
+            rep_ink += sum(u.length for u in us)
+    return rep_ink / total >= 0.6
+
+
 def eval_page(page: pymupdf.Page):
     units = extract_strokes(page)
     # geometry flags come from PRISTINE strokes: build_chains mutates unit
@@ -102,8 +148,23 @@ def eval_page(page: pymupdf.Page):
     _by_layer = defaultdict(list)
     for u in units:
         _by_layer[u.layer].append(u)
+    # aggregate by LEAF layer name: xrefs replot the same logical layer
+    # under several path variants ('24007215.01-X-SITE|P1-WALK' + 'P1-WALK'
+    # + a recolored twin), and chains inherit ONE variant - per-path
+    # buckets then read a sibling's ink as 0-4% recall (C9.0 P1-WALK:
+    # 4.2% by path, 100% coverage in fact). Leaf merging is aggregation
+    # only; texturality still respects the X-CORR leaf caveat elsewhere.
+    def _leaf(lay):
+        return (lay or "").split("|")[-1] or "(none)"
+    _geo_sym = {}
+    _leaf_units = {}
     for lay, lus in _by_layer.items():
-        _geo_tex[lay] = _textural_by_geometry(lus) or _strip_field(lus)
+        _leaf_units.setdefault(_leaf(lay), []).extend(lus)
+    _by_layer = _leaf_units
+    for lay, lus in _by_layer.items():
+        _geo_tex[lay] = (_textural_by_geometry(lus) or _strip_field(lus)
+                         or _scatter_glyphs(lus))
+        _geo_sym[lay] = _symbolic_by_congruence(lus)
     chains = build_chains(units, words=page_words(page))
 
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
@@ -115,11 +176,11 @@ def eval_page(page: pymupdf.Page):
         if getattr(u, "_absorbed", False):
             continue  # twin copy merged into a survivor - one printed line,
             # one expectation (double-drawn layers scored 50% otherwise)
-        per_layer[u.layer]["unit_ink"] += u.length
-        per_layer[u.layer]["lens"].append(u.length)
+        per_layer[_leaf(u.layer)]["unit_ink"] += u.length
+        per_layer[_leaf(u.layer)]["lens"].append(u.length)
 
     for c in chains:
-        s = per_layer[c.layer]
+        s = per_layer[_leaf(c.layer)]
         ink = getattr(c, "ink", None) or c.length
         s["chain_ink"] += ink
         s["n_chains"] += 1
@@ -139,8 +200,9 @@ def eval_page(page: pymupdf.Page):
         # symbol layers: every stroke is a glyph-scale mark (culvert
         # markers, fixture symbols) - countable EA via symbols/suggest,
         # not measurable linework; line recall there is expected-low
-        symbolic = (s["lens"] and float(_np.median(s["lens"])) < 20.0
-                    and s["unit_ink"] < 2000.0)
+        symbolic = ((s["lens"] and float(_np.median(s["lens"])) < 20.0
+                     and s["unit_ink"] < 2000.0)
+                    or _geo_sym.get(layer, False))
         rows.append({
             "layer": layer or "(none)",
             "textural": is_textural(layer)
