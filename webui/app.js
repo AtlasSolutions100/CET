@@ -837,7 +837,13 @@ function draw() {
       ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
       // selection recolors but keeps the true pattern - a solid magenta
       // overlay reads as "this line became solid", which it has not
-      const da = state.faithful ? dashArray(ch.dash_signature) : null;
+      // the chain's own measured period beats any signature-derived
+      // reconstruction (a d9/d45 class signature cannot say whether the
+      // period has one short or two - the template knows)
+      const da = state.faithful
+        ? (ch.template && ch.template.length >= 2 ? ch.template
+           : dashArray(ch.dash_signature))
+        : null;
       ctx.setLineDash(da ? da.map(v => v * f) : []);
       ctx.beginPath();
       const pts = ch.points;

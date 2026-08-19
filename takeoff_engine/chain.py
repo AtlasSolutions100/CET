@@ -61,6 +61,11 @@ class LineChain:
     style_id: int = -1
     layer: str = ""
     ink: float = 0.0  # stroke length excluding gaps; 0 -> use length
+    template: list = None  # one period as [dash, gap, dash, gap, ...] -
+                           # the RENDERABLE truth. The signature compresses
+                           # to length-classes (d9 d45 g9), which cannot say
+                           # long+TWO shorts vs long+one short; drawing from
+                           # it renders the wrong pattern.
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +80,8 @@ class LineChain:
             "label_texts": self.label_texts,
             "style_id": self.style_id,
             "ink_pt": round(self.ink or self.length, 2),
+            "template": [round(float(v), 2) for v in self.template]
+            if self.template else None,
             "points": [[round(float(x), 2), round(float(y), 2)] for x, y in self.pts],
         }
 
@@ -285,6 +292,43 @@ def _cluster_1d(values: list, rel=1.55, abs_tol=1.2) -> list:
     return [(float(np.mean(c)), len(c)) for c in clusters]
 
 
+def _dash_template(dls: list, gaps: list) -> list | None:
+    """One period of the pattern as [dash, gap, dash, gap, ...].
+
+    Finds the smallest repeat period (1..4 marks) in the ORDERED dash
+    sequence, then medians each position over its repeats. Returns None
+    when nothing periodic emerges (solids, irregular chains)."""
+    if not dls or not gaps or len(dls) < 4:
+        return None
+    d = np.asarray(dls[1:-1] if len(dls) >= 6 else dls, dtype=float)
+    g = np.asarray(gaps, dtype=float)
+    if len(d) < 4:
+        return None
+    for q in (1, 2, 3, 4):
+        if len(d) < 2 * q:
+            break
+        ok = True
+        for off in range(q):
+            col = d[off::q]
+            if len(col) < 2:
+                ok = False
+                break
+            m = float(np.median(col))
+            if m > 0 and float(np.abs(col - m).mean()) > max(0.35 * m, 2.5):
+                ok = False
+                break
+        if not ok:
+            continue
+        out = []
+        for off in range(q):
+            out.append(float(np.median(d[off::q])))
+            gc = g[off::q]
+            out.append(float(np.median(gc)) if len(gc) else float(np.median(g)))
+        if all(v > 0.2 for v in out):
+            return [round(v, 2) for v in out]
+    return None
+
+
 def _classify_cadence(dash_lengths: list, gaps: list) -> tuple:
     """Return (klass, signature) from a chain's dash length sequence."""
     # clipped end-dashes (a dash cut short where the line terminates) are
@@ -411,7 +455,11 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
                 klass, sig = "solid", "solid"
             else:
                 klass, sig = _classify_cadence(dls, gaps)
-            cand_chains.append((seq, LineChain(cid, pts, klass, color, width, length, len(seq), sig, layer=layer, ink=float(sum(dls))), gaps))
+            lc_new = LineChain(cid, pts, klass, color, width, length,
+                               len(seq), sig, layer=layer,
+                               ink=float(sum(dls)))
+            lc_new.template = _dash_template(dls, gaps)
+            cand_chains.append((seq, lc_new, gaps))
             cid += 1
 
         group_lcs = []
@@ -1339,6 +1387,7 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                     dls.append(units[payload].length)
                     n_dashes += 1
             klass, sig = _classify_cadence(dls, [g for g in gaps if g > 0.5] or gaps)
+            tmpl = _dash_template(dls, [g for g in gaps if g > 0.5] or gaps)
             # ink = actual stroke, never gap: a merged CHAIN member's
             # length includes its gaps, and summing member lengths as ink
             # made a d10 g30 pattern claim 96% ink - which poisoned the
@@ -1351,8 +1400,10 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                     true_ink += float(payload[0].ink or payload[0].length)
                 else:
                     true_ink += float(units[payload].length)
-            out.append(LineChain(cid, pts, klass, color, width, total_len,
-                                 n_dashes, sig, layer=layer, ink=true_ink))
+            lc_cm = LineChain(cid, pts, klass, color, width, total_len,
+                              n_dashes, sig, layer=layer, ink=true_ink)
+            lc_cm.template = tmpl
+            out.append(lc_cm)
             cid += 1
             consumed.update(k for k, _ in seq)
 
