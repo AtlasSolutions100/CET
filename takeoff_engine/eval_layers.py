@@ -44,11 +44,16 @@ def eval_page(page: pymupdf.Page):
     chains = build_chains(units, words=page_words(page))
 
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
-                                     "styles": defaultdict(float), "n_chains": 0})
+                                     "styles": defaultdict(float), "n_chains": 0,
+                                     "lens": []})
     for u in units:
         if u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False):
             continue  # invisible whiteout, excluded from scoring like in build
+        if getattr(u, "_absorbed", False):
+            continue  # twin copy merged into a survivor - one printed line,
+            # one expectation (double-drawn layers scored 50% otherwise)
         per_layer[u.layer]["unit_ink"] += u.length
+        per_layer[u.layer]["lens"].append(u.length)
 
     for c in chains:
         s = per_layer[c.layer]
@@ -67,9 +72,16 @@ def eval_page(page: pymupdf.Page):
             purity = dom_ink / max(s["chain_ink"], 1e-9)
         else:
             dom_class, dom_sig, purity = "-", "-", 0.0
+        import numpy as _np
+        # symbol layers: every stroke is a glyph-scale mark (culvert
+        # markers, fixture symbols) - countable EA via symbols/suggest,
+        # not measurable linework; line recall there is expected-low
+        symbolic = (s["lens"] and float(_np.median(s["lens"])) < 20.0
+                    and s["unit_ink"] < 2000.0)
         rows.append({
             "layer": layer or "(none)",
             "textural": is_textural(layer),
+            "symbolic": bool(symbolic),
             "unit_ink": s["unit_ink"],
             "recall": recall,
             "purity": min(purity, 1.0),
@@ -99,7 +111,7 @@ def main():
               f"layer='{(c.layer or '(none)')[:28]}'")
     print()
     rows = eval_page(page)
-    line_rows = [r for r in rows if not r["textural"]]
+    line_rows = [r for r in rows if not r["textural"] and not r.get("symbolic")]
     if line_rows:
         tot = sum(r["unit_ink"] for r in line_rows)
         w_recall = sum(r["recall"] * r["unit_ink"] for r in line_rows) / tot
@@ -107,7 +119,7 @@ def main():
         print(f"LINE LAYERS ink-weighted: recall={w_recall:.1%} purity={w_purity:.1%}\n")
     print(f"{'layer':46} {'ink':>8} {'recall':>7} {'purity':>7} {'n':>5}  dominant")
     for r in rows:
-        tag = " [tex]" if r["textural"] else ""
+        tag = " [tex]" if r["textural"] else (" [sym]" if r.get("symbolic") else "")
         print(f"{r['layer'][:46]:46} {r['unit_ink']:8.0f} {r['recall']:7.1%} "
               f"{r['purity']:7.1%} {r['n_chains']:5}  {r['dom'][:38]}{tag}")
 
@@ -173,7 +185,9 @@ def class_metrics(chains, units) -> dict:
         good = sum((c.ink or c.length) for c in cs if c.klass == want)
         # ink recall against the layer's raw stroke ink
         lay_units = [u for u in units
-                     if u.layer == lay and not (u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False))]
+                     if u.layer == lay
+                     and not getattr(u, "_absorbed", False)
+                     and not (u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False))]
         lay_ink = sum(u.length for u in lay_units)
         truth[lay] = {
             "want": want, "class_acc": good / total if total else None,

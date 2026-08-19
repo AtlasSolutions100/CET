@@ -805,12 +805,34 @@ $("legendBtn").onclick = () => {
 // ---------- canvas ----------
 const cv = $("view"), ctx = cv.getContext("2d");
 function resize() {
-  cv.width = cv.clientWidth * devicePixelRatio;
-  cv.height = cv.clientHeight * devicePixelRatio;
+  cv.width = Math.round(cv.clientWidth * devicePixelRatio);
+  cv.height = Math.round(cv.clientHeight * devicePixelRatio);
   fitView();
   draw();
 }
 addEventListener("resize", resize);
+// Browser pinch/zoom changes devicePixelRatio and the visual viewport
+// WITHOUT always firing window resize - the canvas buffer then disagrees
+// with the element size and the un-repainted band shows a frozen stale
+// frame. Track both signals and reallocate.
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", () => requestAnimationFrame(syncBuffer));
+  visualViewport.addEventListener("scroll", () => requestAnimationFrame(syncBuffer));
+}
+let _dprWatch = null;
+function watchDpr() {
+  if (_dprWatch) _dprWatch.removeEventListener("change", onDprChange);
+  _dprWatch = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+  _dprWatch.addEventListener("change", onDprChange);
+}
+function onDprChange() { watchDpr(); syncBuffer(); }
+watchDpr();
+function syncBuffer() {
+  const w = Math.round(cv.clientWidth * devicePixelRatio);
+  const h = Math.round(cv.clientHeight * devicePixelRatio);
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  draw();
+}
 
 function fitOnLoad() { state.img = null; draw(); }
 function fitView() {
@@ -822,8 +844,15 @@ function fitView() {
 }
 
 function draw() {
+  // buffer may lag the element across browser zoom - resync before painting
+  const bw = Math.round(cv.clientWidth * devicePixelRatio);
+  const bh = Math.round(cv.clientHeight * devicePixelRatio);
+  if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
+  // clear the WHOLE buffer in raw pixels: a viewport-relative clear leaves
+  // stale bands whenever devicePixelRatio moved between frames
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-  ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
   $("hint").style.display = state.img ? "none" : "";
   if (!state.img) return;
   const { x, y, k } = state.view;

@@ -66,6 +66,24 @@ def audit_page(pdf: Path, page_no: int, budget_s: int = 240) -> dict:
         a = phantom_span_audit(chains, units)
         row["phantom"] = len(a["bad"])
 
+        # reversal points the SOURCE strokes already contain (zigzag
+        # shading bands, conveyance arrows): a chain tracing one faithfully
+        # is not a bad weld, so those vertices are exempt
+        _src_rev = []
+        for _u in units:
+            _p = np.asarray(_u.pts)
+            for _i in range(1, len(_p) - 1):
+                _v1, _v2 = _p[_i] - _p[_i - 1], _p[_i + 1] - _p[_i]
+                _la, _lb = np.hypot(*_v1), np.hypot(*_v2)
+                if _la > 1 and _lb > 1 and (_v1 / _la) @ (_v2 / _lb) < -0.8 \
+                        and min(_la, _lb) > 15:
+                    _src_rev.append(_p[_i])
+        if _src_rev:
+            from scipy.spatial import cKDTree as _KD
+            _rev_tree = _KD(np.asarray(_src_rev))
+        else:
+            _rev_tree = None
+
         def spikes(c):
             p = np.asarray(c.pts)
             n = 0
@@ -74,6 +92,9 @@ def audit_page(pdf: Path, page_no: int, budget_s: int = 240) -> dict:
                 la, lb = np.hypot(*v1), np.hypot(*v2)
                 if la > 1 and lb > 1 and (v1 / la) @ (v2 / lb) < -0.8 \
                         and min(la, lb) > 15:
+                    if _rev_tree is not None and np.isfinite(
+                            _rev_tree.query(p[i], distance_upper_bound=1.5)[0]):
+                        continue
                     n += 1
             return n
         row["spikes"] = int(sum(spikes(c) for c in keep))

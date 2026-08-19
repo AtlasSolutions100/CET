@@ -920,8 +920,56 @@ def _merge_twin_strokes(units: list) -> list:
             if not ok.any():
                 break
             same_first = d_same <= d_rev
+            # --- ladder veto: a twin is an ISOLATED pair. In a dense
+            # contour field (LIDAR topo) adjacent contour LINES sit only
+            # 2-4pt apart with same-length, in-phase dashes - such a pair
+            # passes every guard above, and merging it eats every other
+            # contour, drags geometry to the midline between two DIFFERENT
+            # lines, and poisons the width bump below (offset joins the
+            # width: 0.48pt hairlines printed as 3.0pt on Belle Road).
+            # A real double-draw has nothing else parallel at comparable
+            # spacing: no third line on the far side of either member and
+            # no next rung beyond the partner. Coincident pairs
+            # (offset <= 1.2pt: stacks, true redraws) are never vetoed.
+            kidx = np.nonzero(ok)[0]
+            veto = np.zeros(len(L), dtype=bool)  # indexed by pair id below
+            veto_pairs = set()
+            if len(kidx):
+                sep = mids[pb[kidx]] - mids[pa[kidx]]
+                da = D[pa[kidx]]
+                offp = da[:, 0] * sep[:, 1] - da[:, 1] * sep[:, 0]
+                need = np.abs(offp) > 1.2
+                if need.any():
+                    # sideways-parallel neighbour count per mark, one
+                    # vectorised pass (a per-pair radius search here cost
+                    # 95s on Oncor's 58k-unit sheets): a mark with >=2
+                    # parallel neighbours offset 1.2-12pt sits in a ladder
+                    # (contour field); a true twin member has exactly its
+                    # partner. Trade-off vs per-pair bands: a double-drawn
+                    # line whose parallel SIBLING feature sits within 12pt
+                    # now also refuses the offset-merge - it stays split
+                    # thin (cosmetic) instead of risking eaten contours.
+                    # enumerate over CALM marks only: crowded stipple
+                    # dots would blow query_pairs into tens of millions
+                    # on Oncor-scale sheets, and only line-like (calm)
+                    # marks constitute ladder evidence
+                    fp = sub.query_pairs(12.0, output_type="ndarray")
+                    cnt = np.zeros(len(L), dtype=np.int32)
+                    if len(fp):
+                        fa, fb = calm[fp[:, 0]], calm[fp[:, 1]]
+                        par = np.abs(np.einsum("ij,ij->i", D[fa], D[fb])) >= 0.94
+                        sv = mids[fb] - mids[fa]
+                        perp = np.abs(D[fa][:, 0] * sv[:, 1]
+                                      - D[fa][:, 1] * sv[:, 0])
+                        side = par & (perp >= 1.2)
+                        np.add.at(cnt, fa[side], 1)
+                        np.add.at(cnt, fb[side], 1)
+                    bad = need & ((cnt[pa[kidx]] >= 2) | (cnt[pb[kidx]] >= 2))
+                    veto_pairs = set(kidx[bad].tolist())
             made = False
             for k in np.nonzero(ok)[0]:
+                if int(k) in veto_pairs:
+                    continue
                 ia, ib = idxs[int(pa[k])], idxs[int(pb[k])]
                 if ia in drop or ib in drop:
                     continue
@@ -1114,6 +1162,11 @@ def _merge_twin_strokes(units: list) -> list:
                 family += added
                 frontier = added
                 pending = still
+    # absorbed marks stay in the CALLER's list (eval uses it as the recall
+    # denominator) - tag them so metrics know their ink lives on in a
+    # survivor instead of scoring a genuinely double-drawn layer at 50%
+    for i in drop:
+        units[i]._absorbed = True
     if not drop:
         return units
     return [u for i, u in enumerate(units) if i not in drop]
@@ -1185,6 +1238,17 @@ def _stitch_across_styles(chains: list) -> list:
         if len(seq) < 2:
             continue
         pts, member_lens, gaps = _chain_geometry(cands, seq)
+        # no real line doubles back on itself mid-run: reject assemblies
+        # whose path reverses repeatedly (texture fields / leader sunbursts
+        # threading into fake cadences - the GCHC lawn spike storms)
+        _segs = np.diff(pts, axis=0)
+        _sl = np.hypot(_segs[:, 0], _segs[:, 1])
+        _ks = _sl > 3.0
+        if _ks.sum() >= 4:
+            _sd = _segs[_ks] / _sl[_ks, None]
+            _rv = np.einsum("ij,ij->i", _sd[:-1], _sd[1:]) < -0.5
+            if float(_rv.mean()) > 0.2:
+                continue
         base = max((cands[k] for k, _ in seq), key=lambda c: c.length)
         base.pts = pts
         base.length = float(sum(member_lens) + sum(gaps))
@@ -1358,6 +1422,17 @@ def _join_chain_ends(chains: list) -> list:
         if len(seq) < 2:
             continue
         pts, member_lens, gaps = _chain_geometry(cands, seq)
+        # no real line doubles back on itself mid-run: reject assemblies
+        # whose path reverses repeatedly (texture fields / leader sunbursts
+        # threading into fake cadences - the GCHC lawn spike storms)
+        _segs = np.diff(pts, axis=0)
+        _sl = np.hypot(_segs[:, 0], _segs[:, 1])
+        _ks = _sl > 3.0
+        if _ks.sum() >= 4:
+            _sd = _segs[_ks] / _sl[_ks, None]
+            _rv = np.einsum("ij,ij->i", _sd[:-1], _sd[1:]) < -0.5
+            if float(_rv.mean()) > 0.2:
+                continue
         base = max((cands[k] for k, _ in seq), key=lambda c: c.length)
         base.pts = pts
         base.length = float(sum(member_lens) + sum(gaps))
@@ -1484,6 +1559,17 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                     continue
             if total_len < 60.0:
                 continue
+            # no real line doubles back on itself mid-run: reject assemblies
+            # whose path reverses repeatedly (texture fields / leader sunbursts
+            # threading into fake cadences - the GCHC lawn spike storms)
+            _segs = np.diff(pts, axis=0)
+            _sl = np.hypot(_segs[:, 0], _segs[:, 1])
+            _ks = _sl > 3.0
+            if _ks.sum() >= 4:
+                _sd = _segs[_ks] / _sl[_ks, None]
+                _rv = np.einsum("ij,ij->i", _sd[:-1], _sd[1:]) < -0.5
+                if float(_rv.mean()) > 0.2:
+                    continue
             # cadence from member dash data: chains contribute their dash
             # lengths, solids and dots their own length
             dls = []
@@ -1594,7 +1680,23 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
                     d0 = float(np.hypot(*(u.pts[0] - ep)))
                     d1 = float(np.hypot(*(u.pts[-1] - ep)))
                     d = min(d0, d1)
-                    if d <= reach and (best is None or d < best[0]):
+                    if d > reach:
+                        continue
+                    # never pick a mark the chain would DOUBLE BACK onto:
+                    # at a callout-leader hub (GCHC lawns) free marks
+                    # radiate BEHIND the chain end - often TOUCHING it at
+                    # the hub - and picking one stitches a spike onto a
+                    # clean run. Judge by where the mark's FAR end takes
+                    # the line (works at zero gap too). A chevron kink
+                    # turns at most ~135deg (dot -0.7); only true
+                    # reversals are refused.
+                    tang = c.pts[-1] - c.pts[-4 if len(c.pts) >= 4 else 0]                         if end != 0 else c.pts[0] - c.pts[3 if len(c.pts) >= 4 else -1]
+                    tn = float(np.hypot(*tang))
+                    far = (u.pts[-1] if d0 <= d1 else u.pts[0]) - ep
+                    fn = float(np.hypot(*far))
+                    if tn > 1e-6 and fn > 1e-6 and                             float(tang @ far) / (tn * fn) < -0.75:
+                        continue
+                    if best is None or d < best[0]:
                         best = (d, i, d0 <= d1)
                 if best is None:
                     continue
@@ -1665,6 +1767,30 @@ def _prune_junk(cand_chains: list, units: list, dash_cand: list,
             if len(seq) <= 7 and mean_turn > 32.0:
                 deferred.append((seq, lc, gaps))
                 continue
+            # texture-symbol fields (grass/earth pair-ticks, scattered
+            # decoration) thread into LONG chains with regular gaps and
+            # even PARALLEL headings - what betrays them is that the marks
+            # do not point where the chain TRAVELS: a real dashed line's
+            # every dash aims at the next one (a drawn corner breaks a few
+            # links at most - a 40-dash ring has ~4), while a lawn chain
+            # walks sideways/backwards between parallel ticks. Judge
+            # heading-vs-travel per link, plus outright travel reversals.
+            if len(seq) >= 8:
+                cs = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2
+                               for i, _ in seq])
+                steps = np.diff(cs, axis=0)
+                slen = np.hypot(steps[:, 0], steps[:, 1])
+                okl = slen > 1e-6
+                if okl.sum() >= 4:
+                    stepd = steps[okl] / slen[okl, None]
+                    hd = heads[:-1][okl]
+                    align = np.abs(np.einsum("ij,ij->i", hd, stepd))
+                    rev = np.einsum("ij,ij->i", stepd[:-1], stepd[1:]) < -0.5
+                    lens = np.array([units[i].length for i, _ in seq])[:-1][okl]
+                    bad = (align < 0.7) & (lens > 2.5)  # dots have no heading
+                    frac = float(bad.mean())
+                    if frac > 0.25 or (len(rev) and float(rev.mean()) > 0.25):
+                        continue
 
         # multi-length cadences must actually repeat - but the repeat
         # PERIOD is not the number of length classes: dash-dot-dot has two
@@ -1709,11 +1835,22 @@ def _prune_junk(cand_chains: list, units: list, dash_cand: list,
             n_left += left
             n_right += right
             n_cross += cross
-        # hatch field: parallel strokes hugging the chain on BOTH sides
-        # (a lone parallel partner - e.g. a double-line ditch - is fine),
-        # or dense crossing strokes (crosshatch).
-        if min(n_left, n_right) / n_s > 0.35 or n_cross / n_s > 0.5:
+        # hatch field: dense crossing strokes (crosshatch) kill outright.
+        if n_cross / n_s > 0.5:
             continue
+        # parallel strokes hugging the chain on BOTH sides (a lone parallel
+        # partner - e.g. a double-line ditch - is fine) is hatch ONLY at
+        # texture scale. A LONG chain of real-sized dashes flanked by
+        # parallels is a LADDER of real lines - tight LIDAR contours 2-4pt
+        # apart, a fence run between contours - and killing it strands
+        # whole kilometre-scale lines. Measured on the corpus: hatch rows
+        # ext<=230 / meddash 2.7 / crossing 0.87-1.0 (caught above anyway);
+        # false kills were ext 700-1100 / meddash 9-14 / crossing 0.
+        if min(n_left, n_right) / n_s > 0.35:
+            ext = float(np.hypot(*(lc.pts.max(axis=0) - lc.pts.min(axis=0))))
+            md = float(np.median(dls)) if dls else 0.0
+            if ext < 240.0 or md < 6.0:
+                continue
         kept.append((seq, lc, gaps))
 
     if deferred and kept:
