@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 <header>
@@ -28,6 +28,7 @@
 <main>
   <aside id="sidebar">
     <div id="colorChips" class="color-chips"></div>
+    <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
     <div id="legendBox" class="legend-box" hidden></div>
     <div id="ewPanel" class="ew-panel" hidden>
       <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
@@ -72,6 +73,7 @@
     <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
     <div id="itemized" class="itemized"></div>
     <div class="approve-bar">
+      <span id="tallyBar" class="tally"></span>
       <button id="approveBtn" disabled>Approve &amp; export</button>
     </div>
     <div class="links-bar">
@@ -100,6 +102,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=18"></script>
+<script src="app.js?v=19"></script>
 </body>
 </html>

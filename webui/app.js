@@ -173,7 +173,27 @@ function renderStyles() {
   box.innerHTML = "";
   $("approveBtn").disabled = !state.result;
   if (!state.result) return;
-  for (const s of state.result.styles) {
+  const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
+  const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
+  const CLASS_NAME = { solid: "Solid lines", dash1: "Dashed",
+    dash2: "Dash-dot", dash3: "Compound (dash-dot-dot)",
+    "dash-text": "Lettered runs (W / SD / FO)" };
+  const styles = [...state.result.styles].sort((a, b) =>
+    CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class)
+    || b.length_pt - a.length_pt);
+  let lastClass = null;
+  for (const s of styles) {
+    const label = state.labels.get(s.style_id) ?? "";
+    if (q && !((label + " " + s.signature + " " + s.class)
+               .toUpperCase().includes(q)))
+      continue;
+    if (s.class !== lastClass) {
+      lastClass = s.class;
+      const h = document.createElement("div");
+      h.className = "class-head";
+      h.textContent = CLASS_NAME[s.class] || s.class;
+      box.appendChild(h);
+    }
     const row = document.createElement("div");
     row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off");
     row.dataset.sid = s.style_id;
@@ -182,8 +202,25 @@ function renderStyles() {
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
     cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked); renderStyles(); renderChips(); renderItemized(); draw(); };
 
-    const sw = document.createElement("div");
-    sw.className = "swatch"; sw.style.background = cssColor(s.color);
+    // a real pattern sample, not a flat chip: estimators match rows to
+    // linework by PATTERN (the flat chip caused every "legend shows a
+    // straight line" report). Template from any chain of this style wins;
+    // signature-derived dashes otherwise.
+    const sw = document.createElement("canvas");
+    sw.className = "swatch-line";
+    sw.width = 92; sw.height = 20;   // 2x for retina, displayed 46x10
+    const sctx = sw.getContext("2d");
+    const rep = state.result.chains.find(c => c.style_id === s.style_id);
+    const tpl = rep && rep.template && rep.template.length >= 2
+      ? rep.template : dashArray(s.signature);
+    sctx.strokeStyle = cssColor(s.color);
+    sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
+    if (s.class !== "solid" && tpl && tpl.length >= 2) {
+      const span = tpl.reduce((a, b) => a + b, 0);
+      const k2 = span > 0 ? Math.min(84 / span, 3.2) : 1;   // >=1 repeat visible
+      sctx.setLineDash(tpl.map(v => Math.max(v * k2, 1.6)));
+    }
+    sctx.beginPath(); sctx.moveTo(4, 10); sctx.lineTo(88, 10); sctx.stroke();
 
     const main = document.createElement("div");
     main.className = "style-main";
@@ -258,6 +295,7 @@ function renderLegend() {
   }
 }
 
+$("styleSearch").oninput = () => renderStyles();
 $("allBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, true); renderStyles(); renderChips(); renderItemized(); draw(); };
 $("noneBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, false); renderStyles(); renderChips(); renderItemized(); draw(); };
 
@@ -407,6 +445,19 @@ function renderItemized() {
       box.appendChild(row);
     }
   }
+  // always-visible tally: sum of INCLUDED footage + priced total
+  let inkPt = 0;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    inkPt += ch.length_pt;
+  }
+  const tf = ftPerIn ? inkPt / 72 * ftPerIn : null;
+  $("tallyBar").textContent =
+    (tf !== null
+      ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
+      : fmtLen(inkPt) + " measured")
+    + (grand ? ` · $${grand.toFixed(0)}` : "");
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";

@@ -45,7 +45,7 @@ aside { width: 330px; background: var(--panel); border-right: 1px solid var(--li
 .side-head h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
 .mini { padding: 2px 8px; font-size: 11px; }
 .style-list { padding: 6px; }
-.style-row { display: grid; grid-template-columns: 16px 14px 1fr auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.style-row { display: grid; grid-template-columns: 16px 46px 1fr auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
 .style-row:hover, .style-row.hot { background: var(--hover); }
 .style-row.off { opacity: .38; }
 .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--swatch-line); }
@@ -155,3 +155,13 @@ canvas#view.panning { cursor: grabbing; }
   max-width: 100%; cursor: pointer; }
 .item-row select.trade-pick:hover { color: var(--accent); }
 .item-row.total { font-family: var(--mono); letter-spacing: .08em; }
+
+/* ---------- readable style list ---------- */
+.style-search { margin: 8px 8px 2px; width: calc(100% - 16px); font-family: var(--mono);
+  font-size: 11px; letter-spacing: .03em; }
+.class-head { font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
+  padding: 10px 10px 2px; }
+canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
+.tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+  color: var(--accent); white-space: nowrap; }
