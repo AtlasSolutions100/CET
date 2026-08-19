@@ -20,6 +20,15 @@ Proof of a fix requires all three, every time:
    region being claimed fixed.
 3. The same region cropped from the source PDF, side by side with (2).
 
+Additionally, verification screenshots sent to the human are ANNOTATED:
+circle every defect you found (and every region you checked and found clean,
+mark sparingly) directly on the image before sending — the human must see
+that you see what they see. And verification is a CRAWL, not a glance:
+isolate the style(s) under test with the app's own filters so unrelated
+linework is hidden, then zoom and pan across the whole sheet region by
+region comparing render to original for completeness (missed pieces) and
+placement (mis-boxes). A full-canvas screenshot alone is not a review.
+
 Verification is not a claim, it is an artifact. Write every verification set
 to `out/verify/<YYYY-MM-DD>/<topic>/` — the screenshots, the source crops,
 and a `VERIFY.md` naming the sheet, page index, region, and what was

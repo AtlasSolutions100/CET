@@ -217,10 +217,10 @@ function chainRuns(ch) {
         }
       }
     }
-    if (cut) { if (polyLen(run) >= 8) runs.push(run); run = [pts[i-1]]; }
+    if (cut) { if (polyLen(run) >= 6) runs.push(run); run = [pts[i-1]]; }
     run.push(pts[i]);
   }
-  if (polyLen(run) >= 8) runs.push(run);
+  if (polyLen(run) >= 6) runs.push(run);
   return runs;
 }
 function styleObjects(sid) {
@@ -239,7 +239,7 @@ function styleObjects(sid) {
     let cur = [];
     for (const q of pts) {
       const inside = opens.some(o =>
-        Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.12);
+        Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.02);
       if (inside) {
         if (cur.length >= 2) parts.push(cur);
         cur = [];
@@ -273,12 +273,12 @@ function styleObjects(sid) {
       };
       const flags = runs.map(onFill);
       const frac = flags.filter(Boolean).length / runs.length;
-      if (frac >= 0.15 && frac <= 0.9)
-        runs = runs.filter((_, i) => flags[i]);
-      // a pool that's mostly OFF the bands on a sheet that HAS bands is
-      // annotation (zone rectangles, dimension strings) - keep whatever
-      // does sit on a band, or nothing measurable remains and we keep all
-      else if (frac > 0 && frac < 0.15) {
+      // when the sheet HAS bands and this pool touches them at all, the
+      // object geometry IS the on-band runs: off-band leftovers are zone
+      // rectangles, dimension strings, leaders - at ANY minority share
+      // (a >0.9 upper bound let the conservatory note-zone rect through
+      // as the only off-band run in an otherwise clean pool)
+      if (frac > 0) {
         const kept2 = runs.filter((_, i) => flags[i]);
         if (kept2.length) runs = kept2;
       }
@@ -351,8 +351,9 @@ function styleObjects(sid) {
       if (!echo) kept.push(r);
     }
     const len = kept.reduce((t, r) => t + r.len, 0);
-    // scraps below ~1.5 ft of wall are pattern debris, not an object
-    if (len < (sc ? (1.5 / sc.ft_per_paper_inch) * 72 : 12)) continue;
+    // scraps below ~1 ft are pattern debris; short stall walls between
+    // clustered doors (restrooms) are REAL per-segment objects and stay
+    if (len < (sc ? (1.0 / sc.ft_per_paper_inch) * 72 : 10)) continue;
     out.push({
       runs: members,                       // every run, for the boxes
       pts: members[0].pts,                 // representative
