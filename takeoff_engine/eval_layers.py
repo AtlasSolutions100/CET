@@ -39,8 +39,71 @@ def is_textural(layer: str) -> bool:
     return any(h in leaf for h in TEXTURAL_HINTS) or leaf.endswith("-CORR")
 
 
+def _textural_by_geometry(lay_units) -> bool:
+    """Texture regardless of the layer's NAME: a fill pattern is thousands
+    of tiny strokes in dense crowds (GCHC 'Shading|GRAVEL': 14,277 stones,
+    median 3.0pt, 9.7 neighbours within 5pt), while real dashed linework
+    runs 8pt+ marks with ~1-2 neighbours. Measured: corpus line layers stay
+    below 4 mean-neighbours; hatch/stipple sits above 6."""
+    import numpy as np
+    if len(lay_units) < 200:
+        return False
+    lens = np.array([u.length for u in lay_units])
+    if float(np.median(lens)) > 6.0:
+        return False
+    from scipy.spatial import cKDTree
+    mids = np.array([u.pts.mean(axis=0) for u in lay_units])
+    t = cKDTree(mids)
+    n5 = t.query_ball_point(mids[:: max(1, len(mids) // 300)], 5.0,
+                            return_length=True)
+    if float(np.mean(n5)) > 6.0:
+        return True
+    return False
+
+
+def _strip_field(lay_units) -> bool:
+    """Second texture signature: HATCH STRIPS - uniform-length parallel
+    strokes stacked SIDEWAYS. Real dash runs are also uniform and parallel,
+    but their marks line up ALONG the shared axis; a hatch field spreads
+    perpendicular to it. Measured: C4.0 P1-BLDG strips are all 16.0pt
+    (p90/median = 1.00) with lateral spread ~ along spread; straight dashed
+    property lines have lateral/along < 0.05 per line group."""
+    import numpy as np
+    if len(lay_units) < 20:
+        return False
+    lens = np.array([u.length for u in lay_units])
+    med = float(np.median(lens))
+    if med < 2.0 or med > 40.0:
+        return False
+    if float(np.percentile(lens, 90)) > 1.2 * med:
+        return False  # mixed lengths: not a machine pattern
+    dirs = np.array([u.direction() for u in lay_units])
+    # dominant orientation (mod 180): doubled-angle mean
+    ang = np.arctan2(dirs[:, 1], dirs[:, 0]) * 2
+    R = np.hypot(np.mean(np.cos(ang)), np.mean(np.sin(ang)))
+    if R < 0.8:
+        return False  # not one shared direction
+    mean_ang = np.arctan2(np.mean(np.sin(ang)), np.mean(np.cos(ang))) / 2
+    axis = np.array([np.cos(mean_ang), np.sin(mean_ang)])
+    mids = np.array([u.pts.mean(axis=0) for u in lay_units])
+    rel = mids - mids.mean(axis=0)
+    along = rel @ axis
+    perp = rel @ np.array([-axis[1], axis[0]])
+    sa, sp = float(np.std(along)) + 1e-6, float(np.std(perp))
+    return sp / sa > 0.25   # sideways-stacked: a line family stays < 0.05
+
+
 def eval_page(page: pymupdf.Page):
     units = extract_strokes(page)
+    # geometry flags come from PRISTINE strokes: build_chains mutates unit
+    # geometry in place (twin merges, marker collapse), which can lift a
+    # stipple layer's median length past any texture threshold
+    _geo_tex = {}
+    _by_layer = defaultdict(list)
+    for u in units:
+        _by_layer[u.layer].append(u)
+    for lay, lus in _by_layer.items():
+        _geo_tex[lay] = _textural_by_geometry(lus) or _strip_field(lus)
     chains = build_chains(units, words=page_words(page))
 
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
@@ -80,7 +143,9 @@ def eval_page(page: pymupdf.Page):
                     and s["unit_ink"] < 2000.0)
         rows.append({
             "layer": layer or "(none)",
-            "textural": is_textural(layer),
+            "textural": is_textural(layer)
+                        or ("SHADING" in (layer or "").upper().split("|")[-1])
+                        or _geo_tex.get(layer, False),
             "symbolic": bool(symbolic),
             "unit_ink": s["unit_ink"],
             "recall": recall,
