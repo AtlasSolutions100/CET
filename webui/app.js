@@ -961,6 +961,31 @@ function renderAiBanner() {
     }
     banner.appendChild(bar);
   }
+
+  // page_modes -> one-click calculator suggestions: the model says what
+  // KIND of measuring this sheet needs; each chip opens the matching tool
+  const CALC = {
+    earthwork: { btn: "ewBtn", label: "EARTHWORK — cut & fill from these contours" },
+    trench:    { btn: "trBtn", label: "TRENCH — excavation + bedding for a pipe run" },
+    count:     { btn: "symBtn", label: "COUNT — tally repeated symbols" },
+  };
+  const modes = (j.page_modes || []).filter(m => CALC[m]);
+  if (modes.length) {
+    const bar2 = document.createElement("div");
+    bar2.className = "ai-actions";
+    const lead = document.createElement("span");
+    lead.className = "ai-dim";
+    lead.textContent = "This sheet also calls for:";
+    bar2.appendChild(lead);
+    for (const m of modes) {
+      const b = document.createElement("button");
+      b.className = "ai-mode";
+      b.textContent = CALC[m].label;
+      b.onclick = () => { const t = $(CALC[m].btn); if (t) t.click(); };
+      bar2.appendChild(b);
+    }
+    banner.appendChild(bar2);
+  }
 }
 
 function applyAiFocus(focus) {

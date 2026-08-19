@@ -206,3 +206,8 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   background: transparent; border: 1px solid var(--line); color: var(--dim); }
 .mm-toggle.ea { background: var(--accent-deep); border-color: var(--accent);
   color: #fff; }
+
+.ai-mode { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
+  background: transparent; border: 1px solid var(--accent);
+  color: var(--accent); }
+.ai-mode:hover { background: var(--accent-deep); color: #fff; }
