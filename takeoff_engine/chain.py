@@ -471,6 +471,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         merged, cid = _compound_merge(
             group_lcs, solid_pool, stray_dots, units, color, width, layer, cid
         )
+        _pickup_end_marks(merged, units, dash_cand, chained_units)
         chains.extend(merged)
 
     chains = _stitch_across_styles(chains)
@@ -1306,6 +1307,67 @@ MAX_WIGGLE = 3.5
 HATCH_RADIUS = 5.5
 
 
+def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
+                      chained_units: set, max_picks: int = 4) -> None:
+    """Absorb stranded single marks at chain ends.
+
+    At a contour's chevron kink, link competition can leave one or two
+    marks unchained - too few to ever form a candidate chain, so no pruner
+    tuning can save them, and the line simply stops one dash short of the
+    kink. A stranded mark whose end sits within the chain's own gap rhythm
+    of a chain end, with a length the chain's cadence already contains,
+    belongs to that chain.
+    """
+    from scipy.spatial import cKDTree
+
+    free = [i for i in dash_cand
+            if i not in chained_units and units[i].length >= 2.0]
+    if not free:
+        return
+    used: set = set()
+    for c in group_chains:
+        if not c.klass.startswith("dash") or c.n_dashes < 4:
+            continue
+        ink = c.ink or c.length
+        gap = (c.length - ink) / max(c.n_dashes - 1, 1)
+        reach = min(max(1.7 * gap + 2.0, 6.0), 30.0)
+        dmax = 1.4 * max((u.length for u in
+                          (units[i] for i in free)), default=0.0)
+        for _ in range(max_picks):
+            picked = False
+            for end in (0, -1):
+                ep = c.pts[end]
+                best = None
+                for i in free:
+                    if i in used:
+                        continue
+                    u = units[i]
+                    if u.length > 1.4 * DASH_MAX_LEN:
+                        continue
+                    d0 = float(np.hypot(*(u.pts[0] - ep)))
+                    d1 = float(np.hypot(*(u.pts[-1] - ep)))
+                    d = min(d0, d1)
+                    if d <= reach and (best is None or d < best[0]):
+                        best = (d, i, d0 <= d1)
+                if best is None:
+                    continue
+                d, i, head_first = best
+                u = units[i]
+                seg = u.pts if head_first else u.pts[::-1]
+                if end == 0:
+                    c.pts = np.vstack([seg[::-1], c.pts])
+                else:
+                    c.pts = np.vstack([c.pts, seg])
+                c.length += u.length + d
+                c.ink = (c.ink or 0.0) + u.length
+                c.n_dashes += 1
+                used.add(i)
+                chained_units.add(i)
+                picked = True
+            if not picked:
+                break
+
+
 def _prune_junk(cand_chains: list, units: list, dash_cand: list,
                 min_extent: float = MIN_EXTENT) -> list:
     """Filter candidate dashed chains that are actually hatching or exploded
@@ -1320,6 +1382,7 @@ def _prune_junk(cand_chains: list, units: list, dash_cand: list,
     tree = cKDTree(centers)
 
     kept = []
+    deferred = []  # short sharp-turn chains: junk unless they continue a line
     for seq, lc, gaps in cand_chains:
         bbox = lc.pts.max(axis=0) - lc.pts.min(axis=0)
         extent = float(np.hypot(*bbox))
@@ -1348,8 +1411,12 @@ def _prune_junk(cand_chains: list, units: list, dash_cand: list,
             # a SHORT chain that keeps changing heading is a glyph tangle
             # or leader scribble, never a line: real short dash runs are
             # straight. (Long chains may curve - contours - so this only
-            # applies to small-n chains.)
+            # applies to small-n chains.) EXCEPT at a contour's chevron
+            # kink, where the shed piece is exactly short-and-turny - so
+            # defer the verdict and keep the piece if it picks up right at
+            # the end of a kept long chain with a matching cadence.
             if len(seq) <= 7 and mean_turn > 32.0:
+                deferred.append((seq, lc, gaps))
                 continue
 
         # multi-length cadences must actually repeat - but the repeat
@@ -1401,6 +1468,24 @@ def _prune_junk(cand_chains: list, units: list, dash_cand: list,
         if min(n_left, n_right) / n_s > 0.35 or n_cross / n_s > 0.5:
             continue
         kept.append((seq, lc, gaps))
+
+    if deferred and kept:
+        ends, meddash = [], []
+        for seq, lc, _g in kept:
+            if len(seq) >= 8:
+                md = float(np.median([units[i].length for i, _ in seq]))
+                ends += [lc.pts[0], lc.pts[-1]]
+                meddash += [md, md]
+        if ends:
+            et = cKDTree(np.asarray(ends))
+            for seq, lc, gaps in deferred:
+                md = float(np.median([units[i].length for i, _ in seq]))
+                for ep in (lc.pts[0], lc.pts[-1]):
+                    d, j = et.query(ep)
+                    if d <= 16.0 and max(md, meddash[j]) <= \
+                            1.6 * min(md, meddash[j]) + 1.5:
+                        kept.append((seq, lc, gaps))
+                        break
     return kept
 
 
