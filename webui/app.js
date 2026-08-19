@@ -864,6 +864,15 @@ $("legendBtn").onclick = () => {
   loadLegendVocab(p.trim());
 };
 
+// ---------- theme ----------
+document.documentElement.dataset.theme =
+  localStorage.getItem("core-theme") || "dark";
+$("themeBtn").onclick = () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("core-theme", next);
+};
+
 // ---------- canvas ----------
 const cv = $("view"), ctx = cv.getContext("2d");
 function resize() {
