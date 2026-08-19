@@ -56,6 +56,9 @@ const state = {
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   measureMode: new Map(),   // style_id -> "object" (absent = line footage)
+  autoAi: localStorage.getItem("core-autoai") !== "off",  // detect pipeline runs AI
+  seedLabels: new Map(),    // style_id -> the default we seeded (AI may replace)
+  aiAuto: false,            // this page's verdicts were auto-applied
   aiUndo: null,             // snapshot taken before applying AI focus
   view: { x: 0, y: 0, k: 1 },
 };
@@ -102,7 +105,7 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map();
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map();
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
@@ -142,7 +145,7 @@ async function loadResult(gen = state.gen) {
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map();
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map();
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
@@ -160,9 +163,11 @@ async function loadResult(gen = state.gen) {
     state.include.set(s.style_id,
       white ? false : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
+    state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
-  document.getElementById("aiBtn").hidden = false;
+  document.getElementById("aiBtn").hidden = state.autoAi;
+  if (state.autoAi) runAnalyze(true);
   const sc = state.result.scale;
   setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
     (sc ? ` · scale ${sc.text} (${sc.source})` : " · no scale found"));
@@ -896,18 +901,29 @@ function esc(s) {
     ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
 
-$("aiBtn").onclick = async () => {
+async function runAnalyze(auto) {
   const banner = $("aiBanner");
-  banner.hidden = false;
-  banner.textContent = "Reading the sheet with AI…";
-  const r = await fetch(`/api/job/${state.job}/page/${state.page}/analyze`, { method: "POST" });
-  if (!r.ok) {
-    banner.textContent = r.status === 503
+  if (!auto) {
+    banner.hidden = false;
+    banner.textContent = "Reading the sheet with AI…";
+  } else {
+    setStatus("AI refining the takeoff…", "busy");
+  }
+  const gen0 = state.job + ":" + state.page;   // page may change mid-flight
+  let r;
+  try {
+    r = await fetch(`/api/job/${state.job}/page/${state.page}/analyze`, { method: "POST" });
+  } catch (e) { r = null; }
+  if (gen0 !== state.job + ":" + state.page) return;  // stale reply, drop it
+  if (!r || !r.ok) {
+    if (auto) { setStatus(""); return; }   // demo never blocks on the model
+    banner.textContent = r && r.status === 503
       ? "AI analysis needs an LLM key (XAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) on the detection service."
-      : "AI analysis failed (" + r.status + ")";
+      : "AI analysis failed (" + (r ? r.status : "network") + ")";
     return;
   }
   const j = await r.json();
+  if (gen0 !== state.job + ":" + state.page) return;  // stale reply, drop it
   state.ai = j;
   // per-style reasoning, surfaced on the style rows themselves
   state.aiWhy = new Map();
@@ -916,14 +932,65 @@ $("aiBtn").onclick = async () => {
     if (f.measure === "object") state.measureMode.set(f.style_id, "object");
   }
   for (const i of j.ignore || []) state.aiWhy.set(i.style_id, { keep: false, why: i.why });
+  if (auto && (j.focus || []).length) {
+    // pipeline mode: the model's read IS the first draft the reviewer sees.
+    // Focus flips checkboxes (snapshotted, undoable); model labels fill in
+    // ONLY where nothing (user, legend) named the style yet.
+    applyAiFocus(j.focus);
+    for (const f of j.focus) {
+      const cur = (state.labels.get(f.style_id) || "").trim();
+      const seed = (state.seedLabels.get(f.style_id) || "").trim();
+      // model names a focused style only where nobody better has: empty,
+      // or still carrying the seeded default; user & legend labels win
+      if (f.label && (!cur || (cur === seed && !seed.includes("(legend)"))))
+        state.labels.set(f.style_id, f.label);
+    }
+    state.aiAuto = true;
+    setStatus("");
+  }
   renderAiBanner();
-  renderStyles();
-};
+  renderStyles(); renderItemized(); renderMiniLegend(); draw();
+}
+$("aiBtn").onclick = () => runAnalyze(false);
 
 function renderAiBanner() {
   const banner = $("aiBanner"), j = state.ai;
   if (!j) { banner.hidden = true; return; }
   banner.hidden = false;
+  if (state.aiAuto) {
+    // pipeline mode: no ceremony - one quiet line, an undo, and the
+    // sheet's calculator chips
+    banner.innerHTML = "";
+    banner.classList.add("slim");
+    const line = document.createElement("span");
+    const nf = (j.focus || []).length;
+    line.innerHTML = `<b>${esc(j.purpose || "")}</b> <span class="ai-dim">· ` +
+      `AI-assisted — ${nf} line type${nf === 1 ? "" : "s"} in focus` +
+      (j.confidence ? ` · confidence ${esc(j.confidence)}` : "") + `</span>`;
+    banner.appendChild(line);
+    if (state.aiUndo) {
+      const undo = document.createElement("button");
+      undo.className = "mini";
+      undo.textContent = "Undo AI";
+      undo.onclick = () => { state.aiAuto = false; undoAiFocus(); };
+      banner.appendChild(undo);
+    }
+    const CALC = {
+      earthwork: { btn: "ewBtn", label: "EARTHWORK" },
+      trench:    { btn: "trBtn", label: "TRENCH" },
+      count:     { btn: "symBtn", label: "COUNT" },
+    };
+    for (const m of (j.page_modes || []).filter(m => CALC[m])) {
+      const b = document.createElement("button");
+      b.className = "ai-mode";
+      b.textContent = CALC[m].label;
+      b.title = "This sheet calls for this calculator";
+      b.onclick = () => { const t = $(CALC[m].btn); if (t) t.click(); };
+      banner.appendChild(b);
+    }
+    return;
+  }
+  banner.classList.remove("slim");
   const legend = (j.inline_legend || [])
     .map(l => `${esc(l.symbol)} = ${esc(l.meaning)}`).join("; ");
   const focus = j.focus || [];
