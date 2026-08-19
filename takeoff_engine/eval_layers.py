@@ -114,12 +114,57 @@ def _symbolic_by_congruence(lay_units) -> bool:
     if len(lay_units) < 6:
         return False
     total = sum(u.length for u in lay_units) or 1.0
+    # CLOSED shapes only, as symbols/suggest counts: grid bubbles and
+    # fixtures are closed; uniform OPEN dashes are also congruent-repeat
+    # and this test flagged real contour/pipe layers symbolic until the
+    # closed gate was restored (caught by the C4.0 control: O-SURFACE and
+    # O-PIPE excluded from LF truth, inflating the cert denominator)
+    closed = [u for u in lay_units if u.closed]
     rep_ink = 0.0
-    for key, us in _congruence_groups(lay_units).items():
+    for key, us in _congruence_groups(closed).items():
         w, h, _ = key
         if len(us) >= 3 and 2 <= max(w, h) <= 45:
             rep_ink += sum(u.length for u in us)
     return rep_ink / total >= 0.5
+
+
+def _radial_bursts(lay_units) -> bool:
+    """Tree/shrub symbols drawn as RAY BURSTS: many strokes fanning out
+    of a shared hub (GCHC TREES: 184 rays, median 21pt, several hubs of
+    20+ rays each). Signature: >=8 stroke endpoints within a 4pt ball,
+    arriving from >=5 distinct directions - dashes crossing a junction
+    gather at most 2-4 directions. Symbolic when >=50% of layer ink
+    touches a hub; trees are counted EA, never measured LF."""
+    import numpy as np
+    if len(lay_units) < 12:
+        return False
+    from scipy.spatial import cKDTree
+    eps, owner, dirs = [], [], []
+    for i, u in enumerate(lay_units):
+        d = u.direction()
+        for e in (u.pts[0], u.pts[-1]):
+            eps.append(e)
+            owner.append(i)
+            dirs.append(d)
+    E = np.asarray(eps)
+    D = np.asarray(dirs)
+    tree = cKDTree(E)
+    hub_units = set()
+    for idx in range(0, len(E), max(1, len(E) // 400)):
+        nb = tree.query_ball_point(E[idx], 4.0)
+        if len(nb) < 8:
+            continue
+        ang = np.degrees(np.arctan2(D[nb][:, 1], D[nb][:, 0])) % 180
+        # distinct directions in 20-degree bins
+        if len(set((ang // 20).astype(int).tolist())) < 5:
+            continue
+        for j in nb:
+            hub_units.add(owner[j])
+    if not hub_units:
+        return False
+    total = sum(u.length for u in lay_units) or 1.0
+    hub_ink = sum(lay_units[i].length for i in hub_units)
+    return hub_ink / total >= 0.5
 
 
 def _scatter_glyphs(lay_units) -> bool:
@@ -164,7 +209,7 @@ def eval_page(page: pymupdf.Page):
     for lay, lus in _by_layer.items():
         _geo_tex[lay] = (_textural_by_geometry(lus) or _strip_field(lus)
                          or _scatter_glyphs(lus))
-        _geo_sym[lay] = _symbolic_by_congruence(lus)
+        _geo_sym[lay] = _symbolic_by_congruence(lus) or _radial_bursts(lus)
     chains = build_chains(units, words=page_words(page))
 
     per_layer = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
