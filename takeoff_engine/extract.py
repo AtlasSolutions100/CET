@@ -369,7 +369,8 @@ def fill_boxes(page: pymupdf.Page) -> list:
     return out
 
 
-def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
+def door_swings(units: list, scale_ft_per_in: float | None = None,
+                words: list | None = None) -> list:
     """Door-swing opening symbols: swing arcs corroborated by structure.
 
     A drafted door is a compass construction - a straight LEAF line from
@@ -417,15 +418,17 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         r_hi = (6.0 / scale_ft_per_in) * 72
     else:
         r_lo, r_hi = 8.0, 80.0
-    # absolute paper-space floor: below ~1mm radius a swing symbol is not
-    # legible and nobody drafts one. Smallest real door measured across
-    # the corpus is r=10.8pt (C3.0/C4.0/C9.0 building doors at 1"=20');
-    # stroked title-block logo glyph bowls measure r=2.1-2.4pt (Oncor
-    # Cloudcrest, Kimley-Horn logo) and slipped through at 1"=50'.
-    r_lo = max(r_lo, 3.0)
+    # absolute paper-space floor: smallest real door measured across the
+    # corpus is r=10.8pt (C3.0/C4.0/C9.0 building doors at 1"=20');
+    # phantom classes below it: leader-arrowhead curls r=3.2-3.4pt
+    # (Oncor p4, admitted when the 25-35deg fragment window landed at
+    # civil scales), logo glyph bowls r=2.1-2.4pt. 8.0 splits the
+    # populations with margin both ways.
+    r_lo = max(r_lo, 8.0)
 
     # pass 1 - arc candidates
-    cands = []  # (cx, cy, r, end0, end1, arc midpoint)
+    cands = []  # (cx, cy, r, end0, end1, arc midpoint, sweep)
+    da_cands = []  # double-acting 180deg candidates
     for u in units:
         # arc length = r x sweep: with r in [r_lo, r_hi] and sweep in
         # [35deg, 135deg] a door arc's length must sit in
@@ -436,7 +439,10 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         if not (0.55 * r_lo <= u.length <= 2.5 * r_hi):
             continue
         p = np.asarray(u.pts, dtype=float)
-        if len(p) < 5 or u.closed:
+        # 4-point floor: a 30deg fragment flattens to 4 vertices at the
+        # drafting tool's ~9deg/vertex (Belle p1 measured); the circle
+        # fit needs 3, and the fit-std gate below rejects degenerates
+        if len(p) < 4 or u.closed:
             continue
         chord = float(np.hypot(*(p[-1] - p[0])))
         # arc/chord: 90deg sweep = 1.111, 55deg = 1.039, 45deg = 1.026,
@@ -444,7 +450,11 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         # (Belle Structural p1 half-open doors sweep 45deg; measured
         # arc/chord 1.0255 after polyline flattening) - corroboration, not
         # this floor, now does the discriminating.
-        if chord < 1e-6 or u.length < 1.012 * chord:
+        # 35deg = 1.016, 30deg = 1.0115, 25deg = 1.0080; polyline
+        # flattening noise on straight runs measures <= 1.005. The gate
+        # sits between so 25-35deg FRAGMENTS reach the candidate pool
+        # (their leaf + template-radius gates do the discriminating).
+        if chord < 1e-6 or u.length < 1.0075 * chord:
             continue  # straight-ish, not an arc
         # fit center: perpendicular bisector intersection via least squares
         # (algebraic circle fit)
@@ -465,12 +475,20 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         vb = p[-1] - (cx, cy)
         sweep = float(np.degrees(np.arccos(np.clip(
             (va @ vb) / (np.hypot(*va) * np.hypot(*vb) + 1e-9), -1, 1))))
-        # 35deg floor: half-open doors are drawn at 45deg (Belle
-        # Structural p1) minus drafting slop; 135 cap keeps out callout
-        # bubbles' semicircle halves (measured 180deg on the same sheet).
-        if not (35.0 <= sweep <= 135.0):
+        # 35deg is the confident floor (half-open doors draw at 45deg);
+        # 25-35deg admits FRAGMENTS - arcs a crossing line split (Belle
+        # Structural p1: two doors survive only as 30.0deg r=27 pieces,
+        # perfect circle fits) - but those must corroborate via their
+        # LEAF specifically (pair logic assumes whole leaves). 165-195deg
+        # is a DOUBLE-ACTING door (glass connector: two 180deg r=36
+        # semicircles, no leaf drawn) gated separately below; the 135 cap
+        # still excludes callout-bubble halves from the swing path.
+        if 165.0 <= sweep <= 195.0:
+            da_cands.append((cx, cy, r, p[0], p[-1]))
             continue
-        cands.append((cx, cy, r, p[0], p[-1], p[len(p) // 2]))
+        if not (25.0 <= sweep <= 135.0):
+            continue
+        cands.append((cx, cy, r, p[0], p[-1], p[len(p) // 2], sweep))
 
     if not cands:
         return []
@@ -510,8 +528,8 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         return False
 
     def pair_ok(i):
-        cxi, cyi, ri, a0, a1, mi = cands[i]
-        for j, (cxj, cyj, rj, b0, b1, mj) in enumerate(cands):
+        cxi, cyi, ri, a0, a1, mi, _swi = cands[i]
+        for j, (cxj, cyj, rj, b0, b1, mj, _swj) in enumerate(cands):
             if j == i:
                 continue
             # leaf radii match within 15% (leaf-and-a-half doors are
@@ -548,10 +566,110 @@ def door_swings(units: list, scale_ft_per_in: float | None = None) -> list:
         return False
 
     out = []
-    for i, (cx, cy, r, e0, e1, _mid) in enumerate(cands):
+    confirmed_r = []
+    for i, (cx, cy, r, e0, e1, _mid, sweep) in enumerate(cands):
+        if sweep < 35.0:
+            continue   # fragments resolved in a second pass below
         if leaf_ok(cx, cy, r, (e0, e1)) or pair_ok(i):
             out.append({"cx": round(cx, 1), "cy": round(cy, 1),
                         "r": round(r, 1)})
+            confirmed_r.append(r)
+    # FRAGMENT pass: a 25-35deg arc is admitted only when (a) its leaf
+    # corroborates AND (b) its radius matches a CONFIRMED full door on
+    # this page within 15% - the drafting template repeats, so real
+    # split doors share r with their whole siblings (Belle p1: r=27.0
+    # fragments vs confirmed r=27 doors). Radius-dimension callouts on
+    # civil sheets have leaf-like leaders but no confirmed-door radius
+    # to match (Oncor p4 grew +10 phantoms without this gate).
+    for i, (cx, cy, r, e0, e1, _mid, sweep) in enumerate(cands):
+        if sweep >= 35.0:
+            continue
+        if not any(abs(r - cr) <= 0.15 * max(r, cr) for cr in confirmed_r):
+            continue
+        if leaf_ok(cx, cy, r, (e0, e1)):
+            out.append({"cx": round(cx, 1), "cy": round(cy, 1),
+                        "r": round(r, 1)})
+
+    # double-acting doors: 180deg swing, no leaf drawn. Guards, each
+    # measured on Belle Structural p1 vs its own callout bubbles:
+    #  - no text inside the circle (bubbles carry sheet numbers; the two
+    #    real glass-connector doors are empty)
+    #  - both arc endpoints sit ON straight linework (the wall/track line
+    #    the door hangs from), within 3pt
+    if da_cands:
+        strt = []
+        for u in units:
+            pu = u.pts
+            ch2 = float(np.hypot(*(pu[-1] - pu[0])))
+            if ch2 > 1e-6 and u.length <= 1.02 * ch2 and u.length >= 6.0:
+                strt.append((pu[0][0], pu[0][1], pu[-1][0], pu[-1][1]))
+        S = np.asarray(strt) if strt else np.zeros((0, 4))
+
+        def on_straight(x, y, tol=3.0):
+            if not len(S):
+                return False
+            dx = S[:, 2] - S[:, 0]
+            dy = S[:, 3] - S[:, 1]
+            L2 = dx * dx + dy * dy
+            t = ((x - S[:, 0]) * dx + (y - S[:, 1]) * dy) / np.maximum(L2, 1e-9)
+            t = np.clip(t, 0.0, 1.0)
+            qx = S[:, 0] + t * dx
+            qy = S[:, 1] + t * dy
+            return bool((np.hypot(x - qx, y - qy) <= tol).any())
+
+        def center_crossed(cx, cy, r, chord_dir, ex0, ey0):
+            # equipment symbols (substation breakers on bus lines) are
+            # circles with straight feeds THROUGH the middle in non-chord
+            # directions; a door's only center-adjacent line is the track
+            # it hangs on, collinear with its chord. Measured on Oncor
+            # p4: every phantom had a >20deg crossing; the two real glass
+            # doors have none.
+            if not len(S):
+                return False
+            dx = S[:, 2] - S[:, 0]
+            dy = S[:, 3] - S[:, 1]
+            L2 = dx * dx + dy * dy
+            t = ((cx - S[:, 0]) * dx + (cy - S[:, 1]) * dy) / np.maximum(L2, 1e-9)
+            t = np.clip(t, 0.0, 1.0)
+            qx = S[:, 0] + t * dx
+            qy = S[:, 1] + t * dy
+            near = np.hypot(cx - qx, cy - qy) <= 0.35 * r
+            # only strokes long enough to be a feed/bus count as crossings:
+            # dashed zone-line MARKS (~11pt) also cross door centers
+            # (Belle glass door #2) but a symbol's feed line runs >= r
+            L = np.sqrt(np.maximum(L2, 1e-9))
+            near &= L >= r
+            if not bool(near.any()):
+                return False
+            cosang = np.abs(dx * chord_dir[0] + dy * chord_dir[1]) / L
+            # a crossing goes THROUGH the opening - endpoints on opposite
+            # sides of the chord line. Walls that TERMINATE at the door
+            # track (measured 5.9pt shy on Belle glass #2) stay one-sided
+            # and are jambs, not feeds.
+            nx, ny = -chord_dir[1], chord_dir[0]
+            s0 = (S[:, 0] - ex0) * nx + (S[:, 1] - ey0) * ny
+            s1 = (S[:, 2] - ex0) * nx + (S[:, 3] - ey0) * ny
+            through = (s0 * s1) < -1.0
+            return bool((near & through & (cosang < 0.94)).any())
+
+        for cx, cy, r, e0, e1 in da_cands:
+            if words:
+                inside = False
+                for w in words:
+                    wx, wy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+                    if np.hypot(wx - cx, wy - cy) < r * 0.95:
+                        inside = True
+                        break
+                if inside:
+                    continue
+            ch = np.asarray(e1, dtype=float) - np.asarray(e0, dtype=float)
+            n = float(np.hypot(*ch)) or 1.0
+            if center_crossed(cx, cy, r, ch / n, float(e0[0]), float(e0[1])):
+                continue
+            if on_straight(*e0) and on_straight(*e1):
+                out.append({"cx": round(float(cx), 1),
+                            "cy": round(float(cy), 1),
+                            "r": round(float(r), 1)})
     # dedupe coincident arcs (double-drawn swings)
     ded = []
     for o in out:

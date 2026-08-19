@@ -302,7 +302,7 @@ def _detect_worker(job_id: str, page: int):
             fills = []
         try:
             openings = door_swings(
-                units, (scale or {}).get("ft_per_paper_inch"))
+                units, (scale or {}).get("ft_per_paper_inch"), words)
         except Exception:
             openings = []
         result = {
