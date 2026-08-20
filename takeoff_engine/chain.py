@@ -629,6 +629,10 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
                                 u.length, 0, "leader", layer=u.layer))
         cid += 1
 
+    # structural grid lines (centerline dashes anchored at lettered grid
+    # bubbles) are annotation, not takeoff linework
+    _grid_annotation(chains, units)
+
     # exploded-glyph labels drawn inline (no text layer to bridge across)
     _mark_glyph_text_chains(chains, glyph_blobs)
 
@@ -670,6 +674,209 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
     _assign_styles(chains)
     return chains
+
+
+def _grid_annotation(chains: list, units: list) -> None:
+    """Structural grid lines -> annotation.
+
+    A grid axis is a long straight dashed centerline that TERMINATES at a
+    lettered grid bubble (small perfect circle with a glyph inside). Grid
+    ink was landing in wall-family style pools and getting boxed as
+    objects (Belle Structural p2, grid D boxed as a shear wall).
+
+    Measured on Belle Structural p2 (2026-08-19): bubbles are perfect
+    circles (len/(pi*d) = 1.00) of uniform d 26.9-28.7 pt, >=40 per
+    sheet, mid-sheet as well as margins (multiple sub-plans per sheet,
+    so no margin gate). Grid chain fragments run straight (lateral
+    wander <= 5 pt) but len/chord reads 1.27 because dash-dot paths
+    zigzag, so straightness is tested laterally.
+
+    The keep-case is a dashed utility run THROUGH a lettered manhole
+    circle (sewer/storm sheets): the pipe CONTINUES collinearly beyond
+    the circle, a grid line does not - the terminal test below. A
+    line-end cleanout with a lettered circle would still demote its last
+    segment; accepted, reviewer-recoverable.
+    """
+    dash_chains = [c for c in chains
+                   if c.klass.startswith("dash") and c.klass != "dash-text"
+                   and len(c.pts) >= 2 and c.length >= 80.0]
+    if not dash_chains:
+        return
+    # candidate bubbles: closed, near-circular, uniform-size, glyph inside
+    cand = []
+    for u in units:
+        if not u.closed or len(u.pts) < 6:
+            continue
+        bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+        if not (14.0 <= max(bb) <= 60.0):
+            continue
+        if min(bb) < 0.75 * max(bb):
+            continue
+        d_avg = float((bb[0] + bb[1]) / 2)
+        circ = u.length / (np.pi * d_avg) if d_avg > 0 else 0.0
+        if not (0.85 <= circ <= 1.20):
+            continue
+        cand.append(((u.pts.min(axis=0) + u.pts.max(axis=0)) / 2, d_avg / 2))
+    if len(cand) < 3:
+        return
+    # uniform size: the dominant radius class (drafting templates repeat)
+    rs = sorted(r for _, r in cand)
+    med_r = rs[len(rs) // 2]
+    bubbles = [(c, r) for c, r in cand if abs(r - med_r) <= 0.12 * med_r]
+    if len(bubbles) < 3:
+        return
+    from scipy.spatial import cKDTree
+    mids = np.array([(u.pts[0] + u.pts[-1]) / 2 for u in units])
+    mtree = cKDTree(mids)
+    glyph_bubbles = []
+    for c, r in bubbles:
+        # a grid bubble carries a letter/number: geometry strictly inside.
+        # The bubble's own midpoint sits ON the rim (closed loop: first
+        # point), i.e. at distance r > 0.8r, so any hit is glyph ink.
+        # >=1, not >=2: twin-merge fuses a letter's double-drawn contours
+        # into one unit, and single-stroke letters (I, 1, L) are one unit
+        # to begin with - measured on Belle p2, bubble D failed at >=2.
+        if len(mtree.query_ball_point(c, r * 0.8)) >= 1:
+            glyph_bubbles.append((c, r))
+    if len(glyph_bubbles) < 3:
+        return
+    # endpoints of ALL dash chains, for the terminal (through-line) test
+    ends, dirs = [], []
+    for c in dash_chains:
+        for e, inner in ((c.pts[0], c.pts[1]), (c.pts[-1], c.pts[-2])):
+            v = np.asarray(e, float) - np.asarray(inner, float)
+            n = float(np.hypot(*v))
+            ends.append(np.asarray(e, float))
+            dirs.append(v / n if n > 1e-9 else np.array([0.0, 0.0]))
+    etree = cKDTree(np.array(ends))
+
+    def lateral_ok(c):
+        a, b = c.pts[0], c.pts[-1]
+        v = np.asarray(b, float) - np.asarray(a, float)
+        n = float(np.hypot(*v))
+        if n < 60.0:
+            return None
+        u_ = v / n
+        rel = c.pts - a
+        lat = np.abs(rel[:, 0] * u_[1] - rel[:, 1] * u_[0])
+        return u_ if float(np.percentile(lat, 90)) <= 3.0 else None
+
+    axes = []
+    for c in dash_chains:
+        u_ = lateral_ok(c)
+        if u_ is None:
+            continue
+        for e, outd in ((c.pts[0], -u_), (c.pts[-1], u_)):
+            for (bc, br) in glyph_bubbles:
+                tv = bc - e
+                dist = float(np.hypot(*tv))
+                if not (0.4 * br <= dist <= 2.6 * br):
+                    continue
+                if float(np.dot(outd, tv / (dist or 1.0))) < 0.85:
+                    continue
+                # terminal: nothing collinear continues beyond the bubble
+                beyond = bc + outd * (br + 20.0)
+                through = False
+                for k in etree.query_ball_point(beyond, 45.0):
+                    if abs(float(np.dot(dirs[k], outd))) > 0.9:
+                        through = True
+                        break
+                if through:
+                    continue
+                axes.append((bc, outd))
+                c.klass = "annotation"
+                c.dash_signature = "grid"
+                break
+            if c.klass == "annotation":
+                break
+    # bubbles that never anchor a terminal chain still mark grid axes:
+    # mid-sheet bubbles sit ON their line (it continues both ways), which
+    # the terminal test rightly refuses. The grid-vs-manhole discriminator
+    # is ALIGNMENT: grid bubbles come in rows/columns (>=3 collinear) and
+    # their lines run PERPENDICULAR to the set (letters across the top,
+    # lines dropping down). A lettered manhole run is collinear WITH its
+    # pipe, so the perpendicular gate blocks it.
+    if len(glyph_bubbles) >= 3:
+        centers = np.array([bc for bc, _ in glyph_bubbles])
+        for c in dash_chains:
+            if c.klass == "annotation":
+                continue
+            a, b = np.asarray(c.pts[0], float), np.asarray(c.pts[-1], float)
+            v = b - a
+            n = float(np.hypot(*v))
+            if n < 60.0:
+                continue
+            u_ = v / n
+            rel_all = np.asarray(c.pts, float) - a
+            if float(np.percentile(
+                    np.abs(rel_all[:, 0] * u_[1] - rel_all[:, 1] * u_[0]),
+                    90)) > 3.0:
+                continue
+            relc = centers - a
+            lat_c = np.abs(relc[:, 0] * u_[1] - relc[:, 1] * u_[0])
+            for bi in np.nonzero(lat_c <= 3.0)[0]:
+                bc = centers[bi]
+                # the bubble's aligned set: >=2 OTHER bubbles collinear
+                # with it in a direction perpendicular to this chain
+                dd = centers - bc
+                dist = np.hypot(dd[:, 0], dd[:, 1])
+                # strictly collinear on the perpendicular line: offset
+                # ALONG the chain <= 3pt. Parallel utilities with
+                # structures at the same station could still fake a set
+                # of 3; accepted residual, regress (C8.0 storm) guards it.
+                along = np.abs(dd[:, 0] * u_[0] + dd[:, 1] * u_[1])
+                mates = (dist > 1.0) & (along <= 3.0)
+                if int(mates.sum()) >= 2:
+                    axes.append((bc, u_))
+                    c.klass = "annotation"
+                    c.dash_signature = "grid"
+                    break
+    if not axes:
+        return
+    # expand along each axis: the same grid line continues as separate
+    # chain fragments across the plan - collinear, tiny lateral offset.
+    # Short stubs (a grid dash crossing one room) fail the 60pt chord
+    # gate above, so the expansion tests EVERY point against the axis
+    # line instead: all points within 3pt AND chord direction collinear.
+    # The direction guard keeps same-cadence wall hatches that happen to
+    # sit on a grid line from being swallowed (their ticks run diagonal).
+    for c in dash_chains:
+        if c.klass == "annotation":
+            continue
+        a, b = np.asarray(c.pts[0], float), np.asarray(c.pts[-1], float)
+        v = b - a
+        n = float(np.hypot(*v))
+        if n < 20.0:
+            continue
+        u_ = v / n
+        for bc, ad in axes:
+            if abs(float(np.dot(u_, ad))) < 0.98:
+                continue
+            rel = np.asarray(c.pts, float) - bc
+            lat = np.abs(rel[:, 0] * ad[1] - rel[:, 1] * ad[0])
+            if float(lat.max()) <= 3.0:
+                c.klass = "annotation"
+                c.dash_signature = "grid"
+                break
+    # the bubbles themselves (circle + tick glyphs) chained from the same
+    # pens: demote chains living inside an armed bubble
+    btree = cKDTree(np.array([bc for bc, _ in glyph_bubbles]))
+    rmax = max(br for _, br in glyph_bubbles)
+    for c in chains:
+        if c.klass == "annotation" or len(c.pts) < 2:
+            continue
+        m = (np.asarray(c.pts[0], float) + np.asarray(c.pts[-1], float)) / 2
+        bb = c.pts.max(axis=0) - c.pts.min(axis=0)
+        # the bubble circle's own bbox diagonal is hypot(2r,2r) = 2.83r -
+        # a 2.6r cap excluded exactly the circles it exists to demote
+        if float(np.hypot(*bb)) > 3.05 * rmax:
+            continue
+        for k in btree.query_ball_point(m, rmax * 1.4):
+            bc, br = glyph_bubbles[k]
+            if np.all(np.abs(np.asarray(c.pts, float) - bc).max(axis=0) <= br * 1.45):
+                c.klass = "annotation"
+                c.dash_signature = "grid"
+                break
 
 
 def _demote_text_chains(chains: list, words: list, frac: float = 0.6) -> None:

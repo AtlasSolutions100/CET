@@ -484,7 +484,7 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         # semicircles, no leaf drawn) gated separately below; the 135 cap
         # still excludes callout-bubble halves from the swing path.
         if 165.0 <= sweep <= 195.0:
-            da_cands.append((cx, cy, r, p[0], p[-1]))
+            da_cands.append((cx, cy, r, p[0], p[-1], p[len(p) // 2]))
             continue
         if not (25.0 <= sweep <= 135.0):
             continue
@@ -571,8 +571,13 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         if sweep < 35.0:
             continue   # fragments resolved in a second pass below
         if leaf_ok(cx, cy, r, (e0, e1)) or pair_ok(i):
+            # mx,my = arc midpoint: tells the consumer which SIDE of the
+            # hinge the opening spans (the door chord), so a wall run is
+            # cut only across the actual doorway, not the full swing disk
             out.append({"cx": round(cx, 1), "cy": round(cy, 1),
-                        "r": round(r, 1)})
+                        "r": round(r, 1),
+                        "mx": round(float(_mid[0]), 1),
+                        "my": round(float(_mid[1]), 1)})
             confirmed_r.append(r)
     # FRAGMENT pass: a 25-35deg arc is admitted only when (a) its leaf
     # corroborates AND (b) its radius matches a CONFIRMED full door on
@@ -588,7 +593,9 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             continue
         if leaf_ok(cx, cy, r, (e0, e1)):
             out.append({"cx": round(cx, 1), "cy": round(cy, 1),
-                        "r": round(r, 1)})
+                        "r": round(r, 1),
+                        "mx": round(float(_mid[0]), 1),
+                        "my": round(float(_mid[1]), 1)})
 
     # double-acting doors: 180deg swing, no leaf drawn. Guards, each
     # measured on Belle Structural p1 vs its own callout bubbles:
@@ -652,7 +659,7 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             through = (s0 * s1) < -1.0
             return bool((near & through & (cosang < 0.94)).any())
 
-        for cx, cy, r, e0, e1 in da_cands:
+        for cx, cy, r, e0, e1, _mid in da_cands:
             if words:
                 inside = False
                 for w in words:
@@ -669,7 +676,9 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             if on_straight(*e0) and on_straight(*e1):
                 out.append({"cx": round(float(cx), 1),
                             "cy": round(float(cy), 1),
-                            "r": round(float(r), 1)})
+                            "r": round(float(r), 1),
+                            "mx": round(float(_mid[0]), 1),
+                            "my": round(float(_mid[1]), 1)})
     # dedupe coincident arcs (double-drawn swings)
     ded = []
     for o in out:

@@ -234,17 +234,47 @@ function styleObjects(sid) {
   // openings split (a doorway gap is two walls), and the two drawn faces
   // of a double-line wall are one object, one footage.
   const opens = state.result.openings || [];
+  const maxR = opens.length ? Math.max(...opens.map(o => o.r)) : 0;
   const splitAtOpenings = (pts) => {
-    // a doorway is a zone the takeoff never measures through: points
-    // inside any swing disk are cut out, splitting the run and trimming
-    // overshoot back to the opening edge
+    // a doorway is a zone the takeoff never measures through - but the
+    // swing DISK is centered at the hinge ON the wall, so cutting the
+    // whole disk erased a 2r span (and rows of adjacent swings tiled
+    // whole walls away: Belle p2 Grand Hall / restroom runs). The engine
+    // now ships the arc midpoint (mx,my); the opening's chord runs from
+    // the hinge toward the arc's side of this run, width r. Cut only
+    // that span, laterally within the wall's own thickness.
     if (!opens.length) return [pts];
+    // door hardware first: leaf strokes and solid-drawn swing arcs live
+    // INSIDE their disk and are door-sized - drop the whole run rather
+    // than boxing a phantom at the opening (Belle p2 double doors)
+    const L = polyLen(pts);
+    if (L <= 2.2 * maxR) {
+      let nin = 0;
+      for (const q of pts)
+        if (opens.some(o => Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.05)) nin++;
+      if (nin / pts.length >= 0.7) return [];
+    }
+    const a = pts[0], b = pts[pts.length - 1];
+    const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const d = [(b[0] - a[0]) / dl, (b[1] - a[1]) / dl];
     const parts = [];
     let cur = [];
     for (const q of pts) {
-      const inside = opens.some(o =>
-        Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.02);
-      if (inside) {
+      let cut = false;
+      for (const o of opens) {
+        const vx = q[0] - o.cx, vy = q[1] - o.cy;
+        if (o.mx !== undefined) {
+          // side of the hinge the door opens toward, along this run
+          const sd = (o.mx - o.cx) * d[0] + (o.my - o.cy) * d[1];
+          const side = sd >= 0 ? 1 : -1;
+          const t = (vx * d[0] + vy * d[1]) * side;
+          const lat = Math.abs(vy * d[0] - vx * d[1]);
+          if (t >= -2 && t <= o.r * 1.05 && lat <= Math.max(8, o.r * 0.3)) {
+            cut = true; break;
+          }
+        } else if (Math.hypot(vx, vy) <= o.r * 1.02) { cut = true; break; }
+      }
+      if (cut) {
         if (cur.length >= 2) parts.push(cur);
         cur = [];
       } else cur.push(q);
