@@ -2101,13 +2101,13 @@ function styleColor(sid) {
 function cssColor(c, w) {
   if (!c) return "#8f959e";
   const [r, g, b] = c.map(v => Math.round(v * 255));
-  // near-white linework would vanish on the dimmed sheet. Thin white
-  // strokes are wash contours - draw them as the faint grey they
-  // visually are. Heavy white strokes are outlined cores (the plotter
-  // draws a black outline around a white fill, so on paper they read as
-  // the BOLDEST lines on the sheet) - draw those dark. NEVER a loud
-  // fallback colour, which read as random phantom lines.
-  if (r > 225 && g > 225 && b > 225) return (w || 0) >= 2 ? "#2b2e33" : "#a7adb6";
+  // near-white linework draws as the faint grey it visually is on the
+  // sheet - at EVERY weight. White ink is invisible on paper: rendering
+  // heavy white strokes dark (tried 2026-08-20) painted phantom dash
+  // rows and squiggles along the Oncor boundary, because the white w3.3
+  // family there is plotter-invisible linework, NOT an outlined core.
+  // The truly bold lines (property line) are black ink and need no help.
+  if (r > 225 && g > 225 && b > 225) return "#a7adb6";
   return `rgb(${r},${g},${b})`;
 }
 
