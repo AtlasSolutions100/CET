@@ -94,6 +94,51 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 continue
             entries.append({"label": label, **sample})
 
+    # inline "SWATCH = NAME" definitions: sheets without a LEGEND box
+    # define a symbol in place ("### = SHEAR WALL", Belle Structural p2).
+    # Anchor on an '=' word; the NAME is the word run to its right, the
+    # sample is the geometry strip to its left. Guards, both measured:
+    #  - a scale note ('1" = 20'') has TEXT in the left strip and a
+    #    numeric right side - rejected by the no-words-left test and the
+    #    mostly-alpha label test
+    #  - a title-block '=' with no same-row words yields no label
+    for w in words:
+        if str(w[4]).strip() != "=":
+            continue
+        ex0, ex1 = w[0], w[2]
+        ecy = (w[1] + w[3]) / 2
+        eh = max(w[3] - w[1], 6.0)
+        # the swatch of a '= NAME' definition hugs the '=': a tight strip
+        # keeps distant room labels (Belle: 'HALL' 220pt left) from
+        # vetoing the row, and keeps unrelated plan geometry out of the
+        # sample. A scale note's '1"' sits 5-30pt left - still caught.
+        strip_x0, strip_x1 = ex0 - 110.0, ex0 - 4.0
+        if any(ww[2] > strip_x0 and ww[0] < strip_x1
+               and abs((ww[1] + ww[3]) / 2 - ecy) <= eh
+               for ww in words if ww is not w):
+            continue
+        right = sorted((ww for ww in words
+                        if abs((ww[1] + ww[3]) / 2 - ecy) <= eh
+                        and ww[0] >= ex1 - 1.0 and ww[0] - ex1 <= 60.0),
+                       key=lambda ww: ww[0])
+        run = []
+        cur_x = ex1
+        for ww in right:
+            if run and ww[0] - cur_x > 24.0:
+                break
+            run.append(ww)
+            cur_x = ww[2]
+        label = " ".join(str(ww[4]).strip() for ww in run).strip()
+        alpha = sum(ch.isalpha() for ch in label)
+        if not (3 <= len(label) <= 60) or alpha < 3 or alpha < len(label) * 0.5:
+            continue
+        sample = _sample_in_strip(chains, strip_x0, strip_x1, ecy)
+        if sample is None and units is not None:
+            sample = _sample_from_units(units, strip_x0, strip_x1, ecy)
+        if sample is None:
+            continue
+        entries.append({"label": label, **sample})
+
     if not entries:
         return {"entries": [], "style_labels": {}}
 
@@ -174,6 +219,19 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             continue  # solid bucket too big to be one legend feature
         if e["sample_style"] is not None:
             style_labels.setdefault(e["sample_style"], e["label"])
+        # compound swatch: label the OTHER distinctive styles drawn in the
+        # same sample (hatch + centerline = one symbol). Same distinctive
+        # gate as above so a generic thin black solid never gets smeared.
+        for sid in e.get("co_styles", []):
+            r = reps.get(sid)
+            if r is None:
+                continue
+            d2 = (r.klass.startswith("dash")
+                  or (r.color and max(r.color) - min(r.color) > 0.15)
+                  or (r.color and min(r.color) > 0.35)
+                  or _weight_class(r.width) >= 2)
+            if d2 and by_style_count[sid] <= 150:
+                style_labels.setdefault(sid, e["label"])
     return {"entries": entries, "style_labels": style_labels}
 
 
@@ -385,6 +443,11 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
         "weight": _weight_class(rep.width),
         "avg_dash": (rep.ink or rep.length) / max(rep.n_dashes, 1),
         "sample_style": rep.style_id,
+        # a compound swatch draws its symbol with several pens (Belle's
+        # shear wall: hatch ticks + a native-dashed centerline). Every
+        # qualifying style in the strip belongs to the definition, not
+        # just the longest bar - the caller labels the distinctive ones.
+        "co_styles": sorted({c.style_id for c in hits} - {rep.style_id}),
     }
 
 
