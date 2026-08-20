@@ -202,6 +202,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
         if e.get("sample_style") is not None:
             continue
         best = None
+        best_key = None
         for sid, r in reps.items():
             if sid in self_joined:
                 continue
@@ -210,9 +211,15 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             # +-2 weight classes: paper-space swatches print heavier than
             # the model-space line (Oncor PROPERTY LINE swatch weight 4 vs
             # the real d9-d45-g9 family at weight 2 - human-confirmed map)
-            if abs(_weight_class(r.width) - e["weight"]) > 2:
+            wdiff = abs(_weight_class(r.width) - e["weight"])
+            if wdiff > 2:
                 continue
-            if e["color"] and r.color and \
+            # near-WHITE candidates are the cores of OUTLINED thick lines
+            # (Oncor property line: black hairline edges + white w3.3
+            # core) - their visible color IS the outline, so the color
+            # gate must not compare against the swatch's black
+            white_core = r.color and min(r.color) > 0.9
+            if not white_core and e["color"] and r.color and \
                     max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
                 continue
             rd = (r.ink or r.length) / max(r.n_dashes, 1)
@@ -220,8 +227,12 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             if hi > 1.9 * lo + 3.0:
                 continue
             cand = sum(c2.length for c2 in chains if c2.style_id == sid)
-            if best is None or cand > best[1]:
-                best = (sid, cand)
+            # closest WEIGHT wins first, ink breaks ties: the thick and
+            # thin variants of one linetype are different legend rows
+            # (PROPERTY LINE vs ADJACENT - human-confirmed on Oncor p4)
+            key = (wdiff, -cand)
+            if best is None or key < best_key:
+                best, best_key = (sid, cand), key
         single_len = not e.get("max_dash") \
             or e["max_dash"] <= 1.6 * max(e["avg_dash"], 1e-6)
         if best is None and single_len:
@@ -349,11 +360,18 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
         # class -> same symbol. Greys/blacks never extend - black is the
         # default pen for everything and would smear.
         base = reps.get(e.get("sample_style"))
-        if base is not None and base.color \
-                and max(base.color) - min(base.color) > 0.3:
+        if base is not None and base.color and (
+                max(base.color) - min(base.color) > 0.3
+                or min(base.color) > 0.9):
+            white_pen = min(base.color) > 0.9
+            base_wc = _weight_class(base.width)
             for sid, r in reps.items():
-                if sid in style_labels or not r.klass.startswith("dash") \
-                        or r.klass == "dash-text":
+                if sid in style_labels or r.klass == "dash-text":
+                    continue
+                if not r.klass.startswith("dash") \
+                        and not (white_pen and r.klass == "solid"):
+                    continue
+                if white_pen and abs(_weight_class(r.width) - base_wc) > 1:
                     continue
                 if r.color and max(abs(a - b) for a, b in
                                    zip(base.color, r.color)) <= 0.2:
