@@ -114,6 +114,7 @@ async function selectPage(p) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   updateSelBar(null);
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
@@ -199,6 +200,7 @@ function setPageStatus(p, st) {
   const t = $("thumbList").children[p];
   const b = t && t.querySelector(".thumb-badge");
   if (b) { b.className = "thumb-badge " + st; b.title = BADGE_TITLE[st] || st; }
+  if (p === state.page) renderSheetHead();   // status chip mirrors the badge
 }
 async function refreshPageStatuses() {
   const job = state.job;
@@ -297,6 +299,7 @@ async function loadResult(gen = state.gen) {
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
@@ -594,6 +597,46 @@ $("mlToggle").onclick = () => {
   renderMiniLegend();
 };
 
+// ---------- sidebar sheet header: doc / page / scale / status ----------
+// quantity in feet whenever the sheet has a scale; honest pt fallback
+function fmtQty(pt) {
+  const sc = state.result && state.result.scale;
+  if (!sc) return fmtLen(pt);
+  const ft = pt / 72 * sc.ft_per_paper_inch;
+  return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " LF";
+}
+function renderSheetHead() {
+  const el = $("sheetHead");
+  if (!state.job) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = "";
+  const name = document.createElement("div");
+  name.className = "sh-name";
+  name.title = state.docName || "";
+  name.textContent = state.docName || "";
+  const meta = document.createElement("div");
+  meta.className = "sh-meta";
+  const chip = (txt, cls) => {
+    const s = document.createElement("span");
+    s.className = "sh-chip" + (cls ? " " + cls : "");
+    s.textContent = txt;
+    return s;
+  };
+  meta.append(chip(`Sheet ${state.page + 1} / ${state.kinds.length}`));
+  const kind = state.kinds[state.page];
+  if (kind && kind !== "unknown") meta.append(chip(kind));
+  const sc = state.result && state.result.scale;
+  if (state.result)
+    meta.append(chip(sc ? sc.text : "no scale", sc ? "ok" : "warn"));
+  const st = state.result ? "detected"
+    : (state.pageStatus || [])[state.page] === "running" ? "detecting…"
+    : (state.pageStatus || [])[state.page] === "error" ? "detect failed"
+    : "not detected";
+  meta.append(chip(st, state.result ? "ok"
+    : st === "detect failed" ? "warn" : ""));
+  el.append(name, meta);
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -653,7 +696,7 @@ function renderStyles() {
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${s.n} lines · ${fmtLen(s.length_pt)} · ${s.signature}`;
+    meta.textContent = `${fmtQty(s.length_pt)} · ${s.n} lines · ${s.signature}`;
     main.append(lab, meta);
 
     const badge = document.createElement("span");
@@ -689,13 +732,12 @@ function renderStyles() {
 }
 // ---------- sheet legend (detector-read) ----------
 function renderLegend() {
-  const box = $("legendBox");
-  box.innerHTML = ""; box.hidden = true;
+  const box = $("legendBox"), head = $("legendHead");
+  box.innerHTML = ""; box.hidden = true; head.hidden = true;
   if (!state.result || !(state.result.legend || []).length) return;
-  box.hidden = false;
-  const head = document.createElement("div");
-  head.className = "legend-head"; head.textContent = "Sheet legend";
-  box.appendChild(head);
+  head.hidden = false;
+  // respect a collapse the user made; new content never forces it open
+  box.hidden = head.classList.contains("closed");
   for (const e of state.result.legend) {
     const sid = e.sample_style;
     // every chip SHOWS its line: the matched style's true pattern, or the
@@ -1011,7 +1053,8 @@ function renderItemized() {
 // every section header toggles the elements listed for it; state is
 // per-session only (a refresh reopens everything)
 const SECTIONS = [
-  ["stylesHead", ["styleList"]],
+  ["legendHead", ["legendBox"]],
+  ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewActions"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
@@ -2514,7 +2557,7 @@ function updateSelBar(ch) {
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
   const el = z !== undefined ? ` · EL ${z}` : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}${pt}${el}`;
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(ch.length_pt)}${pt}${el}`;
 }
 
 function deleteVertex() {

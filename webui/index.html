@@ -36,9 +36,21 @@
     <div id="thumbList" class="thumb-list"></div>
   </nav>
   <aside id="sidebar">
+    <div id="sheetHead" class="sheet-head" hidden></div>
+    <div class="side-head" id="legendHead" hidden><h2>Sheet legend</h2></div>
+    <div id="legendBox" class="legend-box" hidden></div>
+    <div class="side-head" id="stylesHead">
+      <h2>Line styles</h2>
+      <div class="side-actions">
+        <button id="allBtn" class="mini">all</button>
+        <button id="noneBtn" class="mini">none</button>
+      </div>
+    </div>
     <div id="colorChips" class="color-chips"></div>
     <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
-    <div id="legendBox" class="legend-box" hidden></div>
+    <div id="styleList" class="style-list"></div>
+    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
+    <div id="itemized" class="itemized"></div>
     <div id="ewPanel" class="ew-panel" hidden>
       <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
         <button id="ewClose" class="mini">close</button></div>
@@ -78,16 +90,6 @@
         from geometry, so it is checkable - the name is yours.</div>
       <div id="symRows" class="ew-rows"></div>
     </div>
-    <div class="side-head" id="stylesHead">
-      <h2>Detected line styles</h2>
-      <div class="side-actions">
-        <button id="allBtn" class="mini">all</button>
-        <button id="noneBtn" class="mini">none</button>
-      </div>
-    </div>
-    <div id="styleList" class="style-list"></div>
-    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
-    <div id="itemized" class="itemized"></div>
     <div class="approve-bar">
       <span id="tallyBar" class="tally"></span>
       <button id="approveBtn" disabled>Approve &amp; export</button>

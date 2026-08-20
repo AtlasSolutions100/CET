@@ -243,6 +243,18 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .co-row .co-text { font-size: 11px; line-height: 1.35; }
 .co-row:hover { background: rgba(120,160,255,0.08); }
 
+/* ---------- sidebar sheet header ---------- */
+.sheet-head { padding: 12px 12px 10px; border-bottom: 1px solid var(--line); }
+.sh-name { font-weight: 600; font-size: 12.5px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.sh-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.sh-chip { font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px; background: var(--chip);
+  color: var(--dim); white-space: nowrap; }
+.sh-chip.ok { background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent); }
+.sh-chip.warn { background: rgba(229,100,90,.16); color: #e5645a; }
+
 /* ---------- page thumbnail strip ---------- */
 .page-strip { width: 128px; background: var(--panel); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }

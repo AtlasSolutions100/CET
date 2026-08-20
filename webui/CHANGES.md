@@ -36,3 +36,24 @@ unless noted. Canvas interaction code (pan/zoom/click/draw) untouched.
   `:empty` so no ghost pill shows.
 - Mini legend nudged from `left:12px` to `left:64px` so a tall rail can
   never overlap it on short windows.
+
+## 3. Sidebar hierarchy (restructure + one unit change)
+
+- New sheet header at the sidebar top (`#sheetHead`): doc name, "Sheet
+  N / M", page kind, scale chip (green when found, red "no scale" when
+  not), detection status chip. Status chip mirrors the thumbnail badge
+  live via `setPageStatus`.
+- Sidebar order is now: sheet header → Sheet legend → Line styles →
+  Itemized takeoff → calculator panels (earthwork/trench/callouts/count)
+  → approve bar. All element IDs unchanged; the four calculator panels
+  moved below the takeoff in the DOM only.
+- Sheet legend got a real collapsible section header (`#legendHead`,
+  wired into the existing SECTIONS toggle); the old inline label div
+  inside `#legendBox` was removed. Re-render respects a user collapse.
+- "Detected line styles" header renamed "Line styles"; the style search
+  box and color chips now live inside that section and collapse with it.
+- **Unit change:** style-row meta and the selection pill now lead with
+  quantity in feet when the sheet has a scale (`fmtQty`, e.g. "1.2k LF"),
+  falling back to pt verbatim when there is no scale. Line count and
+  signature are still shown. Itemized takeoff/mini legend already used
+  feet; this aligns the style list with them.
