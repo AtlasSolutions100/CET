@@ -152,6 +152,7 @@ async function loadResult(gen = state.gen) {
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
+  $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
@@ -890,6 +891,7 @@ const SECTIONS = [
   ["ewHead", ["ewRows", "ewHint", "ewActions"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
   ["symHead", ["symRows", "symHint"]],
+  ["coHead", ["coRows", "coHint"]],
 ];
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
@@ -1178,6 +1180,69 @@ function renderSym() {
     row.onmouseleave = () => { state.symMarks = null; draw(); };
     box.appendChild(row);
   });
+}
+
+// ---------- sheet callouts: the leaders as data ----------
+function centerOn(xPt, yPt) {
+  const f = IMG_DPI / 72;
+  const kFit = Math.min(cv.clientWidth / state.img.width,
+                        cv.clientHeight / state.img.height) * 0.97;
+  const k = Math.max(state.view.k, kFit * 4.5);
+  state.view.k = k;
+  state.view.x = cv.clientWidth / 2 - xPt * f * k;
+  state.view.y = cv.clientHeight / 2 - yPt * f * k;
+  draw();
+}
+$("coBtn").onclick = async () => {
+  const panel = $("coPanel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!state.co) {
+    $("coRows").innerHTML = '<div class="ew-hint">reading callouts… (first run OCRs the sheet, ~10-30s)</div>';
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/callouts`);
+    if (!r.ok) { $("coRows").textContent = "run Detect first"; return; }
+    state.co = (await r.json()).callouts;
+  }
+  renderCo();
+};
+$("coClose").onclick = () => { $("coPanel").hidden = true; };
+function renderCo() {
+  const box = $("coRows");
+  box.innerHTML = "";
+  if (!state.co || !state.co.length) {
+    box.innerHTML = '<div class="ew-hint">no leaders detected on this page</div>';
+    return;
+  }
+  for (const c of state.co) {
+    const div = document.createElement("div");
+    div.className = "ew-row co-row";
+    const t = document.createElement("div");
+    t.className = "co-text";
+    t.textContent = c.text || "(text not readable)";
+    const tgt = document.createElement("div");
+    tgt.className = "ew-meta";
+    const st = c.target_style_id !== null &&
+      state.result.styles.find(s => s.style_id === c.target_style_id);
+    const lab = c.target_chain_id !== null
+      ? (state.labels.get(c.target_style_id) || (st && st.suggested_label) || "line")
+      : "no line at the tip";
+    tgt.textContent = "→ " + lab;
+    div.append(t, tgt);
+    div.onmouseenter = () => {
+      state.hotChain = c.target_chain_id;
+      state.symMarks = [[c.gx, c.gy], [c.tx, c.ty]];
+      draw();
+    };
+    div.onmouseleave = () => { state.hotChain = null; state.symMarks = null; draw(); };
+    div.onclick = () => {
+      if (c.target_chain_id !== null) {
+        state.selected = c.target_chain_id;
+        updateSelBar(chainById(c.target_chain_id));
+      }
+      centerOn(c.gx, c.gy);
+    };
+    box.appendChild(div);
+  }
 }
 
 // ---------- AI page analyst + auto-focus ----------

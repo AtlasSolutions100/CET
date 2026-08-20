@@ -1012,6 +1012,106 @@ def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     return JSONResponse(result)
 
 
+@app.get("/api/job/{job_id}/page/{page}/callouts")
+def callouts(job_id: str, page: int):
+    """The sheet's own callouts as data: every detected leader paired with
+    the text at its tail and the takeoff line it points at. Leaders stay
+    out of the math; this makes them navigation/context instead."""
+    import numpy as np
+
+    job = JOBS.get(job_id) or _404()
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    cache = _job_dir(job_id) / f"p{page}_callouts.json"
+    if cache.exists():
+        return JSONResponse(json.loads(cache.read_text()))
+    res = json.loads(rf.read_text())
+    leaders = [c for c in res["chains"] if c.get("dash_signature") == "leader"]
+    out = {"callouts": []}
+    if leaders:
+        doc = pymupdf.open(job["path"])
+        pg = doc[page]
+        words = page_words(pg)
+        # sheets whose labels are outlines have no words worth pairing:
+        # OCR once per page and cache with the result
+        if len(words) < 8 * len(leaders):
+            from takeoff_engine.text_detect import ocr_words
+            pix = pg.get_pixmap(dpi=150)
+            img = np.frombuffer(pix.samples, np.uint8).reshape(
+                pix.height, pix.width, pix.n)[:, :, :3].copy()
+            words = list(words) + ocr_words(img, 72.0 / 150.0)
+        doc.close()
+        W = [(w[0], w[1], w[2], w[3], str(w[4])) for w in words
+             if str(w[4]).strip()]
+        takeoff = [c for c in res["chains"] if c["class"] != "annotation"]
+        segs = []
+        for c in takeoff:
+            p = np.asarray(c["points"], float)
+            segs.append((c, p))
+
+        def words_near(e, rad):
+            hits = []
+            for w in W:
+                dx = max(w[0] - e[0], 0, e[0] - w[2])
+                dy = max(w[1] - e[1], 0, e[1] - w[3])
+                if (dx * dx + dy * dy) ** 0.5 <= rad:
+                    hits.append(w)
+            return hits
+
+        def gather_text(e):
+            seed = words_near(e, 40.0)
+            if not seed:
+                return ""
+            # expand to same-row neighbours so multi-line notes read whole
+            box = [min(w[0] for w in seed), min(w[1] for w in seed),
+                   max(w[2] for w in seed), max(w[3] for w in seed)]
+            grown = [w for w in W
+                     if w[0] < box[2] + 90 and w[2] > box[0] - 90
+                     and w[1] < box[3] + 26 and w[3] > box[1] - 26]
+            grown.sort(key=lambda w: (round((w[1] + w[3]) / 2 / 9), w[0]))
+            toks, prev = [], None
+            for w in grown:
+                t = w[4].strip()
+                # OCR debris: bare punctuation and repeated words (the
+                # sparse-PSM pass reads outline text twice along edges)
+                if len(t) == 1 and not t.isalnum():
+                    continue
+                if prev is not None and t.upper() == prev.upper():
+                    continue
+                toks.append(t)
+                prev = t
+            return " ".join(toks)[:120]
+
+        for c in leaders:
+            p = np.asarray(c["points"], float)
+            ends = [p[0], p[-1]]
+            n_near = [len(words_near(e, 24.0)) for e in ends]
+            ti = 0 if n_near[0] >= n_near[1] else 1
+            text_end, tip = ends[ti], ends[1 - ti]
+            text = gather_text(text_end)
+            best, bd = None, 15.0
+            for tc, tp in segs:
+                d = np.min(np.hypot(tp[:, 0] - tip[0], tp[:, 1] - tip[1]))
+                if d < bd:
+                    bd, best = float(d), tc
+            out["callouts"].append({
+                "leader_chain_id": c["chain_id"],
+                "text": text,
+                "tx": round(float(text_end[0]), 1),
+                "ty": round(float(text_end[1]), 1),
+                "gx": round(float(tip[0]), 1),
+                "gy": round(float(tip[1]), 1),
+                "target_chain_id": best["chain_id"] if best else None,
+                "target_style_id": best["style_id"] if best else None,
+            })
+    try:
+        cache.write_text(json.dumps(out))
+    except OSError:
+        pass
+    return JSONResponse(out)
+
+
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
 def symbols_suggest(job_id: str, page: int):
     """Repeated congruent small shapes on the page - the countable symbols

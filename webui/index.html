@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=19">
+<link rel="stylesheet" href="style.css?v=20">
 </head>
 <body>
 <header>
@@ -20,6 +20,7 @@
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
   <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
   <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
+  <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
   <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
   <input id="legendPath" type="hidden">
@@ -53,6 +54,13 @@
         <button id="trCalc">Calculate trench</button>
         <span id="trResult" class="ew-result"></span>
       </div>
+    </div>
+    <div id="coPanel" class="ew-panel" hidden>
+      <div class="side-head" id="coHead"><h2>Sheet callouts</h2>
+        <button id="coClose" class="mini">close</button></div>
+      <div class="ew-hint" id="coHint">Every leader on the sheet, paired with the note at its tail
+        and the line it points at. Click a row to jump there. Callouts never count in the takeoff.</div>
+      <div id="coRows" class="ew-rows"></div>
     </div>
     <div id="symPanel" class="ew-panel" hidden>
       <div class="side-head" id="symHead"><h2>Count symbols</h2>
@@ -125,6 +133,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=48"></script>
+<script src="app.js?v=49"></script>
 </body>
 </html>
