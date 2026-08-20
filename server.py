@@ -334,14 +334,20 @@ def _detect_worker(job_id: str, page: int):
             D = _np.asarray(dirs)
             ang = _np.arctan2(D[:, 1], D[:, 0]) * 2
             R = float(_np.hypot(_np.mean(_np.cos(ang)), _np.mean(_np.sin(ang))))
-            if R < 0.85:
-                continue
+            if R < 0.80:
+                continue  # 0.80: GCHC EXST-CONCRETE shading bends with the
+                          # slope and measured R=0.84; real mixed-direction
+                          # linework sits far lower (L-PVMT-CONC: 0.21)
             mean_ang = _np.arctan2(_np.mean(_np.sin(ang)), _np.mean(_np.cos(ang))) / 2
             nrm = _np.array([-_np.sin(mean_ang), _np.cos(mean_ang)])
             off = _np.sort(_np.asarray(mids) @ nrm)
             gaps = _np.diff(off)
             gaps = gaps[gaps > 0.05]
-            if len(gaps) >= 10 and float(_np.median(gaps)) <= 6.0:
+            # pitch 9.0: measured shading pitches 1-4pt (GCHC South) and
+            # 6.2-6.6pt (GCHC North EXST-CONCRETE, escaped the first 6.0
+            # gate by 0.2-0.6pt); nearest real parallel features are
+            # contour fields at 18-40pt - margin stays > 2x
+            if len(gaps) >= 10 and float(_np.median(gaps)) <= 9.0:
                 st["texture"] = True
         result = {
             "page": pc.to_dict(),
