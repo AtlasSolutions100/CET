@@ -106,7 +106,7 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
@@ -146,7 +146,7 @@ async function loadResult(gen = state.gen) {
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
@@ -1253,11 +1253,34 @@ async function runAnalyze(auto) {
   renderAiBanner();
   renderStyles(); renderItemized(); renderMiniLegend(); draw();
 }
-$("aiBtn").onclick = () => runAnalyze(false);
+$("aiBtn").onclick = () => {
+  // once this page is analyzed, the button re-opens the dismissed
+  // banner instead of re-running; a new page/PDF resets everything
+  if (state.ai && state.aiHidden) {
+    state.aiHidden = false;
+    renderAiBanner();
+    return;
+  }
+  runAnalyze(false);
+};
+
+function aiDismissBtn() {
+  const x = document.createElement("button");
+  x.className = "mini ai-x";
+  x.textContent = "✕";
+  x.title = "Hide this analysis (the Analyze button brings it back on this page)";
+  x.onclick = () => {
+    state.aiHidden = true;
+    $("aiBtn").textContent = "Analyze ▾";
+    renderAiBanner();
+  };
+  return x;
+}
 
 function renderAiBanner() {
   const banner = $("aiBanner"), j = state.ai;
-  if (!j) { banner.hidden = true; return; }
+  if (!j || state.aiHidden) { banner.hidden = true; return; }
+  $("aiBtn").textContent = "Analyze";
   banner.hidden = false;
   if (state.aiAuto) {
     // pipeline mode: no ceremony - one quiet line, an undo, and the
@@ -1288,6 +1311,7 @@ function renderAiBanner() {
       if (r2.ok) { state.aiUndo && undoAiFocus(); runAnalyze(true); }
     };
     banner.appendChild(rr);
+    banner.appendChild(aiDismissBtn());
     const CALC = {
       earthwork: { btn: "ewBtn", label: "EARTHWORK" },
       trench:    { btn: "trBtn", label: "TRENCH" },
@@ -1312,11 +1336,14 @@ function renderAiBanner() {
   if (j.discipline) html += ` <span class="ai-dim">(${esc(j.discipline)})</span>`;
   if (focus.length) html += `<br><b>Measure here:</b> ${names}`;
   if (legend) html += `<br><b>Sheet legend:</b> ${legend}`;
-  html += `<br><span class="ai-dim">${esc(j._provider || "")}`;
-  if (j.confidence) html += ` · confidence ${esc(j.confidence)}`;
-  if (j._invalid_style_ids) html += ` · ${j._invalid_style_ids} suggestion(s) ignored as unknown styles`;
-  html += `</span>`;
+  if (j.confidence || j._invalid_style_ids) {
+    html += `<br><span class="ai-dim">`;
+    if (j.confidence) html += `confidence ${esc(j.confidence)}`;
+    if (j._invalid_style_ids) html += `${j.confidence ? " · " : ""}${j._invalid_style_ids} suggestion(s) ignored as unknown styles`;
+    html += `</span>`;
+  }
   banner.innerHTML = html;
+  banner.appendChild(aiDismissBtn());
 
   if (focus.length) {
     const ids = new Set(focus.map(f => f.style_id));
