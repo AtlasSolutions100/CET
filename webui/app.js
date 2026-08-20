@@ -92,6 +92,11 @@ async function openPath(path) {
     sel.appendChild(o);
   });
   sel.hidden = false; $("detectBtn").hidden = false;
+  state.pageStatus = [];
+  state.detectAll = null;
+  $("detectAllBtn").textContent = "Detect all";
+  renderPageStrip();
+  refreshPageStatuses();
   selectPage(0);
   setStatus(`${j.pages} pages`);
 }
@@ -109,6 +114,7 @@ async function selectPage(p) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   updateSelBar(null);
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
@@ -116,6 +122,7 @@ async function selectPage(p) {
     state.img = img; fitView(); draw();
   };
   img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`);
+  markCurrentThumb();
   // reuse a finished result if the server has one
   const st = await (await fetch(`/api/job/${state.job}/page/${p}/status`)).json();
   if (gen !== state.gen) return;
@@ -125,6 +132,7 @@ async function selectPage(p) {
 $("detectBtn").onclick = async () => {
   await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
   setStatus("detecting…", "busy");
+  setPageStatus(state.page, "running");
   poll(state.gen);
 };
 async function poll(gen = state.gen) {
@@ -132,9 +140,128 @@ async function poll(gen = state.gen) {
   const j = await (await fetch(`/api/job/${state.job}/page/${state.page}/status`)).json();
   if (gen !== state.gen) return;
   if (j.status === "running") return setTimeout(() => poll(gen), 900);
-  if (j.status && j.status.startsWith("error")) return setStatus(j.status, "err");
-  if (j.status === "done") { setStatus("done"); loadResult(gen); }
+  if (j.status && j.status.startsWith("error")) {
+    setPageStatus(state.page, "error");
+    return setStatus(j.status, "err");
+  }
+  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); }
 }
+
+// ---------- page thumbnail strip: the whole-PDF page-by-page flow --------
+// Thumbnails reuse the existing /image endpoint at a low dpi; the server
+// caches one PNG per (page, dpi) so the strip costs one cheap render each.
+const THUMB_DPI = 28;
+const BADGE_TITLE = { idle: "not detected yet", running: "detecting…",
+                      done: "detected", error: "detection failed" };
+
+function renderPageStrip() {
+  const strip = $("pageStrip"), list = $("thumbList");
+  list.innerHTML = "";
+  if (!state.job) { strip.hidden = true; return; }
+  strip.hidden = false;
+  strip.classList.toggle("collapsed",
+    localStorage.getItem("core-pagestrip") === "min");
+  state.kinds.forEach((kind, p) => {
+    const t = document.createElement("div");
+    t.className = "thumb" + (p === state.page ? " current" : "");
+    t.title = `page ${p + 1} — ${kind}`;
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = `page ${p + 1}`;
+    img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${THUMB_DPI}`);
+    const foot = document.createElement("div");
+    foot.className = "thumb-foot";
+    const num = document.createElement("span");
+    num.textContent = p + 1;
+    const badge = document.createElement("span");
+    const st = state.pageStatus[p] || "idle";
+    badge.className = "thumb-badge " + st;
+    badge.title = BADGE_TITLE[st] || st;
+    foot.append(num, badge);
+    t.append(img, foot);
+    t.onclick = () => {
+      if (p === state.page) return;
+      $("pageSel").value = p;
+      selectPage(p);
+    };
+    list.appendChild(t);
+  });
+}
+function markCurrentThumb() {
+  const list = $("thumbList");
+  [...list.children].forEach((el, p) =>
+    el.classList.toggle("current", p === state.page));
+  const cur = list.children[state.page];
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+function setPageStatus(p, st) {
+  if (!state.pageStatus) state.pageStatus = [];
+  state.pageStatus[p] = st;
+  const t = $("thumbList").children[p];
+  const b = t && t.querySelector(".thumb-badge");
+  if (b) { b.className = "thumb-badge " + st; b.title = BADGE_TITLE[st] || st; }
+  if (p === state.page) renderSheetHead();   // status chip mirrors the badge
+}
+async function refreshPageStatuses() {
+  const job = state.job;
+  if (!job) return;
+  const pages = [...state.kinds.keys()];
+  const res = await Promise.all(pages.map(p =>
+    fetch(`/api/job/${job}/page/${p}/status`)
+      .then(r => r.json()).catch(() => ({ status: "idle" }))));
+  if (job !== state.job) return;   // another document won the race
+  res.forEach((j, p) => setPageStatus(p,
+    j.status === "done" ? "done" : j.status === "running" ? "running" : "idle"));
+}
+$("stripToggle").onclick = () => {
+  const min = $("pageStrip").classList.toggle("collapsed");
+  localStorage.setItem("core-pagestrip", min ? "min" : "on");
+};
+$("detectAllBtn").onclick = async () => {
+  if (state.detectAll) {          // second click stops the sweep
+    state.detectAll = null;
+    $("detectAllBtn").textContent = "Detect all";
+    setStatus("detect-all stopped (pages already started keep running)");
+    return;
+  }
+  const job = state.job;
+  if (!job) return;
+  state.detectAll = job;
+  $("detectAllBtn").textContent = "Stop";
+  const n = state.kinds.length;
+  for (let p = 0; p < n; p++) {
+    if (state.detectAll !== job || state.job !== job) return;
+    if (state.pageStatus[p] === "done") continue;
+    setStatus(`detecting page ${p + 1} / ${n}…`, "busy");
+    setPageStatus(p, "running");
+    await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+    while (true) {
+      if (state.detectAll !== job || state.job !== job) return;
+      let j;
+      try {
+        j = await (await fetch(`/api/job/${job}/page/${p}/status`)).json();
+      } catch (e) { j = { status: "running" }; }
+      if (j.status === "done") {
+        setPageStatus(p, "done");
+        // the user may be sitting on this page waiting — load it live
+        if (state.job === job && p === state.page && !state.result)
+          loadResult(state.gen);
+        break;
+      }
+      if (j.status && String(j.status).startsWith("error")) {
+        setPageStatus(p, "error");
+        break;
+      }
+      await new Promise(res => setTimeout(res, 1200));
+    }
+  }
+  if (state.detectAll === job) {
+    state.detectAll = null;
+    $("detectAllBtn").textContent = "Detect all";
+    const bad = state.pageStatus.filter(s => s === "error").length;
+    setStatus(bad ? `all pages done — ${bad} failed` : "all pages detected");
+  }
+};
 
 async function loadResult(gen = state.gen) {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/result`);
@@ -172,6 +299,7 @@ async function loadResult(gen = state.gen) {
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
@@ -469,10 +597,51 @@ $("mlToggle").onclick = () => {
   renderMiniLegend();
 };
 
+// ---------- sidebar sheet header: doc / page / scale / status ----------
+// quantity in feet whenever the sheet has a scale; honest pt fallback
+function fmtQty(pt) {
+  const sc = state.result && state.result.scale;
+  if (!sc) return fmtLen(pt);
+  const ft = pt / 72 * sc.ft_per_paper_inch;
+  return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " LF";
+}
+function renderSheetHead() {
+  const el = $("sheetHead");
+  if (!state.job) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = "";
+  const name = document.createElement("div");
+  name.className = "sh-name";
+  name.title = state.docName || "";
+  name.textContent = state.docName || "";
+  const meta = document.createElement("div");
+  meta.className = "sh-meta";
+  const chip = (txt, cls) => {
+    const s = document.createElement("span");
+    s.className = "sh-chip" + (cls ? " " + cls : "");
+    s.textContent = txt;
+    return s;
+  };
+  meta.append(chip(`Sheet ${state.page + 1} / ${state.kinds.length}`));
+  const kind = state.kinds[state.page];
+  if (kind && kind !== "unknown") meta.append(chip(kind));
+  const sc = state.result && state.result.scale;
+  if (state.result)
+    meta.append(chip(sc ? sc.text : "no scale", sc ? "ok" : "warn"));
+  const st = state.result ? "detected"
+    : (state.pageStatus || [])[state.page] === "running" ? "detecting…"
+    : (state.pageStatus || [])[state.page] === "error" ? "detect failed"
+    : "not detected";
+  meta.append(chip(st, state.result ? "ok"
+    : st === "detect failed" ? "warn" : ""));
+  el.append(name, meta);
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
   $("approveBtn").disabled = !state.result;
+  $("csvBtn").disabled = !state.result;
   if (!state.result) return;
   const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
   const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
@@ -528,7 +697,7 @@ function renderStyles() {
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${s.n} lines · ${fmtLen(s.length_pt)} · ${s.signature}`;
+    meta.textContent = `${fmtQty(s.length_pt)} · ${s.n} lines · ${s.signature}`;
     main.append(lab, meta);
 
     const badge = document.createElement("span");
@@ -564,13 +733,12 @@ function renderStyles() {
 }
 // ---------- sheet legend (detector-read) ----------
 function renderLegend() {
-  const box = $("legendBox");
-  box.innerHTML = ""; box.hidden = true;
+  const box = $("legendBox"), head = $("legendHead");
+  box.innerHTML = ""; box.hidden = true; head.hidden = true;
   if (!state.result || !(state.result.legend || []).length) return;
-  box.hidden = false;
-  const head = document.createElement("div");
-  head.className = "legend-head"; head.textContent = "Sheet legend";
-  box.appendChild(head);
+  head.hidden = false;
+  // respect a collapse the user made; new content never forces it open
+  box.hidden = head.classList.contains("closed");
   for (const e of state.result.legend) {
     const sid = e.sample_style;
     // every chip SHOWS its line: the matched style's true pattern, or the
@@ -737,10 +905,11 @@ function tradeFor(label) {
   return "General";
 }
 
-function renderItemized() {
-  const box = $("itemized");
-  box.innerHTML = "";
-  if (!state.result) return;
+// One computation for the itemized panel AND the CSV export: totals per
+// label, object counts, overrides, prices, trade grouping. Items come back
+// grouped in TRADES order, each group sorted by quantity descending.
+function computeTakeoffRows() {
+  if (!state.result) return null;
   const sc = state.result.scale;
   const ftPerIn = sc ? sc.ft_per_paper_inch : null;
   const totals = new Map();
@@ -759,12 +928,6 @@ function renderItemized() {
     if (t.objSids.size)
       t.objects = styleObjects([...t.objSids]).length;
   }
-  const head = document.createElement("div");
-  head.className = "item-row head";
-  head.innerHTML = "<div>label</div><div>count</div><div>" +
-    (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
-  box.appendChild(head);
-  let grand = 0;
   // one flat list: measured line families + calculator items, then group
   const items = [...totals.entries()].map(([label, t]) => t.objects
     ? { label, cnt: "EA", qty: t.objects,
@@ -782,6 +945,8 @@ function renderItemized() {
     if (!byTrade.has(tr)) byTrade.set(tr, []);
     byTrade.get(tr).push(it);
   }
+  let grand = 0;
+  const groups = [];
   for (const tr of TRADES) {
     const group = byTrade.get(tr);
     if (!group) continue;
@@ -797,11 +962,29 @@ function renderItemized() {
       }
       const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
       it.price = price;
+      it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
       if (it.ext) sub += it.ext;
       if (it.cnt === "EA") subEa += it.qty; else subQty += it.qty;
     }
     grand += sub;
+    groups.push({ trade: tr, items: group, sub, subQty, subEa });
+  }
+  return { groups, grand, ftPerIn };
+}
+
+function renderItemized() {
+  const box = $("itemized");
+  box.innerHTML = "";
+  if (!state.result) return;
+  const { groups, grand, ftPerIn } = computeTakeoffRows();
+  const head = document.createElement("div");
+  head.className = "item-row head";
+  head.innerHTML = "<div>label</div><div>count</div><div>" +
+    (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
+  box.appendChild(head);
+  for (const g of groups) {
+    const { trade: tr, items: group, sub, subQty, subEa } = g;
     const th = document.createElement("div");
     th.className = "trade-head";
     const qtyStr = subQty >= 1000 ? (subQty/1000).toFixed(1) + "k" : subQty.toFixed(0);
@@ -882,11 +1065,52 @@ function renderItemized() {
   }
 }
 
+// ---------- CSV export of the itemized takeoff (client-side blob) ----------
+function takeoffCsv() {
+  const data = computeTakeoffRows();
+  if (!data) return null;
+  const { groups, grand, ftPerIn } = data;
+  const csc = (v) => {
+    v = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  const rows = [["label", "trade", "count/EA",
+                 ftPerIn ? "feet" : "pt", "$/ft", "ext $"]];
+  for (const g of groups) {
+    for (const it of g.items) {
+      const isLf = !isNaN(parseFloat(it.cnt));   // plain line-count rows
+      rows.push([
+        it.label,
+        g.trade,
+        isLf ? it.cnt : `${it.qty} ${it.cnt}`,
+        isLf ? it.qty.toFixed(1)
+             : (it.ft !== undefined && it.ft !== null ? it.ft.toFixed(1) : ""),
+        it.price !== null && it.price !== undefined ? it.price : "",
+        it.ext ? it.ext.toFixed(2) : "",
+      ]);
+    }
+  }
+  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2)]);
+  return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
+}
+$("csvBtn").onclick = () => {
+  const csv = takeoffCsv();
+  if (csv === null) return;
+  const stem = (state.docName || "takeoff").replace(/\.pdf$/i, "");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `${stem}_p${state.page + 1}_takeoff.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(`CSV downloaded — ${a.download}`);
+};
+
 // ---------- collapsible sidebar sections ----------
 // every section header toggles the elements listed for it; state is
 // per-session only (a refresh reopens everything)
 const SECTIONS = [
-  ["stylesHead", ["styleList"]],
+  ["legendHead", ["legendBox"]],
+  ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewActions"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
@@ -2389,7 +2613,7 @@ function updateSelBar(ch) {
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
   const el = z !== undefined ? ` · EL ${z}` : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}${pt}${el}`;
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(ch.length_pt)}${pt}${el}`;
 }
 
 function deleteVertex() {
