@@ -536,7 +536,7 @@ function drawPatternSample(cnv, s, w, h) {
   const rep = state.result.chains.find(c => c.style_id === s.style_id);
   const tpl = rep && rep.template && rep.template.length >= 2
     ? rep.template : dashArray(s.signature);
-  sctx.strokeStyle = cssColor(s.color);
+  sctx.strokeStyle = cssColor(s.color, s.width);
   sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
   if (s.class !== "solid" && tpl && tpl.length >= 2) {
     const span = tpl.reduce((a, b) => a + b, 0);
@@ -750,7 +750,7 @@ function renderLegend() {
       const c2 = cnv.getContext("2d");
       const col = (styleOrNull && styleOrNull.color) || e.color || [0, 0, 0];
       const wgt = styleOrNull ? styleOrNull.width : 1.0;
-      c2.strokeStyle = cssColor(col);
+      c2.strokeStyle = cssColor(col, wgt);
       c2.lineWidth = Math.min(1.5 + (wgt || 0.5) * 1.2, 6);
       // the swatch's own measured cadence is the truth of what the sheet
       // legend DRAWS (paper-space); the matched style's absolute lengths
@@ -1873,7 +1873,7 @@ function draw() {
       const sel = state.selected === ch.chain_id;
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
     ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
-    ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
+    ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
       ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
@@ -1934,11 +1934,11 @@ function draw() {
       if (state.isolate !== null && s2.style_id !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(s2.style_id)) continue;
       const lab = (state.labels.get(s2.style_id) || "#" + s2.style_id);
-      if (!pools.has(lab)) pools.set(lab, { color: s2.color, sids: [] });
+      if (!pools.has(lab)) pools.set(lab, { color: s2.color, w: s2.width, sids: [] });
       pools.get(lab).sids.push(s2.style_id);
     }
     for (const pool of pools.values()) {
-      ctx.strokeStyle = cssColor(pool.color);
+      ctx.strokeStyle = cssColor(pool.color, pool.w);
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
       for (const comp of styleObjects(pool.sids)) {
@@ -2085,13 +2085,16 @@ function styleColor(sid) {
   }
   return styleColorCache.get(sid);
 }
-function cssColor(c) {
+function cssColor(c, w) {
   if (!c) return "#8f959e";
   const [r, g, b] = c.map(v => Math.round(v * 255));
-  // near-white linework (white-over-wash contours) would vanish on the
-  // dimmed sheet; draw it as the faint grey it visually is - NEVER as a
-  // loud fallback colour, which read as random phantom lines
-  if (r > 225 && g > 225 && b > 225) return "#a7adb6";
+  // near-white linework would vanish on the dimmed sheet. Thin white
+  // strokes are wash contours - draw them as the faint grey they
+  // visually are. Heavy white strokes are outlined cores (the plotter
+  // draws a black outline around a white fill, so on paper they read as
+  // the BOLDEST lines on the sheet) - draw those dark. NEVER a loud
+  // fallback colour, which read as random phantom lines.
+  if (r > 225 && g > 225 && b > 225) return (w || 0) >= 2 ? "#2b2e33" : "#a7adb6";
   return `rgb(${r},${g},${b})`;
 }
 
