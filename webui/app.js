@@ -92,6 +92,11 @@ async function openPath(path) {
     sel.appendChild(o);
   });
   sel.hidden = false; $("detectBtn").hidden = false;
+  state.pageStatus = [];
+  state.detectAll = null;
+  $("detectAllBtn").textContent = "Detect all";
+  renderPageStrip();
+  refreshPageStatuses();
   selectPage(0);
   setStatus(`${j.pages} pages`);
 }
@@ -116,6 +121,7 @@ async function selectPage(p) {
     state.img = img; fitView(); draw();
   };
   img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`);
+  markCurrentThumb();
   // reuse a finished result if the server has one
   const st = await (await fetch(`/api/job/${state.job}/page/${p}/status`)).json();
   if (gen !== state.gen) return;
@@ -125,6 +131,7 @@ async function selectPage(p) {
 $("detectBtn").onclick = async () => {
   await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
   setStatus("detecting…", "busy");
+  setPageStatus(state.page, "running");
   poll(state.gen);
 };
 async function poll(gen = state.gen) {
@@ -132,9 +139,127 @@ async function poll(gen = state.gen) {
   const j = await (await fetch(`/api/job/${state.job}/page/${state.page}/status`)).json();
   if (gen !== state.gen) return;
   if (j.status === "running") return setTimeout(() => poll(gen), 900);
-  if (j.status && j.status.startsWith("error")) return setStatus(j.status, "err");
-  if (j.status === "done") { setStatus("done"); loadResult(gen); }
+  if (j.status && j.status.startsWith("error")) {
+    setPageStatus(state.page, "error");
+    return setStatus(j.status, "err");
+  }
+  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); }
 }
+
+// ---------- page thumbnail strip: the whole-PDF page-by-page flow --------
+// Thumbnails reuse the existing /image endpoint at a low dpi; the server
+// caches one PNG per (page, dpi) so the strip costs one cheap render each.
+const THUMB_DPI = 28;
+const BADGE_TITLE = { idle: "not detected yet", running: "detecting…",
+                      done: "detected", error: "detection failed" };
+
+function renderPageStrip() {
+  const strip = $("pageStrip"), list = $("thumbList");
+  list.innerHTML = "";
+  if (!state.job) { strip.hidden = true; return; }
+  strip.hidden = false;
+  strip.classList.toggle("collapsed",
+    localStorage.getItem("core-pagestrip") === "min");
+  state.kinds.forEach((kind, p) => {
+    const t = document.createElement("div");
+    t.className = "thumb" + (p === state.page ? " current" : "");
+    t.title = `page ${p + 1} — ${kind}`;
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = `page ${p + 1}`;
+    img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${THUMB_DPI}`);
+    const foot = document.createElement("div");
+    foot.className = "thumb-foot";
+    const num = document.createElement("span");
+    num.textContent = p + 1;
+    const badge = document.createElement("span");
+    const st = state.pageStatus[p] || "idle";
+    badge.className = "thumb-badge " + st;
+    badge.title = BADGE_TITLE[st] || st;
+    foot.append(num, badge);
+    t.append(img, foot);
+    t.onclick = () => {
+      if (p === state.page) return;
+      $("pageSel").value = p;
+      selectPage(p);
+    };
+    list.appendChild(t);
+  });
+}
+function markCurrentThumb() {
+  const list = $("thumbList");
+  [...list.children].forEach((el, p) =>
+    el.classList.toggle("current", p === state.page));
+  const cur = list.children[state.page];
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+function setPageStatus(p, st) {
+  if (!state.pageStatus) state.pageStatus = [];
+  state.pageStatus[p] = st;
+  const t = $("thumbList").children[p];
+  const b = t && t.querySelector(".thumb-badge");
+  if (b) { b.className = "thumb-badge " + st; b.title = BADGE_TITLE[st] || st; }
+}
+async function refreshPageStatuses() {
+  const job = state.job;
+  if (!job) return;
+  const pages = [...state.kinds.keys()];
+  const res = await Promise.all(pages.map(p =>
+    fetch(`/api/job/${job}/page/${p}/status`)
+      .then(r => r.json()).catch(() => ({ status: "idle" }))));
+  if (job !== state.job) return;   // another document won the race
+  res.forEach((j, p) => setPageStatus(p,
+    j.status === "done" ? "done" : j.status === "running" ? "running" : "idle"));
+}
+$("stripToggle").onclick = () => {
+  const min = $("pageStrip").classList.toggle("collapsed");
+  localStorage.setItem("core-pagestrip", min ? "min" : "on");
+};
+$("detectAllBtn").onclick = async () => {
+  if (state.detectAll) {          // second click stops the sweep
+    state.detectAll = null;
+    $("detectAllBtn").textContent = "Detect all";
+    setStatus("detect-all stopped (pages already started keep running)");
+    return;
+  }
+  const job = state.job;
+  if (!job) return;
+  state.detectAll = job;
+  $("detectAllBtn").textContent = "Stop";
+  const n = state.kinds.length;
+  for (let p = 0; p < n; p++) {
+    if (state.detectAll !== job || state.job !== job) return;
+    if (state.pageStatus[p] === "done") continue;
+    setStatus(`detecting page ${p + 1} / ${n}…`, "busy");
+    setPageStatus(p, "running");
+    await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+    while (true) {
+      if (state.detectAll !== job || state.job !== job) return;
+      let j;
+      try {
+        j = await (await fetch(`/api/job/${job}/page/${p}/status`)).json();
+      } catch (e) { j = { status: "running" }; }
+      if (j.status === "done") {
+        setPageStatus(p, "done");
+        // the user may be sitting on this page waiting — load it live
+        if (state.job === job && p === state.page && !state.result)
+          loadResult(state.gen);
+        break;
+      }
+      if (j.status && String(j.status).startsWith("error")) {
+        setPageStatus(p, "error");
+        break;
+      }
+      await new Promise(res => setTimeout(res, 1200));
+    }
+  }
+  if (state.detectAll === job) {
+    state.detectAll = null;
+    $("detectAllBtn").textContent = "Detect all";
+    const bad = state.pageStatus.filter(s => s === "error").length;
+    setStatus(bad ? `all pages done — ${bad} failed` : "all pages detected");
+  }
+};
 
 async function loadResult(gen = state.gen) {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/result`);

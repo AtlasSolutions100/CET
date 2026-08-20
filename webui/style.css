@@ -230,3 +230,35 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .co-row { cursor: pointer; }
 .co-row .co-text { font-size: 11px; line-height: 1.35; }
 .co-row:hover { background: rgba(120,160,255,0.08); }
+
+/* ---------- page thumbnail strip ---------- */
+.page-strip { width: 128px; background: var(--panel); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
+.strip-head { display: flex; align-items: center; gap: 6px; padding: 8px; }
+.strip-title { flex: 1; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .16em; color: var(--dim); }
+.strip-toggle { transition: transform .15s; }
+.page-strip.collapsed { width: 34px; }
+.page-strip.collapsed .strip-head { flex-direction: column; padding: 8px 4px; }
+.page-strip.collapsed .strip-toggle { transform: rotate(180deg); }
+.page-strip.collapsed .strip-title,
+.page-strip.collapsed #detectAllBtn,
+.page-strip.collapsed .thumb-list { display: none; }
+.thumb-list { overflow-y: auto; padding: 0 8px 8px; display: flex;
+  flex-direction: column; gap: 8px; }
+.thumb { position: relative; border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; cursor: pointer; background: #fff; flex-shrink: 0; }
+.thumb:hover { border-color: var(--accent); }
+.thumb.current { outline: 2px solid var(--accent); outline-offset: -1px; }
+.thumb img { width: 100%; display: block; min-height: 24px; }
+.thumb-foot { position: absolute; left: 0; right: 0; bottom: 0; display: flex;
+  justify-content: space-between; align-items: center; padding: 2px 5px;
+  background: rgba(15,17,14,.62); color: #fff; font-family: var(--mono);
+  font-size: 9px; }
+.thumb-badge { width: 8px; height: 8px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.7); background: transparent; }
+.thumb-badge.running { background: #e0a83c; border-color: #e0a83c;
+  animation: pulse 1.1s ease-in-out infinite; }
+.thumb-badge.done { background: var(--ok); border-color: var(--ok); }
+.thumb-badge.error { background: #e5645a; border-color: #e5645a; }
+@keyframes pulse { 50% { opacity: .35; } }

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=20">
+<link rel="stylesheet" href="style.css?v=21">
 </head>
 <body>
 <header>
@@ -27,6 +27,14 @@
 </header>
 <div id="aiBanner" class="ai-banner" hidden></div>
 <main>
+  <nav id="pageStrip" class="page-strip" hidden>
+    <div class="strip-head">
+      <button id="stripToggle" class="mini strip-toggle" title="Collapse the page strip">&#10094;</button>
+      <span class="strip-title">Pages</span>
+      <button id="detectAllBtn" class="mini" title="Detect lines on every page, one after another">Detect all</button>
+    </div>
+    <div id="thumbList" class="thumb-list"></div>
+  </nav>
   <aside id="sidebar">
     <div id="colorChips" class="color-chips"></div>
     <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
@@ -133,6 +141,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=49"></script>
+<script src="app.js?v=50"></script>
 </body>
 </html>
