@@ -24,3 +24,15 @@ unless noted. Canvas interaction code (pan/zoom/click/draw) untouched.
 - Hooks added: `openPath` resets/renders the strip; `selectPage` marks the
   current thumb; single-page Detect and `poll()` now update the badge for
   the current page. No other behavior changed.
+
+## 2. Vertical tool rail + canvas status pill (restyle only)
+
+- The toolkit (measure/split/extend/cut-span/draw/reclassify/separate/
+  delete/faithful) is now a slim vertical icon rail on the canvas's left
+  edge. Same buttons, same IDs, same tooltips, same shortcuts — CSS only.
+- `#selInfo` and `#measureInfo` moved out of the rail into a floating
+  pill (`.canvas-status`) bottom-center of the canvas. IDs unchanged, so
+  all JS that writes them is untouched. Empty selInfo collapses via
+  `:empty` so no ghost pill shows.
+- Mini legend nudged from `left:12px` to `left:64px` so a tall rail can
+  never overlap it on short windows.
