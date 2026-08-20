@@ -207,7 +207,10 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 continue
             if not r.klass.startswith("dash") or r.klass != e["klass"]:
                 continue
-            if _weight_class(r.width) != e["weight"]:
+            # +-2 weight classes: paper-space swatches print heavier than
+            # the model-space line (Oncor PROPERTY LINE swatch weight 4 vs
+            # the real d9-d45-g9 family at weight 2 - human-confirmed map)
+            if abs(_weight_class(r.width) - e["weight"]) > 2:
                 continue
             if e["color"] and r.color and \
                     max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
@@ -251,8 +254,49 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 cand = sum(c.length for c in sib)
                 if best is None or cand > best[1]:
                     best = (sid, cand)
+        if best is None and e["klass"] == "solid":
+            # THIRD TIER: a solid legend entry (PROPOSED CONTOUR) matches
+            # a CURVY solid family - contours measure med len/chord >= 1.3
+            # while straight border/wall buckets sit at 1.0. Straight
+            # solid buckets stay unmatched (honest miss beats a smear).
+            curv: dict = {}
+            for c in chains:
+                if c.klass != "solid" or len(c.pts) < 2:
+                    continue
+                ch2 = float(np.hypot(*(np.asarray(c.pts[-1], float)
+                                       - np.asarray(c.pts[0], float))))
+                if ch2 > 1.0:
+                    curv.setdefault(c.style_id, []).append(c.length / ch2)
+            for sid, r in reps.items():
+                if sid in self_joined or r.klass != "solid":
+                    continue
+                if abs(_weight_class(r.width) - e["weight"]) > 2:
+                    continue
+                if e["color"] and r.color and \
+                        max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
+                    continue
+                rats = curv.get(sid) or []
+                if not rats or float(np.median(rats)) < 1.3:
+                    continue
+                cand = sum(c.length for c in chains if c.style_id == sid)
+                if best is None or cand > best[1]:
+                    best = (sid, cand)
         if best is not None:
             e["sample_style"] = best[0]
+    # one style, one name: when two entries claim the same style (PL and
+    # ADJACENT are the same linetype at different weights), the first row
+    # keeps it and later claimants go honestly unmatched
+    claimed: set = set()
+    for e in entries:
+        sid = e.get("sample_style")
+        if sid is None:
+            continue
+        if sid in claimed and by_style_count.get(sid, 0) > 0 \
+                and e is not next(x for x in entries
+                                  if x.get("sample_style") == sid):
+            e["sample_style"] = None
+        else:
+            claimed.add(sid)
     curvy_cache: dict = {}
     def _curvy(sid):
         if sid not in curvy_cache:
@@ -524,7 +568,16 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
         hits.extend(cs)
     if not hits:
         return None
-    rep = max(hits, key=lambda c: c.length)
+    # prefer real takeoff chains; an annotation-class hit (the swatch got
+    # classified as a leader by the layerless pass) still gives cadence
+    # but must not exact-join - its style is an annotation bucket
+    real = [c for c in hits if c.klass != "annotation"]
+    rep = max(real or hits, key=lambda c: c.length)
+    # an annotation-class rep (the swatch itself got demoted) still tells
+    # us the swatch's GEOMETRY: unbroken straight bar = solid linetype
+    rep_klass = rep.klass
+    if rep_klass == "annotation":
+        rep_klass = "solid" if (rep.n_dashes or 0) <= 1 else "dash1"
     # the swatch's own cadence, marks in x order: what the sheet's legend
     # actually draws (paper-space) - the chip renders THIS, because the
     # matched style's absolute lengths differ under LTSCALE
@@ -548,12 +601,12 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
         # swatch cadence (it is the swatch, drawn in paper space)
         tpl = list(rep.template)
     return {
-        "klass": rep.klass,
+        "klass": rep_klass,
         "color": rep.color,
         "weight": _weight_class(rep.width),
         "avg_dash": (rep.ink or rep.length) / max(rep.n_dashes, 1),
         "swatch_template": [round(v, 1) for v in tpl] if len(tpl) >= 2 else None,
-        "sample_style": rep.style_id,
+        "sample_style": rep.style_id if rep.klass != "annotation" else None,
         # a compound swatch draws its symbol with several pens (Belle's
         # shear wall: hatch ticks + a native-dashed centerline). Every
         # qualifying style in the strip belongs to the definition, not

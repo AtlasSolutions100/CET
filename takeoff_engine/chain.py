@@ -406,10 +406,25 @@ def _leader_annotation_units(units: list) -> set:
         (C4.1 O-SURFACE-LBL-FG), 27/33 (C6.0 PIPE-LBL).
     """
     by_layer = defaultdict(list)
+    layerless = []
     for i, u in enumerate(units):
         leaf = (u.layer or "").split("|")[-1]
         if leaf and _ANNO_LAYER.search(leaf):
             by_layer[u.layer].append(i)
+        elif not leaf:
+            layerless.append(i)
+    # LAYERLESS sheets (flattened CAD: Oncor) draw their callout text as
+    # vector outlines with no layer names and no text layer, so the same
+    # glyph-anchored leader test runs over the layerless pool as a whole.
+    # The repeat guard carries the false-positive protection: a fence bar
+    # or dash mark near a label has a collinear same-cadence neighbour
+    # continuing beyond it; a leader is terminal. Measured Oncor p4:
+    # 8 clean leaders, 91 look-alikes rejected by continuation, 33 by
+    # the both-ends test (dimension strings).
+    if len(layerless) >= 50 and not by_layer:
+        by_layer[""] = layerless
+    elif len(layerless) >= 50:
+        by_layer.setdefault("", layerless)
     if not by_layer:
         return set()
     from scipy.spatial import cKDTree
@@ -418,17 +433,47 @@ def _leader_annotation_units(units: list) -> set:
     for lay in sorted(by_layer):
         idxs = by_layer[lay]
         glyph_pts = []
+        layerless_pool = (lay == "")
         for i in idxs:
             u = units[i]
             bb = u.pts.max(axis=0) - u.pts.min(axis=0)
             diag = float(np.hypot(*bb))
             fold = u.length / diag if diag > 1e-6 else 9.9
-            if diag <= 15.0 and u.length <= 40.0 and (
-                    fold >= 1.25 or diag <= 6.0 or u.closed):
+            if layerless_pool:
+                # TEXT-only anchor: open folded letterform strokes. Closed
+                # shapes are feature SYMBOLS here (manhole triangles/
+                # circles sit at the pointy end of a leader and made both
+                # ends look like text - measured Oncor p4 unit 6281/6325)
+                ok = (diag <= 15.0 and u.length <= 40.0
+                      and fold >= 1.25 and not u.closed)
+            else:
+                ok = (diag <= 15.0 and u.length <= 40.0 and (
+                    fold >= 1.25 or diag <= 6.0 or u.closed))
+            if ok:
                 glyph_pts.append((u.pts[0] + u.pts[-1]) / 2)
         if len(glyph_pts) < 3:
             continue
         tree = cKDTree(np.asarray(glyph_pts))
+        if layerless_pool:
+            # sibling pool for the cadence-repeat guard: mids + dirs +
+            # lengths of open strokes. A fence bar / dash mark near a
+            # label has PARALLEL SAME-LENGTH siblings at a regular offset
+            # (its cadence row); a leader is one of a kind. This guard
+            # replaced a terminal test that drowned in Oncor's contour
+            # field (everything has something collinear beyond it).
+            mids, mdirs, mlens = [], [], []
+            for k2 in idxs:
+                u2 = units[k2]
+                if u2.closed or len(u2.pts) < 2 or u2.length < 8:
+                    continue
+                v2 = u2.pts[-1] - u2.pts[0]
+                n2 = float(np.hypot(*v2))
+                if n2 < 1e-9:
+                    continue
+                mids.append((u2.pts[0] + u2.pts[-1]) / 2)
+                mdirs.append(v2 / n2)
+                mlens.append(u2.length)
+            mtree2 = cKDTree(np.array(mids)) if mids else None
         for i in idxs:
             u = units[i]
             if u.closed or len(u.pts) < 2 or not (15.0 <= u.length <= 600.0):
@@ -437,12 +482,55 @@ def _leader_annotation_units(units: list) -> set:
             if chord < 1e-6:
                 continue
             r = u.length / chord
-            if not ((r <= 1.10 and len(u.pts) <= 5) or r <= 1.60):
+            if not ((r <= 1.10 and len(u.pts) <= 7) or r <= 1.60):
                 continue
-            for e in (u.pts[0], u.pts[-1]):
-                if len(tree.query_ball_point(e, 18.0)) >= 3:
-                    leaders.add(i)
+            if not layerless_pool:
+                for e in (u.pts[0], u.pts[-1]):
+                    if len(tree.query_ball_point(e, 18.0)) >= 3:
+                        leaders.add(i)
+                        break
+                continue
+            # layerless: glyphs at exactly ONE end, and NOT a member of a
+            # cadence row (no parallel same-length sibling at short offset)
+            n_g = [len(tree.query_ball_point(u.pts[0], 14.0)),
+                   len(tree.query_ball_point(u.pts[-1], 14.0))]
+            at = [k3 for k3 in (0, 1) if n_g[k3] >= 2]
+            # one glyph-anchored end only; the OTHER end may sit near
+            # stray glyphs (inline utility letters live everywhere on
+            # civil sheets - the manhole-leader far end measured 3+)
+            if len(at) != 1:
+                continue
+            if mtree2 is None:
+                continue
+            v = u.pts[-1] - u.pts[0]
+            n = float(np.hypot(*v))
+            ud = v / n
+            um = (u.pts[0] + u.pts[-1]) / 2
+            sib = False
+            for k3 in mtree2.query_ball_point(um, 70.0):
+                m2 = mids[k3]
+                if float(np.hypot(*(m2 - um))) < 2.0:
+                    continue  # self
+                if abs(float(np.dot(mdirs[k3], ud))) < 0.95:
+                    continue
+                if not (0.7 * u.length <= mlens[k3] <= 1.4 * u.length):
+                    continue
+                rel = m2 - um
+                lat = abs(float(rel[0] * ud[1] - rel[1] * ud[0]))
+                along = abs(float(rel[0] * ud[0] + rel[1] * ud[1]))
+                if 3.0 <= lat <= 60.0 and along <= 0.6 * u.length:
+                    sib = True
                     break
+                # collinear cadence: the next dash of the SAME line
+                # continues past this one (property-line marks near a
+                # label were being eaten - measured: the d9-d45-g9 family
+                # lost 3 chains / 1.2k pt to the leader pass)
+                gap = along - 0.5 * (u.length + mlens[k3])
+                if lat <= 3.0 and -5.0 <= gap <= 60.0:
+                    sib = True
+                    break
+            if not sib:
+                leaders.add(i)
     return leaders
 
 
