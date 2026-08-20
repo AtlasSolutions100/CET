@@ -1892,19 +1892,42 @@ function draw() {
       ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
       // selection recolors but keeps the true pattern - a solid magenta
       // overlay reads as "this line became solid", which it has not
-      // the chain's own measured period beats any signature-derived
-      // reconstruction (a d9/d45 class signature cannot say whether the
-      // period has one short or two - the template knows)
-      const da = state.faithful
-        ? (ch.template && ch.template.length >= 2 ? ch.template
-           : dashArray(ch.dash_signature))
-        : null;
-      ctx.setLineDash(da ? da.map(v => v * f) : []);
-      ctx.beginPath();
       const pts = ch.points;
-      ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
-      ctx.stroke();
+      // seg_counts partitions points into the SOURCE ink marks: draw each
+      // mark as its own solid subpath so every dash lands exactly where
+      // the sheet printed it. A repeating template can only approximate -
+      // its phase drifts off the real bars (the Oncor property-line
+      // complaint). Template remains the fallback for chains without mark
+      // boundaries (native dash arrays, custom drawn lines, old results).
+      if (ch._scOK === undefined)
+        ch._scOK = !!(ch.seg_counts &&
+          ch.seg_counts.reduce((a, b) => a + b, 0) === pts.length);
+      if (state.faithful && ch._scOK && ch.class !== "solid") {
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        let off = 0;
+        for (const n of ch.seg_counts) {
+          ctx.moveTo(pts[off][0] * f, pts[off][1] * f);
+          if (n === 1) ctx.lineTo(pts[off][0] * f + 0.75, pts[off][1] * f);
+          for (let i = off + 1; i < off + n; i++)
+            ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+          off += n;
+        }
+        ctx.stroke();
+      } else {
+        // the chain's own measured period beats any signature-derived
+        // reconstruction (a d9/d45 class signature cannot say whether the
+        // period has one short or two - the template knows)
+        const da = state.faithful
+          ? (ch.template && ch.template.length >= 2 ? ch.template
+             : dashArray(ch.dash_signature))
+          : null;
+        ctx.setLineDash(da ? da.map(v => v * f) : []);
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1.0;
     ctx.setLineDash([]);
@@ -2312,6 +2335,9 @@ function materialize(ch) {
   const clone = JSON.parse(JSON.stringify(ch));
   clone.chain_id = state.nextChainId++;
   clone.custom = true;
+  // an edited clone's points diverge from the engine's mark partition -
+  // drop it so the render falls back to the template, never a stale map
+  delete clone.seg_counts; delete clone._scOK;
   if (state.chainLabels.has(ch.chain_id))
     state.chainLabels.set(clone.chain_id, state.chainLabels.get(ch.chain_id));
   state.result.chains.push(clone);
@@ -2348,6 +2374,7 @@ function splitSelected() {
     const c = JSON.parse(JSON.stringify(ch));
     c.chain_id = state.nextChainId++;
     c.custom = true;
+    delete c.seg_counts; delete c._scOK;
     c.points = p;
     c.length_pt = ch.length_pt * polyLen(p) / full;
     if (state.chainLabels.has(ch.chain_id))
@@ -2449,6 +2476,7 @@ function cutSpanClick(px, py) {
     const c = JSON.parse(JSON.stringify(ch));
     c.chain_id = state.nextChainId++;
     c.custom = true;
+    delete c.seg_counts; delete c._scOK;
     c.points = p;
     c.length_pt = ch.length_pt * polyLen(p) / full;
     if (state.chainLabels.has(ch.chain_id))
@@ -2529,6 +2557,7 @@ function finishDraw() {
   const c = JSON.parse(JSON.stringify(src));  // inherits the family's style/pattern
   c.chain_id = state.nextChainId++;
   c.custom = true;
+  delete c.seg_counts; delete c._scOK;
   c.points = merged;
   c.length_pt = polyLen(merged);
   if (label) state.chainLabels.set(c.chain_id, label);

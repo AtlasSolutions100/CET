@@ -67,6 +67,15 @@ class LineChain:
                            # to length-classes (d9 d45 g9), which cannot say
                            # long+TWO shorts vs long+one short; drawing from
                            # it renders the wrong pattern.
+    seg_counts: list = None  # points-per-mark partition of pts: pts[0:n0] is
+                             # the first ink mark, pts[n0:n0+n1] the second...
+                             # This is the SOURCE ink geometry - rendering
+                             # from it puts every dash exactly where the
+                             # sheet printed it, which no repeating template
+                             # can (template phase drifts off the real bars).
+                             # None = boundaries unknown; render falls back
+                             # to the template. Solids never need it (their
+                             # whole path is one continuous mark).
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +92,8 @@ class LineChain:
             "ink_pt": round(self.ink or self.length, 2),
             "template": [round(float(v), 2) for v in self.template]
             if self.template else None,
+            "seg_counts": [int(n) for n in self.seg_counts]
+            if self.seg_counts else None,
             "points": [[round(float(x), 2), round(float(y), 2)] for x, y in self.pts],
         }
 
@@ -271,10 +282,14 @@ def _walk_chains(units: list, idxs: list, links: list) -> list:
 
 def _chain_geometry(units: list, seq: list):
     """Concatenate stroke points along the chain, orienting each stroke by
-    its entry end. Returns (pts, dash_lengths, gap_lengths)."""
+    its entry end. Returns (pts, dash_lengths, gap_lengths, seg_counts);
+    seg_counts partitions pts into ink marks (see LineChain.seg_counts) and
+    is None when any member chain lost its own mark boundaries."""
     pts_parts = []
     dash_lengths = []
     gaps = []
+    seg_parts = []
+    poisoned = False
     prev_exit = None
     for unit_idx, ent in seq:
         u = units[unit_idx]
@@ -284,8 +299,19 @@ def _chain_geometry(units: list, seq: list):
         pts_parts.append(p)
         dash_lengths.append(u.length)
         prev_exit = p[-1]
+        if isinstance(u, LineChain):
+            sc = u.seg_counts
+            if sc is None and u.klass == "solid":
+                sc = [len(u.pts)]  # a solid IS one continuous mark
+            if sc is None:
+                poisoned = True
+            else:
+                seg_parts.append(list(reversed(sc)) if ent == 1 else list(sc))
+        else:
+            seg_parts.append([len(p)])  # a raw stroke is one mark
     pts = np.vstack(pts_parts)
-    return pts, dash_lengths, gaps
+    seg_counts = None if poisoned else [n for part in seg_parts for n in part]
+    return pts, dash_lengths, gaps, seg_counts
 
 
 def _cluster_1d(values: list, rel=1.55, abs_tol=1.2) -> list:
@@ -470,10 +496,32 @@ def _merge_collinear_overlaps(units: list) -> list:
                 continue
             keep = max(idxs, key=lambda k: units[k].length)
             u = units[keep]
-            base = u.pts[0]
-            t0 = float(np.dot(base, d))
-            u.pts = np.vstack([base + (lo - t0) * d, base + (hi - t0) * d])
-            u.length = float(hi - lo)
+            # The merged mark must sit on the printed mark's CENTERLINE,
+            # not on one member's edge: an edge pair is two outline strokes
+            # a line-width apart, and anchoring at the kept member's own
+            # endpoint drew the bar half a width off and tilted by the
+            # bucket's 2-degree quantization (the Oncor PL overlay sat
+            # visibly off its source bars). Use the group's own mean
+            # direction and the length-weighted mean lateral instead.
+            wts = np.array([units[k].length for k in idxs], float)
+            dirs = []
+            for k in idxs:
+                vk = units[k].pts[-1] - units[k].pts[0]
+                nk = float(np.hypot(*vk))
+                dk = vk / max(nk, 1e-9)
+                if float(np.dot(dk, d)) < 0:
+                    dk = -dk
+                dirs.append(dk)
+            dm = np.average(np.array(dirs), axis=0, weights=wts)
+            dm /= max(float(np.hypot(*dm)), 1e-9)
+            nm = np.array([dm[1], -dm[0]])
+            eps = np.array([p for k in idxs
+                            for p in (units[k].pts[0], units[k].pts[-1])])
+            t = eps @ dm
+            latm = float(np.average(eps @ nm, weights=np.repeat(wts, 2)))
+            lo2, hi2 = float(t.min()), float(t.max())
+            u.pts = np.vstack([lo2 * dm + latm * nm, hi2 * dm + latm * nm])
+            u.length = float(hi2 - lo2)
             u.width = max((units[k].width or 0) for k in idxs)
             if hasattr(u, "_dir"):
                 del u._dir
@@ -733,7 +781,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             if len(seq) < MIN_DASHES and not named_line_layer:
                 frag_seqs.append(seq)
                 continue
-            pts, dls, gaps = _chain_geometry(units, seq)
+            pts, dls, gaps, segs = _chain_geometry(units, seq)
             length = float(sum(dls) + sum(gaps))
             if not gaps or float(np.median(gaps)) < 0.5:
                 # touching segments: continuous geometry split across path
@@ -746,6 +794,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
                                len(seq), sig, layer=layer,
                                ink=float(sum(dls)))
             lc_new.template = _dash_template(dls, gaps)
+            lc_new.seg_counts = segs
             cand_chains.append((seq, lc_new, gaps))
             cid += 1
 
@@ -769,7 +818,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         for seq in frag_seqs:
             if not templates:
                 break
-            pts, dls, gaps = _chain_geometry(units, seq)
+            pts, dls, gaps, segs = _chain_geometry(units, seq)
             if not gaps:
                 continue
             dl_med, gap_med = float(np.median(dls)), float(np.median(gaps))
@@ -780,11 +829,11 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
                         and abs(gap_med - tgap) <= max(0.4 * tgap, 1.5):
                     length = float(sum(dls) + sum(gaps))
                     klass, sig = _classify_cadence(dls, gaps)
-                    group_lcs.append((
-                        LineChain(cid, pts, klass, color, width, length,
-                                  len(seq), sig, layer=layer, ink=float(sum(dls))),
-                        dls,
-                    ))
+                    lc_fr = LineChain(cid, pts, klass, color, width, length,
+                                      len(seq), sig, layer=layer,
+                                      ink=float(sum(dls)))
+                    lc_fr.seg_counts = segs
+                    group_lcs.append((lc_fr, dls))
                     cid += 1
                     chained_units.update(i for i, _ in seq)
                     break
@@ -823,8 +872,10 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     # this exists to prevent.
     for i in sorted(leader_idx):
         u = units[i]
-        chains.append(LineChain(cid, u.pts, "annotation", u.color, u.width,
-                                u.length, 0, "leader", layer=u.layer))
+        lc_an = LineChain(cid, u.pts, "annotation", u.color, u.width,
+                          u.length, 0, "leader", layer=u.layer)
+        lc_an.seg_counts = [len(u.pts)]
+        chains.append(lc_an)
         cid += 1
 
     # structural grid lines (centerline dashes anchored at lettered grid
@@ -1809,7 +1860,7 @@ def _stitch_across_styles(chains: list) -> list:
     for seq in _walk_chains(cands, list(range(len(cands))), ok_links):
         if len(seq) < 2:
             continue
-        pts, member_lens, gaps = _chain_geometry(cands, seq)
+        pts, member_lens, gaps, segs = _chain_geometry(cands, seq)
         # no real line doubles back on itself mid-run: reject assemblies
         # whose path reverses repeatedly (texture fields / leader sunbursts
         # threading into fake cadences - the GCHC lawn spike storms)
@@ -1823,6 +1874,7 @@ def _stitch_across_styles(chains: list) -> list:
                 continue
         base = max((cands[k] for k, _ in seq), key=lambda c: c.length)
         base.pts = pts
+        base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
@@ -2007,7 +2059,7 @@ def _join_chain_ends(chains: list) -> list:
     for seq in _walk_chains(cands, list(range(len(cands))), ok_links):
         if len(seq) < 2:
             continue
-        pts, member_lens, gaps = _chain_geometry(cands, seq)
+        pts, member_lens, gaps, segs = _chain_geometry(cands, seq)
         # no real line doubles back on itself mid-run: reject assemblies
         # whose path reverses repeatedly (texture fields / leader sunbursts
         # threading into fake cadences - the GCHC lawn spike storms)
@@ -2021,6 +2073,7 @@ def _join_chain_ends(chains: list) -> list:
                 continue
         base = max((cands[k] for k, _ in seq), key=lambda c: c.length)
         base.pts = pts
+        base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
@@ -2041,7 +2094,7 @@ def _split_irregular_gaps(units: list, seqs: list) -> list:
         if len(seq) < 4:
             out.append(seq)
             continue
-        _, _, gaps = _chain_geometry(units, seq)
+        _, _, gaps, _ = _chain_geometry(units, seq)
         med = float(np.median(gaps)) if gaps else 0.0
         limit = max(2.5 * med, med + 18.0)
         cur = [seq[0]]
@@ -2100,7 +2153,7 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
                 meta[k][0] == "chain" and meta[k][1][0].klass.startswith("dash")
                 for k, _ in seq
             )
-            pts, member_lens, gaps = _chain_geometry(pseudos, seq)
+            pts, member_lens, gaps, segs = _chain_geometry(pseudos, seq)
             total_len = float(sum(member_lens) + sum(gaps))
             # a solid can only extend a dashed chain if it is plausibly one
             # of the pattern's own long dashes - not a curb that happens to
@@ -2185,6 +2238,7 @@ def _compound_merge(group_lcs, solid_pool, stray_dots, units, color, width,
             lc_cm = LineChain(cid, pts, klass, color, width, total_len,
                               n_dashes, sig, layer=layer, ink=true_ink)
             lc_cm.template = tmpl
+            lc_cm.seg_counts = segs
             out.append(lc_cm)
             cid += 1
             consumed.update(k for k, _ in seq)
@@ -2292,8 +2346,12 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
                 seg = u.pts if head_first else u.pts[::-1]
                 if end == 0:
                     c.pts = np.vstack([seg[::-1], c.pts])
+                    if c.seg_counts is not None:
+                        c.seg_counts = [len(seg)] + c.seg_counts
                 else:
                     c.pts = np.vstack([c.pts, seg])
+                    if c.seg_counts is not None:
+                        c.seg_counts = c.seg_counts + [len(seg)]
                 c.length += u.length + d
                 c.ink = (c.ink or 0.0) + u.length
                 c.n_dashes += 1
@@ -2631,6 +2689,17 @@ def _text_between(a, b, words, gap_max):
 def _merge_into(a, b, a_end, b_end, text):
     a_pts = a.pts if a_end == 1 else a.pts[::-1]
     b_pts = b.pts if b_end == 0 else b.pts[::-1]
+
+    def _sc(c, forward):
+        sc = c.seg_counts
+        if sc is None and c.klass == "solid":
+            sc = [len(c.pts)]  # a solid is one continuous mark
+        if sc is None:
+            return None
+        return list(sc) if forward else list(reversed(sc))
+    a_sc, b_sc = _sc(a, a_end == 1), _sc(b, b_end == 0)
+    a.seg_counts = a_sc + b_sc if (a_sc is not None and b_sc is not None) \
+        else None
     a.pts = np.vstack([a_pts, b_pts])
     a.length += b.length + float(np.hypot(*(b_pts[0] - a_pts[-1])))
     a.ink = (a.ink or 0.0) + (b.ink or b.length)

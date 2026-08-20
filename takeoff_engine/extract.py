@@ -98,14 +98,22 @@ def _close(a, b) -> bool:
     return abs(a[0] - b[0]) <= CONNECT_EPS and abs(a[1] - b[1]) <= CONNECT_EPS
 
 
-def _thin_rect_centerline(pts: np.ndarray) -> np.ndarray | None:
+def _thin_rect_centerline(pts: np.ndarray, pca_axis: bool = False) -> np.ndarray | None:
     """If a closed polyline is a thin elongated box (a stroked 'thick line
     segment'), return its 2-point centerline; else None.
 
     Estimate: longest vertex-pair distance is the length axis; half the
     perimeter minus that is the width. Orientation-independent, so rotated
     pipe segments work.
-    """
+
+    pca_axis: use the perimeter-weighted PCA long axis instead of the
+    longest vertex pair. The corner-to-corner diameter tilts by
+    atan(width/length) off a thin box's true axis, which rendered every
+    collapsed FILL sliver askew of its printed ink (Oncor p4 property
+    line, 45.7x3.3 fill slivers ~4deg off). Scoped to fill-bearing paths
+    for now: flipping the axis for plain stroked rects moved C2.1's
+    chain population -300 in the 2026-08-20 corpus gate, and that
+    movement is unaudited - widen only behind a fresh corpus audit."""
     if len(pts) > 8:
         return None
     d = np.diff(pts, axis=0)
@@ -120,6 +128,22 @@ def _thin_rect_centerline(pts: np.ndarray) -> np.ndarray | None:
     # heavy dashed boundaries plot as fat bars up to ~6pt thick
     if width > 7.0 or diam < 3.0 * width:
         return None
+    if pca_axis:
+        segs = np.diff(pts, axis=0)
+        slen = np.hypot(segs[:, 0], segs[:, 1])
+        if float(slen.sum()) < 1e-6:
+            return None
+        emids = (pts[:-1] + pts[1:]) / 2
+        w = slen / slen.sum()
+        mu = (emids * w[:, None]).sum(axis=0)
+        X = emids - mu
+        cov = (X * w[:, None]).T @ X
+        _, evecs = np.linalg.eigh(cov)
+        axis = evecs[:, -1]
+        t = (pts - mu) @ axis
+        lo, hi = float(t.min()), float(t.max())
+        # mu is the perimeter centroid, which centers the line in the ink
+        return np.vstack([mu + lo * axis, mu + hi * axis])
     axis = (pts[k[1]] - pts[k[0]]) / diam
     t = (pts - pts[k[0]]) @ axis
     lo, hi = float(t.min()), float(t.max())
@@ -256,7 +280,7 @@ def extract_strokes(page: pymupdf.Page) -> list[StrokeUnit]:
                             # closed rectangles (pipe runs, wide dashes);
                             # collapse those to their centerline so they can
                             # chain like any other dash
-                            cl = _thin_rect_centerline(pts)
+                            cl = _thin_rect_centerline(pts, pca_axis="f" in ptype)
                             if cl is not None:
                                 pts, closed = cl, False
                         if rot is not None:
