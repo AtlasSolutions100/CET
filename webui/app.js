@@ -30,7 +30,7 @@ const url = (p) => location.origin + p;
 const $ = (id) => document.getElementById(id);
 const IMG_DPI = 130; // must match /image endpoint default
 
-const state = {
+const state = window.state = {
   job: null, page: 0, kinds: [],
   img: null, result: null,
   include: new Map(), labels: new Map(), isolate: null, hot: null,
@@ -1868,9 +1868,61 @@ function handleCanvasClick(e) {
     cutSpanClick(px, py);
     return;
   }
+  if (state.tool === "reclass" && state.selected !== null) {
+    // click a line of the TARGET family: the selected line joins it -
+    // class, pattern, color, label pooling, itemized count, everything
+    const fR = IMG_DPI / 72;
+    const tolR = 6 / state.view.k / fR * 4 + 1.5;
+    let tgt = null, tgtD = tolR;
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
+      if (state.isolate !== null ? ch.style_id !== state.isolate
+                                 : !state.include.get(ch.style_id)) continue;
+      for (let i = 1; i < ch.points.length; i++) {
+        const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
+        if (d < tgtD) { tgtD = d; tgt = ch; }
+      }
+    }
+    const sel = chainById(state.selected);
+    if (!tgt || !sel) { setStatus("click a line of the family this one belongs to", "err"); return; }
+    if (tgt.style_id === sel.style_id) { setStatus("already in that family"); state.tool = null; $("reclassBtn").classList.remove("active"); return; }
+    const c = materialize(sel);
+    c.style_id = tgt.style_id;
+    c.class = tgt.class; c.color = tgt.color; c.width = tgt.width;
+    c.dash_signature = tgt.dash_signature;
+    if (tgt.template) c.template = JSON.parse(JSON.stringify(tgt.template));
+    state.tool = null;
+    $("reclassBtn").classList.remove("active");
+    state.selected = c.chain_id;
+    updateSelBar(c);
+    const lab = state.labels.get(tgt.style_id) || "its new family";
+    afterEdit(`moved ${fmtLen(c.length_pt)} into ${lab}`);
+    renderStyles(); renderChips(); renderMiniLegend();
+    return;
+  }
   if (state.tool === "drawline") {
-    state.drawPts.push([px, py]);
-    setStatus(`draw: ${state.drawPts.length} point(s) — double-click or Enter to finish`, "busy");
+    // clicking an existing line endpoint SNAPS there - and if the draw is
+    // already underway, it FINISHES the line at that point (the drawn run
+    // then fuses with the touched family line in finishDraw)
+    const fSnap = IMG_DPI / 72;
+    const tolSnap = 7 / state.view.k / fSnap + 1.5;
+    let snap = null;
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      if (state.isolate !== null ? ch.style_id !== state.isolate
+                                 : !state.include.get(ch.style_id)) continue;
+      for (const q of [ch.points[0], ch.points[ch.points.length - 1]]) {
+        const d = Math.hypot(px - q[0], py - q[1]);
+        if (snap === null || d < snap.d) snap = { d, q };
+      }
+    }
+    const pt = (snap && snap.d <= tolSnap) ? [snap.q[0], snap.q[1]] : [px, py];
+    state.drawPts.push(pt);
+    if (snap && snap.d <= tolSnap && state.drawPts.length >= 2) {
+      finishDraw();
+      return;
+    }
+    setStatus(`draw: ${state.drawPts.length} point(s) — click a line end to finish there, or double-click/Enter`, "busy");
     draw();
     return;
   }
@@ -2098,17 +2150,67 @@ function finishDraw() {
     cancelDraw(); draw();
     return setStatus("draw cancelled — a line needs at least two points", "err");
   }
+  // when an end of the drawn run lands on an endpoint of a same-family
+  // line, this is an EXTENSION: fuse into one line (either end works,
+  // and both ends can bridge two lines into one)
+  const fT = IMG_DPI / 72;
+  const tolT = 7 / state.view.k / fT + 1.5;
+  const endMatch = (pt, skip) => {
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id) || ch.style_id !== src.style_id) continue;
+      if (skip && ch.chain_id === skip) continue;
+      const P = ch.points;
+      if (Math.hypot(pt[0] - P[0][0], pt[1] - P[0][1]) <= tolT)
+        return { ch, at: 0 };
+      if (Math.hypot(pt[0] - P[P.length-1][0], pt[1] - P[P.length-1][1]) <= tolT)
+        return { ch, at: 1 };
+    }
+    return null;
+  };
+  const head = endMatch(pts[0], null);
+  let tail = endMatch(pts[pts.length - 1], head ? head.ch.chain_id : null);
+  let merged = pts, label = null, fused = 0;
+  const consume = (m) => {
+    if (!m.ch.custom) state.excluded.add(m.ch.chain_id);
+    else state.excluded.add(m.ch.chain_id);
+    label = label || state.chainLabels.get(m.ch.chain_id) || null;
+    fused += 1;
+  };
+  if (head) {
+    const P = head.ch.points;
+    merged = (head.at === 1 ? P : [...P].reverse()).concat(merged.slice(1));
+    consume(head);
+  }
+  if (tail) {
+    const P = tail.ch.points;
+    merged = merged.slice(0, -1).concat(tail.at === 0 ? P : [...P].reverse());
+    consume(tail);
+  }
   const c = JSON.parse(JSON.stringify(src));  // inherits the family's style/pattern
   c.chain_id = state.nextChainId++;
   c.custom = true;
-  c.points = pts;
-  c.length_pt = polyLen(pts);
+  c.points = merged;
+  c.length_pt = polyLen(merged);
+  if (label) state.chainLabels.set(c.chain_id, label);
   state.result.chains.push(c);
   state.selected = c.chain_id; state.selPt = null;
   cancelDraw();
   updateSelBar(c);
-  afterEdit(`drew ${fmtLen(c.length_pt)} into the family`);
+  afterEdit(fused
+    ? `extended the line — now ${fmtLen(c.length_pt)}`
+    : `drew ${fmtLen(c.length_pt)} into the family`);
 }
+
+$("reclassBtn").onclick = () => {
+  const ch = state.selected !== null && chainById(state.selected);
+  if (!ch)
+    return setStatus("select the misclassified line first, then hit reclassify", "err");
+  state.tool = state.tool === "reclass" ? null : "reclass";
+  $("reclassBtn").classList.toggle("active", state.tool === "reclass");
+  setStatus(state.tool === "reclass"
+    ? "reclassify: click a line of the family this one SHOULD belong to (Esc cancels)"
+    : "reclassify cancelled");
+};
 
 $("sepBtn").onclick = () => {
   const ch = state.selected !== null && chainById(state.selected);
@@ -2260,6 +2362,10 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     removeSelected();
   }
+  if ((e.key === "r" || e.key === "R") && !typing() && state.selected !== null) {
+    $("reclassBtn").onclick();
+    return;
+  }
   if (e.key === "Enter" && state.tool === "drawline" && !typing()) {
     e.preventDefault();
     finishDraw();
@@ -2271,6 +2377,12 @@ addEventListener("keydown", (e) => {
       cancelCut();
       setStatus("cut cancelled");
       draw();
+      return;
+    }
+    if (state.tool === "reclass") {
+      state.tool = null;
+      $("reclassBtn").classList.remove("active");
+      setStatus("reclassify cancelled");
       return;
     }
     if (state.tool === "drawline") {
