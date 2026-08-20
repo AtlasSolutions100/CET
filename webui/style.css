@@ -265,7 +265,8 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 /* ---------- page thumbnail strip ---------- */
 .page-strip { width: 128px; background: var(--panel); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
-.strip-head { display: flex; align-items: center; gap: 6px; padding: 8px; }
+.strip-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; flex-wrap: wrap; }
+#detectAllBtn { flex: 1 0 100%; }
 .strip-title { flex: 1; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .16em; color: var(--dim); }
 .strip-toggle { transition: transform .15s; }
