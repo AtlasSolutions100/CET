@@ -89,3 +89,23 @@ unless noted. Canvas interaction code (pan/zoom/click/draw) untouched.
 - Both themes intact: every new rule uses the existing CSS variables;
   dark stays default, paper theme unchanged apart from inheriting the
   same cleanups.
+
+## Verification
+
+Live-app smoke check on :8101 with Oncor sheet 5 (engine page 4):
+see `out/verify/2026-08-20/ui-kreo-selfcheck/VERIFY.md` for exactly what
+was exercised and what was left to the senior review. `node -e "new
+Function(...)"` syntax gate passed after every commit; zero browser
+console errors.
+
+## Known limits / notes for the reviewer
+
+- Stopping Detect-all cannot cancel the page already running server-side
+  (`/detect` has no cancel); its badge stays amber until it finishes or
+  the doc is reopened.
+- Thumbnails assume `state.kinds` order == page order (it is — built from
+  the same array as the page dropdown).
+- The "annotation" style class sorts before "solid" in the style list;
+  pre-existing behavior (CLASS_ORDER has no entry for it), untouched.
+- `renderPageStrip` recreates thumbs per document open only; per-page
+  switches just retag `.current` (no image refetch).
