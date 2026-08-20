@@ -641,6 +641,7 @@ function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
   $("approveBtn").disabled = !state.result;
+  $("csvBtn").disabled = !state.result;
   if (!state.result) return;
   const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
   const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
@@ -904,10 +905,11 @@ function tradeFor(label) {
   return "General";
 }
 
-function renderItemized() {
-  const box = $("itemized");
-  box.innerHTML = "";
-  if (!state.result) return;
+// One computation for the itemized panel AND the CSV export: totals per
+// label, object counts, overrides, prices, trade grouping. Items come back
+// grouped in TRADES order, each group sorted by quantity descending.
+function computeTakeoffRows() {
+  if (!state.result) return null;
   const sc = state.result.scale;
   const ftPerIn = sc ? sc.ft_per_paper_inch : null;
   const totals = new Map();
@@ -926,12 +928,6 @@ function renderItemized() {
     if (t.objSids.size)
       t.objects = styleObjects([...t.objSids]).length;
   }
-  const head = document.createElement("div");
-  head.className = "item-row head";
-  head.innerHTML = "<div>label</div><div>count</div><div>" +
-    (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
-  box.appendChild(head);
-  let grand = 0;
   // one flat list: measured line families + calculator items, then group
   const items = [...totals.entries()].map(([label, t]) => t.objects
     ? { label, cnt: "EA", qty: t.objects,
@@ -949,6 +945,8 @@ function renderItemized() {
     if (!byTrade.has(tr)) byTrade.set(tr, []);
     byTrade.get(tr).push(it);
   }
+  let grand = 0;
+  const groups = [];
   for (const tr of TRADES) {
     const group = byTrade.get(tr);
     if (!group) continue;
@@ -964,11 +962,29 @@ function renderItemized() {
       }
       const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
       it.price = price;
+      it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
       if (it.ext) sub += it.ext;
       if (it.cnt === "EA") subEa += it.qty; else subQty += it.qty;
     }
     grand += sub;
+    groups.push({ trade: tr, items: group, sub, subQty, subEa });
+  }
+  return { groups, grand, ftPerIn };
+}
+
+function renderItemized() {
+  const box = $("itemized");
+  box.innerHTML = "";
+  if (!state.result) return;
+  const { groups, grand, ftPerIn } = computeTakeoffRows();
+  const head = document.createElement("div");
+  head.className = "item-row head";
+  head.innerHTML = "<div>label</div><div>count</div><div>" +
+    (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
+  box.appendChild(head);
+  for (const g of groups) {
+    const { trade: tr, items: group, sub, subQty, subEa } = g;
     const th = document.createElement("div");
     th.className = "trade-head";
     const qtyStr = subQty >= 1000 ? (subQty/1000).toFixed(1) + "k" : subQty.toFixed(0);
@@ -1048,6 +1064,46 @@ function renderItemized() {
     box.appendChild(row);
   }
 }
+
+// ---------- CSV export of the itemized takeoff (client-side blob) ----------
+function takeoffCsv() {
+  const data = computeTakeoffRows();
+  if (!data) return null;
+  const { groups, grand, ftPerIn } = data;
+  const csc = (v) => {
+    v = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  const rows = [["label", "trade", "count/EA",
+                 ftPerIn ? "feet" : "pt", "$/ft", "ext $"]];
+  for (const g of groups) {
+    for (const it of g.items) {
+      const isLf = !isNaN(parseFloat(it.cnt));   // plain line-count rows
+      rows.push([
+        it.label,
+        g.trade,
+        isLf ? it.cnt : `${it.qty} ${it.cnt}`,
+        isLf ? it.qty.toFixed(1)
+             : (it.ft !== undefined && it.ft !== null ? it.ft.toFixed(1) : ""),
+        it.price !== null && it.price !== undefined ? it.price : "",
+        it.ext ? it.ext.toFixed(2) : "",
+      ]);
+    }
+  }
+  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2)]);
+  return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
+}
+$("csvBtn").onclick = () => {
+  const csv = takeoffCsv();
+  if (csv === null) return;
+  const stem = (state.docName || "takeoff").replace(/\.pdf$/i, "");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `${stem}_p${state.page + 1}_takeoff.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(`CSV downloaded — ${a.download}`);
+};
 
 // ---------- collapsible sidebar sections ----------
 // every section header toggles the elements listed for it; state is

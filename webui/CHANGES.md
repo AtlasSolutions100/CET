@@ -57,3 +57,16 @@ unless noted. Canvas interaction code (pan/zoom/click/draw) untouched.
   falling back to pt verbatim when there is no scale. Line count and
   signature are still shown. Itemized takeoff/mini legend already used
   feet; this aligns the style list with them.
+
+## 4. CSV export (new feature) + itemized computation extracted
+
+- `renderItemized`'s computation (label totals, EA object counts, qty/ft
+  overrides, prices, trade grouping/sorting) is extracted verbatim into
+  `computeTakeoffRows()`; the panel and the new CSV both consume it, so
+  they can never disagree. Rendering output is unchanged.
+- New "CSV" button in the approve bar (left of Approve & export), enabled
+  whenever a result is loaded. Client-side blob download named
+  `<doc>_p<N>_takeoff.csv`. Columns: label, trade, count/EA (line count
+  for LF rows, "N EA"/"N CY" for counted/calculator rows), feet (pt when
+  no scale), $/ft, ext $; TOTAL row when anything is priced. Overrides
+  and prices are included exactly as the panel shows them.
