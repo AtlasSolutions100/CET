@@ -12,4 +12,8 @@ echo ""
 echo "=== Review UI is live locally on http://localhost:8100 ==="
 echo "=== Creating public link (leave this window open)...   ==="
 echo ""
-exec cloudflared tunnel --url http://localhost:8100
+# Tunnel disabled for now (2026-08-19): demoing via screen share, and the
+# password gate blocks local automation. Re-enable BOTH together - never
+# expose the tunnel without TAKEOFF_UI_PASSWORD set in .env.
+echo "!! Tunnel is disabled in share.sh - uncomment the cloudflared line (and re-enable TAKEOFF_UI_PASSWORD) to go public."
+# exec cloudflared tunnel --url http://localhost:8100

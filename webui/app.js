@@ -1116,7 +1116,10 @@ function renderSym() {
     row.className = "sym-row";
     const meta = document.createElement("div");
     meta.className = "sym-meta";
-    meta.textContent = `${g.w}×${g.h}pt · ×${g.n}`;
+    let mtxt = `${g.w}×${g.h}pt · ×${g.n}`;
+    if (g.schedule_qty !== undefined)
+      mtxt += ` · schedule says ${g.schedule_qty} ${g.schedule_qty === g.n ? "✓" : "✗ CHECK"}`;
+    meta.textContent = mtxt;
     const name = document.createElement("input");
     name.placeholder = "name it (e.g. WINDOW)";
     name.name = "sym-name-" + k;

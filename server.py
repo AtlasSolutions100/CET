@@ -1006,10 +1006,53 @@ def symbols_suggest(job_id: str, page: int):
     inline-legend read) supplies the NAME."""
     import numpy as np
 
+    import re as _re
+
     job = JOBS.get(job_id) or _404()
     doc = pymupdf.open(job["path"])
-    units = extract_strokes(doc[page])
+    pg = doc[page]
+    units = extract_strokes(pg)
+    words = page_words(pg)
     doc.close()
+
+    # mark schedule, when the sheet carries one: a header row containing
+    # MARK and QTY anchors a table whose rows map mark -> quantity. Used
+    # two ways: cross-check counted symbols, and EXCLUDE the table's own
+    # cell rectangles from symbol grouping (they are congruent boxes and
+    # count themselves otherwise - measured on the window benchmark).
+    MARK_RE = _re.compile(r"^[A-Z]{1,3}-?\d+$")
+    sched: dict = {}
+    table_box = None
+    heads = [w for w in words if str(w[4]).strip().upper() == "MARK"]
+    for hw in heads:
+        hy = (hw[1] + hw[3]) / 2
+        row = [w for w in words if abs((w[1] + w[3]) / 2 - hy) <= 5.0]
+        texts = {str(w[4]).strip().upper() for w in row}
+        if "QTY" not in texts:
+            continue
+        qty_col = next(w for w in row if str(w[4]).strip().upper() == "QTY")
+        qcx = (qty_col[0] + qty_col[2]) / 2
+        x0 = min(w[0] for w in row) - 8
+        x1 = max(w[2] for w in row) + 8
+        y_max = hw[3]
+        for w in words:
+            if w[1] <= hw[3] or w[0] < x0 or w[2] > x1:
+                continue
+            t = str(w[4]).strip().upper()
+            if MARK_RE.match(t):
+                wy = (w[1] + w[3]) / 2
+                mates = [m for m in words
+                         if abs((m[1] + m[3]) / 2 - wy) <= 5.0
+                         and str(m[4]).strip().isdigit()]
+                if mates:
+                    q = min(mates, key=lambda m: abs((m[0] + m[2]) / 2 - qcx))
+                    if abs((q[0] + q[2]) / 2 - qcx) <= 30.0:
+                        sched[t] = int(str(q[4]).strip())
+                        y_max = max(y_max, w[3])
+        if sched:
+            table_box = (x0, hw[1] - 4, x1, y_max + 8)
+            break
+
     groups: dict = {}
     for u in units:
         if not u.closed or not (4.0 <= u.length <= 160.0):
@@ -1022,6 +1065,22 @@ def symbols_suggest(job_id: str, page: int):
         c = (u.pts.min(axis=0) + u.pts.max(axis=0)) / 2.0
         groups.setdefault(key, []).append([round(float(c[0]), 1),
                                            round(float(c[1]), 1)])
+
+    def _in_table(c):
+        return table_box and table_box[0] <= c[0] <= table_box[2] \
+            and table_box[1] <= c[1] <= table_box[3]
+
+    def _mark_at(c):
+        # the mark text lives INSIDE its bubble (measured 0.7pt): the word
+        # box containing (or within 3pt of) the symbol center names it
+        for w in words:
+            t = str(w[4]).strip().upper()
+            if not MARK_RE.match(t):
+                continue
+            if w[0] - 3 <= c[0] <= w[2] + 3 and w[1] - 3 <= c[1] <= w[3] + 3:
+                return t
+        return None
+
     out = []
     for (w, h, _), centers in groups.items():
         # a symbol repeats; also drop coincident duplicates (drawn twice)
@@ -1029,10 +1088,35 @@ def symbols_suggest(job_id: str, page: int):
         for c in centers:
             if all(abs(c[0]-d[0]) > 2 or abs(c[1]-d[1]) > 2 for d in uniq):
                 uniq.append(c)
-        if len(uniq) >= 3:
+        # the schedule's own cell boxes are congruent shapes too
+        if uniq and sum(1 for c in uniq if _in_table(c)) >= 0.6 * len(uniq):
+            continue
+        if len(uniq) < 3:
+            continue
+        marks: dict = {}
+        unmarked = []
+        for c in uniq:
+            m = _mark_at(c)
+            if m:
+                marks.setdefault(m, []).append(c)
+            else:
+                unmarked.append(c)
+        if sum(len(v) for v in marks.values()) >= 0.6 * len(uniq):
+            # mark-bubble family: one countable group per mark, named by
+            # the sheet, cross-checked against its own schedule
+            for m in sorted(marks):
+                g = {"w": w, "h": h, "n": len(marks[m]),
+                     "centers": marks[m], "name": m}
+                if m in sched:
+                    g["schedule_qty"] = sched[m]
+                out.append(g)
+            if len(unmarked) >= 3:
+                out.append({"w": w, "h": h, "n": len(unmarked),
+                            "centers": unmarked})
+        else:
             out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
     out.sort(key=lambda g: -g["n"])
-    return {"groups": out[:15]}
+    return {"groups": out[:15], "schedule": sched}
 
 
 app.mount("/", StaticFiles(directory=ROOT / "webui", html=True), name="ui")
