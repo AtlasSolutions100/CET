@@ -84,6 +84,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             x0 = ws[0][0]
             cy = float(np.mean([(w[1] + w[3]) / 2 for w in ws]))
             sample = _sample_in_strip(chains, x0 - SAMPLE_W, x0 - 4.0, cy)
+            _sbox = [x0 - SAMPLE_W, cy - 9.0, x0 - 4.0, cy + 9.0]
             if sample is None and units is not None:
                 # swatches are tiny and often fail to chain (pattern-filled
                 # bars, touching marks); the RAW strip marks still spell the
@@ -92,7 +93,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 sample = _sample_from_units(units, x0 - SAMPLE_W, x0 - 4.0, cy)
             if sample is None:
                 continue
-            entries.append({"label": label, **sample})
+            entries.append({"label": label, "sample_box": _sbox, **sample})
 
     # inline "SWATCH = NAME" definitions: sheets without a LEGEND box
     # define a symbol in place ("### = SHEAR WALL", Belle Structural p2).
@@ -137,7 +138,9 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             sample = _sample_from_units(units, strip_x0, strip_x1, ecy)
         if sample is None:
             continue
-        entries.append({"label": label, **sample})
+        entries.append({"label": label,
+                        "sample_box": [strip_x0, ecy - 9.0, strip_x1, ecy + 9.0],
+                        **sample})
 
     if not entries:
         return {"entries": [], "style_labels": {}}
@@ -232,6 +235,22 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                   or _weight_class(r.width) >= 2)
             if d2 and by_style_count[sid] <= 150:
                 style_labels.setdefault(sid, e["label"])
+        # pen-family extension: a symbol drawn with a DISTINCTIVE pen
+        # (saturated color) fragments across styles when its dashes chain
+        # differently run to run (Belle shear centerline: native 3-3 +
+        # two re-measured dash2 variants, all red). Same color, dashed
+        # class -> same symbol. Greys/blacks never extend - black is the
+        # default pen for everything and would smear.
+        base = reps.get(e.get("sample_style"))
+        if base is not None and base.color \
+                and max(base.color) - min(base.color) > 0.3:
+            for sid, r in reps.items():
+                if sid in style_labels or not r.klass.startswith("dash") \
+                        or r.klass == "dash-text":
+                    continue
+                if r.color and max(abs(a - b) for a, b in
+                                   zip(base.color, r.color)) <= 0.2:
+                    style_labels.setdefault(sid, e["label"])
     return {"entries": entries, "style_labels": style_labels}
 
 

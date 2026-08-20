@@ -783,7 +783,7 @@ def _grid_annotation(chains: list, units: list) -> None:
                         break
                 if through:
                     continue
-                axes.append((bc, outd))
+                axes.append((bc, outd, c.color, _weight_class(c.width)))
                 c.klass = "annotation"
                 c.dash_signature = "grid"
                 break
@@ -797,9 +797,26 @@ def _grid_annotation(chains: list, units: list) -> None:
     # lines dropping down). A lettered manhole run is collinear WITH its
     # pipe, so the perpendicular gate blocks it.
     if len(glyph_bubbles) >= 3:
-        centers = np.array([bc for bc, _ in glyph_bubbles])
+        # the grid PEN is whatever the terminal-anchored chains are drawn
+        # with. A wall centerline lying exactly on a bubble row (Belle p2:
+        # red shear centerline on grid row 3) passes the geometric tests,
+        # so when terminal anchors exist, perpendicular-set anchoring is
+        # restricted to their pen family.
+        tpens = [(acol, awt) for _, _, acol, awt in axes]
+        def _pen_ok(c):
+            if not tpens:
+                return True
+            for acol, awt in tpens:
+                if _weight_class(c.width) != awt:
+                    continue
+                if acol and c.color and max(abs(a - b) for a, b in
+                                            zip(acol, c.color)) > 0.2:
+                    continue
+                return True
+            return False
+        centers = np.array([bc for bc, _, _, _ in glyph_bubbles] if False else [bc for bc, _ in glyph_bubbles])
         for c in dash_chains:
-            if c.klass == "annotation":
+            if c.klass == "annotation" or not _pen_ok(c):
                 continue
             a, b = np.asarray(c.pts[0], float), np.asarray(c.pts[-1], float)
             v = b - a
@@ -827,7 +844,7 @@ def _grid_annotation(chains: list, units: list) -> None:
                 along = np.abs(dd[:, 0] * u_[0] + dd[:, 1] * u_[1])
                 mates = (dist > 1.0) & (along <= 3.0)
                 if int(mates.sum()) >= 2:
-                    axes.append((bc, u_))
+                    axes.append((bc, u_, c.color, _weight_class(c.width)))
                     c.klass = "annotation"
                     c.dash_signature = "grid"
                     break
@@ -849,8 +866,14 @@ def _grid_annotation(chains: list, units: list) -> None:
         if n < 20.0:
             continue
         u_ = v / n
-        for bc, ad in axes:
+        for bc, ad, acol, awt in axes:
             if abs(float(np.dot(u_, ad))) < 0.98:
+                continue
+            # same pen as the anchoring grid chain: a shear-wall
+            # centerline ON a grid row is collinear but differently drawn
+            if _weight_class(c.width) != awt:
+                continue
+            if acol and c.color and max(abs(a - b) for a, b in zip(acol, c.color)) > 0.2:
                 continue
             rel = np.asarray(c.pts, float) - bc
             lat = np.abs(rel[:, 0] * ad[1] - rel[:, 1] * ad[0])

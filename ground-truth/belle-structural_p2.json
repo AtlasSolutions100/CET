@@ -1,0 +1,10 @@
+{
+  "sheet": "Belle Farms Structural Plans.pdf",
+  "page_index": 1,
+  "printed_page": 2,
+  "feature": "shear wall segments (objects, EA)",
+  "expected_count": 24,
+  "source": "human-confirmed by Koby Stull 2026-08-19 (hand-numbered markup 1-24)",
+  "convention": "continuous shear band split into boxes at corners/jogs and at large openings; box boundaries within continuous runs found by zooming (blue ticks on markup); piers between adjacent folding-door panels do NOT split the run (Grand Hall upper wall counted as 2 segments: left/right of center doors)",
+  "notes": "auto pool (legend-labeled red centerline family) measures 22 EA vs expected 24; the two deltas are boundary questions pending human answer: (a) top wall - does the main-entry doorway split 1|23|21 (the drawn centerline+band run continuous through it); (b) grand hall wall - what splits 12|13 at the folding-row center. Swatch furniture excluded via legend_samples. 2026-08-19 late."
+}

@@ -291,6 +291,10 @@ def _detect_worker(job_id: str, page: int):
                 pass
         legend = read_legend(words_legend, chains, units=units)
         _legend_labels.update(legend["style_labels"])
+        # swatch locations: the legend's own sample bars must never be
+        # counted as takeoff objects (Belle p2 grew a 25th 'shear wall')
+        legend_samples = [e["sample_box"] for e in legend.get("entries", [])
+                          if e.get("sample_box")]
         for st in style_list:
             if st["style_id"] in _legend_labels:
                 st["suggested_label"] = _legend_labels[st["style_id"]] + " (legend)"
@@ -357,6 +361,7 @@ def _detect_worker(job_id: str, page: int):
             "chains": [c.to_dict() for c in chains],
             "fills": fills,
             "openings": openings,
+            "legend_samples": legend_samples,
         }
         (_job_dir(job_id) / f"p{page}_result.json").write_text(json.dumps(result))
         job["status"][page] = "done"

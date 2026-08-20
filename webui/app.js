@@ -254,33 +254,12 @@ function styleObjects(sid) {
         if (opens.some(o => Math.hypot(q[0] - o.cx, q[1] - o.cy) <= o.r * 1.05)) nin++;
       if (nin / pts.length >= 0.7) return [];
     }
-    const a = pts[0], b = pts[pts.length - 1];
-    const dl = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-    const d = [(b[0] - a[0]) / dl, (b[1] - a[1]) / dl];
-    const parts = [];
-    let cur = [];
-    for (const q of pts) {
-      let cut = false;
-      for (const o of opens) {
-        const vx = q[0] - o.cx, vy = q[1] - o.cy;
-        if (o.mx !== undefined) {
-          // side of the hinge the door opens toward, along this run
-          const sd = (o.mx - o.cx) * d[0] + (o.my - o.cy) * d[1];
-          const side = sd >= 0 ? 1 : -1;
-          const t = (vx * d[0] + vy * d[1]) * side;
-          const lat = Math.abs(vy * d[0] - vx * d[1]);
-          if (t >= -2 && t <= o.r * 1.05 && lat <= Math.max(8, o.r * 0.3)) {
-            cut = true; break;
-          }
-        } else if (Math.hypot(vx, vy) <= o.r * 1.02) { cut = true; break; }
-      }
-      if (cut) {
-        if (cur.length >= 2) parts.push(cur);
-        cur = [];
-      } else cur.push(q);
-    }
-    if (cur.length >= 2) parts.push(cur);
-    return parts;
+    // NO geometric cut at swings: the drawing itself breaks the band
+    // where the shear wall truly stops (human-confirmed on Belle p2 -
+    // the band runs CONTINUOUS over the folding-door row and that whole
+    // run is ONE counted object, ground-truth 24). Drawn gaps wider than
+    // the union tolerance separate objects on their own.
+    return [pts];
   };
   let runs = [];
   for (const ch of state.result.chains) {
@@ -288,6 +267,16 @@ function styleObjects(sid) {
     for (const r of chainRuns(ch))
       for (const part of splitAtOpenings(r))
         runs.push({ pts: part, len: polyLen(part) });
+  }
+  // the legend's own swatch bars share the symbol's style but are sheet
+  // furniture, not takeoff (Belle p2 counted its legend as a 25th wall)
+  const lsamps = state.result.legend_samples || [];
+  if (lsamps.length) {
+    runs = runs.filter(r => {
+      const m = r.pts[Math.floor(r.pts.length / 2)];
+      return !lsamps.some(b => m[0] >= b[0] - 2 && m[0] <= b[2] + 2 &&
+                               m[1] >= b[1] - 2 && m[1] <= b[3] + 2);
+    });
   }
   if (!runs.length) return [];
   // annotation riding the same pen: real object faces sit ON a fill band
@@ -335,6 +324,20 @@ function styleObjects(sid) {
     // is a DIFFERENT object - that is how an estimator counts bands.
     const da = dirOf(a), db = dirOf(b);
     if (Math.abs(da[0]*db[0] + da[1]*db[1]) < 0.87) return false;
+    // side-by-side (projection overlap) = two faces of one wall: lateral
+    // up to the wall thickness. End-to-end = continuation: COLLINEAR
+    // only (lat <= 8pt) - a parallel run a jog-step away is the NEXT
+    // object (human-confirmed segment convention, Belle p2 west wall)
+    const a0 = a.pts[0];
+    const proj = (p) => (p[0]-a0[0])*da[0] + (p[1]-a0[1])*da[1];
+    const aP = [proj(a.pts[0]), proj(a.pts[a.pts.length-1])].sort((x,y)=>x-y);
+    const bP = [proj(b.pts[0]), proj(b.pts[b.pts.length-1])].sort((x,y)=>x-y);
+    const overlap = Math.min(aP[1], bP[1]) - Math.max(aP[0], bP[0]);
+    const bm = b.pts[Math.floor(b.pts.length/2)];
+    const lat = Math.abs((bm[0]-a0[0])*da[1] - (bm[1]-a0[1])*da[0]);
+    const sideBySide = overlap > 4 &&
+      overlap >= 0.3 * Math.min(aP[1]-aP[0], bP[1]-bP[0]);
+    if (sideBySide ? lat > Math.max(tol, 12) : lat > 8) return false;
     for (const p of [a.pts[0], a.pts[a.pts.length - 1]]) {
       for (let i = 1; i < b.pts.length; i++) {
         if (distToSeg(p[0], p[1], b.pts[i - 1], b.pts[i]) <= tol) return true;
