@@ -577,19 +577,27 @@ function renderLegend() {
     const mkSample = (styleOrNull) => {
       const cnv = document.createElement("canvas");
       cnv.className = "chip-line";
-      const ps = styleOrNull || {
-        style_id: -1, class: e.klass || "dash1", color: e.color,
-        width: 1.0,
-        signature: "", };
-      if (!styleOrNull) {
-        const d = Math.max(e.avg_dash || 6, 2);
-        ps.template = [d, Math.max(d * 0.6, 2)];
-        // drawPatternSample falls back to dashArray(signature) when no
-        // rep chain exists; feed the measured cadence directly instead
-        const repFake = { style_id: -1, template: ps.template };
-        state.result.chains.includes(repFake); // no-op, keep shape simple
+      cnv.width = 56; cnv.height = 12;
+      const c2 = cnv.getContext("2d");
+      const col = (styleOrNull && styleOrNull.color) || e.color || [0, 0, 0];
+      const wgt = styleOrNull ? styleOrNull.width : 1.0;
+      c2.strokeStyle = cssColor(col);
+      c2.lineWidth = Math.min(1.5 + (wgt || 0.5) * 1.2, 6);
+      // the swatch's own measured cadence is the truth of what the sheet
+      // legend DRAWS (paper-space); the matched style's absolute lengths
+      // differ under LTSCALE, so never render the chip from those
+      let tpl = e.swatch_template;
+      if (!tpl || tpl.length < 2) {
+        const rep = styleOrNull &&
+          state.result.chains.find(c3 => c3.style_id === styleOrNull.style_id);
+        tpl = rep && rep.template;
       }
-      drawPatternSample(cnv, ps, 56, 12);
+      if (tpl && tpl.length >= 2 && e.klass !== "solid") {
+        const span = tpl.reduce((a, b) => a + b, 0);
+        const k3 = span > 0 ? Math.min(48 / span, 3.2) : 1;
+        c2.setLineDash(tpl.map(v => Math.max(v * k3, 1.4)));
+      }
+      c2.beginPath(); c2.moveTo(4, 6); c2.lineTo(52, 6); c2.stroke();
       return cnv;
     };
     if (sid === null || sid === undefined) {

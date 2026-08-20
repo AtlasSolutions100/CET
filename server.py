@@ -295,6 +295,20 @@ def _detect_worker(job_id: str, page: int):
         # counted as takeoff objects (Belle p2 grew a 25th 'shear wall')
         legend_samples = [e["sample_box"] for e in legend.get("entries", [])
                           if e.get("sample_box")]
+        # the swatch bars themselves are sheet furniture: demote the
+        # chains living inside the legend strips so they never reach the
+        # style pool as takeoff linework
+        import numpy as _np
+        for c in chains:
+            if c.klass == "annotation" or len(c.pts) < 2:
+                continue
+            m = _np.asarray(c.pts).mean(axis=0)
+            for b in legend_samples:
+                if b[0]-6 <= m[0] <= b[2]+6 and b[1]-8 <= m[1] <= b[3]+8 \
+                        and c.length <= 1.5 * (b[2] - b[0]):
+                    c.klass = "annotation"
+                    c.dash_signature = "legend swatch"
+                    break
         for st in style_list:
             if st["style_id"] in _legend_labels:
                 st["suggested_label"] = _legend_labels[st["style_id"]] + " (legend)"

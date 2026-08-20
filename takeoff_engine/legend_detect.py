@@ -93,6 +93,10 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 sample = _sample_from_units(units, x0 - SAMPLE_W, x0 - 4.0, cy)
             if sample is None:
                 continue
+            if not sample.get("swatch_template") and units is not None:
+                alt = _sample_from_units(units, x0 - SAMPLE_W, x0 - 4.0, cy)
+                if alt and alt.get("swatch_template"):
+                    sample["swatch_template"] = alt["swatch_template"]
             entries.append({"label": label, "sample_box": _sbox, **sample})
 
     # inline "SWATCH = NAME" definitions: sheets without a LEGEND box
@@ -138,6 +142,10 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             sample = _sample_from_units(units, strip_x0, strip_x1, ecy)
         if sample is None:
             continue
+        if not sample.get("swatch_template") and units is not None:
+            alt = _sample_from_units(units, strip_x0, strip_x1, ecy)
+            if alt and alt.get("swatch_template"):
+                sample["swatch_template"] = alt["swatch_template"]
         entries.append({"label": label,
                         "sample_box": [strip_x0, ecy - 9.0, strip_x1, ecy + 9.0],
                         **sample})
@@ -154,6 +162,35 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
     by_style_count: dict = defaultdict(int)
     for c in chains:
         by_style_count[c.style_id] += 1
+    # exact joins that land on the SWATCH'S OWN style are self-joins: the
+    # legend bar chained into a tiny style of its own instead of sharing
+    # the plan style (LTSCALE: paper-space swatch, model-space plan).
+    # Measured (Oncor p4): ADJACENT PROPERTY LINE joined a 261pt 3-chain
+    # 'misc' style holding its own swatch bar, while the real 2437pt
+    # d9-d45-g9 family sat unlabeled. A style that is mostly legend-strip
+    # ink (or nearly absent outside the strips) is no plan match.
+    strip_boxes = [e["sample_box"] for e in entries if e.get("sample_box")]
+    def _strip_ink(sid):
+        tot = out_ink = 0.0
+        for c in chains:
+            if c.style_id != sid:
+                continue
+            m = np.asarray(c.pts).mean(axis=0)
+            inside = any(b[0]-6 <= m[0] <= b[2]+6 and b[1]-8 <= m[1] <= b[3]+8
+                         for b in strip_boxes)
+            tot += c.length
+            if not inside:
+                out_ink += c.length
+        return tot, out_ink
+    self_joined: set = set()
+    for e in entries:
+        sid = e.get("sample_style")
+        if sid is None:
+            continue
+        tot, out_ink = _strip_ink(sid)
+        if out_ink < 400.0 or out_ink < 0.6 * tot:
+            self_joined.add(sid)
+            e["sample_style"] = None  # fall through to the matcher
     # unit-derived samples have no chained style: join by measured geometry
     # (class family + weight + colour + dash length within tolerance)
     reps: dict = {}
@@ -166,6 +203,8 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             continue
         best = None
         for sid, r in reps.items():
+            if sid in self_joined:
+                continue
             if not r.klass.startswith("dash") or r.klass != e["klass"]:
                 continue
             if _weight_class(r.width) != e["weight"]:
@@ -180,13 +219,19 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             cand = sum(c2.length for c2 in chains if c2.style_id == sid)
             if best is None or cand > best[1]:
                 best = (sid, cand)
-        if best is None:
+        single_len = not e.get("max_dash") \
+            or e["max_dash"] <= 1.6 * max(e["avg_dash"], 1e-6)
+        if best is None and single_len:
             # SECOND TIER: bold dashed lines often chain as individual
             # SOLID bars (each long dash = one solid chain), so the dashed
             # legend entry finds no dashed style. Match a solid style whose
             # typical mark length fits the swatch's LONGEST bar, with
             # matching colour and near weight - the sheet's own legend
             # doing the matching, not a stored template.
+            # COMPOUND swatches (dash-dot-dot: max_dash >> avg) never take
+            # this tier - a uniform-bar solid style cannot be that
+            # linetype (Oncor PL swatch max/avg 2.67 wrongly took the
+            # 45.7pt fence bars; honest unmatched beats a wrong label).
             want = e.get("max_dash") or e["avg_dash"]
             for sid, r in reps.items():
                 if r.klass != "solid":
@@ -208,18 +253,36 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                     best = (sid, cand)
         if best is not None:
             e["sample_style"] = best[0]
+    curvy_cache: dict = {}
+    def _curvy(sid):
+        if sid not in curvy_cache:
+            ratios = []
+            for c in chains:
+                if c.style_id != sid or len(c.pts) < 2:
+                    continue
+                chord = float(np.hypot(*(np.asarray(c.pts[-1], float)
+                                         - np.asarray(c.pts[0], float))))
+                if chord > 1.0:
+                    ratios.append(c.length / chord)
+            curvy_cache[sid] = bool(ratios) and float(np.median(ratios)) >= 1.3
+        return curvy_cache[sid]
     for e in entries:
         distinctive = (
             e["klass"].startswith("dash")
             or (e["color"] and max(e["color"]) - min(e["color"]) > 0.15)
             or (e["color"] and min(e["color"]) > 0.35)
             or e["weight"] >= 2
+            or (e.get("sample_style") is not None and _curvy(e["sample_style"]))
         )
         if not distinctive and by_style_count[e["sample_style"]] > 8:
             continue  # generic bucket: an honest miss beats a smear
         if not e["klass"].startswith("dash") \
-                and by_style_count[e["sample_style"]] > 25:
-            continue  # solid bucket too big to be one legend feature
+                and by_style_count[e["sample_style"]] > 25 \
+                and not _curvy(e["sample_style"]):
+            # solid bucket too big to be one legend feature - UNLESS the
+            # bucket is curvy (contour families measure med len/chord 2.4;
+            # straight border/wall buckets sit at 1.0)
+            continue
         if e["sample_style"] is not None:
             style_labels.setdefault(e["sample_style"], e["label"])
         # compound swatch: label the OTHER distinctive styles drawn in the
@@ -409,12 +472,18 @@ def _sample_from_units(units: list, x0: float, x1: float, cy: float):
         klass = "dash2" if len(set(round(v / 4) for v in lens)) >= 2 else "dash1"
     wmax = max((u.width or 0.0) for u in strip)
     col = strip[int(np.argmax([u.length for u in strip]))].color
+    tpl = []
+    for k2, u in enumerate(strip):
+        tpl.append(max(lens[k2], 1.0))
+        if k2 < len(gaps):
+            tpl.append(max(gaps[k2], 1.0))
     return {
         "klass": klass,
         "color": col,
         "weight": _weight_class(wmax),
         "avg_dash": float(np.median(lens)),
         "max_dash": float(max(lens)),
+        "swatch_template": [round(v, 1) for v in tpl] if len(tpl) >= 2 else None,
         "sample_style": None,
     }
 
@@ -456,11 +525,34 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
     if not hits:
         return None
     rep = max(hits, key=lambda c: c.length)
+    # the swatch's own cadence, marks in x order: what the sheet's legend
+    # actually draws (paper-space) - the chip renders THIS, because the
+    # matched style's absolute lengths differ under LTSCALE
+    spans = []
+    for c in hits:
+        pts = np.asarray(c.pts)
+        m = (pts[:, 0] >= x0) & (pts[:, 0] <= x1) \
+            & (np.abs(pts[:, 1] - cy) <= SAMPLE_H)
+        if m.any():
+            xs = pts[m][:, 0]
+            spans.append((float(xs.min()), float(xs.max())))
+    spans.sort()
+    tpl = []
+    for k2, (a, b) in enumerate(spans):
+        tpl.append(max(b - a, 1.0))
+        if k2 + 1 < len(spans):
+            tpl.append(max(spans[k2 + 1][0] - b, 1.0))
+    if len(tpl) < 2 and getattr(rep, "template", None) \
+            and len(rep.template) >= 2:
+        # one chain = one x-span; the chain's own measured template IS the
+        # swatch cadence (it is the swatch, drawn in paper space)
+        tpl = list(rep.template)
     return {
         "klass": rep.klass,
         "color": rep.color,
         "weight": _weight_class(rep.width),
         "avg_dash": (rep.ink or rep.length) / max(rep.n_dashes, 1),
+        "swatch_template": [round(v, 1) for v in tpl] if len(tpl) >= 2 else None,
         "sample_style": rep.style_id,
         # a compound swatch draws its symbol with several pens (Belle's
         # shear wall: hatch ticks + a native-dashed centerline). Every
