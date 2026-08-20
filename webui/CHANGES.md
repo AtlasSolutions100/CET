@@ -70,3 +70,22 @@ unless noted. Canvas interaction code (pan/zoom/click/draw) untouched.
   for LF rows, "N EA"/"N CY" for counted/calculator rows), feet (pt when
   no scale), $/ft, ext $; TOTAL row when anything is priced. Overrides
   and prices are included exactly as the panel shows them.
+
+## 5. Visual pass (CSS only — no behavior change)
+
+- **One accent color.** The per-tool button rainbow is gone: Analyze
+  (was purple), Earthwork (brown), Trench (teal), Count (purple) are now
+  quiet chrome buttons; primary actions (Detect, Approve, calculator
+  Calculate/Add buttons, faithful-pattern active state) use the single
+  green accent. The Analyze banner is neutral panel + accent edge instead
+  of purple. Kept deliberately: dash-class badges (data encoding), the
+  magenta measure tool (matches its canvas ink), EXIST/PROP green/blue
+  (surface encoding), red danger states.
+- **Less border noise, 8px rhythm.** Section headers no longer carry
+  full-width bottom borders; hierarchy comes from spacing and label
+  weight. Paddings normalized to the 4/8/12 grid. Border-radius unified
+  at 7-8px. Slim custom scrollbars on the data panes. `:focus-visible`
+  accent outline for keyboard use.
+- Both themes intact: every new rule uses the existing CSS variables;
+  dark stays default, paper theme unchanged apart from inheriting the
+  same cleanups.
