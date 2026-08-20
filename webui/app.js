@@ -56,7 +56,7 @@ const state = window.state = {
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   measureMode: new Map(),   // style_id -> "object" (absent = line footage)
-  autoAi: localStorage.getItem("core-autoai") === "on",   // OPT-IN: detect stays deterministic
+  autoAi: false,   // OPT-IN per session, never remembered: detect stays deterministic
   seedLabels: new Map(),    // style_id -> the default we seeded (AI may replace)
   aiAuto: false,            // this page's verdicts were auto-applied
   aiUndo: null,             // snapshot taken before applying AI focus
@@ -671,7 +671,7 @@ function renderStyles() {
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
     cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked);
-      localStorage.setItem(docKey() + "::inc::" + styleFp(s), cb.checked ? "1" : "0");
+      store.setItem(docKey() + "::inc::" + styleFp(s), cb.checked ? "1" : "0");
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -712,7 +712,7 @@ function renderStyles() {
       if (state.measureMode.get(s.style_id) === "object") {
         state.measureMode.delete(s.style_id);
         const lab = (state.labels.get(s.style_id) || "").trim().toUpperCase();
-        if (lab) localStorage.removeItem("measure::" + lab);
+        if (lab) store.removeItem("measure::" + lab);
       } else state.measureMode.set(s.style_id, "object");
       memSave(s);
       renderStyles(); renderItemized(); renderMiniLegend(); draw();
@@ -830,6 +830,19 @@ function renderChips() {
 }
 
 // ---------- live itemized takeoff ----------
+// NO cross-session blueprint memory: every label, include, EA-mode, qty/ft
+// override, price, and trade edit lives in THIS session only, so a reload
+// here produces exactly what a client's fresh seat produces. UI prefs
+// (theme, panel collapse) stay in localStorage; takeoff decisions never do.
+const sessionMem = new Map();
+const store = {
+  getItem: (k) => sessionMem.has(k) ? sessionMem.get(k) : null,
+  setItem: (k, v) => sessionMem.set(k, String(v)),
+  removeItem: (k) => sessionMem.delete(k),
+};
+// purge memory left behind by earlier builds so it can never resurface
+for (const k of Object.keys(localStorage))
+  if (/^(doc::|measure::|trade::|price:)/.test(k)) localStorage.removeItem(k);
 function priceKey(label) { return "price:" + label; }
 // quantity/footage override: the estimator's number beats the detector's.
 // Doc-scoped (this sheet has 24 shear walls; another sheet doesn't).
@@ -852,19 +865,19 @@ function memSave(st) {
   const measure = state.measureMode.get(st.style_id) === "object" ? "object" : "";
   const k = docKey() + "::" + styleFp(st);
   if (label || measure)
-    localStorage.setItem(k, JSON.stringify({ label, measure }));
-  else localStorage.removeItem(k);
+    store.setItem(k, JSON.stringify({ label, measure }));
+  else store.removeItem(k);
   // label-level measure memory travels ACROSS documents: "shear wall" set
   // to EA once means shear walls count as objects everywhere
   if (label && measure)
-    localStorage.setItem("measure::" + label.toUpperCase(), measure);
+    store.setItem("measure::" + label.toUpperCase(), measure);
 }
 function memApply() {
   if (!state.result) return;
   for (const st of state.result.styles) {
-    const inc = localStorage.getItem(docKey() + "::inc::" + styleFp(st));
+    const inc = store.getItem(docKey() + "::inc::" + styleFp(st));
     if (inc !== null) state.include.set(st.style_id, inc === "1");
-    const raw = localStorage.getItem(docKey() + "::" + styleFp(st));
+    const raw = store.getItem(docKey() + "::" + styleFp(st));
     if (raw) {
       try {
         const m = JSON.parse(raw);
@@ -874,7 +887,7 @@ function memApply() {
       } catch (e) {}
     }
     const lab = (state.labels.get(st.style_id) || "").trim().toUpperCase();
-    if (lab && localStorage.getItem("measure::" + lab) === "object")
+    if (lab && store.getItem("measure::" + lab) === "object")
       state.measureMode.set(st.style_id, "object");
   }
 }
@@ -884,7 +897,7 @@ const TRADES = ["Earthwork & Grading", "Wet Utilities", "Dry Utilities",
                 "Paving & Concrete", "Structures", "Fencing & Sitework", "General"];
 function tradeKey(label) { return "trade::" + label.trim().toUpperCase(); }
 function tradeFor(label) {
-  const saved = localStorage.getItem(tradeKey(label));
+  const saved = store.getItem(tradeKey(label));
   if (saved && TRADES.includes(saved)) return saved;
   const L = label.toUpperCase();
   const has = (...ws) => ws.some(w => L.includes(w));
@@ -953,14 +966,14 @@ function computeTakeoffRows() {
     group.sort((a, b) => b.qty - a.qty);
     let sub = 0, subQty = 0, subEa = 0;
     for (const it of group) {
-      const ov = parseFloat(localStorage.getItem(
+      const ov = parseFloat(store.getItem(
         ovKey(it.label, it.cnt === "EA" ? "qty" : "ft")) || "");
       if (!isNaN(ov) && ov > 0) {
         it.auto = it.qty; it.qty = ov;
         if (it.cnt === "EA") it.qtyText = String(ov);
         it.ov = true;
       }
-      const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
+      const price = parseFloat(store.getItem(priceKey(it.label)) || "") || null;
       it.price = price;
       it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
@@ -1009,7 +1022,7 @@ function renderItemized() {
         pick.appendChild(o);
       }
       pick.onchange = () => {
-        localStorage.setItem(tradeKey(it.label), pick.value);
+        store.setItem(tradeKey(it.label), pick.value);
         renderItemized();
       };
       lab.appendChild(document.createElement("br"));
@@ -1027,7 +1040,7 @@ function renderItemized() {
       if (it.ov) { q.value = it.qty; q.title = `detected ${it.auto && it.auto.toFixed ? it.auto.toFixed(1) : it.auto} — clear to restore`; }
       else { q.placeholder = autoText; q.title = "type to override the detected quantity"; }
       q.onchange = () => {
-        localStorage.setItem(ovKey(it.label, it.cnt === "EA" ? "qty" : "ft"), q.value);
+        store.setItem(ovKey(it.label, it.cnt === "EA" ? "qty" : "ft"), q.value);
         renderItemized(); renderChips();
       };
       const pin = document.createElement("input");
@@ -1035,7 +1048,7 @@ function renderItemized() {
       pin.name = "price-" + it.label;
       if (it.price) pin.value = it.price;
       pin.oninput = () => {
-        localStorage.setItem(priceKey(it.label), pin.value);
+        store.setItem(priceKey(it.label), pin.value);
         renderItemized();
       };
       const e = document.createElement("div");
@@ -1724,7 +1737,7 @@ $("approveBtn").onclick = async () => {
           pools.get(label).push(st.style_id);
         }
         return [...pools.entries()].map(([l, sids]) =>
-          [l, parseFloat(localStorage.getItem(ovKey(l, "qty")) || "") ||
+          [l, parseFloat(store.getItem(ovKey(l, "qty")) || "") ||
               styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(
@@ -1740,11 +1753,11 @@ $("approveBtn").onclick = async () => {
         [...state.chainLabels].filter(([id]) => !state.excluded.has(id))),
       extra_items: state.extraItems.map(it => ({
         ...it,
-        unit_price: parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null,
+        unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
       })),
       prices: Object.fromEntries(
         [...Object.values(labels), ...state.chainLabels.values()]
-          .map(l => [l, parseFloat(localStorage.getItem(priceKey(l)) || "") || 0])
+          .map(l => [l, parseFloat(store.getItem(priceKey(l)) || "") || 0])
           .filter(([, v]) => v > 0 ? true : false)
       ) }),
   });
