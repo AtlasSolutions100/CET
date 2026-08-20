@@ -15,6 +15,7 @@ Classes emitted:
   dash-text   dashed line interrupted by inline labels (e.g. "SD")
 """
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -362,6 +363,89 @@ def _classify_cadence(dash_lengths: list, gaps: list) -> tuple:
     return klass, sig
 
 
+# CAD layer-name tokens that mark annotation content (text, labels,
+# leaders, dimensions). Token-bounded so xref prefixes and words like
+# SEDIMENT can't match; tested against the LEAF layer name only, because
+# xref path prefixes (e.g. "SITE-NOTES|P1-FENCE") describe the source
+# drawing, not the stroke. Convention: content-based layer naming is
+# standard CAD practice (AIA-style *-ANNO-*/-TEXT); audited across the
+# Plans corpus 2026-08-19: all 61 matching leaf names were genuinely
+# annotation layers.
+_ANNO_LAYER = re.compile(
+    r"(?:^|[^A-Za-z0-9])(TEXT|TXT|LBL|ANNO|NOTES?|CALLOUT|LDR|LEADER|DIMS?)"
+    r"(?=[^A-Za-z0-9]|$)", re.I)
+
+
+def _leader_annotation_units(units: list) -> set:
+    """Indices of leader/callout strokes on annotation-named layers.
+
+    A leader is a straight or gently arced stroke that anchors at its
+    label text. On these CAD exports the text is exploded to vector
+    outlines on the SAME layer, so the anchor test is geometric: >=3
+    glyph-like units within 18pt of either endpoint.
+
+    Why unit-level, pre-chain: the post-chain demotion below caps at a
+    300pt bbox to protect real linework that firms park on TEXT layers
+    (IMEG's drainage boundary on P6-TEXT-STORM). Leaders defeat that cap
+    by CHAINING to each other and to glyphs at callout hubs until the
+    tangle spans the sheet. Removing the leader units before pooling
+    breaks the tangles at their connectors.
+
+    Every constant measured 2026-08-19 on GCHC North / C4.1 / C6.0
+    (leader layers) vs C8.0/C8.1 P6-TEXT-STORM (boundary linework on a
+    TEXT layer, the keep case):
+      - glyph unit: bbox diag <=15, len <=40, folded (len/diag >=1.25)
+        or tiny (diag <=6) or closed - _glyph_blobs lineage
+      - leader shape: 15 <= len <= 600; straight (len/chord <= 1.10,
+        <=5 vertices) or arc (1.10 < len/chord <= 1.60)
+      - anchor: >=3 same-layer glyphs within 18pt of an endpoint.
+        Same-layer tree, NOT a cross-layer union: union costs 8/244
+        false demotions on the C8.0 boundary (other layers' station
+        text near the path); same-layer scores 0/244 there while
+        catching 203/205 (GCHC C-TOPO-TEXT), 405/433 + 5/5 arcs
+        (C4.1 O-SURFACE-LBL-FG), 27/33 (C6.0 PIPE-LBL).
+    """
+    by_layer = defaultdict(list)
+    for i, u in enumerate(units):
+        leaf = (u.layer or "").split("|")[-1]
+        if leaf and _ANNO_LAYER.search(leaf):
+            by_layer[u.layer].append(i)
+    if not by_layer:
+        return set()
+    from scipy.spatial import cKDTree
+
+    leaders: set = set()
+    for lay in sorted(by_layer):
+        idxs = by_layer[lay]
+        glyph_pts = []
+        for i in idxs:
+            u = units[i]
+            bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+            diag = float(np.hypot(*bb))
+            fold = u.length / diag if diag > 1e-6 else 9.9
+            if diag <= 15.0 and u.length <= 40.0 and (
+                    fold >= 1.25 or diag <= 6.0 or u.closed):
+                glyph_pts.append((u.pts[0] + u.pts[-1]) / 2)
+        if len(glyph_pts) < 3:
+            continue
+        tree = cKDTree(np.asarray(glyph_pts))
+        for i in idxs:
+            u = units[i]
+            if u.closed or len(u.pts) < 2 or not (15.0 <= u.length <= 600.0):
+                continue
+            chord = float(np.hypot(*(u.pts[-1] - u.pts[0])))
+            if chord < 1e-6:
+                continue
+            r = u.length / chord
+            if not ((r <= 1.10 and len(u.pts) <= 5) or r <= 1.60):
+                continue
+            for e in (u.pts[0], u.pts[-1]):
+                if len(tree.query_ball_point(e, 18.0)) >= 3:
+                    leaders.add(i)
+                    break
+    return leaders
+
+
 def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[LineChain]:
     """Main entry: stroke units -> classified line chains.
 
@@ -370,8 +454,11 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     """
     units = list(units)  # local copy: X-mark repair appends synthetic units
     units = _merge_twin_strokes(units)
+    leader_idx = _leader_annotation_units(units)
     by_style = defaultdict(list)
     for idx, u in enumerate(units):
+        if idx in leader_idx:
+            continue  # emitted as annotation chains after the style loop
         # near-white strokes are invisible on paper: masking/whiteout, not
         # linework
         if u.color and min(u.color) > 0.92 and not getattr(u, 'on_fill', False):
@@ -531,6 +618,16 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
     if words:
         chains = _bridge_text(chains, words)
+
+    # leader/callout strokes pulled out before pooling: emit them as their
+    # own annotation chains so the reviewer can still toggle them visible.
+    # One chain per stroke - chaining leaders together is exactly the weld
+    # this exists to prevent.
+    for i in sorted(leader_idx):
+        u = units[i]
+        chains.append(LineChain(cid, u.pts, "annotation", u.color, u.width,
+                                u.length, 0, "leader", layer=u.layer))
+        cid += 1
 
     # exploded-glyph labels drawn inline (no text layer to bridge across)
     _mark_glyph_text_chains(chains, glyph_blobs)

@@ -161,8 +161,11 @@ async function loadResult(gen = state.gen) {
     // white-over-wash linework is real but faint existing-conditions data;
     // it starts OFF so it never surprises the takeoff - one click turns a
     // family on when the estimator wants it
+    // annotation (text/label/leader strokes) starts OFF like texture:
+    // it is real ink but not takeoff linework, and ON-by-default is how
+    // leader lines ended up welded into wall tallies
     state.include.set(s.style_id,
-      (white || s.texture) ? false
+      (white || s.texture || s.class === "annotation") ? false
         : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
     state.seedLabels.set(s.style_id, s.suggested_label || "");
@@ -1454,7 +1457,7 @@ function draw() {
       const hot = state.hot === sid || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
-    ctx.globalAlpha = st2 && st2.texture ? 0.25 : 1.0;
+    ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
     ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
