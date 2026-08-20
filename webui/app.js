@@ -162,7 +162,8 @@ async function loadResult(gen = state.gen) {
     // it starts OFF so it never surprises the takeoff - one click turns a
     // family on when the estimator wants it
     state.include.set(s.style_id,
-      white ? false : (s.class !== "solid" ? true : s.length_pt > 500));
+      (white || s.texture) ? false
+        : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
@@ -1452,7 +1453,9 @@ function draw() {
       if (state.isolate === null && !state.include.get(sid)) continue;
       const hot = state.hot === sid || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
-      ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
+      const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
+    ctx.globalAlpha = st2 && st2.texture ? 0.25 : 1.0;
+    ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid));
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
       ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
@@ -1472,6 +1475,7 @@ function draw() {
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1.0;
     ctx.setLineDash([]);
   }
   // vertex handles on the selected line

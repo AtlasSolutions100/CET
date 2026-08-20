@@ -305,6 +305,44 @@ def _detect_worker(job_id: str, page: int):
                 units, (scale or {}).get("ft_per_paper_inch"), words)
         except Exception:
             openings = []
+        # texture styles: a shading fill is MANY parallel chains at a tight
+        # regular pitch. Measured: GCHC 'SHADING ASPHALT' strips pitch
+        # 1-4pt; real parallel features sit far wider (contours 20-40pt,
+        # curb pairs are 2 members). Flagged styles default OFF in the UI
+        # and render faint - they are area shading, not takeoff linework.
+        import numpy as _np
+        by_style_chains = {}
+        for c in chains:
+            by_style_chains.setdefault(c.style_id, []).append(c)
+        for st in style_list:
+            cs = by_style_chains.get(st["style_id"], [])
+            st["texture"] = False
+            if len(cs) < 15:
+                continue
+            dirs = []
+            mids = []
+            for c in cs:
+                pts = _np.asarray(c.pts)
+                v = pts[-1] - pts[0]
+                n = float(_np.hypot(*v))
+                if n < 1e-6:
+                    continue
+                dirs.append(v / n)
+                mids.append(pts.mean(axis=0))
+            if len(dirs) < 15:
+                continue
+            D = _np.asarray(dirs)
+            ang = _np.arctan2(D[:, 1], D[:, 0]) * 2
+            R = float(_np.hypot(_np.mean(_np.cos(ang)), _np.mean(_np.sin(ang))))
+            if R < 0.85:
+                continue
+            mean_ang = _np.arctan2(_np.mean(_np.sin(ang)), _np.mean(_np.cos(ang))) / 2
+            nrm = _np.array([-_np.sin(mean_ang), _np.cos(mean_ang)])
+            off = _np.sort(_np.asarray(mids) @ nrm)
+            gaps = _np.diff(off)
+            gaps = gaps[gaps > 0.05]
+            if len(gaps) >= 10 and float(_np.median(gaps)) <= 6.0:
+                st["texture"] = True
         result = {
             "page": pc.to_dict(),
             "scale": scale,

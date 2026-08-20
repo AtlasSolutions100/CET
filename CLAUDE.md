@@ -29,6 +29,13 @@ linework is hidden, then zoom and pan across the whole sheet region by
 region comparing render to original for completeness (missed pieces) and
 placement (mis-boxes). A full-canvas screenshot alone is not a review.
 
+The FINAL deliverable of every review run — including batch sends of
+multiple sheets — is the ANNOTATED comparison: every capture sent to the
+human carries its circles (defects, improvement areas, and sparse clean
+checkmarks) BEFORE it is sent. Raw captures without annotation are working
+files, not deliverables; sending them as the review output is a process
+failure even when the captures themselves are fine.
+
 Verification is not a claim, it is an artifact. Write every verification set
 to `out/verify/<YYYY-MM-DD>/<topic>/` — the screenshots, the source crops,
 and a `VERIFY.md` naming the sheet, page index, region, and what was
