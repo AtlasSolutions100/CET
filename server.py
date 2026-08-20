@@ -79,7 +79,9 @@ def _save_registry() -> None:
     right there, and the page has to be detected again."""
     try:
         REGISTRY.write_text(json.dumps(
-            {jid: {"path": j["path"], "pages": j["pages"]}
+            {jid: {"path": j["path"], "pages": j["pages"],
+                   "mtime": j.get("mtime"), "kinds": j.get("kinds"),
+                   "sizes": j.get("sizes")}
              for jid, j in JOBS.items()}, indent=1))
     except OSError:
         pass
@@ -104,7 +106,8 @@ def _load_registry() -> None:
                 except ValueError:
                     continue
         JOBS[jid] = {"path": j["path"], "pages": j.get("pages", 0),
-                     "status": status}
+                     "mtime": j.get("mtime"), "kinds": j.get("kinds"),
+                     "sizes": j.get("sizes"), "status": status}
 
 
 _load_registry()
@@ -737,18 +740,17 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
     matter for takeoff? Provider by available key, cheapest-first:
     XAI_API_KEY (Grok) > GROQ_API_KEY > ANTHROPIC_API_KEY.
 
-    The verdict is PINNED: one model read per page, cached on disk, stable
-    across restarts and re-detects - a takeoff must not change because the
-    same page was opened twice. fresh=1 re-reads the sheet."""
+    The verdict caches for THIS SERVER SESSION only (re-opening the banner
+    should not re-bill the model), and never on disk: a pinned verdict that
+    survives restarts is blueprint memory a fresh seat would not have, and
+    memory was removed 2026-08-20 for report consistency. fresh=1 re-reads
+    the sheet."""
     import base64
     import os
 
-    _ai_cache = _job_dir(job_id) / f"p{page}_ai.json"
-    if not fresh and _ai_cache.exists():
-        try:
-            return JSONResponse(json.loads(_ai_cache.read_text()))
-        except Exception:
-            pass
+    _ck = (job_id, page)
+    if not fresh and _ck in _AI_SESSION_CACHE:
+        return JSONResponse(_AI_SESSION_CACHE[_ck])
 
     import requests as _rq
 
@@ -929,10 +931,7 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
     parsed["_invalid_style_ids"] = drop_f + drop_i
     parsed["_known_style_ids"] = len(known_ids)
     parsed["_provider"] = f"{name}:{model}"
-    try:
-        _ai_cache.write_text(json.dumps(parsed))
-    except Exception:
-        pass
+    _AI_SESSION_CACHE[_ck] = parsed
     return JSONResponse(parsed)
 
 
@@ -966,7 +965,34 @@ def earthwork_suggest(job_id: str, page: int):
             self.length = d["length_pt"]
             self.width = d.get("width")
     chains = [_C(c) for c in res["chains"]]
-    sug = suggest_elevations(chains, words)
+    # contour labels printed inside line breaks are rotated + often
+    # exploded to vectors: read them by deskewing each gap with the
+    # line's own angle. OCR of a fixed raster is deterministic, so the
+    # per-page cache reproduces on any seat (compute cache, not memory).
+    gcache = _job_dir(job_id) / f"p{page}_elevgaps.json"
+    gap_z = None
+    if gcache.exists():
+        try:
+            gap_z = {int(k): tuple(v)
+                     for k, v in json.loads(gcache.read_text()).items()}
+        except Exception:
+            gap_z = None
+    if gap_z is None:
+        import numpy as _np3
+
+        from takeoff_engine.earthwork import gap_label_elevations
+        doc2 = pymupdf.open(job["path"])
+        pix = doc2[page].get_pixmap(dpi=150)
+        img = _np3.frombuffer(pix.samples, _np3.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].copy()
+        doc2.close()
+        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0)
+        try:
+            gcache.write_text(json.dumps(
+                {str(k): list(v) for k, v in gap_z.items()}))
+        except OSError:
+            pass
+    sug = suggest_elevations(chains, words, gap_z=gap_z)
     by_id = {c.chain_id: c for c in chains}
     for r in sug:
         w = by_id[r["chain_id"]].width
@@ -1231,6 +1257,22 @@ def symbols_suggest(job_id: str, page: int):
             out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
     out.sort(key=lambda g: -g["n"])
     return {"groups": out[:15], "schedule": sched}
+
+
+# Analyze verdicts live for this server session only - never on disk
+_AI_SESSION_CACHE: dict = {}
+
+
+@app.middleware("http")
+async def _no_stale_ui(request, call_next):
+    """UI assets must revalidate every load. A browser that keeps serving a
+    cached app.js resurrects removed behavior (the blueprint-memory code
+    lived on in stale tabs after removal); ETag revalidation keeps reloads
+    fast while guaranteeing the current build."""
+    resp = await call_next(request)
+    if not request.url.path.startswith("/api"):
+        resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return resp
 
 
 app.mount("/", StaticFiles(directory=ROOT / "webui", html=True), name="ui")
