@@ -219,3 +219,6 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 /* editable qty/ft cell in the itemized takeoff */
 .item-row input.qty-in { text-align: right; }
 .item-row input.qty-in.ov { border-color: var(--accent, #4a9); font-weight: 700; }
+
+/* legend chips render their line sample */
+.legend-chip canvas.chip-line { vertical-align: middle; margin-right: 6px; background: transparent; }

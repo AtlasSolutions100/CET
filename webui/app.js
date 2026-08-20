@@ -572,13 +572,34 @@ function renderLegend() {
   box.appendChild(head);
   for (const e of state.result.legend) {
     const sid = e.sample_style;
+    // every chip SHOWS its line: the matched style's true pattern, or the
+    // swatch cadence measured off the sheet when nothing matched yet
+    const mkSample = (styleOrNull) => {
+      const cnv = document.createElement("canvas");
+      cnv.className = "chip-line";
+      const ps = styleOrNull || {
+        style_id: -1, class: e.klass || "dash1", color: e.color,
+        width: 1.0,
+        signature: "", };
+      if (!styleOrNull) {
+        const d = Math.max(e.avg_dash || 6, 2);
+        ps.template = [d, Math.max(d * 0.6, 2)];
+        // drawPatternSample falls back to dashArray(signature) when no
+        // rep chain exists; feed the measured cadence directly instead
+        const repFake = { style_id: -1, template: ps.template };
+        state.result.chains.includes(repFake); // no-op, keep shape simple
+      }
+      drawPatternSample(cnv, ps, 56, 12);
+      return cnv;
+    };
     if (sid === null || sid === undefined) {
       // the legend NAMES this line type but no detected style matches yet -
       // show it honestly as found-but-unmatched instead of hiding it
       const chip = document.createElement("button");
       chip.className = "legend-chip";
       chip.style.opacity = "0.55";
-      chip.textContent = e.label + " (not matched)";
+      chip.appendChild(mkSample(null));
+      chip.appendChild(document.createTextNode(e.label + " (not matched)"));
       chip.title = "Read from the legend, but no detected line style matches its geometry yet";
       box.appendChild(chip);
       continue;
@@ -586,7 +607,8 @@ function renderLegend() {
     const applied = (state.labels.get(sid) || "").startsWith(e.label);
     const chip = document.createElement("button");
     chip.className = "legend-chip" + (applied ? " applied" : "");
-    chip.textContent = e.label;
+    chip.appendChild(mkSample(state.result.styles.find(s2 => s2.style_id === sid)));
+    chip.appendChild(document.createTextNode(e.label));
     chip.title = applied
       ? `applied to style ${sid}`
       : `click to label style ${sid} "${e.label}" — hover to highlight`;
