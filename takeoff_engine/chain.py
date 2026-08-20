@@ -141,7 +141,14 @@ def _match_links(units: list, idxs: list, gap_max: float, ang_tol_deg: float) ->
         ulen[2 * k] = ulen[2 * k + 1] = u.length
 
     tree = cKDTree(pos)
-    pairs = tree.query_pairs(gap_max, output_type="ndarray")
+    # the query radius must reach the LONG marks' own gaps: a pool whose
+    # median is skewed by short ticks (Oncor property line: 45.7pt bars
+    # among 10.3pt slash ticks -> gap_max 41.2 < the 45.7 bar gap) would
+    # otherwise clip exactly the links that matter. p90 keeps dot/stipple
+    # pools at their tight radius, so the pair count stays tractable.
+    p90 = float(np.percentile(ulen, 90)) if len(ulen) else 0.0
+    radius = float(min(GAP_ABS_MAX, max(gap_max, 1.5 * p90)))
+    pairs = tree.query_pairs(radius, output_type="ndarray")
     if len(pairs) == 0:
         return []
     a, b = pairs[:, 0], pairs[:, 1]
@@ -152,7 +159,9 @@ def _match_links(units: list, idxs: list, gap_max: float, ang_tol_deg: float) ->
     dist = np.hypot(g[:, 0], g[:, 1])
     # dynamic gap first - it needs no geometry math and cheaply shrinks the
     # arrays every later step runs on (dot fields produce millions of pairs)
-    local_max = np.minimum(gap_max, np.maximum(10.0, 3.0 * np.maximum(ulen[a], ulen[b])))
+    # (clamped by the ABSOLUTE cap, not the pool median: long marks may
+    # reach their own-length gaps even in short-mark-dominated pools)
+    local_max = np.minimum(GAP_ABS_MAX, np.maximum(np.minimum(gap_max, np.maximum(10.0, 3.0 * np.maximum(ulen[a], ulen[b]))), np.where(np.maximum(ulen[a], ulen[b]) >= 30.0, np.maximum(ulen[a], ulen[b]) * 1.15, 0.0)))
     keep = dist <= local_max
     a, b, g, dist = a[keep], b[keep], g[keep], dist[keep]
     if len(a) == 0:
@@ -376,6 +385,106 @@ _ANNO_LAYER = re.compile(
     r"(?=[^A-Za-z0-9]|$)", re.I)
 
 
+def _merge_collinear_overlaps(units: list) -> list:
+    """Merge same-pen marks that OVERLAP or abut along one line.
+
+    CAD plotters emit one dash mark as several stacked collinear pieces,
+    and draw some marks TWICE at coincident positions (Oncor p4 property
+    line: 45.7pt longs doubled, shorts in 3-4 overlapping fragments).
+    The duplicates poison greedy dash matching - a coincident twin is a
+    zero-distance "touching" partner that outranks every real 9pt-gap
+    link, so the boldest line on the sheet never chained. Marks only
+    (straight, <= 1.5x DASH_MAX_LEN); long polylines untouched.
+    Buckets by (color, layer, direction); inside a bucket a sweep merges
+    spans that overlap in projection AND lie within 0.9pt laterally
+    (parallel neighbours on other lines stay separate)."""
+    from collections import defaultdict as _dd
+
+    buckets = _dd(list)
+    for i, u in enumerate(units):
+        if u.closed or len(u.pts) < 2:
+            continue
+        if u.length > 1.5 * DASH_MAX_LEN or u.length < 0.5:
+            continue
+        v = u.pts[-1] - u.pts[0]
+        n = float(np.hypot(*v))
+        if n < 1e-6 or u.length / n > 1.05:
+            continue
+        d = v / n
+        if d[0] < 0 or (d[0] == 0 and d[1] < 0):
+            d = -d
+        ang = round(float(np.degrees(np.arctan2(d[1], d[0]))) / 2.0)
+        buckets[(u.color, u.layer, ang)].append((i, d))
+    dropped = set()
+    for (col, lay, ang), members in buckets.items():
+        if len(members) < 2:
+            continue
+        d = members[0][1]
+        rows = []
+        for i, _ in members:
+            u = units[i]
+            a = float(np.dot(u.pts[0], d))
+            b = float(np.dot(u.pts[-1], d))
+            mid = (u.pts[0] + u.pts[-1]) / 2
+            lat = float(mid[0] * d[1] - mid[1] * d[0])
+            rows.append([min(a, b), max(a, b), lat, i])
+        rows.sort()
+        groups = []  # each: [lo, hi, lat, [idxs]]
+        done = []
+        for lo, hi, lat, i in rows:
+            placed = False
+            w_i = units[i].width or 0.0
+            for grp in groups:
+                dlat = abs(lat - grp[2])
+                if lo <= grp[1] + 0.5 and dlat <= 0.9:
+                    grp[1] = max(grp[1], hi)
+                    grp[3].append(i)
+                    placed = True
+                    break
+                # EDGE PAIRS: an outlined thick mark extracts as two
+                # parallel strokes one line-width apart (Oncor property
+                # line: 45.7pt bars doubled at 3.3pt lateral). Merge only
+                # on strong span overlap so offset cadence neighbours on
+                # nearby lines never chain together laterally.
+                ov = min(grp[1], hi) - max(grp[0], lo)
+                if dlat <= max(0.9, 1.3 * max(w_i, units[grp[3][0]].width or 0)) \
+                        and ov >= 0.6 * min(hi - lo, grp[1] - grp[0]):
+                    grp[1] = max(grp[1], hi)
+                    grp[0] = min(grp[0], lo)
+                    grp[3].append(i)
+                    placed = True
+                    break
+            # groups whose span ended long ago retire for speed - but they
+            # must still be MERGED (an earlier version dropped them here,
+            # which silently skipped almost every group in a big bucket)
+            if not placed:
+                still, retired = [], []
+                for g in groups:
+                    (still if g[1] >= lo - 2.0 else retired).append(g)
+                done.extend(retired)
+                groups = still
+                groups.append([lo, hi, lat, [i]])
+        done.extend(groups)
+        for lo, hi, lat, idxs in done:
+            if len(idxs) < 2:
+                continue
+            keep = max(idxs, key=lambda k: units[k].length)
+            u = units[keep]
+            base = u.pts[0]
+            t0 = float(np.dot(base, d))
+            u.pts = np.vstack([base + (lo - t0) * d, base + (hi - t0) * d])
+            u.length = float(hi - lo)
+            u.width = max((units[k].width or 0) for k in idxs)
+            if hasattr(u, "_dir"):
+                del u._dir
+            for k in idxs:
+                if k != keep:
+                    dropped.add(k)
+    if not dropped:
+        return units
+    return [u for i, u in enumerate(units) if i not in dropped]
+
+
 def _leader_annotation_units(units: list) -> set:
     """Indices of leader/callout strokes on annotation-named layers.
 
@@ -542,6 +651,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     """
     units = list(units)  # local copy: X-mark repair appends synthetic units
     units = _merge_twin_strokes(units)
+    units = _merge_collinear_overlaps(units)
     leader_idx = _leader_annotation_units(units)
     by_style = defaultdict(list)
     for idx, u in enumerate(units):

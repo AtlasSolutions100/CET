@@ -206,7 +206,14 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
         for sid, r in reps.items():
             if sid in self_joined:
                 continue
-            if not r.klass.startswith("dash") or r.klass != e["klass"]:
+            if not r.klass.startswith("dash"):
+                continue
+            # class must match - EXCEPT at exact weight: a compound
+            # linetype's slash ticks don't chain (they slant off-axis),
+            # so the plan chains as dash1 while the swatch reads dash2
+            # (Oncor property line: bars d45.7 g45.7)
+            if r.klass != e["klass"] \
+                    and _weight_class(r.width) != e["weight"]:
                 continue
             # +-2 weight classes: paper-space swatches print heavier than
             # the model-space line (Oncor PROPERTY LINE swatch weight 4 vs
@@ -223,14 +230,24 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                     max(abs(a - b) for a, b in zip(e["color"], r.color)) > 0.2:
                 continue
             rd = (r.ink or r.length) / max(r.n_dashes, 1)
-            lo, hi = sorted([e["avg_dash"], rd])
-            if hi > 1.9 * lo + 3.0:
+            # LTSCALE: swatch lengths are paper-space - test the window
+            # against BOTH the swatch's average and its longest mark
+            # (Oncor PL: swatch avg 10.2 / max 27.2 vs plan bars 45.7)
+            fits = False
+            for ref in (e["avg_dash"], e.get("max_dash") or 0):
+                if ref <= 0:
+                    continue
+                lo, hi = sorted([ref, rd])
+                if hi <= 1.9 * lo + 3.0:
+                    fits = True
+                    break
+            if not fits:
                 continue
             cand = sum(c2.length for c2 in chains if c2.style_id == sid)
-            # closest WEIGHT wins first, ink breaks ties: the thick and
-            # thin variants of one linetype are different legend rows
-            # (PROPERTY LINE vs ADJACENT - human-confirmed on Oncor p4)
-            key = (wdiff, -cand)
+            # closest WEIGHT wins first; true-color matches outrank the
+            # white-core bypass; ink breaks ties. (Thick and thin variants
+            # of one linetype are different legend rows - human-confirmed)
+            key = (wdiff, 1 if white_core else 0, -cand)
             if best is None or key < best_key:
                 best, best_key = (sid, cand), key
         single_len = not e.get("max_dash") \
