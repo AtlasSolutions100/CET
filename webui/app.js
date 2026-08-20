@@ -632,6 +632,11 @@ function renderChips() {
 
 // ---------- live itemized takeoff ----------
 function priceKey(label) { return "price:" + label; }
+// quantity/footage override: the estimator's number beats the detector's.
+// Doc-scoped (this sheet has 24 shear walls; another sheet doesn't).
+function ovKey(label, kind) {
+  return docKey() + "::ov:" + kind + ":" + label.trim().toUpperCase();
+}
 // ---------- style memory: the reviewer's decisions ARE the takeoff -------
 // Deterministic consistency: once a style is labeled / set to EA, that
 // decision is stored against (document, style fingerprint) and reapplies
@@ -752,6 +757,13 @@ function renderItemized() {
     group.sort((a, b) => b.qty - a.qty);
     let sub = 0, subQty = 0, subEa = 0;
     for (const it of group) {
+      const ov = parseFloat(localStorage.getItem(
+        ovKey(it.label, it.cnt === "EA" ? "qty" : "ft")) || "");
+      if (!isNaN(ov) && ov > 0) {
+        it.auto = it.qty; it.qty = ov;
+        if (it.cnt === "EA") it.qtyText = String(ov);
+        it.ov = true;
+      }
       const price = parseFloat(localStorage.getItem(priceKey(it.label)) || "") || null;
       it.price = price;
       it.ext = it.priced && price ? it.qty * price : null;
@@ -789,9 +801,21 @@ function renderItemized() {
       lab.appendChild(document.createElement("br"));
       lab.appendChild(pick);
       const cnt = document.createElement("div"); cnt.textContent = it.cnt;
-      const q = document.createElement("div");
-      q.textContent = it.qtyText ||
-        (it.qty >= 1000 ? (it.qty/1000).toFixed(1) + "k" : it.qty.toFixed(1));
+      const q = document.createElement("input");
+      q.type = "number"; q.min = "0";
+      q.step = it.cnt === "EA" ? "1" : "0.1";
+      q.className = "qty-in" + (it.ov ? " ov" : "");
+      q.name = "qty-" + it.label;
+      const autoText = it.qtyText ||
+        ((it.ov ? it.auto : it.qty) >= 1000
+          ? ((it.ov ? it.auto : it.qty)/1000).toFixed(1) + "k"
+          : (it.ov ? it.auto : it.qty).toFixed(1));
+      if (it.ov) { q.value = it.qty; q.title = `detected ${it.auto && it.auto.toFixed ? it.auto.toFixed(1) : it.auto} — clear to restore`; }
+      else { q.placeholder = autoText; q.title = "type to override the detected quantity"; }
+      q.onchange = () => {
+        localStorage.setItem(ovKey(it.label, it.cnt === "EA" ? "qty" : "ft"), q.value);
+        renderItemized(); renderChips();
+      };
       const pin = document.createElement("input");
       pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
       pin.name = "price-" + it.label;
@@ -1343,7 +1367,8 @@ $("approveBtn").onclick = async () => {
           pools.get(label).push(st.style_id);
         }
         return [...pools.entries()].map(([l, sids]) =>
-          [l, styleObjects(sids).length]);
+          [l, parseFloat(localStorage.getItem(ovKey(l, "qty")) || "") ||
+              styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(
         [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]

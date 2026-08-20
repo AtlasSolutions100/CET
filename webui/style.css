@@ -215,3 +215,7 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .ai-banner.slim { display: flex; align-items: center; gap: 10px;
   padding: 5px 16px; font-size: 11.5px; }
 .ai-banner.slim b { font-weight: 600; }
+
+/* editable qty/ft cell in the itemized takeoff */
+.item-row input.qty-in { text-align: right; }
+.item-row input.qty-in.ov { border-color: var(--accent, #4a9); font-weight: 700; }
