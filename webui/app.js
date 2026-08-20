@@ -106,7 +106,7 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map();
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined;
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
@@ -146,7 +146,7 @@ async function loadResult(gen = state.gen) {
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
   state.tool = null; state.measurePts = [];
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map();
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined;
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
@@ -939,9 +939,17 @@ function renderEw() {
       'Elevations can still be assigned by selecting lines and using Separate, then entering values here later.</div>';
     return;
   }
+  state.ew.rows.sort((a, b) => (a.z ?? 1e9) - (b.z ?? 1e9));
   for (const row of state.ew.rows) {
     const div = document.createElement("div");
     div.className = "ew-row";
+    div.title = "click to select this contour on the sheet";
+    div.onclick = (ev) => {
+      if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
+      state.selected = row.chain_id; state.selPt = null;
+      updateSelBar(chainById(row.chain_id));
+      draw();
+    };
     const z = document.createElement("input");
     z.className = "z"; z.type = "number"; z.step = "0.1"; z.value = row.z;
     z.name = "ew-z-" + row.chain_id;
@@ -2260,6 +2268,21 @@ function distToSeg(px, py, a, b) {
   return Math.hypot(px-qx, py-qy);
 }
 
+// contour elevations, read once per page off the sheet's own labels
+// (the earthwork reader already pairs them); selecting a topo line then
+// shows its elevation without opening any panel
+async function ensureElev() {
+  if (state.elevMap !== undefined) return;
+  state.elevMap = undefined;
+  state.elevMap = null;  // in flight
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
+    state.elevMap = r.ok
+      ? new Map((await r.json()).suggestions.map(s => [s.chain_id, s.z]))
+      : new Map();
+  } catch { state.elevMap = new Map(); }
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+}
 function updateSelBar(ch) {
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn", "drawBtn"])
     $(id).disabled = !ch;
@@ -2271,7 +2294,10 @@ function updateSelBar(ch) {
   const pt = state.selPt !== null
     ? ` · point ${state.selPt + 1}/${ch.points.length} selected`
     : ` · ${ch.points.length} points`;
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}${pt}`;
+  if (state.elevMap === undefined) ensureElev();
+  const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
+  const el = z !== undefined ? ` · EL ${z}` : "";
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtLen(ch.length_pt)}${pt}${el}`;
 }
 
 function deleteVertex() {
