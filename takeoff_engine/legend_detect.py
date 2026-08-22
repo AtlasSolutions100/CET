@@ -245,9 +245,19 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 continue
             cand = sum(c2.length for c2 in chains if c2.style_id == sid)
             # closest WEIGHT wins first; true-color matches outrank the
-            # white-core bypass; ink breaks ties. (Thick and thin variants
-            # of one linetype are different legend rows - human-confirmed)
-            key = (wdiff, 1 if white_core else 0, -cand)
+            # white-core bypass; then closest COLOUR (0.05 buckets), then
+            # ink. Colour before ink: the Barn "7900 EXISTING CONTOUR
+            # INTERVAL" swatch (grey 0.459) matched the 0.59-grey regular
+            # contours at 9x the ink instead of the exact-0.46 index
+            # family - a 0.13-off colour must not beat an exact one on
+            # bulk. (Thick and thin variants of one linetype are still
+            # different legend rows - human-confirmed.)
+            if white_core or not (e["color"] and r.color):
+                cbucket = 0 if white_core else 2
+            else:
+                cbucket = min(4, int(max(abs(a - b) for a, b in
+                                         zip(e["color"], r.color)) / 0.05))
+            key = (wdiff, 1 if white_core else 0, cbucket, -cand)
             if best is None or key < best_key:
                 best, best_key = (sid, cand), key
         single_len = not e.get("max_dash") \
@@ -313,7 +323,12 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             e["sample_style"] = best[0]
     # one style, one name: when two entries claim the same style (PL and
     # ADJACENT are the same linetype at different weights), the first row
-    # keeps it and later claimants go honestly unmatched
+    # keeps it and later claimants go honestly unmatched. A runner-up
+    # fallback was tried here (2026-08-21) and REVERTED: it relabeled
+    # claim-conflicted texture rows (gravel / chip&seal / patio) and even
+    # PROPERTY/TRACT LINE onto title-block styles - the claim-death is a
+    # safety valve, not a bug. The colour-bucket ranking above is what
+    # fixes the 7900 index-contour row; it needs no fallback.
     claimed: set = set()
     for e in entries:
         sid = e.get("sample_style")
