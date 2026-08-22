@@ -990,6 +990,15 @@ def earthwork_suggest(job_id: str, page: int):
             self.pts = _np.asarray(d["points"], float)
             self.length = d["length_pt"]
             self.width = d.get("width")
+            # layer and linetype are what stop a profile box or a title
+            # block entering the contour TIN, and stop an elevation being
+            # inherited across two different objects whose ends happen to
+            # meet (earthwork._is_plan_chain / the pass-2 union guard).
+            # They are in the stored result; not lifting them here made
+            # those guards a silent no-op on the service path even though
+            # they measured correctly offline.
+            self.layer = d.get("layer") or ""
+            self.klass = d.get("class") or ""
     chains = [_C(c) for c in res["chains"]]
     # contour labels printed inside line breaks are rotated + often
     # exploded to vectors: read them by deskewing each gap with the
