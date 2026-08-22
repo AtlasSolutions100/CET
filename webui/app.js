@@ -123,6 +123,7 @@ async function selectPage(p) {
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderSheetHead();
+  scaleMemApply();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
@@ -317,6 +318,7 @@ async function loadResult(gen = state.gen) {
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
   renderSheetHead();
+  scaleMemApply();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
@@ -676,6 +678,81 @@ function renderSheetHead() {
   meta.append(chip(st, state.result ? "ok"
     : st === "detect failed" ? "warn" : ""));
   el.append(name, meta);
+  renderScalePick(el);
+}
+
+// ---------- more than one scale on the sheet -----------------------------
+// A sheet with a plan AND details carries several scale captions, and the
+// engine picks by how many times each appears. On a detail sheet that runs
+// exactly backwards: many small details, one big plan. Measured across the
+// client sets, 15 of 208 text-scale pages carry two or more distinct
+// candidates, spread 1.50x to 6.00x, and on several the count picks the
+// detail over the plan - 4x length and 16x area on one landscape sheet,
+// 12.5x linear on a sheet whose only caption belongs to a vicinity-map
+// inset. The engine already computed the right answer on every one of those
+// pages and put it in `candidates`, where nothing read it.
+//
+// Rather than guess which caption governs the drawing - which needs to know
+// what the caption is attached to - show the estimator every reading the
+// sheet offers and let one click switch. The choice is remembered per
+// document and page, like the style decisions.
+function scaleKey() {
+  return "scale::" + (state.docName || "?") + "::p" + state.page;
+}
+function renderScalePick(host) {
+  const sc = state.result && state.result.scale;
+  const cands = (sc && sc.candidates) || [];
+  const uniq = [];
+  for (const c of cands) {
+    if (!c || !c.ft_per_paper_inch) continue;
+    if (!uniq.some(u => Math.abs(u.ft_per_paper_inch - c.ft_per_paper_inch) < 1e-6))
+      uniq.push(c);
+  }
+  if (uniq.length < 2) return;
+  const row = document.createElement("div");
+  row.className = "sh-scales";
+  const lab = document.createElement("span");
+  lab.className = "dim";
+  lab.textContent = `this sheet prints ${uniq.length} different scales — using:`;
+  row.appendChild(lab);
+  for (const c of uniq) {
+    const b = document.createElement("button");
+    b.className = "sh-scale-pick" +
+      (Math.abs(c.ft_per_paper_inch - sc.ft_per_paper_inch) < 1e-6 ? " on" : "");
+    b.textContent = `${(+c.ft_per_paper_inch).toFixed(2)} ft/in`;
+    b.title = c.text + (c.count > 1 ? ` — printed ${c.count}x` : " — printed once");
+    b.onclick = () => {
+      // keep the reading's own text and provenance; drop the bar
+      // corroboration, which was computed against the engine's pick
+      state.result.scale = Object.assign({}, sc, {
+        text: c.text, ft_per_paper_inch: c.ft_per_paper_inch,
+        count: c.count, near_scale_keyword: c.near_scale_keyword,
+        agrees: null, bar_ft_per_paper_inch: sc.bar_ft_per_paper_inch,
+        delta_pct: null, picked_by_reviewer: true,
+      });
+      try { store.setItem(scaleKey(), String(c.ft_per_paper_inch)); } catch (e) { /* private mode */ }
+      setStatus(`scale set to ${(+c.ft_per_paper_inch).toFixed(2)} ft per inch — every quantity on this sheet recalculated`);
+      renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+      renderMiniLegend(); draw();
+    };
+    row.appendChild(b);
+  }
+  host.appendChild(row);
+}
+// reapply a remembered pick after a detect
+function scaleMemApply() {
+  const sc = state.result && state.result.scale;
+  if (!sc || !sc.candidates) return;
+  let want;
+  try { want = store.getItem(scaleKey()); } catch (e) { return; }
+  if (!want) return;
+  const hit = sc.candidates.find(
+    c => Math.abs(c.ft_per_paper_inch - parseFloat(want)) < 1e-6);
+  if (!hit || Math.abs(hit.ft_per_paper_inch - sc.ft_per_paper_inch) < 1e-6) return;
+  state.result.scale = Object.assign({}, sc, {
+    text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
+    count: hit.count, agrees: null, delta_pct: null, picked_by_reviewer: true,
+  });
 }
 
 function renderStyles() {
