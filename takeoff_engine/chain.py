@@ -917,6 +917,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
                 c.klass = "annotation"
 
     _demote_sheet_furniture(chains)
+    _demote_page_frame(chains)
 
     # pages without layer info can't use the demotion above; there, chains
     # living inside text boxes are exploded-glyph junk
@@ -981,6 +982,114 @@ def _demote_sheet_furniture(chains: list) -> None:
             c.klass = "annotation"
             c.dash_signature = "sheet furniture"
 
+
+
+# --- the page frame -------------------------------------------------------
+# A drawing border is not takeoff linework, and the name+position rule above
+# cannot see the worst case: a border is a rectangle drawn AROUND the page,
+# so its centre is dead centre and the edge test never fires. Measured on
+# Barn Civil p6 the border sits on `G-ANNO-TTLB-THIN`, matches _SHEET_LAYER,
+# and survives on position alone; on 26 of the 73 Thielen sheets and on all
+# three Belle Farms sheets it carries NO layer name at all, so no name-based
+# rule can ever reach it.
+#
+# The shape is the tell. A closed chain whose path length equals the
+# perimeter of its own bounding box IS that bounding box - any wander adds
+# length - so length/perimeter == 1 plus "the bbox is the whole sheet" says
+# "rectangle around the drawing" without reading a layer name.
+#
+# Tolerances measured over 2,008 exact axis-aligned rectangles found among
+# the live chains of 198 sheets (gate corpus + all six Beaumont client
+# files). 54 of them span >=0.95 of the page-geometry extent on both axes;
+# every one is a sheet border (8,650-10,368 pt, 5 or 8 points, closing gap
+# 0.000, length/perimeter 1.0000). The next-largest rectangle in the whole
+# population spans 0.6304 - an image-clip boundary on Guide Civil p0 - so
+# the band 0.63..0.98 is empty and the threshold sits in it, biased to the
+# true-positive end so the rule under-fires rather than over-fires.
+_FRAME_PERIM_TOL = 0.002   # |path length / bbox perimeter - 1|; measured 0.0000
+_FRAME_CLOSE_TOL = 1.0     # pt from last point back to first; measured 0.000
+_FRAME_SPAN_FRAC = 0.95    # of the page-geometry extent, on BOTH axes;
+                           # lowest true border measured 0.9807
+_FRAME_MAX_SHARE = 0.60    # insurance only, nothing in the corpus is near it:
+                           # a border is furniture around a drawing, so it is
+                           # never most of the sheet's span. Highest measured
+                           # share of live span is 0.2577 (Barn Civil p13).
+                           # Without it, a lone rectangle on an otherwise
+                           # empty sheet - a limits-of-work box, say - would
+                           # define the extent and be read as a border.
+
+
+def _demote_page_frame(chains: list) -> None:
+    """Demote the drawing border: a closed chain that IS the whole sheet.
+
+    Two conditions, both geometric, neither needing a layer name:
+
+    1. the chain is closed and its path length equals the perimeter of its
+       own bounding box, which means it traces that rectangle exactly;
+    2. that rectangle spans essentially the entire extent of everything
+       drawn on the sheet, i.e. nothing lies outside it.
+
+    Evidence for (1): Thielen p18's border has bbox (-0.02, 0.03, 3023.99,
+    2159.97) and path length 10,367.88 pt against 2 x (3024.00 + 2159.94) =
+    10,367.88 - the page MediaBox perimeter to 0.12 pt. A real line that
+    merely crosses the page meanders, so its length runs well over its bbox
+    perimeter (Thielen p18's next-longest live chain: 2,910.56 pt against a
+    2,318.16 pt bbox perimeter, ratio 1.2555), and a line that spans the
+    page in one direction only runs well under it (ratio 0.5000).
+
+    Evidence for (2), which is what stops the rule eating real rectangles:
+    of the 2,008 exact rectangles in the 198-sheet measurement, the 54 that
+    span >=0.95 of the page extent are all borders and the largest remaining
+    one spans 0.6304.
+
+    Reach, measured as the border's share of each sheet's live span:
+    26 of 73 Thielen sheets (2.86%-21.73%), 9 of 9 Guide Civil (2.37%-16.65%,
+    including gate sheet p3 at 3.90%), 14 of 15 Barn Civil (2.24%-25.77%),
+    Barn Landscaping p0 (11.79%) and all three Belle Farms sheets
+    (9.27%-12.47%, including gate sheet p0).
+
+    This sits BESIDE _demote_sheet_furniture, not in place of it. The two
+    catch disjoint things: the name+position rule catches the 82-84
+    fragmented title-block chains per Loves Lane sheet, none of which is a
+    full-page rectangle; this one catches the single closed border, whose
+    centre is dead centre and which is often on no layer at all.
+    """
+    pts = [np.asarray(c.pts) for c in chains if len(c.pts) >= 2]
+    if not pts:
+        return
+    P = np.vstack(pts)
+    lo, hi = P.min(axis=0), P.max(axis=0)
+    ew, eh = float(hi[0] - lo[0]), float(hi[1] - lo[1])
+    if ew <= 0 or eh <= 0:
+        return
+    live = [c for c in chains
+            if c.klass != "annotation" and len(c.pts) >= 4]
+    if not live:
+        return
+    span = sum(c.length for c in live)
+    for c in live:
+        p = np.asarray(c.pts)
+        mn, mx = p.min(axis=0), p.max(axis=0)
+        w, h = float(mx[0] - mn[0]), float(mx[1] - mn[1])
+        # cheapest test first: almost every chain dies here
+        if w < _FRAME_SPAN_FRAC * ew or h < _FRAME_SPAN_FRAC * eh:
+            continue
+        per = 2.0 * (w + h)
+        if per <= 0:
+            continue
+        if float(np.hypot(*(p[0] - p[-1]))) > _FRAME_CLOSE_TOL:
+            continue
+        # path length off the points themselves, not c.length: for a dashed
+        # chain c.length is dashes+gaps re-derived from the cadence, and the
+        # question here is purely what the polyline traces
+        d = np.diff(p, axis=0)
+        path = float(np.hypot(d[:, 0], d[:, 1]).sum())
+        if abs(path / per - 1.0) > _FRAME_PERIM_TOL:
+            continue
+        if span > 0 and c.length / span > _FRAME_MAX_SHARE:
+            continue
+        c.klass = "annotation"
+        c.dash_signature = "page frame"
 
 def _grid_annotation(chains: list, units: list) -> None:
     """Structural grid lines -> annotation.
