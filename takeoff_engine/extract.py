@@ -83,6 +83,51 @@ def page_words(page) -> list:
     return out
 
 
+def page_lines(page) -> list:
+    """Text LINES in the SAME coordinate space as extract_strokes output.
+
+    page_words() throws away which words the PDF itself considers one line,
+    and on a rotated label those words are not left-to-right in display space
+    at all. A spot grade written up the side of a sheet - `FG: 15.96` - has
+    its tag and its value on one PDF line but nowhere near each other on a
+    horizontal row, so a row-window pairing misses every rotated label and
+    can reach sideways into a NEIGHBOUR's value and pair the wrong number.
+    Measured on Beaumont Guide civil page index 2: of 112 printed spot
+    labels, 49 were missed for being rotated and 2 were paired to the value
+    beside them - one of those a 3.64 ft error on a wall top, which is the
+    worst kind of defect because the answer looks right.
+
+    The PDF's own line grouping is rotation-independent, so reading lines
+    instead of re-deriving rows fixes both at once.
+
+    Returns [(x0, y0, x1, y1, text)] with the bbox mapped through
+    page.rotation_matrix, matching page_words()'s space and tuple shape.
+    """
+    out = []
+    try:
+        d = page.get_text("dict")
+    except Exception:
+        return out
+    rot = page.rotation_matrix if page.rotation else None
+    for blk in d.get("blocks", []):
+        for ln in blk.get("lines", []):
+            txt = "".join(sp.get("text", "") for sp in ln.get("spans", []))
+            if not txt.strip():
+                continue
+            bx = ln.get("bbox")
+            if not bx:
+                continue
+            if rot is None:
+                x0, y0, x1, y1 = bx
+            else:
+                a = pymupdf.Point(bx[0], bx[1]) * rot
+                b = pymupdf.Point(bx[2], bx[3]) * rot
+                x0, x1 = sorted((a.x, b.x))
+                y0, y1 = sorted((a.y, b.y))
+            out.append((x0, y0, x1, y1, txt))
+    return out
+
+
 def _bezier_points(p0, p1, p2, p3, n=8) -> list:
     t = np.linspace(0, 1, n + 1)[1:]
     pts = []

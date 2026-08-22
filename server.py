@@ -393,12 +393,33 @@ def _detect_worker(job_id: str, page: int):
         error_path(_job_dir(job_id), page).unlink(missing_ok=True)
 
 
+def _result_stale(job_id: str, page: int) -> bool:
+    """True when a stored result was produced by DIFFERENT engine code.
+
+    A result is cached on (pdf path, mtime), which says nothing about whether
+    the code changed. See takeoff_engine.detect_page.engine_sig - a scale fix
+    landed on 2026-08-22 while the browser kept serving the old wrong value
+    out of this cache.
+    """
+    from takeoff_engine.detect_page import engine_sig
+
+    f = _job_dir(job_id) / f"p{page}_result.json"
+    if not f.exists():
+        return False
+    try:
+        sig = json.loads(f.read_text()).get("engine_sig")
+    except (OSError, ValueError):
+        return True
+    return sig != engine_sig()
+
+
 @app.post("/api/job/{job_id}/page/{page}/detect")
 def detect(job_id: str, page: int):
     job = JOBS.get(job_id) or _404()
     if job["status"].get(page) == "running":
         return {"status": "running", "queued": _is_queued(job_id, page)}
-    if (_job_dir(job_id) / f"p{page}_result.json").exists():
+    if (_job_dir(job_id) / f"p{page}_result.json").exists() \
+            and not _result_stale(job_id, page):
         job["status"][page] = "done"
         return {"status": "done"}
     _enqueue_detect(job_id, page)
@@ -411,6 +432,13 @@ def status(job_id: str, page: int):
     st = job["status"].get(page)
     if st is None and (_job_dir(job_id) / f"p{page}_result.json").exists():
         st = "done"
+    # A result from older engine code is not "done" as far as the UI is
+    # concerned: auto-loading it puts a number on screen that the current
+    # engine would not produce, and the reviewer has no way to tell. Report
+    # it as idle-with-a-reason so the page shows "not detected" and one
+    # click on Detect recomputes it.
+    if st == "done" and _result_stale(job_id, page):
+        return {"status": "idle", "stale": True}
     out = {"status": st or "idle"}
     if st == "running" and _is_queued(job_id, page):
         out["queued"] = True
@@ -981,6 +1009,12 @@ def earthwork_suggest(job_id: str, page: int):
     job = JOBS.get(job_id) or _404()
     doc = pymupdf.open(job["path"])
     words = page_words(doc[page])
+    # Lines as well as words: a spot grade written up the side of a sheet has
+    # its tag and value on one PDF line but nowhere near each other on a
+    # horizontal row, so the word reader misses every rotated label and can
+    # pair a tag to the value beside it. See earthwork.read_spot_grades.
+    from takeoff_engine.extract import page_lines as _page_lines
+    lines = _page_lines(doc[page])
     doc.close()
 
     class _C:  # minimal chain view over the stored result
@@ -1037,7 +1071,7 @@ def earthwork_suggest(job_id: str, page: int):
     # and the whole population used to be invisible. They are POINT
     # elevations, so they ride alongside the contour rows.
     from takeoff_engine.earthwork import read_spot_grades
-    spots = read_spot_grades(words)
+    spots = read_spot_grades(words, lines=lines)
 
     # Two junk sources make the contour suggestions untrustworthy on sparse
     # sheets (Barn C3.4 offered 6 rows of which 4 were noise):

@@ -453,15 +453,35 @@ def _is_plan_chain(c) -> bool:
     return not _NON_PLAN_LAYER.search(getattr(c, "layer", "") or "")
 
 
-_SPOT_TAG = re.compile(r"^(FG|FIN|TS|BS|TW|BW|EG|FF|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
+# FL flow line and FFE finished floor elevation were added 2026-08-22: both
+# appear in the Beaumont Guide civil legend, and 11 printed labels were being
+# skipped for want of them. Same standard of evidence as the rest of the list
+# - the sheet's own vocabulary, each printed with a value beside it.
+_SPOT_TAG = re.compile(
+    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
 _SPOT_VALUE = re.compile(r"^\d{1,4}(\.\d{1,2})?$")
 _FULL_ELEV = re.compile(r"^\d{3,4}$")
 
+# One whole PDF text line that IS a spot grade: a tag, an optional colon or
+# equals, a value, and an optional foot mark. Anchored at both ends so a line
+# carrying anything else cannot match - the point of reading lines is that a
+# neighbour's value is on a DIFFERENT line and can no longer be captured.
+# The glued form `FIN:05.25'` is the one the sheet's own legend prints as its
+# example, and the word-pair reader could never see it.
+_SPOT_LINE = re.compile(
+    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)"
+    r"\s*[:=]?\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s*$", re.I)
+# Two readings of the same tag closer than this are the same printed label.
+# The two passes place one label 2.5-3.4 pt apart on Guide civil p2, and the
+# nearest genuinely distinct same-tag labels there are far further off, so
+# 10 pt separates them with room on both sides.
+_SPOT_SAME_R2 = 10.0 ** 2
+
 
 def read_spot_grades(words: list, max_dx: float = 26.0,
-                     row_tol: float = 6.0) -> list:
+                     row_tol: float = 6.0, lines: list | None = None) -> list:
     """Spot elevations printed as `FG: 15.96` / `TW: 7918.60`.
 
     Civil sheets abbreviate: the value carries only the last two digits and
@@ -500,6 +520,35 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     raw_anchors = [((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, float(w[4]))
                    for w in ws if _FULL_ELEV.fullmatch(str(w[4]).strip())]
     out = []
+    # Where pass A already read a label, keyed by tag. A grid bucket is the
+    # wrong tool here: the two passes place the same label a few points apart
+    # (a line's bbox centre against a tag-to-value midpoint), so any bucket
+    # edge between them lets the label through twice. Measured on Guide civil
+    # p2: 12 labels double-counted at 2.5-3.4 pt apart. A radius test is what
+    # the question actually is.
+    line_at: dict = {}
+
+    # Pass A - whole PDF text lines. The PDF's own line grouping is
+    # rotation-independent, so this reads the labels written up the side of a
+    # sheet that a horizontal row window cannot see, and it cannot pair a tag
+    # to a neighbour's value because the two are on different lines.
+    for ln in (lines or ()):
+        t = str(ln[4]).strip()
+        m = _SPOT_LINE.match(t)
+        if not m:
+            continue
+        tag = m.group(1).upper()
+        x = (ln[0] + ln[2]) / 2.0
+        y = (ln[1] + ln[3]) / 2.0
+        out.append({"tag": tag, "value": float(m.group(2)),
+                    "x": round(float(x), 1), "y": round(float(y), 1),
+                    "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
+        line_at.setdefault(tag, []).append((x, y))
+
+    # Pass B - the original word-pair reader, for anything the line grouping
+    # split (a tag and its value emitted as two lines). Anything already found
+    # in pass A is skipped: the line reading is the more trustworthy of the
+    # two, because it cannot cross into a neighbouring label.
     for w in ws:
         t = str(w[4]).strip()
         m = _SPOT_TAG.match(t)
@@ -525,6 +574,14 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         val = float(best[1][4])
         x = (w[0] + best[1][2]) / 2
         y = cy
+        # Pass A already read this label - keep its reading and drop this one,
+        # whatever value this pass arrived at. Pass A is the more trustworthy
+        # of the two precisely because a line cannot reach into a neighbour's
+        # value, which is how the word reader put 10.36 against a TW: 14.00
+        # tag and reported a wall top 3.64 ft out.
+        if any((x - px) ** 2 + (y - py) ** 2 <= _SPOT_SAME_R2
+               for px, py in line_at.get(tag, ())):
+            continue
         out.append({"tag": tag, "value": val, "x": round(float(x), 1),
                     "y": round(float(y), 1),
                     "side": "existing" if tag in _SPOT_EXISTING else "proposed"})

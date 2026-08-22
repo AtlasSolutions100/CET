@@ -123,10 +123,14 @@ async function selectPage(p) {
   };
   img.src = url(`/api/job/${state.job}/page/${p}/image?dpi=${IMG_DPI}`);
   markCurrentThumb();
-  // reuse a finished result if the server has one
+  // reuse a finished result if the server has one - unless the engine has
+  // changed since it was produced, in which case the server reports it as
+  // idle+stale and we make the reviewer re-detect rather than showing a
+  // number the current engine would not produce
   const st = await (await fetch(`/api/job/${state.job}/page/${p}/status`)).json();
   if (gen !== state.gen) return;
   if (st.status === "done") loadResult(gen);
+  else if (st.stale) setStatus("this sheet was detected with an older engine — press Detect to refresh it", "busy");
 }
 
 $("detectBtn").onclick = async () => {

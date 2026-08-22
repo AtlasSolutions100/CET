@@ -38,11 +38,40 @@ def error_path(job_dir: str, page: int) -> Path:
     return Path(job_dir) / f"p{page}_error.txt"
 
 
+# The modules whose code decides what a stored result contains. A result is
+# cached per job on (pdf path, mtime), which correctly reuses work when the
+# DRAWING is unchanged but says nothing about whether the CODE changed. That
+# hid a fix in plain sight on 2026-08-22: the scale reader was corrected from
+# "SCALE 5'-2"" to "1 inch = 20 ft.", the API returned 20.0, and the browser
+# kept showing 5'-2" in a confident green chip read off the stored file. An
+# estimator who detected a page before a fix keeps the wrong number with no
+# way to know. regress.cached_extract keys its cache on extract.py's mtime
+# for exactly this reason; this is the same idea one level up.
+_ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
+                 "legend_detect.py", "detect_page.py", "raster.py",
+                 "text_detect.py")
+
+
+def engine_sig() -> str:
+    """Fingerprint of the code that produces a detect result."""
+    import hashlib
+
+    h = hashlib.sha1()
+    here = Path(__file__).parent
+    for name in _ENGINE_FILES:
+        try:
+            h.update(f"{name}:{(here / name).stat().st_mtime_ns}|".encode())
+        except OSError:
+            h.update(f"{name}:missing|".encode())
+    return h.hexdigest()[:16]
+
+
 def run_detect(pdf_path: str, page: int, job_dir: str) -> None:
     out_dir = Path(job_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         result = detect_page(pdf_path, page)
+        result["engine_sig"] = engine_sig()
         result_path(job_dir, page).write_text(json.dumps(result))
     except Exception as e:  # surfaced to the UI by the parent process
         try:
