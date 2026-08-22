@@ -1028,7 +1028,42 @@ def earthwork_suggest(job_id: str, page: int):
     # elevations, so they ride alongside the contour rows.
     from takeoff_engine.earthwork import read_spot_grades
     spots = read_spot_grades(words)
+
+    # Two junk sources make the contour suggestions untrustworthy on sparse
+    # sheets (Barn C3.4 offered 6 rows of which 4 were noise):
+    #  - the sheet's own LEGEND text: "7900 EXISTING CONTOUR INTERVAL" reads
+    #    as an elevation label sitting on the legend's sample bar. We already
+    #    know where those bars are, so drop anything inside one.
+    #  - stray 4-digit numbers, above all the DATE (2026). Judge by consensus
+    #    like the spot grades do: keep the dominant hundreds band, and only
+    #    when at least two candidates agree on it. A lone outlier is noise;
+    #    if nothing agrees, nothing is dropped (better a noisy list than a
+    #    silently emptied one).
+    boxes = res.get("legend_samples") or []
+    def _in_legend(r):
+        x, y = r.get("label_xy", [None, None])
+        if x is None:
+            return False
+        return any(b[0] - 6 <= x <= b[2] + 6 and b[1] - 8 <= y <= b[3] + 8
+                   for b in boxes)
+    kept = [r for r in sug if not _in_legend(r)]
+    # cluster on GAPS, not on hundreds: a site that spans 7690-7710 is one
+    # surface, and a hundreds bucket would cut it in half
+    if len(kept) > 1:
+        order = sorted(kept, key=lambda r: float(r["z"]))
+        groups, cur = [], [order[0]]
+        for prev, r in zip(order, order[1:]):
+            if float(r["z"]) - float(prev["z"]) > 100.0:
+                groups.append(cur); cur = []
+            cur.append(r)
+        groups.append(cur)
+        top = max(groups, key=len)
+        if len(top) >= 2:
+            kept = top
+    dropped = len(sug) - len(kept)
+    sug = kept
     return {"suggestions": sug,
+            "suggestions_dropped": dropped,
             "spot_grades": spots,
             "spot_datum_needed": bool(spots) and not any(
                 g.get("resolved") for g in spots),
