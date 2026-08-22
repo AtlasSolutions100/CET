@@ -916,6 +916,8 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             if float(np.hypot(*bbox)) < 300.0:
                 c.klass = "annotation"
 
+    _demote_sheet_furniture(chains)
+
     # pages without layer info can't use the demotion above; there, chains
     # living inside text boxes are exploded-glyph junk
     if words:
@@ -923,6 +925,61 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
     _assign_styles(chains)
     return chains
+
+
+# A layer whose name says it belongs to the sheet template rather than the
+# drawing: the border and the title-block grid.
+_SHEET_LAYER = re.compile(
+    r"(?i)(?:^|[-_|])(SHEET|TTLB|TITLEBLOCK|BORDER)(?:[-_|]|$)")
+# How far in from the nearest page edge a chain's centre may sit and still
+# be sheet furniture. Measured across the gate corpus: every one of the 84
+# P6-SHEET chains per Loves Lane sheet sits at most 0.095 of the way in
+# (0.079 on three of the four); 0.12 clears that with room.
+_SHEET_EDGE_FRAC = 0.12
+
+
+def _demote_sheet_furniture(chains: list) -> None:
+    """Demote the drawing border and title-block grid to annotation.
+
+    Measured on the four Loves Lane sheets: 82-84 chains each on layer
+    `P6-SHEET`, 23,257-23,378 pt, i.e. **11.5-15.0% of each sheet's emitted
+    span** billed as takeoff linework. The precision proxy reports 100%
+    throughout because it only scores dashed chains under 300 pt, so this
+    was the widest gap between what the gate claimed and what the engine
+    emitted (F84b).
+
+    Name AND position, because neither alone is safe:
+
+    * Name alone is not enough. The token has to survive a firm using a real
+      construction word - SHEET FLOW is a drainage term, SHEET PILE an
+      excavation one - and a layer called `SHEET-FLOW` would match the token
+      while carrying genuine linework in the middle of the plan.
+    * Position alone is not enough either. 20-38 chains per sheet that are
+      NOT sheet furniture also sit within 0.10 of an edge, so an edge test on
+      its own would delete real geometry.
+
+    Together they are decisive: on the measured corpus every sheet-layer
+    chain is at most 0.095 of the way in from an edge, and nothing inside
+    the drawing is touched. Sheets with no such layer (Belle, both Oncor)
+    are entirely unaffected.
+    """
+    live = [c for c in chains
+            if c.klass != "annotation" and len(c.pts) >= 2
+            and _SHEET_LAYER.search(c.layer or "")]
+    if not live:
+        return
+    P = np.vstack([np.asarray(c.pts) for c in chains if len(c.pts) >= 2])
+    x0, y0 = P.min(axis=0)
+    x1, y1 = P.max(axis=0)
+    w, h = float(x1 - x0), float(y1 - y0)
+    if w <= 0 or h <= 0:
+        return
+    for c in live:
+        cx, cy = np.asarray(c.pts).mean(axis=0)
+        edge = min(min(cx - x0, x1 - cx) / w, min(cy - y0, y1 - cy) / h)
+        if edge <= _SHEET_EDGE_FRAC:
+            c.klass = "annotation"
+            c.dash_signature = "sheet furniture"
 
 
 def _grid_annotation(chains: list, units: list) -> None:
