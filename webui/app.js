@@ -276,7 +276,8 @@ async function loadResult(gen = state.gen) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
-  $("ewPanel").hidden = true; $("ewBtn").hidden = false; $("ewMap").checked = false;
+  $("ewPanel").hidden = true; $("ewBtn").hidden = false;
+  $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch $("ewMap").checked = false;
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
