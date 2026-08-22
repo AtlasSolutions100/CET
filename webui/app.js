@@ -1700,7 +1700,12 @@ $("trCalc").onclick = () => {
     `<b>dig ${cy(dig).toLocaleString()} CY</b> · <b>bedding ${cy(bed).toLocaleString()} CY</b>` +
     ` · backfill ${cy(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
   const name = (state.labels.get(t.style_id) || "pipe").slice(0, 40);
-  state.extraItems = state.extraItems.filter(it => !it.label.startsWith("Trench") && !it.label.startsWith("Bedding") && !it.label.startsWith("Backfill"));
+  state.extraItems = state.extraItems.filter(it => !it.label.startsWith("Trench") && !it.label.startsWith("Bedding") && !it.label.startsWith("Backfill") && !it.label.endsWith("(run)"));
+  // The FOOTAGE is the line item an excavator actually bids. Every utility
+  // row on Beaumont's Estimate #853 is priced per LF - the perimeter drain
+  // alone is 3,395 LF / $105,245 - while the CY volumes below are the
+  // supporting math. Emit the run first so it leads the group.
+  if (runFt > 0) state.extraItems.push({ label: `${name} (run)`, qty: Math.round(runFt * 10) / 10, unit: "LF" });
   if (dig > 0) state.extraItems.push({ label: `Trench excavation (${name})`, qty: cy(dig), unit: "CY" });
   if (bed > 0) state.extraItems.push({ label: `Bedding gravel (${name})`, qty: cy(bed), unit: "CY" });
   if (backfill > 0) state.extraItems.push({ label: `Backfill (${name})`, qty: cy(backfill), unit: "CY" });
