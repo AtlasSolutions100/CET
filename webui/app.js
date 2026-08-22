@@ -53,6 +53,14 @@ const state = window.state = {
   ew: null,                 // earthwork panel state {rows, result}
   hotChain: null,           // chain highlighted from a calculator row
   extraItems: [],           // calculator outputs: {label, qty, unit}
+  areaInc: new Map(),       // area group_id -> included in the takeoff
+  areaLabels: new Map(),    // area group_id -> reviewer's label
+  areaRows: [],             // {group_id, unit} - a region can feed SEVERAL
+                            // priced rows (Estimate #853 bills the same
+                            // 22,796 SF twice: to subgrade, then road base),
+                            // so rows REFERENCE a group and the quantity is
+                            // recomputed from it, never copied
+  areaHot: null,            // group_id highlighted from a hovered row
   ai: null,                 // last page-analyst result
   aiWhy: new Map(),         // style_id -> {keep, why, label}
   measureMode: new Map(),   // style_id -> "object" (absent = line footage)
@@ -115,7 +123,7 @@ async function selectPage(p) {
   $("aiBanner").hidden = true;
   updateSelBar(null);
   renderSheetHead();
-  renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); fitOnLoad();
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
     if (gen !== state.gen) return;   // a later page won the race
@@ -279,6 +287,8 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  state.areaInc = new Map(); state.areaLabels = new Map();
+  state.areaRows = []; state.areaHot = null;
   state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
@@ -307,7 +317,7 @@ async function loadResult(gen = state.gen) {
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
   renderSheetHead();
-  renderStyles(); renderChips(); renderLegend(); renderItemized(); renderMiniLegend(); draw();
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
   const sc = state.result.scale;
@@ -762,6 +772,266 @@ function renderStyles() {
     box.appendChild(row);
   }
 }
+// ---------- filled AREA regions: the square-foot takeoff ----------
+// Hardscape is bought by the square foot - Beaumont's own Estimate #853
+// prices "Paths To Subgrade 22,796 SF", "Slab Prep 9,237 SF" (client
+// document, not an industry prior). A group here is one APPEARANCE (fill
+// colour + CAD layer); its regions are the measured things, and takeoff
+// rows reference the group rather than copying its number, so one region
+// can feed several priced rows at different depths or materials - which is
+// exactly how #853 bills the same 22,796 SF twice.
+const AR_COLOR = "#00c2a8";
+const AR_HOT = "#ffd166";
+
+function arData() { return (state.result && state.result.areas) || null; }
+function arGroup(gid) {
+  const a = arData();
+  return a ? a.groups.find(g => g.group_id === gid) : null;
+}
+function arRegionsOf(g) {
+  const a = arData();
+  return a && g ? g.region_ids.map(i => a.regions[i]).filter(Boolean) : [];
+}
+// the label an estimator sees: their own edit wins, then the sheet's name,
+// then an honest placeholder - never a fabricated material name
+function arLabel(g) {
+  const own = state.areaLabels.get(g.group_id);
+  if (own !== undefined && own !== "") return own;
+  if (g.name) return g.name;
+  const c = g.fill.map(v => Math.round(v * 255));
+  return `unnamed area (rgb ${c.join(",")})`;
+}
+const arFmt = (v, d = 0) =>
+  v === null || v === undefined ? "—"
+    : v.toLocaleString(undefined, { maximumFractionDigits: d });
+
+// Rows are DERIVED from the group every time, so a scale correction or a
+// re-detect flows straight through instead of leaving a stale number.
+function arApplyItems() {
+  const a = arData();
+  state.extraItems = state.extraItems.filter(it => !it._area);
+  if (!a) { renderItemized(); return; }
+  const seen = new Map();
+  for (const row of state.areaRows) {
+    const g = arGroup(row.group_id);
+    if (!g || !state.areaInc.get(g.group_id)) continue;
+    const qty = row.unit === "LF" ? g.perim_lf : g.area_sf;
+    if (qty === null || qty === undefined) continue;   // no scale: no number
+    const base = arLabel(g);
+    let label = row.label || (row.unit === "LF" ? `${base} (edge)` : base);
+    // The second row on one region is the POINT of this shape (#853 bills
+    // the same 22,796 SF to subgrade and again for road base), but prices
+    // and overrides are keyed by LABEL - two identical labels would share
+    // one rate. Number the repeats so each can carry its own.
+    const n = (seen.get(label) || 0) + 1;
+    seen.set(label, n);
+    if (n > 1) label = `${label} (${n})`;
+    state.extraItems.push({
+      label, qty: Math.round(qty * 10) / 10, unit: row.unit,
+      _area: true, group_id: g.group_id, region_ids: g.region_ids,
+    });
+  }
+  renderItemized();
+}
+
+function renderAreas() {
+  const head = $("arHead"), scaleBox = $("arScale");
+  const box = $("arList"), un = $("arUnmatched");
+  const a = arData();
+  box.innerHTML = ""; un.innerHTML = ""; scaleBox.innerHTML = "";
+  // furniture (title block, text masks) is LISTED, not hidden - nothing is
+  // silently dropped - but it starts unticked and "all" skips it
+  const groups = a ? a.groups : [];
+  const any = a && (groups.length || a.unmatched_legend.length);
+  head.hidden = !any; scaleBox.hidden = !any;
+  box.hidden = !any || head.classList.contains("closed");
+  un.hidden = !any || head.classList.contains("closed");
+  if (!any) return;
+
+  // --- scale provenance. An area is only as good as the scale under it, so
+  // the reader must SEE which scale was used and what the sheet's own
+  // printed areas say about it.
+  const sc = a.scale || {};
+  const tc = sc.tag_check || {};
+  const parts = [];
+  parts.push(sc.ft_per_paper_inch
+    ? `scale used: 1 inch = ${(+sc.ft_per_paper_inch).toFixed(2)} ft`
+      + (sc.text ? ` (read as “${esc(sc.text)}”)` : "")
+    : `<b>no scale on this sheet</b> — areas shown in pt², no SF`);
+  let cls = "ar-scale";
+  if (tc.implied_ft_per_paper_inch && sc.ft_per_paper_inch) {
+    const d = Math.abs(tc.implied_ft_per_paper_inch - sc.ft_per_paper_inch)
+      / sc.ft_per_paper_inch;
+    if (d > 0.02) {
+      cls += " bad";
+      parts.push(`<b>the sheet disagrees.</b> ${tc.n_matched} printed “N sf” tag`
+        + `${tc.n_matched === 1 ? "" : "s"} on this page imply `
+        + `<b>1 inch = ${tc.implied_ft_per_paper_inch.toFixed(2)} ft</b>. `
+        + `Every SF below is off by about `
+        + `${(Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2)).toFixed(1)}×. `
+        + `Treat these numbers as provisional until the scale is fixed.`);
+    } else if (tc.n_ok) {
+      cls += " ok";
+      parts.push(`checked against ${tc.n_ok} area${tc.n_ok === 1 ? "" : "s"} `
+        + `printed on the sheet — they agree.`);
+    }
+  } else if (sc.ft_per_paper_inch) {
+    parts.push(`no printed “N sf” tag on this sheet to check it against.`);
+  }
+  scaleBox.className = cls;
+  scaleBox.innerHTML = parts.join("<br>");
+
+  for (const g of groups) {
+    const row = document.createElement("div");
+    row.className = "ar-row" + (state.areaInc.get(g.group_id) ? "" : " off");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!state.areaInc.get(g.group_id);
+    cb.onclick = (e) => {
+      e.stopPropagation();
+      state.areaInc.set(g.group_id, cb.checked);
+      if (cb.checked && !state.areaRows.some(r => r.group_id === g.group_id))
+        state.areaRows.push({ group_id: g.group_id, unit: "SF" });
+      renderAreas(); arApplyItems(); draw();
+    };
+    const sw = document.createElement("span");
+    sw.className = "ar-swatch";
+    sw.style.background = `rgb(${g.fill.map(v => Math.round(v * 255)).join(",")})`;
+
+    const main = document.createElement("div");
+    main.className = "ar-main";
+    const lab = document.createElement("input");
+    lab.className = "ar-label"; lab.name = "area-" + g.group_id;
+    lab.value = state.areaLabels.get(g.group_id) ?? (g.name || "");
+    lab.placeholder = arLabel(g);
+    lab.onclick = (e) => e.stopPropagation();
+    lab.oninput = () => {
+      state.areaLabels.set(g.group_id, lab.value);
+      clearTimeout(lab._t);
+      lab._t = setTimeout(() => arApplyItems(), 350);
+    };
+    const meta = document.createElement("div");
+    meta.className = "ar-meta";
+    const src = g.name_source
+      ? { tag: "named by the sheet's own area tag",
+          legend: "named from the legend swatch of the same colour",
+          layer: "named from the CAD layer" }[g.name_source]
+      : "no name on the sheet — type one";
+    meta.textContent = `${arFmt(g.area_sf)} SF · ${arFmt(g.perim_lf)} LF edge · `
+      + `${g.n} region${g.n === 1 ? "" : "s"}`;
+    const why = document.createElement("span");
+    why.className = "ar-why " + (g.name_source || "none");
+    why.textContent = g.name_source || "unnamed";
+    why.title = src;
+    meta.appendChild(why);
+    if (g.furniture) {
+      const f = document.createElement("span");
+      f.className = "ar-why none"; f.textContent = "sheet furniture";
+      f.title = "Its CAD layer names a title block, text mask or border, so "
+        + "this is almost certainly not a takeoff area. Listed rather than "
+        + "hidden — tick it if the guess is wrong.";
+      meta.appendChild(f);
+    }
+    if (g.n_printed) {
+      const chk = document.createElement("span");
+      const bad = g.n_mismatch > 0;
+      chk.className = "ar-check " + (bad ? "bad" : "ok");
+      chk.textContent = bad
+        ? `sheet says ${arFmt(g.printed_sf)} SF`
+        : `matches the sheet (${g.n_printed})`;
+      // compare like with like: our measurement of the TAGGED regions only,
+      // never the group total against a partial set of tags
+      chk.title = bad
+        ? `The sheet prints its own area for ${g.n_printed} of these `
+          + `${g.n} regions, totalling ${arFmt(g.printed_sf)} SF. We measure `
+          + `${arFmt(g.area_sf_tagged)} SF for those same ${g.n_printed}. `
+          + `${g.n_mismatch} disagree by more than 2% — almost always the page scale.`
+        : `${g.n_printed} of these ${g.n} regions carry an area printed on the `
+          + `sheet (${arFmt(g.printed_sf)} SF); we measure `
+          + `${arFmt(g.area_sf_tagged)} SF for those same ${g.n_printed}, `
+          + `agreeing within 2%.`;
+      meta.appendChild(chk);
+    }
+    main.append(lab, meta);
+
+    const add = document.createElement("button");
+    add.className = "mini ar-add";
+    add.textContent = "+row";
+    add.title = "Add another priced row for this same area — one region often "
+      + "bills more than once (subgrade, then road base).";
+    add.onclick = (e) => {
+      e.stopPropagation();
+      state.areaInc.set(g.group_id, true);
+      state.areaRows.push({ group_id: g.group_id, unit: "SF" });
+      renderAreas(); arApplyItems(); draw();
+    };
+    const edge = document.createElement("button");
+    edge.className = "mini ar-add";
+    edge.textContent = "+LF";
+    edge.title = "Add the perimeter as its own row — edge forming and curb "
+      + "are priced by the foot, separately from the slab.";
+    edge.onclick = (e) => {
+      e.stopPropagation();
+      state.areaInc.set(g.group_id, true);
+      state.areaRows.push({ group_id: g.group_id, unit: "LF" });
+      renderAreas(); arApplyItems(); draw();
+    };
+
+    const nrows = state.areaRows.filter(r => r.group_id === g.group_id).length;
+    if (nrows > 1) {
+      const badge = document.createElement("span");
+      badge.className = "ar-nrows";
+      badge.textContent = `${nrows} rows`;
+      badge.title = "This one measured area feeds several priced takeoff rows.";
+      main.appendChild(badge);
+    }
+
+    row.append(cb, sw, main, edge, add);
+    row.onmouseenter = () => { state.areaHot = g.group_id; draw(); };
+    row.onmouseleave = () => { state.areaHot = null; draw(); };
+    box.appendChild(row);
+  }
+
+  // Legend classes with NO geometry on this sheet. Named, never quantified:
+  // the legend is a document-wide key, so most rows describe another sheet.
+  if (a.unmatched_legend.length) {
+    const h = document.createElement("div");
+    h.className = "ar-un-head";
+    h.textContent = "in the legend, not drawn on this sheet";
+    h.title = "These classes are named in the sheet legend but no matching "
+      + "filled region exists on this page, so there is nothing to measure. "
+      + "No quantity is shown rather than a zero.";
+    un.appendChild(h);
+    for (const u of a.unmatched_legend) {
+      const r = document.createElement("div");
+      r.className = "ar-un";
+      const s = document.createElement("span");
+      s.className = "ar-swatch";
+      s.style.background = `rgb(${u.fill.map(v => Math.round(v * 255)).join(",")})`;
+      const t = document.createElement("span");
+      t.textContent = u.label;
+      const q = document.createElement("span");
+      q.className = "ar-noqty"; q.textContent = "no quantity";
+      r.append(s, t, q);
+      un.appendChild(r);
+    }
+  }
+}
+
+$("arAllBtn").onclick = () => {
+  const a = arData(); if (!a) return;
+  for (const g of a.groups) {
+    if (g.furniture) continue;
+    state.areaInc.set(g.group_id, true);
+    if (!state.areaRows.some(r => r.group_id === g.group_id))
+      state.areaRows.push({ group_id: g.group_id, unit: "SF" });
+  }
+  renderAreas(); arApplyItems(); draw();
+};
+$("arNoneBtn").onclick = () => {
+  state.areaInc = new Map(); state.areaRows = [];
+  renderAreas(); arApplyItems(); draw();
+};
+
 // ---------- sheet legend (detector-read) ----------
 function renderLegend() {
   const box = $("legendBox"), head = $("legendHead");
@@ -1154,6 +1424,7 @@ $("csvBtn").onclick = () => {
 // per-session only (a refresh reopens everything)
 const SECTIONS = [
   ["legendHead", ["legendBox"]],
+  ["arHead", ["arList", "arScale", "arUnmatched"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewLayers", "ewActions"]],
@@ -2424,6 +2695,33 @@ function draw() {
     // dim the sheet toward white so detected colors pop like ink on paper
     ctx.globalAlpha = 0.62;
     ctx.fillRect(0, 0, state.img.width, state.img.height);
+    ctx.globalAlpha = 1.0;
+  }
+  // filled AREA regions, under the linework: an estimator must SEE the
+  // polygon whose square footage is being billed, not just a number
+  if (state.result && arData()) {
+    const fA = IMG_DPI / 72;
+    for (const g of arData().groups) {
+      const on = state.areaInc.get(g.group_id);
+      const hot = state.areaHot === g.group_id;
+      if (!on && !hot) continue;
+      ctx.fillStyle = hot ? AR_HOT : AR_COLOR;
+      ctx.strokeStyle = hot ? AR_HOT : AR_COLOR;
+      ctx.lineWidth = (hot ? 2.2 : 1.4) / k;
+      ctx.globalAlpha = hot ? 0.38 : 0.22;
+      for (const reg of arRegionsOf(g)) {
+        const p = reg.points;
+        if (!p || p.length < 3) continue;
+        ctx.beginPath();
+        ctx.moveTo(p[0][0] * fA, p[0][1] * fA);
+        for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0] * fA, p[i][1] * fA);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = hot ? 0.95 : 0.75;
+        ctx.stroke();
+        ctx.globalAlpha = hot ? 0.38 : 0.22;
+      }
+    }
     ctx.globalAlpha = 1.0;
   }
   // state.result gate: on a page switch state.ew outlives the old result

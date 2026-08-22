@@ -49,7 +49,7 @@ def error_path(job_dir: str, page: int) -> Path:
 # for exactly this reason; this is the same idea one level up.
 _ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
                  "legend_detect.py", "detect_page.py", "raster.py",
-                 "text_detect.py")
+                 "text_detect.py", "areas.py")
 
 
 def engine_sig() -> str:
@@ -191,6 +191,16 @@ def detect_page(pdf_path: str, page: int) -> dict:
         fills = fill_boxes(pg)
     except Exception:
         fills = []
+    # filled AREA regions: square-foot takeoff (hardscape, pools, washes).
+    # Its own get_drawings() walk on purpose - see areas.py's docstring; the
+    # stroke path stays untouched so the vector gate cannot move.
+    try:
+        from .areas import page_areas
+
+        areas = page_areas(pg, scale, words)
+    except Exception:
+        areas = {"scale": {}, "regions": [], "groups": [],
+                 "unmatched_legend": [], "legend_classes": [], "truncated": 0}
     try:
         openings = door_swings(
             units, (scale or {}).get("ft_per_paper_inch"), words)
@@ -246,6 +256,7 @@ def detect_page(pdf_path: str, page: int) -> dict:
         "styles": style_list,
         "chains": [c.to_dict() for c in chains],
         "fills": fills,
+        "areas": areas,
         "openings": openings,
         "legend_samples": legend_samples,
     }

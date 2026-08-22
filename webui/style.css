@@ -386,3 +386,43 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .roll-tbl td.roll-code { text-align: left; font-weight: 600; }
 .roll-tbl td.roll-tot { font-weight: 700; }
 .roll-tbl tr:hover td { background: rgba(128,128,128,.10); }
+
+/* ---- filled AREA regions: the square-foot takeoff ---- */
+.ar-list { padding: 2px 8px 6px; }
+.ar-row { display: grid; grid-template-columns: 16px 14px 1fr auto auto; gap: 8px;
+          align-items: center; padding: 7px 8px; border-radius: 8px; cursor: default; }
+.ar-row:hover { background: var(--hover); }
+.ar-row.off { opacity: .45; }
+.ar-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--swatch-line); }
+.ar-main { min-width: 0; }
+.ar-label { width: 100%; background: transparent; border: none; border-bottom: 1px dashed transparent;
+            padding: 0 0 1px; color: var(--text); font-weight: 600; }
+.ar-label:hover, .ar-label:focus { border-bottom-color: var(--dim); outline: none; }
+.ar-meta { color: var(--dim); font-size: 11px; display: flex; flex-wrap: wrap;
+           gap: 6px; align-items: center; }
+.ar-why { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
+          background: #2c3947; color: #9ec1ef; }
+.ar-why.tag { background: #1e3b2b; color: #7fd6a4; }
+.ar-why.legend { background: #1f2c4d; color: #92b4f4; }
+.ar-why.layer { background: #35302a; color: #d3bd93; }
+.ar-why.none, .ar-why.unnamed { background: #3a2e2e; color: #e0a3a3; }
+.ar-check { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
+.ar-check.ok { background: #1e3b2b; color: #7fd6a4; }
+.ar-check.bad { background: #4a2222; color: #ffb4a8; }
+.ar-nrows { font-size: 10px; color: var(--dim); }
+.ar-add { align-self: center; }
+/* scale provenance: an area is only as good as the scale under it */
+.ar-scale { margin: 2px 12px 6px; padding: 7px 9px; border-radius: 7px; font-size: 11px;
+            line-height: 1.5; color: var(--dim); background: #232b33;
+            border-left: 3px solid var(--dim); }
+.ar-scale.ok { border-left-color: #4caf7d; }
+.ar-scale.bad { border-left-color: #e0574a; background: #352322; color: #f2c3bc; }
+.ar-scale b { color: var(--text); }
+.ar-scale.bad b { color: #ffd9d3; }
+/* legend classes that are named but have nothing to measure on this sheet */
+.ar-un-head { padding: 6px 12px 2px; font-size: 10px; text-transform: uppercase;
+              letter-spacing: .07em; color: var(--dim); }
+.ar-un { display: flex; gap: 8px; align-items: center; padding: 3px 12px;
+         font-size: 12px; color: var(--dim); }
+.ar-noqty { margin-left: auto; font-size: 10px; font-weight: 700; padding: 1px 6px;
+            border-radius: 10px; background: #33302a; color: #cbb98f; }
