@@ -14,6 +14,7 @@ style labeling from a human chore into sheet-provided ground truth:
 Output maps style_id -> legend label, used to pre-fill suggested labels.
 """
 
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -24,6 +25,47 @@ from .chain import _classify_cadence, _weight_class
 # and the sample strip to the left of each label
 REGION_H = 420.0
 REGION_W = 520.0
+_WORDS = re.compile(r"[A-Za-z]{2}")
+
+
+def _is_usable_label(t: str) -> bool:
+    """A legend label an estimator could act on.
+
+    A legend row's text is only worth propagating if it says something. On
+    Beaumont's Barn civil C4.3 the swatch for the footer drain has blue flow
+    CHEVRONS drawn inside the sample bar, and the row reader picked up the
+    chevrons as the label: six styles, 12,379 pt, all named `> > >`. One of
+    them is `SE-P-FND DRN` at 10,437 pt = 1,449.6 ft of perimeter drain - the
+    most valuable line item on the sheet, and per the client's own Estimate
+    #853 the one they price at $31/ft. Sheet 2 does the same with dimension
+    fragments (`"> 12'-1`, 17,761 pt).
+
+    Worse than useless: the legend label OVERWRITES the CAD layer name, which
+    would have read `SE-P-FND DRN` and been perfectly serviceable. Refusing
+    the label restores that fallback.
+
+    Two letters in a row is the whole test - it admits "PVC" and "4in" and
+    rejects chevrons, arrowheads and dimension fragments.
+    """
+    return bool(_WORDS.search(t or ""))
+
+
+def _assign_label(store: dict, sid, label: str) -> None:
+    """Record a style's legend label, preferring the more usable one.
+
+    setdefault made this first-writer-wins, so a chevron row that happened to
+    be processed first kept its `> > >` even though the reader had ALREADY
+    computed `PROPOSED 4" RIGID PERFORATED PVC FOOTER DRAIN PIPE` for the same
+    style and joined it correctly. The right answer was computed and thrown
+    away.
+    """
+    if not _is_usable_label(label):
+        return
+    cur = store.get(sid)
+    if cur is None or not _is_usable_label(cur):
+        store[sid] = label
+
+
 ROW_TOL = 7.0
 SAMPLE_W = 240.0
 SAMPLE_H = 7.0
@@ -371,7 +413,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             # straight border/wall buckets sit at 1.0)
             continue
         if e["sample_style"] is not None:
-            style_labels.setdefault(e["sample_style"], e["label"])
+            _assign_label(style_labels, e["sample_style"], e["label"])
         # compound swatch: label the OTHER distinctive styles drawn in the
         # same sample (hatch + centerline = one symbol). Same distinctive
         # gate as above so a generic thin black solid never gets smeared.
@@ -384,7 +426,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                   or (r.color and min(r.color) > 0.35)
                   or _weight_class(r.width) >= 2)
             if d2 and by_style_count[sid] <= 150:
-                style_labels.setdefault(sid, e["label"])
+                _assign_label(style_labels, sid, e["label"])
         # pen-family extension: a symbol drawn with a DISTINCTIVE pen
         # (saturated color) fragments across styles when its dashes chain
         # differently run to run (Belle shear centerline: native 3-3 +
@@ -407,7 +449,7 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                     continue
                 if r.color and max(abs(a - b) for a, b in
                                    zip(base.color, r.color)) <= 0.2:
-                    style_labels.setdefault(sid, e["label"])
+                    _assign_label(style_labels, sid, e["label"])
     return {"entries": entries, "style_labels": style_labels}
 
 
