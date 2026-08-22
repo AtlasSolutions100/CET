@@ -310,3 +310,24 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .thumb-badge.done { background: var(--ok); border-color: var(--ok); }
 .thumb-badge.error { background: #e5645a; border-color: #e5645a; }
 @keyframes pulse { 50% { opacity: .35; } }
+
+/* ---------- structure calculator (footprint dig + layback) ---------- */
+.st-modes { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.st-modes button.active { background: #00a8e8; border-color: #00a8e8; color: #fff; }
+.st-draft { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px;
+  border: 1px solid #00a8e8; border-radius: 8px; }
+.st-draft .st-name input { width: 100%; padding: 3px 6px; font-size: 12px; }
+.st-draft .tr-grid { grid-template-columns: 1fr 64px; font-size: 11px; line-height: 1.3; }
+.st-draft-acts { display: flex; justify-content: flex-end; }
+.st-row { display: flex; flex-direction: column; gap: 3px; padding: 4px 6px; border-radius: 6px;
+  border-left: 3px solid #ff7a00; margin: 2px 0; }
+.st-row:hover { background: var(--hover); }
+.st-row-top { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.st-row-top b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-row-top .danger { color: #ff9a90; padding: 0 7px; }
+.st-row-top .danger:hover { background: #b3362c; color: #fff; border-color: #b3362c; }
+.st-row-in { display: grid; grid-template-columns: auto 52px auto 52px auto 52px; gap: 4px;
+  align-items: center; font-size: 10.5px; color: var(--dim); }
+.st-row-in input { width: 100%; padding: 2px 4px; font-size: 11px; }
+.st-total { font-family: var(--mono); font-size: 10.5px; color: var(--text); padding: 6px 6px 2px;
+  border-top: 1px solid var(--line); margin-top: 4px; }

@@ -2214,6 +2214,7 @@ function draw() {
       ctx.fill();
     }
   }
+  drawStructural(ctx, k);
   ctx.restore();
 }
 
@@ -2955,5 +2956,483 @@ function fmtLen(pt) {
   return pt > 8000 ? `${(pt / 1000).toFixed(1)}k pt` : `${Math.round(pt)} pt`;
 }
 function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.className = "status " + (cls || ""); }
+
+// ---------- structure calculator: footprint dig + perimeter layback ----------
+// The excavator's bid-sheet formulas (client_meet/beaumont, "Bid sheet" p1,
+// handwritten; FINDINGS-2026-08-21 F52):
+//   Mass Excavation CY      = footprint SF x depth / 27
+//   Structure Excavation CY = wall length LF x depth x layback width / 27
+//   Structure Backfill CY   = the same trench, filled back in ("I'm doing
+//                             that calculation twice ... dig it and back fill it")
+//   Slab Prep SF            = footprint SF
+// The outline is a polygon in page pt - picked off a closed detected chain
+// or clicked corner by corner - and feet come from the sheet scale. With no
+// scale the panel shows pt and refuses volumes (same rule as the trench
+// tool). Everything here is general geometry; nothing is tuned to a sheet.
+SECTIONS.push(["stHead", ["stBody", "stRows", "stHint", "stActions"]]);
+{
+  const head = $("stHead");
+  head.querySelector("h2").onclick = () => {
+    const closed = head.classList.toggle("closed");
+    for (const cid of ["stBody", "stRows", "stHint", "stActions"]) $(cid).hidden = closed;
+  };
+}
+const ST_LABELS = ["Mass Excavation", "Structure Excavation", "Structure Backfill", "Slab Prep"];
+const ST_UNITS = { "Mass Excavation": "CY", "Structure Excavation": "CY",
+                   "Structure Backfill": "CY", "Slab Prep": "SF" };
+const ST_COLOR = "#ff7a00";        // committed structures: outline + band
+const ST_DRAFT_COLOR = "#00a8e8";  // the one being outlined right now
+const stR1 = (v) => Math.round(v * 10) / 10;
+const stFmt = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
+
+function stFtPerPt() {
+  const sc = state.result && state.result.scale;
+  return sc ? sc.ft_per_paper_inch / 72 : null;
+}
+// The panel's list belongs to ONE detection result: a page switch or a
+// re-detect hands loadResult a new result object (and empties extraItems),
+// so the structures drawn on the old sheet must go with it.
+function stSync() {
+  if (!state.st || state.st.result !== state.result) {
+    state.st = { result: state.result, items: [], draft: null, drawPts: [], hover: null,
+                 hot: null, seq: 1, depth_ft: 8, layback_ft: 4, footing_ft: 0 };
+    if (state.tool === "st-pick" || state.tool === "st-draw") state.tool = null;
+    $("stPanel").hidden = true;
+    $("stResult").textContent = "";
+  }
+  $("stBtn").hidden = !state.result;
+  return state.st;
+}
+function stPolyArea(pts) {   // shoelace, pt^2
+  let a = 0;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const p = pts[i], q = pts[(i + 1) % n];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+function stPolyPerim(pts) {  // closed ring length, pt
+  let L = 0;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const p = pts[i], q = pts[(i + 1) % n];
+    L += Math.hypot(q[0] - p[0], q[1] - p[1]);
+  }
+  return L;
+}
+// one structure -> its geometry + the four bid-sheet numbers (null w/o scale)
+function stCalc(it) {
+  const fpp = stFtPerPt();
+  const area_pt2 = stPolyArea(it.pts), perim_pt = stPolyPerim(it.pts);
+  const out = { area_pt2, perim_pt, area_sf: null, perim_lf: null,
+                mass_cy: null, struct_cy: null, backfill_cy: null, slab_sf: null };
+  if (!fpp) return out;
+  out.area_sf = area_pt2 * fpp * fpp;
+  out.perim_lf = perim_pt * fpp;
+  const d = Math.max(0, +it.depth_ft || 0);
+  const lb = Math.max(0, +it.layback_ft || 0);
+  const fd = Math.max(0, +it.footing_ft || 0);
+  out.mass_cy = out.area_sf * d / 27;
+  // the perimeter trench goes to the BOTTOM OF THE FOOTING: the dig depth
+  // plus whatever the footing sits below the slab (0 when the depth typed
+  // already is the footing bottom)
+  out.struct_cy = out.perim_lf * (d + fd) * lb / 27;
+  out.backfill_cy = out.struct_cy;
+  out.slab_sf = out.area_sf;
+  return out;
+}
+// every structure on the page, summed per bid-sheet label, into the takeoff
+function stApplyItems() {
+  const st = stSync();
+  state.extraItems = state.extraItems.filter(it => !ST_LABELS.includes(it.label));
+  const sum = { "Mass Excavation": 0, "Structure Excavation": 0,
+                "Structure Backfill": 0, "Slab Prep": 0 };
+  for (const it of st.items) {
+    const c = stCalc(it);
+    if (c.mass_cy === null) continue;
+    sum["Mass Excavation"] += c.mass_cy;
+    sum["Structure Excavation"] += c.struct_cy;
+    sum["Structure Backfill"] += c.backfill_cy;
+    sum["Slab Prep"] += c.slab_sf;
+  }
+  for (const label of ST_LABELS) {
+    if (sum[label] > 0)
+      state.extraItems.push({ label, qty: stR1(sum[label]), unit: ST_UNITS[label] });
+    // bid-sheet rows are earthwork items; "Slab Prep" would otherwise file
+    // under Structures on the SLAB keyword. Session default only - the
+    // reviewer's own trade pick wins.
+    if (!store.getItem(tradeKey(label))) store.setItem(tradeKey(label), "Earthwork & Grading");
+  }
+  renderItemized();
+}
+
+// ---- outline capture ----
+function stArm(mode) {
+  const st = stSync();
+  if (!state.result) return setStatus("run Detect first", "err");
+  // release whatever click-tool was armed so its button does not stay lit
+  if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "measure") $("measureBtn").click();
+  else if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "reclass") $("reclassBtn").onclick();
+  state.tool = mode; st.drawPts = []; st.hover = null;
+  setStatus(mode === "st-pick"
+    ? "structure: click a closed line that is the building outline (Esc cancels)"
+    : "structure: click each corner of the building — Enter or double-click closes, Esc backs up", "busy");
+  renderSt(); draw();
+}
+function stDisarm(msg) {
+  const st = stSync();
+  state.tool = null; st.drawPts = []; st.hover = null;
+  if (msg !== undefined) setStatus(msg);
+  renderSt(); draw();
+}
+// nearest VISIBLE chain (same eligibility as a plain canvas click) that
+// closes on itself - within a gap of 2% of its length, so a footprint whose
+// last corner stops a hair short still counts
+function stPickAt(px, py) {
+  const { k } = state.view;
+  const f = IMG_DPI / 72;
+  const tolPt = 6 / k / f * 4 + 1.5;
+  let best = null, bestD = tolPt;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    const P = ch.points;
+    for (let i = 1; i < P.length; i++) {
+      const d = distToSeg(px, py, P[i-1], P[i]);
+      if (d < bestD) { bestD = d; best = ch; }
+    }
+  }
+  if (!best) return setStatus("no line there — click closer to the building outline, or draw it instead", "err");
+  const P = best.points;
+  const gap = Math.hypot(P[0][0] - P[P.length-1][0], P[0][1] - P[P.length-1][1]);
+  const ring = polyLen(P) + gap;
+  if (P.length < 4 || gap > Math.max(3, 0.02 * ring)) {
+    const fpp = stFtPerPt();
+    return setStatus(`that line is not a closed outline (ends ${fpp ? stFmt(gap * fpp) + " ft" : Math.round(gap) + " pt"} apart) — draw the outline corner by corner instead`, "err");
+  }
+  const pts = P.map(q => [q[0], q[1]]);
+  if (gap < 0.5) pts.pop();   // first == last: one ring vertex, not two
+  const st = stSync();
+  st.draft = { name: `Structure ${st.seq}`, pts, source: "line", chain_id: best.chain_id, gap_pt: gap,
+               depth_ft: st.depth_ft, layback_ft: st.layback_ft, footing_ft: st.footing_ft };
+  state.tool = null;
+  const c = stCalc(st.draft);
+  setStatus(c.area_sf !== null
+    ? `outline taken: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
+    : "outline taken — no scale on this page, so only pt can be shown");
+  renderSt(); draw();
+}
+function stDrawClick(px, py) {
+  const st = stSync();
+  const last = st.drawPts[st.drawPts.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
+  st.drawPts.push([px, py]);
+  const n = st.drawPts.length;
+  const fpp = stFtPerPt();
+  let live = "";
+  if (n >= 3 && fpp) {
+    live = ` · so far ${stFmt(stPolyArea(st.drawPts) * fpp * fpp, 0)} SF, ${stFmt(stPolyPerim(st.drawPts) * fpp, 0)} LF`;
+  }
+  setStatus(`structure: ${n} corner(s)${live} — Enter/double-click closes, Esc backs up`, "busy");
+  draw();
+}
+function stFinishDraw() {
+  const st = stSync();
+  const pts = [];
+  for (const q of st.drawPts)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length-1][0], q[1] - pts[pts.length-1][1]) > 0.5)
+      pts.push(q);
+  if (pts.length >= 2 && Math.hypot(pts[0][0] - pts[pts.length-1][0], pts[0][1] - pts[pts.length-1][1]) < 0.5)
+    pts.pop();
+  if (pts.length < 3) {
+    return setStatus(`an outline needs at least 3 corners (have ${pts.length}) — keep clicking, or Esc to cancel`, "err");
+  }
+  st.draft = { name: `Structure ${st.seq}`, pts, source: "drawn", chain_id: null, gap_pt: 0,
+               depth_ft: st.depth_ft, layback_ft: st.layback_ft, footing_ft: st.footing_ft };
+  state.tool = null; st.drawPts = []; st.hover = null;
+  const c = stCalc(st.draft);
+  setStatus(c.area_sf !== null
+    ? `outline closed: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
+    : "outline closed — no scale on this page, so only pt can be shown");
+  renderSt(); draw();
+}
+function stCanvasClick(e) {
+  const [px, py] = ptFromEvent(e);
+  if (state.tool === "st-pick") stPickAt(px, py);
+  else if (state.tool === "st-draw") stDrawClick(px, py);
+}
+// clicks land in the structure tool while it is armed; every other tool
+// and plain selection go on exactly as before
+const _stClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "st-pick" || state.tool === "st-draw") return stCanvasClick(e);
+  return _stClickBefore(e);
+};
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "st-draw" || panning || !state.st || !state.st.drawPts.length) return;
+  state.st.hover = ptFromEvent(e);
+  draw();
+});
+cv.addEventListener("dblclick", () => { if (state.tool === "st-draw") stFinishDraw(); });
+// capture phase so the generic Esc (clear selection) never sees these keys
+// while the structure tool owns them
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  const armed = state.tool === "st-pick" || state.tool === "st-draw";
+  if (!armed) return;
+  if (e.key === "Enter" && state.tool === "st-draw") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    stFinishDraw();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    const st = stSync();
+    if (state.tool === "st-draw" && st.drawPts.length) {
+      st.drawPts.pop();
+      setStatus(st.drawPts.length
+        ? `structure: ${st.drawPts.length} corner(s) — Esc again removes another`
+        : "all corners removed — Esc again exits the structure tool", "busy");
+      draw();
+    } else {
+      stDisarm("structure outline cancelled");
+    }
+  }
+}, true);
+
+// ---- panel ----
+$("stBtn").onclick = () => {
+  const st = stSync();
+  const panel = $("stPanel");
+  if (!panel.hidden) {
+    panel.hidden = true;
+    if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
+    draw();
+    return;
+  }
+  panel.hidden = false;
+  renderSt(); draw();
+};
+$("stClose").onclick = () => {
+  $("stPanel").hidden = true;
+  if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
+  draw();
+};
+function stNumInput(obj, key, step, onchange) {
+  const i = document.createElement("input");
+  i.type = "number"; i.step = step; i.min = "0"; i.value = obj[key]; i.name = "st-" + key;
+  i.oninput = () => { obj[key] = parseFloat(i.value); if (onchange) onchange(); };
+  return i;
+}
+function stResultText(c) {
+  if (c.area_sf === null)
+    return `${stFmt(c.area_pt2, 0)} pt² · ${stFmt(c.perim_pt, 0)} pt — no scale on this page, volumes need feet`;
+  return `mass ${stFmt(stR1(c.mass_cy))} CY · structure dig ${stFmt(stR1(c.struct_cy))} CY` +
+    ` · backfill ${stFmt(stR1(c.backfill_cy))} CY · slab prep ${stFmt(c.slab_sf, 0)} SF`;
+}
+function renderSt() {
+  const st = stSync();
+  const body = $("stBody"), rows = $("stRows");
+  body.innerHTML = ""; rows.innerHTML = "";
+  if (!state.result) { body.textContent = "run Detect first"; $("stAdd").disabled = true; return; }
+  const fpp = stFtPerPt();
+  const mk = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt !== undefined) d.textContent = txt; return d; };
+
+  // mode buttons
+  const modes = mk("div", "st-modes");
+  const pick = mk("button", "mini", "Pick outline");
+  pick.title = "Click a closed detected line that IS the building outline";
+  pick.classList.toggle("active", state.tool === "st-pick");
+  pick.onclick = () => state.tool === "st-pick" ? stDisarm("") : stArm("st-pick");
+  const drawB = mk("button", "mini", "Draw outline");
+  drawB.title = "Click each corner of the building on the sheet; Enter or double-click closes";
+  drawB.classList.toggle("active", state.tool === "st-draw");
+  drawB.onclick = () => state.tool === "st-draw" ? stDisarm("") : stArm("st-draw");
+  modes.append(pick, drawB);
+  const scaleNote = mk("span", "ew-meta",
+    fpp ? `scale ${state.result.scale.text}` : "NO SCALE — pt only");
+  modes.appendChild(scaleNote);
+  body.appendChild(modes);
+
+  // draft: the outline just taken, with its inputs and live numbers
+  const d = st.draft;
+  if (d) {
+    const c = stCalc(d);
+    const box = mk("div", "st-draft");
+    const nameRow = mk("div", "st-name");
+    const name = document.createElement("input");
+    name.value = d.name; name.name = "st-name"; name.placeholder = "name (House, Barn, Garage…)";
+    name.oninput = () => { d.name = name.value; };
+    nameRow.append(name);
+    box.appendChild(nameRow);
+    const srcTxt = d.source === "line"
+      ? `from line #${d.chain_id}` + (d.gap_pt >= 0.5 ? ` (ends ${fpp ? stFmt(d.gap_pt * fpp) + " ft" : Math.round(d.gap_pt) + " pt"} apart, closed for you)` : "")
+      : `drawn, ${d.pts.length} corners`;
+    box.appendChild(mk("div", "ew-meta", (c.area_sf !== null
+      ? `${stFmt(c.area_sf, 0)} SF footprint · ${stFmt(c.perim_lf, 0)} LF of wall`
+      : `${stFmt(c.area_pt2, 0)} pt² · ${stFmt(c.perim_pt, 0)} pt`) + ` · ${srcTxt}`));
+    const grid = mk("div", "tr-grid");
+    const upd = () => {
+      st.depth_ft = d.depth_ft; st.layback_ft = d.layback_ft; st.footing_ft = d.footing_ft;
+      $("stResult").textContent = stResultText(stCalc(d));
+      draw();
+    };
+    grid.append(mk("div", null, "Dig depth (ft): ground down to the basement slab, or to the footing bottom when there is no basement"),
+                stNumInput(d, "depth_ft", "0.5", upd));
+    grid.append(mk("div", null, "Layback width (ft): working room dug outside the foundation wall, all the way around"),
+                stNumInput(d, "layback_ft", "0.5", upd));
+    grid.append(mk("div", null, "Footing below slab (ft): extra depth the perimeter trench goes past the slab; 0 if the depth above already is the footing bottom"),
+                stNumInput(d, "footing_ft", "0.5", upd));
+    box.appendChild(grid);
+    const acts = mk("div", "st-draft-acts");
+    const discard = mk("button", "mini", "discard outline");
+    discard.onclick = () => { st.draft = null; $("stResult").textContent = ""; renderSt(); draw(); };
+    acts.append(discard);
+    box.appendChild(acts);
+    body.appendChild(box);
+    $("stResult").textContent = stResultText(c);
+    $("stAdd").disabled = c.area_sf === null;
+  } else {
+    body.appendChild(mk("div", "ew-meta", st.items.length
+      ? "Pick or draw the next building to add another."
+      : "Pick or draw the building outline to begin."));
+    $("stAdd").disabled = true;
+    if (!st.items.length) $("stResult").textContent = "";
+  }
+
+  // committed structures
+  st.items.forEach((it, k) => {
+    const c = stCalc(it);
+    const row = mk("div", "st-row");
+    const top = mk("div", "st-row-top");
+    top.append(mk("b", null, it.name || `Structure ${k + 1}`));
+    top.append(mk("span", "ew-meta", c.area_sf !== null
+      ? `${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF`
+      : `${stFmt(c.area_pt2, 0)} pt²`));
+    const rm = mk("button", "mini danger", "×");
+    rm.title = "remove this structure from the takeoff";
+    rm.onclick = () => { st.items.splice(k, 1); stApplyItems(); renderSt(); draw(); setStatus(`${it.name} removed`); };
+    top.append(rm);
+    row.appendChild(top);
+    const g = mk("div", "st-row-in");
+    const upd = () => { stApplyItems(); $("stResult").textContent = stResultText(stCalc(it)); draw(); };
+    g.append(mk("span", null, "depth"), stNumInput(it, "depth_ft", "0.5", upd),
+             mk("span", null, "layback"), stNumInput(it, "layback_ft", "0.5", upd),
+             mk("span", null, "ftg"), stNumInput(it, "footing_ft", "0.5", upd));
+    row.appendChild(g);
+    row.appendChild(mk("div", "ew-meta", c.mass_cy !== null
+      ? `mass ${stFmt(stR1(c.mass_cy))} · dig ${stFmt(stR1(c.struct_cy))} · backfill ${stFmt(stR1(c.backfill_cy))} CY`
+      : "no scale"));
+    row.onmouseenter = () => { st.hot = k; draw(); };
+    row.onmouseleave = () => { st.hot = null; draw(); };
+    rows.appendChild(row);
+  });
+  if (st.items.length > 1 && fpp) {
+    const tot = { mass: 0, dig: 0, slab: 0 };
+    for (const it of st.items) { const c = stCalc(it); tot.mass += c.mass_cy; tot.dig += c.struct_cy; tot.slab += c.slab_sf; }
+    rows.appendChild(mk("div", "st-total",
+      `${st.items.length} structures → mass ${stFmt(stR1(tot.mass))} CY · dig ${stFmt(stR1(tot.dig))} CY · backfill ${stFmt(stR1(tot.dig))} CY · slab prep ${stFmt(tot.slab, 0)} SF`));
+  }
+}
+$("stAdd").onclick = async () => {
+  const st = stSync();
+  const d = st.draft;
+  if (!d) return;
+  const c = stCalc(d);
+  if (c.area_sf === null) { $("stResult").textContent = "no scale on this page — volumes need feet"; return; }
+  st.items.push(d); st.draft = null; st.seq += 1;
+  stApplyItems();
+  renderSt(); draw();
+  setStatus(`${d.name}: ${stFmt(stR1(c.mass_cy))} CY mass · ${stFmt(stR1(c.struct_cy))} CY dig + backfill · ${stFmt(c.slab_sf, 0)} SF slab prep → takeoff`);
+  // server-side cross-check of the same arithmetic (the export/report path
+  // will read from there later); a mismatch is shown, never silently taken
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/structure`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ structures: [{ name: d.name, points: d.pts, depth_ft: d.depth_ft,
+                                            layback_ft: d.layback_ft, footing_ft: d.footing_ft }] }),
+    });
+    if (!r.ok) { $("stResult").textContent += ` · server check failed (${r.status})`; return; }
+    const j = await r.json();
+    const s = j.structures && j.structures[0];
+    const off = s && ["mass_cy", "struct_cy", "backfill_cy"].some(k => Math.abs(s[k] - stR1(c[k])) > 0.15);
+    $("stResult").textContent = stResultText(c) + (off ? " · SERVER DISAGREES: " + JSON.stringify(s) : " · server agrees ✓");
+  } catch (err) {
+    $("stResult").textContent += " · server check unreachable";
+  }
+};
+// canvas: each structure's outline + the layback band outside it. The band
+// is the outline stroked 2x layback wide and clipped to the OUTSIDE of the
+// polygon, which is exactly the outward offset (mitred corners) without
+// any polygon-offset arithmetic - it holds for concave footprints too.
+function drawStructural(ctx, k) {
+  const st = stSync();
+  if ($("stPanel").hidden && !(state.tool === "st-pick" || state.tool === "st-draw")) return;
+  const f = IMG_DPI / 72;
+  const fpp = stFtPerPt();
+  const ring = (pts) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+    ctx.closePath();
+  };
+  const paint = (it, color, band, hot) => {
+    const pts = it.pts;
+    if (pts.length < 3) return;
+    const lbPt = fpp && it.layback_ft > 0 ? it.layback_ft / fpp : 0;
+    if (lbPt > 0) {
+      ctx.save();
+      // clip = whole sheet minus the polygon (even-odd)
+      ctx.beginPath();
+      ctx.rect(0, 0, state.img.width, state.img.height);
+      ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+      ctx.closePath();
+      ctx.clip("evenodd");
+      ring(pts);
+      ctx.lineJoin = "miter"; ctx.miterLimit = 4;
+      ctx.lineWidth = 2 * lbPt * f;
+      ctx.strokeStyle = band;
+      ctx.stroke();
+      ctx.restore();
+    }
+    ring(pts);
+    ctx.lineJoin = "miter";
+    ctx.lineWidth = (hot ? 3.5 : 2.2) / k;
+    ctx.strokeStyle = color;
+    ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    for (const q of pts) {
+      ctx.beginPath();
+      ctx.arc(q[0] * f, q[1] * f, 3 / k, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+  st.items.forEach((it, i) => paint(it, ST_COLOR, "rgba(255,122,0,.30)", st.hot === i));
+  if (st.draft) paint(st.draft, ST_DRAFT_COLOR, "rgba(0,168,232,.30)", true);
+  // in-progress polygon while drawing
+  if (state.tool === "st-draw" && st.drawPts.length) {
+    const P = st.drawPts;
+    ctx.beginPath();
+    ctx.moveTo(P[0][0] * f, P[0][1] * f);
+    for (let i = 1; i < P.length; i++) ctx.lineTo(P[i][0] * f, P[i][1] * f);
+    if (st.hover) ctx.lineTo(st.hover[0] * f, st.hover[1] * f);
+    if (P.length >= 2) ctx.lineTo(P[0][0] * f, P[0][1] * f);   // closing edge preview
+    ctx.lineWidth = 2 / k;
+    ctx.setLineDash([6 / k, 4 / k]);
+    ctx.strokeStyle = ST_DRAFT_COLOR;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of P) {
+      ctx.beginPath();
+      ctx.arc(q[0] * f, q[1] * f, 3.5 / k, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
+    }
+  }
+}
 
 resize();

@@ -1373,6 +1373,105 @@ def symbols_suggest(job_id: str, page: int):
     return {"groups": out[:15], "schedule": sched}
 
 
+class StructureBody(BaseModel):
+    # [{name?, points: [[x_pt, y_pt], ...] (>= 3 corners, page pt),
+    #   depth_ft, layback_ft, footing_ft?}] - one entry per building
+    structures: list[dict] = []
+
+
+def _structure_one(s: dict, ft_per_pt: float) -> dict:
+    """One building footprint -> the excavator's four bid-sheet numbers.
+    Same arithmetic as the review UI (webui/app.js stCalc); this is the
+    server-side source of truth for the export/report path.
+
+      Mass Excavation CY      = footprint SF x depth / 27
+      Structure Excavation CY = wall LF x (depth + footing) x layback / 27
+      Structure Backfill CY   = Structure Excavation (dig it, fill it back)
+      Slab Prep SF            = footprint SF
+    """
+    pts = s.get("points") or []
+    try:
+        ring = [(float(p[0]), float(p[1])) for p in pts]
+    except (TypeError, ValueError, IndexError):
+        raise HTTPException(400, "points must be [[x, y], ...] in page pt")
+    if len(ring) >= 2 and abs(ring[0][0] - ring[-1][0]) < 0.5 \
+            and abs(ring[0][1] - ring[-1][1]) < 0.5:
+        ring.pop()     # first == last: one vertex, not two
+    if len(ring) < 3:
+        raise HTTPException(400, "an outline needs at least 3 corners")
+    for x, y in ring:
+        if not (x == x and y == y and abs(x) < 1e7 and abs(y) < 1e7):
+            raise HTTPException(400, "non-finite corner coordinate")
+
+    def num(key, default=0.0):
+        v = s.get(key, default)
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a number")
+        if v != v or v < 0 or v > 1000:
+            raise HTTPException(400, f"{key} out of range (0-1000 ft)")
+        return v
+    depth, layback, footing = num("depth_ft"), num("layback_ft", 4.0), num("footing_ft")
+    area2 = 0.0
+    perim = 0.0
+    n = len(ring)
+    for i in range(n):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % n]
+        area2 += x1 * y2 - x2 * y1
+        perim += ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+    area_sf = abs(area2) / 2.0 * ft_per_pt * ft_per_pt
+    perim_lf = perim * ft_per_pt
+    struct = perim_lf * (depth + footing) * layback / 27.0
+    return {
+        "name": str(s.get("name", ""))[:60],
+        "corners": n,
+        "area_sf": round(area_sf, 1),
+        "perim_lf": round(perim_lf, 1),
+        "depth_ft": depth, "layback_ft": layback, "footing_ft": footing,
+        "mass_cy": round(area_sf * depth / 27.0, 1),
+        "struct_cy": round(struct, 1),
+        "backfill_cy": round(struct, 1),
+        "slab_sf": round(area_sf, 1),
+    }
+
+
+@app.post("/api/job/{job_id}/page/{page}/structure")
+def structure_calc(job_id: str, page: int, body: StructureBody):
+    """Building footprint(s) -> Mass Excavation / Structure Excavation /
+    Structure Backfill (CY) and Slab Prep (SF), in the excavator's own
+    bid-sheet terms. Validates the polygons and returns per-structure rows
+    plus the page totals; the UI does the same math client-side and uses
+    this as a cross-check."""
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    res = json.loads(rf.read_text())
+    det = res.get("scale")
+    if not det:
+        raise HTTPException(400, "no scale on this page - calibrate first, "
+                                 "volumes need real-world units")
+    ft_per_pt = det["ft_per_paper_inch"] / 72.0
+    if not body.structures:
+        raise HTTPException(400, "no structures given")
+    if len(body.structures) > 200:
+        raise HTTPException(400, "too many structures")
+    rows = [_structure_one(s, ft_per_pt) for s in body.structures]
+    totals = {k: round(sum(r[k] for r in rows), 1)
+              for k in ("mass_cy", "struct_cy", "backfill_cy", "slab_sf")}
+    items = [{"label": label, "qty": totals[key], "unit": unit}
+             for label, key, unit in (
+                 ("Mass Excavation", "mass_cy", "CY"),
+                 ("Structure Excavation", "struct_cy", "CY"),
+                 ("Structure Backfill", "backfill_cy", "CY"),
+                 ("Slab Prep", "slab_sf", "SF"))
+             if totals[key] > 0]
+    return JSONResponse({"structures": rows, "totals": totals,
+                         "extra_items": items,
+                         "ft_per_pt": round(ft_per_pt, 5)})
+
+
 # Analyze verdicts live for this server session only - never on disk
 _AI_SESSION_CACHE: dict = {}
 
