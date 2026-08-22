@@ -48,11 +48,15 @@ _NTS = re.compile(r"(?i)\bN\.?\s*T\.?\s*S\.?\b|NOT\s+TO\s+SCALE")
 # OCR often loses the inch/foot marks completely ("SCALE: 1 = = 20").
 # Units are then implied by convention (paper inches = real feet), but only
 # trust that when anchored right after the SCALE keyword.
+# Every part but <feet> is optional, so the word SCALE followed by any bare
+# integer also matches - and a keyword hit outranks everything in _choose.
+# The separator and the unit marks are captured so that case can be told
+# apart and rejected: see the guard in _scan.
 _PAT_KEYWORD = re.compile(
-    rf"""(?i)scale\s*[:=]?\s*
-        (?P<paper>\d+(?:/\d+)?)?\s*{_IN}?\s*   # OCR may eat the 1"
-        (?:[=:\-]\s*){{0,2}}                      # ... or the separator
-        (?P<feet>\d+)\s*{_FT}?
+    rf"""(?i)scale\s*(?P<kwsep>[:=])?\s*
+        (?P<paper>\d+(?:/\d+)?)?\s*(?P<inmark>{_IN})?\s*   # OCR may eat the 1"
+        (?P<sep>(?:[=:\-]\s*){{0,2}})                      # ... or the separator
+        (?P<feet>\d+)\s*(?P<ftmark>{_FT})?
         (?:\s*-\s*(?P<inches>\d+)\s*{_IN}?)?""",
     re.X,
 )
@@ -135,6 +139,17 @@ def _scan(text: str) -> list[ScaleCandidate]:
         ctx = text[max(0, m.start() - 30): m.start()]
         add(m, bool(re.search(r"(?i)scale", ctx)))
     for m in _PAT_KEYWORD.finditer(text):
+        # "SCALE" plus a bare integer is not a scale notation. Guide C3.0
+        # (engine page index 2) row-joins to "... SCALE 2% 2% W
+        # CONSTRUCTION ...", which matched as 1" = 2 ft and, being a
+        # keyword hit, outranked the sheet's own "1 inch = 10 ft." - a 5x
+        # error on every length and 25x on every area and volume. Require
+        # one shred of notation beyond the number: the paper term, a
+        # separator, or a unit mark. The OCR case this pattern exists for
+        # ("SCALE: 1 = = 20") carries all three.
+        if not (m.group("paper") or m.group("kwsep") or m.group("inmark")
+                or m.group("ftmark") or (m.group("sep") or "").strip()):
+            continue
         add(m, True)
     for m in _PAT_KEYWORD_PRE.finditer(text):
         add(m, True)
