@@ -277,7 +277,8 @@ async function loadResult(gen = state.gen) {
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
-  $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch $("ewMap").checked = false;
+  $("ewMap").checked = false;
+  $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
