@@ -20,6 +20,7 @@
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
   <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
   <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
+  <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
   <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
   <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
@@ -102,6 +103,18 @@
       <div class="ew-hint" id="coHint">Every leader on the sheet, paired with the note at its tail
         and the line it points at. Click a row to jump there. Callouts never count in the takeoff.</div>
       <div id="coRows" class="ew-rows"></div>
+    </div>
+    <div id="rollPanel" class="ew-panel" hidden>
+      <div class="side-head" id="rollHead"><h2>Whole job &mdash; marks by sheet</h2>
+        <button id="rollClose" class="mini">close</button></div>
+      <div class="ew-hint" id="rollHint">Every mark code in the document, per sheet and in total &mdash;
+        the number you send a supplier. Counted from the sheets you have already run through Count;
+        sheets not yet counted are listed so a partial document is never shown as a total.
+        Where the schedule prints its own quantity, it sits beside ours so the two can be compared.</div>
+      <div id="rollPending" class="sym-sched" hidden></div>
+      <div id="rollBody"></div>
+      <div id="rollTotal" class="sym-total" hidden></div>
+      <div class="sym-foot"><button id="rollCsv" class="mini">Export CSV</button></div>
     </div>
     <div id="symPanel" class="ew-panel" hidden>
       <div class="side-head" id="symHead"><h2>Count symbols</h2>

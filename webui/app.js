@@ -281,6 +281,7 @@ async function loadResult(gen = state.gen) {
   $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
+  $("rollPanel").hidden = true; $("rollBtn").hidden = false;
   $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
@@ -1714,6 +1715,113 @@ $("trCalc").onclick = () => {
 
 // ---------- symbol counter ----------
 $("symClose").onclick = () => { $("symPanel").hidden = true; state.symMarks = null; draw(); };
+
+// ---------- whole job: every mark code across the document ---------------
+// Bill Dunn, 2026-08-21: "I want to know that I have 27 type D windows on
+// the fifth floor." A per-page count cannot answer that and neither can a
+// per-page CSV - what he faxes a supplier is one quantity per type for the
+// whole building. The server reads the per-page symbol caches only, so this
+// never kicks off detection; sheets not yet counted are named rather than
+// silently treated as zero.
+$("rollClose").onclick = () => { $("rollPanel").hidden = true; };
+
+$("rollBtn").onclick = async () => {
+  const panel = $("rollPanel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  $("rollBody").innerHTML = '<div class="ew-hint">reading the sheets already counted…</div>';
+  const r = await fetch(`/api/job/${state.job}/marks-rollup`);
+  if (!r.ok) { $("rollBody").textContent = "rollup failed (" + r.status + ")"; return; }
+  state.roll = await r.json();
+  renderRoll();
+};
+
+function renderRoll() {
+  const j = state.roll || {}, rows = j.rows || [];
+  const pend = $("rollPending");
+  const counted = j.pages_counted || [], pending = j.pages_pending || [];
+  if (pending.length) {
+    pend.innerHTML = `counted <b>${counted.length}</b> sheet${counted.length === 1 ? "" : "s"}` +
+      ` &middot; <b>${pending.length}</b> not counted yet (sheet ` +
+      pending.map(p => p + 1).join(", ") + `) &mdash; ` +
+      `<span class="dim">open Count on those sheets and this total completes</span>`;
+    pend.hidden = false;
+  } else if (counted.length) {
+    pend.innerHTML = `every sheet in the document counted (<b>${counted.length}</b>)`;
+    pend.hidden = false;
+  } else { pend.hidden = true; }
+
+  const box = $("rollBody");
+  box.innerHTML = "";
+  if (!rows.length) {
+    box.innerHTML = '<div class="ew-hint">no named marks yet. Run <b>Count</b> on a sheet that ' +
+      'carries mark bubbles, then come back.</div>';
+    $("rollTotal").hidden = true;
+    return;
+  }
+  const pages = counted.slice();
+  const tbl = document.createElement("table");
+  tbl.className = "roll-tbl";
+  const th = document.createElement("tr");
+  th.innerHTML = "<th>mark</th>" + pages.map(p => `<th>sh ${p + 1}</th>`).join("") +
+    "<th>total</th><th>schedule</th><th></th>";
+  tbl.appendChild(th);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    let html = `<td class="roll-code">${r.code}</td>`;
+    for (const p of pages) {
+      const v = (r.per_page || {})[String(p)];
+      html += `<td>${v == null ? '<span class="dim">&middot;</span>' : v}</td>`;
+    }
+    html += `<td class="roll-tot">${r.found}</td>`;
+    if (r.schedule_qty == null) {
+      html += '<td class="dim">&mdash;</td><td></td>';
+    } else {
+      const d = r.delta;
+      html += `<td>${r.schedule_qty}</td>`;
+      html += d === 0
+        ? '<td class="sym-chk-ok">match</td>'
+        : `<td class="sym-chk-bad">${d > 0 ? "+" + d : d}</td>`;
+    }
+    tr.innerHTML = html;
+    tbl.appendChild(tr);
+  }
+  box.appendChild(tbl);
+
+  const t = $("rollTotal");
+  let txt = `<b>${j.total_found}</b> marks counted across ${counted.length} sheet` +
+    (counted.length === 1 ? "" : "s");
+  if (j.total_schedule) {
+    const d = j.total_found - j.total_schedule;
+    txt += ` &middot; schedule totals <b>${j.total_schedule}</b>` +
+      (d === 0 ? ' <span class="sym-chk-ok">match</span>'
+               : ` <span class="sym-chk-bad">${d > 0 ? "+" + d : d}</span>`);
+  }
+  if (pending.length) txt += `<br><span class="dim">not a whole-document total yet &mdash; ` +
+    `${pending.length} sheet${pending.length === 1 ? "" : "s"} still uncounted</span>`;
+  t.innerHTML = txt; t.hidden = false;
+}
+
+$("rollCsv").onclick = () => {
+  const j = state.roll || {}, rows = j.rows || [];
+  if (!rows.length) { setStatus("nothing to export yet", "err"); return; }
+  const pages = j.pages_counted || [];
+  const out = [["mark", ...pages.map(p => "sheet " + (p + 1)), "total", "schedule", "delta"]];
+  for (const r of rows) {
+    out.push([r.code, ...pages.map(p => (r.per_page || {})[String(p)] ?? ""),
+              r.found, r.schedule_qty ?? "", r.delta ?? ""]);
+  }
+  out.push(["TOTAL", ...pages.map(() => ""), j.total_found, j.total_schedule ?? "", ""]);
+  const csv = out.map(r => r.map(c => {
+    const s = String(c);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = (state.docName || "takeoff").replace(/\.pdf$/i, "") + " - marks by sheet.csv";
+  a.click(); URL.revokeObjectURL(a.href);
+  setStatus("whole-job mark CSV exported");
+};
 $("symBtn").onclick = async () => {
   const panel = $("symPanel");
   if (!panel.hidden) { panel.hidden = true; state.symMarks = null; draw(); return; }

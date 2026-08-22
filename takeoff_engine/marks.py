@@ -796,6 +796,38 @@ def _txt(w) -> str:
     return str(w[4]).strip().upper()
 
 
+# A wide table on a SKEWED scan does not have a flat header row. Bill Dunn's
+# Aqua Vista schedule is OCR'd off a 300 dpi scan that marks.upright measures
+# at 2.2 deg, and its MARK and QUANTITY headers sit ~700 pt apart, so their
+# y centres differ by ~28 pt - six times the flat y_tol. The row match has to
+# widen with horizontal distance or a quantity column is simply never seen.
+# 0.045 covers ~2.6 deg, above every skew measured on his sheets. On a real
+# text layer dx-widening costs nothing because dy there is ~0.
+SKEW_SLOPE = 0.045
+
+
+def _row_tol(y_tol: float, dx: float) -> float:
+    """y tolerance for two words claimed to be on the same table row."""
+    return y_tol + SKEW_SLOPE * abs(dx)
+
+
+def _is_qty_head(t: str) -> bool:
+    """QTY column header, tolerant of OCR noise.
+
+    A table rule touching the word comes back glued to it - Bill's schedule
+    OCRs as "LQUANTITY" - so a head token is accepted when it sits inside a
+    slightly longer word as well as when it matches outright.
+    """
+    if t in _QTY_HEADS:
+        return True
+    core = "".join(c for c in t if c.isalpha())
+    for q in _QTY_HEADS:
+        qa = "".join(c for c in q if c.isalpha())
+        if len(qa) >= 3 and core.endswith(qa) and len(core) - len(qa) <= 2:
+            return True
+    return False
+
+
 def read_mark_schedule(words: list, y_tol: float = 5.0,
                        fuzzy: bool = False) -> dict:
     """Read a MARK/QTY (or WINDOW TYPE/QTY) schedule out of a page's words.
@@ -825,7 +857,10 @@ def read_mark_schedule(words: list, y_tol: float = 5.0,
         if t not in _MARK_HEADS:
             continue
         hy = (hw[1] + hw[3]) / 2.0
-        row = [w for w in words if abs((w[1] + w[3]) / 2.0 - hy) <= y_tol]
+        hx = (hw[0] + hw[2]) / 2.0
+        row = [w for w in words
+               if abs((w[1] + w[3]) / 2.0 - hy)
+               <= _row_tol(y_tol, (w[0] + w[2]) / 2.0 - hx)]
         row.sort(key=lambda w: w[0])
         texts = [_txt(w) for w in row]
         # "WINDOW TYPE" / "DOOR TYPE": the qualifier sits immediately left
@@ -838,7 +873,7 @@ def read_mark_schedule(words: list, y_tol: float = 5.0,
                 continue        # a bare "TYPE" with no table around it
         qcol = None
         for w in row:
-            if _txt(w) in _QTY_HEADS:
+            if _is_qty_head(_txt(w)):
                 qcol = w
                 break
         if qcol is None:
@@ -898,6 +933,16 @@ def _harvest(words: list, hw, qcol, row: list, header: str,
     rx0 = min(w[0] for w in row) - 8
     rx1 = max(w[2] for w in row) + 8
     qcx = (qcol[0] + qcol[2]) / 2.0 if qcol is not None else None
+    # The table's own two headers give its row slope, so a quantity 700 pt
+    # away is looked for where that row ACTUALLY runs rather than inside a
+    # band wide enough to swallow its neighbours. Widening symmetrically
+    # instead gave every mark on Bill's schedule the same quantity (148).
+    slope = 0.0
+    if qcol is not None:
+        hxc, hyc = (hw[0] + hw[2]) / 2.0, (hw[1] + hw[3]) / 2.0
+        qyc = (qcol[1] + qcol[3]) / 2.0
+        if abs(qcx - hxc) > 1.0:
+            slope = (qyc - hyc) / (qcx - hxc)
     marks, raws, qty, y_max = [], [], {}, hw[3]
     letters_only = True
     for w in words:
@@ -924,8 +969,10 @@ def _harvest(words: list, hw, qcol, row: list, header: str,
         y_max = max(y_max, w[3])
         if qcx is None:
             continue
+        wxc = (w[0] + w[2]) / 2.0
+        want = wy + slope * (qcx - wxc)      # where this row runs at qcx
         mates = [m for m in words
-                 if abs((m[1] + m[3]) / 2.0 - wy) <= y_tol
+                 if abs((m[1] + m[3]) / 2.0 - want) <= y_tol
                  and _txt(m).isdigit() and rx0 <= m[0] and m[2] <= rx1]
         if mates:
             q = min(mates, key=lambda m: abs((m[0] + m[2]) / 2.0 - qcx))

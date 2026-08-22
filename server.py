@@ -1382,6 +1382,27 @@ def _doc_schedule(job_id: str, path: str, page: int) -> dict:
 
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
 def symbols_suggest(job_id: str, page: int):
+    """Cached wrapper. The finding is deterministic for a given page, and on
+    a scanned sheet it costs minutes (takeoff_engine.marks renders, deskews
+    and template-matches at 300 dpi). Caching it per page is what makes a
+    whole-document rollup affordable: /marks-rollup reads these files rather
+    than recomputing six floor plans."""
+    f = _job_dir(job_id) / f"p{page}_symbols.json"
+    if f.exists():
+        try:
+            return JSONResponse(json.loads(f.read_text()))
+        except (OSError, ValueError):
+            pass
+    out = _symbols_compute(job_id, page)
+    try:
+        _job_dir(job_id).mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(out))
+    except OSError:
+        pass
+    return JSONResponse(out)
+
+
+def _symbols_compute(job_id: str, page: int):
     """Repeated congruent small shapes on the page - the countable symbols
     (grid bubbles, fixtures, window/door glyphs). Geometry does the finding
     and counting so the number is verifiable; the human (or the AI's
@@ -1599,6 +1620,77 @@ def _structure_one(s: dict, ft_per_pt: float) -> dict:
         "backfill_cy": round(struct, 1),
         "slab_sf": round(area_sf, 1),
     }
+
+
+@app.get("/api/job/{job_id}/marks-rollup")
+def marks_rollup(job_id: str):
+    """Every mark code in the DOCUMENT, per page and in total.
+
+    Bill Dunn asked for exactly this on 2026-08-21: "I want to know that I
+    have 27 type D windows on the fifth floor". A per-page count cannot
+    answer it and neither can a per-page CSV - what he faxes a supplier is
+    one quantity per type for the whole building.
+
+    Reads the per-page symbol caches only; it never triggers detection, so
+    it is instant and it reports which pages are still pending rather than
+    quietly counting a partial document as a total. `schedule_qty` is the
+    architect's own printed quantity where the schedule carries one, so the
+    row doubles as the reconciliation an estimator is actually paid for.
+    """
+    job = JOBS.get(job_id) or _404()
+    d = _job_dir(job_id)
+    npages = int(job.get("pages") or 0)
+    per_page: dict[int, dict[str, int]] = {}
+    pending: list[int] = []
+    sched: dict[str, float] = {}
+    sched_page = None
+    for pno in range(npages):
+        f = d / f"p{pno}_symbols.json"
+        if not f.exists():
+            pending.append(pno)
+            continue
+        try:
+            js = json.loads(f.read_text())
+        except (OSError, ValueError):
+            pending.append(pno)
+            continue
+        if not sched and js.get("schedule"):
+            sched = {str(k): v for k, v in js["schedule"].items()}
+            sched_page = js.get("schedule_page")
+        counts: dict[str, int] = {}
+        for g in js.get("groups") or []:
+            nm = (g.get("name") or "").strip()
+            if not nm:
+                continue          # unread bubbles are reported separately
+            counts[nm] = counts.get(nm, 0) + int(g.get("n") or 0)
+        if counts:
+            per_page[pno] = counts
+
+    codes = sorted({c for pc in per_page.values() for c in pc}
+                   | {str(k) for k in sched})
+    rows = []
+    for c in codes:
+        by = {str(p): per_page[p][c] for p in sorted(per_page) if c in per_page[p]}
+        found = sum(by.values())
+        q = sched.get(c)
+        row = {"code": c, "per_page": by, "found": found}
+        if q is not None:
+            try:
+                q = int(round(float(q)))
+                row["schedule_qty"] = q
+                row["delta"] = found - q
+            except (TypeError, ValueError):
+                pass
+        rows.append(row)
+    return JSONResponse({
+        "rows": rows,
+        "pages_counted": sorted(per_page),
+        "pages_pending": pending,
+        "schedule_page": sched_page,
+        "total_found": sum(r["found"] for r in rows),
+        "total_schedule": sum(r["schedule_qty"] for r in rows
+                              if "schedule_qty" in r) or None,
+    })
 
 
 @app.post("/api/job/{job_id}/page/{page}/structure")
