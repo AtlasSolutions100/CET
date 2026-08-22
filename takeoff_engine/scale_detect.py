@@ -64,14 +64,22 @@ _PAT_KEYWORD = re.compile(
 # OCR word order can put the ratio BEFORE the keyword ('1" 10' SCALE:' on
 # the C4.x grading plans): same relaxed body, keyword trailing. Degree
 # signs stand in for foot marks in OCR output, so they count as ticks.
+# That form carries no separator, so one cannot be required here - instead
+# <sep>/<gmark> are captured and checked in _scan: with no separator the
+# ground term must declare its own foot mark, or the two numbers are merely
+# adjacent rather than related.
 _PAT_KEYWORD_PRE = re.compile(
-    rf"""(?i)(?P<paper>\d+(?:/\d+)?)\s*{_IN}\s*
-        (?:[=:\-]\s*){{0,2}}
-        (?P<feet>\d+)\s*(?:{_FT}|[°º])?\s*
+    rf"""(?i)(?P<paper>\d+(?:/\d+)?)\s*{_IN}
+        (?P<sep>\s*(?:[=:\-]\s*){{0,2}})
+        (?P<feet>\d+)\s*(?P<gmark>{_FT}|[°º])?\s*
         (?:-\s*(?P<inches>\d+)\s*{_IN}?\s*)?
         scale\b""",
     re.X,
 )
+
+# An '=' or ':' actually relating the two sides of a match. Used to gate the
+# feet-and-inches ground form, which is otherwise a dimension callout.
+_REL = re.compile(r"[=:]")
 
 
 @dataclass
@@ -135,23 +143,67 @@ def _scan(text: str) -> list[ScaleCandidate]:
         else:
             found[key] = ScaleCandidate(m.group(0).strip(), fpi, near)
 
+    def compound_needs_relation(m: re.Match) -> bool:
+        """Reject a feet-and-inches ground term with nothing relating it.
+
+        N'-M" is how a dimension callout is written, so on its own it is a
+        length. It is also the right-hand side of an architectural scale,
+        but there the two sides are related in one of two visible ways:
+
+          * an explicit '=' or ':' BETWEEN them (<sep>, not the keyword's
+            own colon in "SCALE:") - 1/4" = 1'-0", 3/16" = 1'-0",
+            1" = 16'-0"; or
+          * the ground side is exactly 1'-0", which is what the notation
+            means - "an eighth of an inch to the foot". CONVENTION, from
+            these sheets: every architectural caption in the Beaumont sets
+            is written X" = 1'-0", i.e. the ground side is one foot. OCR
+            drops the '=' often enough (Thielen p57/p58 read
+            '1/8" 1'-0" SCALE:') that the form has to survive without it.
+
+        Anything else - 5'-2", 11'-3 1/2" - is a callout, not a ratio.
+        """
+        if not m.group("inches"):
+            return False
+        sep = m.group("sep") or ""
+        if _REL.search(sep):
+            return False
+        return not (int(m.group("feet")) == 1 and int(m.group("inches")) == 0)
+
     for m in _PAT.finditer(text):
         ctx = text[max(0, m.start() - 30): m.start()]
         add(m, bool(re.search(r"(?i)scale", ctx)))
     for m in _PAT_KEYWORD.finditer(text):
-        # "SCALE" plus a bare integer is not a scale notation. Guide C3.0
-        # (engine page index 2) row-joins to "... SCALE 2% 2% W
-        # CONSTRUCTION ...", which matched as 1" = 2 ft and, being a
-        # keyword hit, outranked the sheet's own "1 inch = 10 ft." - a 5x
-        # error on every length and 25x on every area and volume. Require
-        # one shred of notation beyond the number: the paper term, a
-        # separator, or a unit mark. The OCR case this pattern exists for
-        # ("SCALE: 1 = = 20") carries all three.
-        if not (m.group("paper") or m.group("kwsep") or m.group("inmark")
-                or m.group("ftmark") or (m.group("sep") or "").strip()):
+        # A scale is a RATIO, so BOTH of its sides have to be on the page.
+        # Every part of this pattern but <feet> is optional, so without a
+        # shape test it reduces to "the word SCALE followed by a number" -
+        # and a keyword hit outranks everything in _choose. Two live cases:
+        # Guide C3.0 (engine page index 2) row-joined to "... SCALE 2% 2% W
+        # CONSTRUCTION ..." and read 1" = 2 ft over the sheet's own "1 inch
+        # = 10 ft." (5x on every length, 25x on every area and volume);
+        # Barn Civil (engine page index 1) row-joined the bar caption to a
+        # 5'-2" dimension callout and read 1" = 5.17 ft over "1 inch = 20
+        # ft.". Requiring any ONE token is not enough - the second case
+        # carries a foot mark, but it belongs to the dimension, not to a
+        # ratio. Require the LEFT side (<paper>) plus something joining it
+        # to the right side: its own inch mark, or a separator. The OCR
+        # case this pattern exists for ("SCALE: 1 = = 20") has both.
+        # <kwsep> is the keyword's own colon in "SCALE:", not a relation
+        # between two sides, so it is not evidence on its own.
+        if not (m.group("paper")
+                and (m.group("inmark") or (m.group("sep") or "").strip())):
+            continue
+        if compound_needs_relation(m):
             continue
         add(m, True)
     for m in _PAT_KEYWORD_PRE.finditer(text):
+        # No separator between the sides -> the ground term has to declare
+        # its own unit, else these are two unrelated numbers that only
+        # happen to sit beside the word SCALE ('3/8" 6 SCALE', Guide Civil
+        # engine page index 6, from OCR).
+        if not ((m.group("sep") or "").strip() or m.group("gmark")):
+            continue
+        if compound_needs_relation(m):
+            continue
         add(m, True)
     return list(found.values())
 
@@ -264,10 +316,54 @@ def graphic_scale_bar(words: list) -> ScaleCandidate | None:
     return None
 
 
+# The row-join sorts every word on the sheet into 8pt horizontal bands, so
+# with no gap test it welds text from opposite ends of a 42-inch sheet into
+# one "line" - which is how both keyword misreads were manufactured. On Barn
+# Civil p1 the bar caption "GRAPHIC SCALE" (x=810..897pt) and an unrelated
+# 5'-2" dimension callout (x=1341pt) shared a band and joined as
+# `SCALE 5'-2"`.
+#
+# Keyed to glyph height, because OCR word boxes and title text are sized
+# very differently from body text. Measured across the corpus:
+#   widest gap INSIDE a real caption   23.5pt at 9.1pt glyphs  = 2.6x
+#     (C9.0 OCR "SCALE: 1" 20'" - the hole where OCR dropped the '=')
+#   narrowest FALSE weld              424.8pt at 12.6pt glyphs = 34x
+#     (Barn Civil p1 "1 inch = 20 ft." -> "STBK", and 444pt for the 5'-2")
+# 6x sits between the two with 2.3x headroom over the widest real caption
+# gap. An earlier 2.5x missed C9.0's caption by 0.7pt and cost it its scale.
+_ROW_GAP_MIN = 24.0      # pt, floor for small text
+_ROW_GAP_HEIGHTS = 6.0   # x the taller of the two neighbouring words
+
+
 def _row_text(words: list) -> str:
-    """Join word boxes into rough lines: sort by (row bucket, x)."""
+    """Join word boxes into rough lines: sort by (row bucket, x).
+
+    A "|" marks a column gap INSIDE a band - two words on the same row
+    bucket that are nowhere near each other. "|" is not a scale separator
+    and \\s* cannot cross it, so no pattern matches over a break, while the
+    30-character keyword lookback in _scan still sees a caption sitting on
+    the near side of one.
+
+    The wrap from the end of one band to the start of the next is left
+    joined on purpose. Sorting by (bucket, x) scrambles a caption whose
+    words straddle a bucket edge - Thielen p57 OCR puts "SCALE:" 2.4pt
+    below its own "1/8"" and the two land in buckets 200 and 199, so the
+    join emits `1/8" 1'-0" SCALE: =`. Recovering that is exactly what
+    _PAT_KEYWORD_PRE is for, and breaking on the wrap would take it away.
+    """
     words = sorted(words, key=lambda w: (round(w[1] / 8), w[0]))
-    return " ".join(str(w[4]) for w in words)
+    out: list[str] = []
+    prev = None  # (row bucket, x1, height)
+    for w in words:
+        row = round(float(w[1]) / 8)
+        h = max(float(w[3]) - float(w[1]), 1.0)
+        if prev is not None and prev[0] == row:
+            cap = max(_ROW_GAP_MIN, _ROW_GAP_HEIGHTS * max(prev[2], h))
+            if float(w[0]) - prev[1] > cap:
+                out.append("|")
+        out.append(str(w[4]))
+        prev = (row, float(w[2]), h)
+    return " ".join(out)
 
 
 def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True) -> ScaleResult:
