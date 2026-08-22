@@ -205,7 +205,10 @@ def suggest_elevations(chains: list, words: list,
         return []
     samples, owner = [], []
     for c in chains:
-        if c.length < 60:
+        # a profile box or the title block is not plan ground - see
+        # _NON_PLAN_LAYER. Filtering the sample pool once keeps both the
+        # direct match below and the propagation in pass 2 off them.
+        if c.length < 60 or not _is_plan_chain(c):
             continue
         s, _ = _sample_polyline(np.asarray(c.pts), step=4.0, max_n=60000)
         if len(s):
@@ -254,7 +257,8 @@ def suggest_elevations(chains: list, words: list,
     # neighbour's elevation cannot leak across. A component whose direct
     # matches disagree keeps only its direct matches (ambiguity is worse
     # than absence).
-    ch_ok = [c for c in chains if c.length >= 60 and len(c.pts) >= 2]
+    ch_ok = [c for c in chains
+             if c.length >= 60 and len(c.pts) >= 2 and _is_plan_chain(c)]
     ends, tangs, cid_of = [], [], []
     for c in ch_ok:
         p = np.asarray(c.pts, float)
@@ -280,8 +284,24 @@ def suggest_elevations(chains: list, words: list,
                 a = parent[a]
             return a
         pairs = sorted(map(tuple, etree.query_pairs(60.0)))
+        chain_of = {int(c.chain_id): c for c in ch_ok}
         for i, j in pairs:
             if cid_of[i] == cid_of[j]:
+                continue
+            # A contour continuing itself past a gap keeps its CAD layer and
+            # its linetype. Anything that changes either is a different
+            # object whose end merely happens to land nearby, and welding it
+            # in hands it an elevation it never had: on Guide civil page 3 a
+            # BG-L-Riprap rock apron took 7915 as proposed, and an
+            # A-GR PATIO chain took 7921 from a label 907 pt away - 126 ft on
+            # the ground. Union-find is transitive, so without this guard
+            # each 60 pt hop compounds into an unbounded reach.
+            ca, cb = chain_of.get(cid_of[i]), chain_of.get(cid_of[j])
+            if ca is None or cb is None:
+                continue
+            if (getattr(ca, "layer", "") or "") != (getattr(cb, "layer", "") or ""):
+                continue
+            if ca.klass != cb.klass:
                 continue
             v = ends[j] - ends[i]
             d = float(np.hypot(*v))
@@ -411,6 +431,28 @@ def gap_label_elevations(chains: list, page_img: np.ndarray,
 # ME match existing, HP/LP high/low point. Verified against the Beaumont
 # SWR sheets 2026-08-21; the list is the sheet's own vocabulary, not a
 # guess (each appears with a colon and a value to its right).
+# Layers that are not plan ground. A profile or section box is a DIFFERENT
+# VIEW drawn on the same sheet: its axes are elevation-against-station, not
+# plan position, so a "contour" found inside one is grid, not ground - and
+# its station lines get handed elevations off nearby pipe-invert numbers.
+# Title-block layers carry sheet metadata; the sheet DATE reads as a clean
+# four-digit elevation. Measured on Beaumont Guide civil engine page index 3:
+# 18 of 51 suggestions sat on C-ROAD-PROF-VIEW and one (2026, the date) on
+# G-ANNO-TTLB-THIN, and 18 of the 23 PROPOSED contours were profile geometry.
+# Rejecting on the interval alone does not work - 7 of those 18 carry a clean
+# whole-foot value.
+# The tokens are read off the layer names in Beaumont's Guide and Barn civil
+# sets. That they carry the same meaning under other CAD layer standards is
+# an INFERENCE, not something these sheets establish.
+_NON_PLAN_LAYER = re.compile(
+    r"(?i)(?:^|[-_|\s])(PROF|PROFILE|SECT|SECTION|TTLB|TITLEBLOCK)(?:[-_|\s]|$)")
+
+
+def _is_plan_chain(c) -> bool:
+    """False for chains that live in a non-plan view or in the title block."""
+    return not _NON_PLAN_LAYER.search(getattr(c, "layer", "") or "")
+
+
 _SPOT_TAG = re.compile(r"^(FG|FIN|TS|BS|TW|BW|EG|FF|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
