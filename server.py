@@ -12,10 +12,12 @@ out/jobs/, so re-opening a document reuses finished work.
 """
 
 import json
+import multiprocessing
+import os
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import deque
 from pathlib import Path
 
 import pymupdf
@@ -26,8 +28,8 @@ from pydantic import BaseModel
 
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
+from takeoff_engine.detect_page import error_path, result_path, run_detect
 from takeoff_engine.extract import extract_strokes, page_words
-from takeoff_engine.legend_detect import read_legend
 from takeoff_engine.scale_detect import detect_scale
 
 ROOT = Path(__file__).parent
@@ -44,11 +46,10 @@ SAMPLES_DIR = (ROOT / ".." / "TakeoffPro AI").resolve()
 #   TAKEOFF_HOSTED=1    hosted mode - open-path/legend-sheet paths are
 #                       refused outright (uploads only) and /api/samples
 #                       is empty, so one tenant never sees another's files
-_os = __import__("os")
-HOSTED = _os.environ.get("TAKEOFF_HOSTED", "").strip().lower() in ("1", "true", "yes")
-_roots_env = _os.environ.get("TAKEOFF_PLAN_ROOTS", "").strip()
+HOSTED = os.environ.get("TAKEOFF_HOSTED", "").strip().lower() in ("1", "true", "yes")
+_roots_env = os.environ.get("TAKEOFF_PLAN_ROOTS", "").strip()
 PLAN_ROOTS = [Path(r).expanduser().resolve()
-              for r in (_roots_env.split(_os.pathsep) if _roots_env else [])
+              for r in (_roots_env.split(os.pathsep) if _roots_env else [])
               if r.strip()] or [
     SAMPLES_DIR,
     (ROOT / ".." / "client_meet").resolve(),
@@ -90,7 +91,7 @@ app = FastAPI(title="Takeoff Detection Service")
 # Optional site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic
 # auth on every request (username is ignored). Meant for exposing the
 # review UI through a tunnel for remote demos.
-_UI_PASSWORD = __import__("os").environ.get("TAKEOFF_UI_PASSWORD")
+_UI_PASSWORD = os.environ.get("TAKEOFF_UI_PASSWORD")
 if _UI_PASSWORD:
     import base64 as _b64
     import secrets as _secrets
@@ -262,194 +263,145 @@ def _404():
     raise HTTPException(404, "unknown job")
 
 
+# ---------- detection scheduler: one child PROCESS per page ----------
+# Detection used to run in a thread inside the web process. One heavy sheet
+# pinned the CPU and the GIL (the extract/chain hot loops are C calls that
+# never release it), so page images, samples and status stalled for seconds,
+# nothing capped concurrency, and nothing could kill a runaway page
+# (python-level SIGALRM budgets never fire inside a C call - FINDINGS F23).
+# Each page now runs in a spawned child process (takeoff_engine.detect_page
+# .run_detect, which writes the same p{page}_result.json): the web process
+# stays responsive, at most TAKEOFF_WORKERS children run at once (FIFO
+# beyond that), and a child over TAKEOFF_PAGE_BUDGET_S is terminated.
+# Default cap is 4, not cpu_count-1: a heavy sheet (Barn civil p3, 412k
+# paths) peaks at multiple GB, so 15 concurrent children on a 16-core box
+# would swap long before they ran out of cores. Raise TAKEOFF_WORKERS on a
+# box sized for it.
+TAKEOFF_WORKERS = max(1, int(os.environ.get("TAKEOFF_WORKERS")
+                             or min(4, max(1, (os.cpu_count() or 2) - 1))))
+TAKEOFF_PAGE_BUDGET_S = float(os.environ.get("TAKEOFF_PAGE_BUDGET_S") or 900)
+_MP = multiprocessing.get_context("spawn")
+_SCHED = threading.Condition()          # guards the two containers below
+_SCHED_QUEUE: deque = deque()           # (job_id, page) FIFO, not started yet
+_SCHED_RUNNING: dict = {}               # (job_id, page) -> {"proc", "t0"}
+_SCHED_THREAD: list = []                # [Thread] once the watcher is up
+
+
+def _sched_start_locked(job_id: str, page: int) -> None:
+    job = JOBS[job_id]
+    proc = _MP.Process(
+        target=run_detect, args=(job["path"], page, str(_job_dir(job_id))),
+        name=f"detect-{job_id}-p{page}", daemon=True)
+    proc.start()
+    _SCHED_RUNNING[(job_id, page)] = {"proc": proc, "t0": time.time()}
+
+
+def _sched_fill_locked() -> None:
+    while _SCHED_QUEUE and len(_SCHED_RUNNING) < TAKEOFF_WORKERS:
+        job_id, page = _SCHED_QUEUE.popleft()
+        try:
+            _sched_start_locked(job_id, page)
+        except Exception as e:  # spawn itself failed; surface like any error
+            JOBS[job_id]["status"][page] = f"error: could not start worker: {e}"
+
+
+def _sched_finish_locked(key: tuple, reason: str | None = None) -> None:
+    """Record the outcome of a child that has exited (reason=None: read it
+    off the disk) or that we killed (reason given: clean partial files)."""
+    job_id, page = key
+    proc = _SCHED_RUNNING.pop(key)["proc"]
+    d = _job_dir(job_id)
+    rf, ef = result_path(d, page), error_path(d, page)
+    if reason is None:
+        if rf.exists():
+            st = "done"
+        elif ef.exists():
+            try:
+                st = f"error: {ef.read_text()}"
+            except OSError:
+                st = "error: detection failed"
+        else:
+            st = f"error: worker exited with code {proc.exitcode}"
+    else:
+        st = reason
+        rf.unlink(missing_ok=True)  # a kill mid-write leaves a truncated file
+    ef.unlink(missing_ok=True)
+    try:
+        proc.close()
+    except Exception:
+        pass
+    job = JOBS.get(job_id)
+    if job is not None:
+        job["status"][page] = st
+
+
+def _sched_loop() -> None:
+    """Watcher: reap finished children, kill over-budget ones, start queued."""
+    while True:
+        with _SCHED:
+            _SCHED.wait(timeout=0.25)
+            now = time.time()
+            for key, info in list(_SCHED_RUNNING.items()):
+                proc = info["proc"]
+                if not proc.is_alive():
+                    proc.join()
+                    _sched_finish_locked(key)
+                elif now - info["t0"] > TAKEOFF_PAGE_BUDGET_S:
+                    proc.terminate()
+                    proc.join(10)
+                    _sched_finish_locked(
+                        key, f"error: timeout after {TAKEOFF_PAGE_BUDGET_S:g}s")
+            _sched_fill_locked()
+
+
+def _enqueue_detect(job_id: str, page: int) -> bool:
+    """Queue a page for detection; returns True if it was already queued or
+    running (so a double-click / a detect-all pass never runs a page twice)."""
+    key = (job_id, page)
+    with _SCHED:
+        if key in _SCHED_RUNNING or key in _SCHED_QUEUE:
+            return True
+        JOBS[job_id]["status"][page] = "running"
+        _SCHED_QUEUE.append(key)
+        if not _SCHED_THREAD:
+            t = threading.Thread(target=_sched_loop, name="detect-scheduler",
+                                 daemon=True)
+            t.start()
+            _SCHED_THREAD.append(t)
+        _sched_fill_locked()
+        _SCHED.notify()
+        return False
+
+
+def _is_queued(job_id: str, page: int) -> bool:
+    with _SCHED:
+        return (job_id, page) in _SCHED_QUEUE
+
+
 def _detect_worker(job_id: str, page: int):
+    """Synchronous in-process detection (scripts / tests). The service itself
+    goes through _enqueue_detect; this keeps the old entry point callable."""
     job = JOBS[job_id]
     try:
-        doc = pymupdf.open(job["path"])
-        pg = doc[page]
-        pc = classify_page(pg)
-        if pc.kind == "raster":
-            from takeoff_engine.raster import extract_raster_units
-
-            words: list = []
-            units = extract_raster_units(pg, words_out=words)
-        else:
-            units = extract_strokes(pg)
-            words = page_words(pg)
-            has_layers = any(u.layer for u in units[:300])
-            if pc.text_chars < 1500 and not has_layers:
-                # sparse text + no CAD layers = exploded annotations with no
-                # metadata; OCR fills in word boxes for junk pruning +
-                # dash-text labels. Layered pages skip OCR - layer names are
-                # strictly better metadata and OCR words only add noise.
-                try:
-                    import numpy as _np
-
-                    from takeoff_engine.text_detect import ocr_words
-
-                    _pix = pg.get_pixmap(matrix=pymupdf.Matrix(150 / 72, 150 / 72),
-                                         colorspace="rgb")
-                    _img = _np.frombuffer(_pix.samples, dtype=_np.uint8).reshape(
-                        _pix.height, _pix.width, 3)
-                    words = list(words) + ocr_words(_img, px_to_pt=72.0 / 150)
-                except Exception:
-                    pass
-            if pc.kind == "hybrid":
-                from takeoff_engine.raster import extract_hybrid_image_units
-
-                units.extend(extract_hybrid_image_units(pg))
-        chains = build_chains(units, words=words)
-
-        _legend_labels: dict = {}
-        styles: dict = defaultdict(lambda: {
-            "n": 0, "length_pt": 0.0, "class": "", "color": None,
-            "width": 0.0, "layer": "", "signature": "",
-        })
-        for c in chains:
-            s = styles[c.style_id]
-            s["n"] += 1
-            s["length_pt"] += c.length
-            s["class"] = c.klass
-            s["color"] = c.color
-            s["width"] = c.width
-            s["layer"] = c.layer
-            s["signature"] = c.dash_signature
-        style_list = []
-        for sid, s in styles.items():
-            label = s["layer"].split("|")[-1] if s["layer"] else \
-                f'{s["class"]} {s["signature"]}'.strip()
-            label = _legend_labels.get(sid, label)
-            style_list.append({
-                "style_id": sid, "suggested_label": label,
-                "length_pt": round(s["length_pt"], 1), **{
-                    k: s[k] for k in ("n", "class", "color", "width",
-                                      "layer", "signature")},
-            })
-        style_list.sort(key=lambda s: -s["length_pt"])
-
-        # legend reading: OCR words help here even on layered pages (the
-        # legend text is often exploded strokes); these words are used ONLY
-        # for the legend, not for chaining
-        words_legend = list(words)
-        if pc.text_chars < 1500 and pc.kind != "raster":
-            try:
-                import numpy as _np2
-
-                from takeoff_engine.text_detect import ocr_words as _ocr
-
-                _pix2 = pg.get_pixmap(matrix=pymupdf.Matrix(150 / 72, 150 / 72),
-                                      colorspace="rgb")
-                _img2 = _np2.frombuffer(_pix2.samples, dtype=_np2.uint8).reshape(
-                    _pix2.height, _pix2.width, 3)
-                words_legend += _ocr(_img2, px_to_pt=72.0 / 150)
-            except Exception:
-                pass
-        legend = read_legend(words_legend, chains, units=units)
-        _legend_labels.update(legend["style_labels"])
-        # swatch locations: the legend's own sample bars must never be
-        # counted as takeoff objects (Belle p2 grew a 25th 'shear wall')
-        legend_samples = [e["sample_box"] for e in legend.get("entries", [])
-                          if e.get("sample_box")]
-        # the swatch bars themselves are sheet furniture: demote the
-        # chains living inside the legend strips so they never reach the
-        # style pool as takeoff linework
-        import numpy as _np
-        for c in chains:
-            if c.klass == "annotation" or len(c.pts) < 2:
-                continue
-            m = _np.asarray(c.pts).mean(axis=0)
-            for b in legend_samples:
-                if b[0]-6 <= m[0] <= b[2]+6 and b[1]-8 <= m[1] <= b[3]+8 \
-                        and c.length <= 1.5 * (b[2] - b[0]):
-                    c.klass = "annotation"
-                    c.dash_signature = "legend swatch"
-                    break
-        for st in style_list:
-            if st["style_id"] in _legend_labels:
-                st["suggested_label"] = _legend_labels[st["style_id"]] + " (legend)"
-        scale = detect_scale(pg).to_dict()
-        from takeoff_engine.extract import fill_boxes, door_swings
-        try:
-            fills = fill_boxes(pg)
-        except Exception:
-            fills = []
-        try:
-            openings = door_swings(
-                units, (scale or {}).get("ft_per_paper_inch"), words)
-        except Exception:
-            openings = []
-        # texture styles: a shading fill is MANY parallel chains at a tight
-        # regular pitch. Measured: GCHC 'SHADING ASPHALT' strips pitch
-        # 1-4pt; real parallel features sit far wider (contours 20-40pt,
-        # curb pairs are 2 members). Flagged styles default OFF in the UI
-        # and render faint - they are area shading, not takeoff linework.
-        import numpy as _np
-        by_style_chains = {}
-        for c in chains:
-            by_style_chains.setdefault(c.style_id, []).append(c)
-        for st in style_list:
-            cs = by_style_chains.get(st["style_id"], [])
-            st["texture"] = False
-            if len(cs) < 15:
-                continue
-            dirs = []
-            mids = []
-            for c in cs:
-                pts = _np.asarray(c.pts)
-                v = pts[-1] - pts[0]
-                n = float(_np.hypot(*v))
-                if n < 1e-6:
-                    continue
-                dirs.append(v / n)
-                mids.append(pts.mean(axis=0))
-            if len(dirs) < 15:
-                continue
-            D = _np.asarray(dirs)
-            ang = _np.arctan2(D[:, 1], D[:, 0]) * 2
-            R = float(_np.hypot(_np.mean(_np.cos(ang)), _np.mean(_np.sin(ang))))
-            if R < 0.80:
-                continue  # 0.80: GCHC EXST-CONCRETE shading bends with the
-                          # slope and measured R=0.84; real mixed-direction
-                          # linework sits far lower (L-PVMT-CONC: 0.21)
-            mean_ang = _np.arctan2(_np.mean(_np.sin(ang)), _np.mean(_np.cos(ang))) / 2
-            nrm = _np.array([-_np.sin(mean_ang), _np.cos(mean_ang)])
-            off = _np.sort(_np.asarray(mids) @ nrm)
-            gaps = _np.diff(off)
-            gaps = gaps[gaps > 0.05]
-            # pitch 9.0: measured shading pitches 1-4pt (GCHC South) and
-            # 6.2-6.6pt (GCHC North EXST-CONCRETE, escaped the first 6.0
-            # gate by 0.2-0.6pt); nearest real parallel features are
-            # contour fields at 18-40pt - margin stays > 2x
-            if len(gaps) >= 10 and float(_np.median(gaps)) <= 9.0:
-                st["texture"] = True
-        result = {
-            "page": pc.to_dict(),
-            "scale": scale,
-            "legend": legend["entries"],
-            "styles": style_list,
-            "chains": [c.to_dict() for c in chains],
-            "fills": fills,
-            "openings": openings,
-            "legend_samples": legend_samples,
-        }
-        (_job_dir(job_id) / f"p{page}_result.json").write_text(json.dumps(result))
+        run_detect(job["path"], page, str(_job_dir(job_id)))
         job["status"][page] = "done"
     except Exception as e:  # surfaced to the UI
         job["status"][page] = f"error: {e}"
         raise
+    finally:
+        error_path(_job_dir(job_id), page).unlink(missing_ok=True)
 
 
 @app.post("/api/job/{job_id}/page/{page}/detect")
 def detect(job_id: str, page: int):
     job = JOBS.get(job_id) or _404()
     if job["status"].get(page) == "running":
-        return {"status": "running"}
+        return {"status": "running", "queued": _is_queued(job_id, page)}
     if (_job_dir(job_id) / f"p{page}_result.json").exists():
         job["status"][page] = "done"
         return {"status": "done"}
-    job["status"][page] = "running"
-    threading.Thread(target=_detect_worker, args=(job_id, page), daemon=True).start()
-    return {"status": "running"}
+    _enqueue_detect(job_id, page)
+    return {"status": "running", "queued": _is_queued(job_id, page)}
 
 
 @app.get("/api/job/{job_id}/page/{page}/status")
@@ -458,7 +410,10 @@ def status(job_id: str, page: int):
     st = job["status"].get(page)
     if st is None and (_job_dir(job_id) / f"p{page}_result.json").exists():
         st = "done"
-    return {"status": st or "idle"}
+    out = {"status": st or "idle"}
+    if st == "running" and _is_queued(job_id, page):
+        out["queued"] = True
+    return out
 
 
 @app.get("/api/job/{job_id}/page/{page}/result")
