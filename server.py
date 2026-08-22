@@ -947,6 +947,19 @@ class EarthworkBody(BaseModel):
     existing: list[dict] = []
     proposed: list[dict] = []
     cell_ft: float = 2.0
+    # Layer stacks (Beaumont workflow, F52). Each {name, thickness_in}.
+    # existing_layers come OFF first (topsoil strip from the soils report,
+    # old asphalt, road base): their total lowers the existing surface
+    # before cut/fill. proposed_layers are built back on the proposed
+    # side (driveway base + paving): the sheet shows finish grade, the
+    # dig stops that much lower, so their total lowers the proposed
+    # surface. Each layer's own volume = area x thickness.
+    existing_layers: list[dict] = []
+    proposed_layers: list[dict] = []
+    # area the layers apply over, SF. Default: the TIN overlap area_sf
+    # (where both surfaces are defined) - override with the clear & grub
+    # area when the strip extends beyond the graded region.
+    strip_area_sf: float | None = None
 
 
 @app.get("/api/job/{job_id}/page/{page}/earthwork/suggest")
@@ -1010,9 +1023,27 @@ def earthwork_suggest(job_id: str, page: int):
                     "proposed before calculating"}
 
 
-@app.post("/api/job/{job_id}/page/{page}/earthwork")
-def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
-    """Cut & fill volumes between two labeled contour surfaces."""
+def _layer_stack(rows: list) -> tuple[list, float]:
+    """[{name, thickness_in}] -> (clean rows, total thickness ft)."""
+    out, tot_in = [], 0.0
+    for r in rows or []:
+        try:
+            t = float(r.get("thickness_in", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if t <= 0:
+            continue
+        out.append({"name": str(r.get("name") or "layer").strip() or "layer",
+                    "thickness_in": t})
+        tot_in += t
+    return out, tot_in / 12.0
+
+
+def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
+                   return_grid: bool = False) -> dict:
+    """Shared by the volumes endpoint and the map endpoint: build both
+    surfaces from the stored chains, lower each by its layer stack, and
+    difference them. Adds the per-layer volumes and the offsets used."""
     import numpy as _np
 
     from takeoff_engine.earthwork import Surface, cut_fill
@@ -1036,13 +1067,89 @@ def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
             if cid in pts_by_id:
                 surf.contours.append((pts_by_id[cid], float(r["z"])))
         return surf
+    ex_layers, ex_off = _layer_stack(body.existing_layers)
+    pr_layers, pr_off = _layer_stack(body.proposed_layers)
     result = cut_fill(build("existing", body.existing),
                       build("proposed", body.proposed),
-                      ft_per_pt, cell_ft=body.cell_ft)
+                      ft_per_pt, cell_ft=body.cell_ft,
+                      existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
+                      return_grid=return_grid)
     if "error" in result:
         raise HTTPException(400, result["error"])
     result["ft_per_pt"] = round(ft_per_pt, 5)
-    return JSONResponse(result)
+    result["existing_offset_ft"] = round(ex_off, 4)
+    result["proposed_offset_ft"] = round(pr_off, 4)
+    # layer volumes: a slab of the strip area at the layer's thickness.
+    # Default area is the TIN overlap (the region the cut/fill itself
+    # covers); strip_area_sf overrides it with e.g. the clear & grub area.
+    area = float(body.strip_area_sf) if body.strip_area_sf else float(result["area_sf"])
+    result["layer_area_sf"] = round(area, 0)
+    layers = []
+    for side, rows in (("existing", ex_layers), ("proposed", pr_layers)):
+        for r in rows:
+            layers.append({"name": r["name"], "side": side,
+                           "thickness_in": r["thickness_in"],
+                           "volume_yd3": round(area * r["thickness_in"] / 12.0 / 27.0, 1)})
+    result["layers"] = layers
+    return result
+
+
+@app.post("/api/job/{job_id}/page/{page}/earthwork")
+def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
+    """Cut & fill volumes between two labeled contour surfaces, after
+    lowering each by its layer stack (see EarthworkBody)."""
+    return JSONResponse(_earthwork_run(job_id, page, body))
+
+
+@app.post("/api/job/{job_id}/page/{page}/earthwork/map")
+def earthwork_map(job_id: str, page: int, body: EarthworkBody):
+    """Cut/fill map for the same request body as /earthwork: an RGBA PNG
+    of the dz grid (cut blue, fill yellow-orange, depth -> opacity,
+    undefined cells clear). Registration for the caller rides in headers:
+      X-Map-Bbox    x0,y0,x1,y1 in page pt (the PNG stretches to this box)
+      X-Map-Cell-Pt grid cell size in pt
+      X-Map-Ref-Dz  |dz| in ft at which the colour reaches full opacity
+    The PNG + its meta are cached as the LAST map for (job, page); GET the
+    same path to re-read them without recomputing."""
+    from takeoff_engine.earthwork import render_cut_fill_map
+
+    result = _earthwork_run(job_id, page, body, return_grid=True)
+    png, meta = render_cut_fill_map(result.pop("grid"))
+    meta.update({k: result[k] for k in
+                 ("cut_yd3", "fill_yd3", "net_yd3", "area_sf", "cell_ft",
+                  "existing_offset_ft", "proposed_offset_ft")})
+    d = _job_dir(job_id)
+    try:
+        (d / f"p{page}_ewmap.png").write_bytes(png)
+        (d / f"p{page}_ewmap.json").write_text(json.dumps(meta))
+    except OSError:
+        pass
+    return Response(png, media_type="image/png",
+                    headers=_ewmap_headers(meta))
+
+
+def _ewmap_headers(meta: dict) -> dict:
+    return {
+        "X-Map-Bbox": ",".join(f"{v:.3f}" for v in meta["bbox_pt"]),
+        "X-Map-Cell-Pt": f"{meta['cell_pt']:.5f}",
+        "X-Map-Ref-Dz": f"{meta['ref_dz_ft']:.3f}",
+        "Cache-Control": "no-store",
+    }
+
+
+@app.get("/api/job/{job_id}/page/{page}/earthwork/map")
+def earthwork_map_cached(job_id: str, page: int, meta: int = 0):
+    """The last map rendered for (job, page): PNG by default, or its
+    JSON meta (bbox, cell, ref depth, volumes) with ?meta=1."""
+    d = _job_dir(job_id)
+    pj, pp = d / f"p{page}_ewmap.json", d / f"p{page}_ewmap.png"
+    if not (pj.exists() and pp.exists()):
+        raise HTTPException(404, "no cut/fill map yet - POST this path first")
+    m = json.loads(pj.read_text())
+    if meta:
+        return JSONResponse(m)
+    return Response(pp.read_bytes(), media_type="image/png",
+                    headers=_ewmap_headers(m))
 
 
 @app.get("/api/job/{job_id}/page/{page}/callouts")

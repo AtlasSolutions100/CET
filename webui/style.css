@@ -144,6 +144,22 @@ canvas#view.panning { cursor: grabbing; }
 #ewCalc { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
 .ew-result { font-size: 12px; color: var(--text); }
 .ew-meta { color: var(--dim); font-size: 10.5px; }
+/* layer stacks: what comes off the existing side, what goes on the proposed */
+.ew-layers { padding: 4px 8px 6px; border-top: 1px solid var(--line); }
+.ew-layers-head { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--dim); padding: 5px 4px 2px; }
+.ew-layers-head span { flex: 1; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; font-size: 10px; }
+.ew-layer-rows:empty::after { content: "none"; color: var(--dim); font-size: 11px; padding: 2px 4px; display: block; }
+.ew-layer-row { display: grid; grid-template-columns: 1fr 54px auto auto; gap: 6px; align-items: center; padding: 2px 4px; border-radius: 6px; }
+.ew-layer-row:hover { background: var(--hover); }
+.ew-layer-row input { width: 100%; padding: 2px 6px; font-size: 12px; }
+.ew-layer-row .unit { color: var(--dim); font-size: 11px; }
+.ew-layer-row .x { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.ew-layer-out { font-size: 11.5px; padding: 4px 4px 0; }
+.ew-layer-out div { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+.ew-layer-out b { font-variant-numeric: tabular-nums; }
+.ew-layer-out .sub { color: var(--dim); }
+.ew-map-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-left: auto; white-space: nowrap; cursor: pointer; }
+.ew-map-toggle input { margin: 0; }
 
 .side-head h2, .takeoff-head h2 { cursor: pointer; user-select: none; }
 .side-head h2::before, .takeoff-head h2::before { content: "▾ "; color: var(--dim); }

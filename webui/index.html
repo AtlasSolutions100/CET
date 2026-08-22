@@ -58,9 +58,20 @@
         Set which surface it belongs to; fix any elevation the sheet reader got wrong.
         Volumes only compute where both surfaces overlap.</div>
       <div id="ewRows" class="ew-rows"></div>
+      <div id="ewLayers" class="ew-layers">
+        <div class="ew-layers-head"><span>Existing layers to remove</span>
+          <button id="ewStrip" class="mini" title="Topsoil comes off first; thickness is from the soils report, not the plans">Strip topsoil</button>
+          <button id="ewAddEx" class="mini">+ add layer</button></div>
+        <div id="ewExLayers" class="ew-layer-rows"></div>
+        <div class="ew-layers-head"><span>Proposed layers (fill stack)</span>
+          <button id="ewAddPr" class="mini" title="What gets built on the proposed side (base, paving): the dig stops this much below the finish grade drawn">+ add layer</button></div>
+        <div id="ewPrLayers" class="ew-layer-rows"></div>
+        <div id="ewLayerOut" class="ew-layer-out"></div>
+      </div>
       <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
         <span id="ewResult" class="ew-result"></span>
+        <label class="ew-map-toggle" title="Paint where the dirt moves: cut blue, fill yellow; deeper = stronger"><input type="checkbox" id="ewMap"> Show cut/fill map</label>
       </div>
     </div>
     <div id="trPanel" class="ew-panel" hidden>

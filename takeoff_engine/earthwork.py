@@ -46,8 +46,26 @@ class Surface:
 
 
 def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
-             cell_ft: float = 2.0) -> dict:
-    """Grid-integrate (proposed - existing) where both TINs are defined."""
+             cell_ft: float = 2.0, existing_offset_ft: float = 0.0,
+             proposed_offset_ft: float = 0.0,
+             return_grid: bool = False) -> dict:
+    """Grid-integrate (proposed - existing) where both TINs are defined.
+
+    Offsets LOWER a surface before differencing (z - offset). The client's
+    workflow (Beaumont, F52): strip topsoil first - a thickness from the
+    soils report, never on the plans - so the existing ground the cut/fill
+    starts from is that much lower; remove named layers (asphalt, road
+    base) the same way. On the proposed side the sheet draws finish grade
+    but the dig stops at subgrade under the pavement stack, so the proposed
+    surface drops by that stack. Lowering existing by e and proposed by p
+    shifts every dz by (e - p): net_yd3 moves by exactly area * (e - p) / 27.
+
+    return_grid=True adds "grid": the full dz array (NaN where either TIN
+    is undefined), the "ok" mask, and the grid's origin / cell size in page
+    pt so a caller can paint a cut/fill map registered to the sheet. The
+    default call path (offsets 0, no grid) returns exactly what it always
+    did - same keys, same numbers.
+    """
     fe, pe = existing.interpolator()
     fp, pp = proposed.interpolator()
     if fe is None or fp is None:
@@ -74,11 +92,17 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
     ok = ~(np.isnan(ze) | np.isnan(zp))
     if not ok.any():
         return {"error": "surfaces overlap in plan but their TINs do not"}
-    dz = (zp - ze)[ok]
+    # guarded so the zero-offset path is the exact expression it always was
+    if existing_offset_ft:
+        ze = ze - float(existing_offset_ft)
+    if proposed_offset_ft:
+        zp = zp - float(proposed_offset_ft)
+    dz_grid = zp - ze
+    dz = dz_grid[ok]
     cell_area_ft2 = cell_ft * cell_ft
     fill_ft3 = float(dz[dz > 0].sum() * cell_area_ft2)
     cut_ft3 = float(-dz[dz < 0].sum() * cell_area_ft2)
-    return {
+    out = {
         "cut_yd3": round(cut_ft3 / 27.0, 1),
         "fill_yd3": round(fill_ft3 / 27.0, 1),
         "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),
@@ -87,6 +111,64 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         "existing_contours": len(existing.contours),
         "proposed_contours": len(proposed.contours),
     }
+    if return_grid:
+        # row i / col j of dz covers page-pt box
+        #   [x0 + j*cell_pt, x0 + (j+1)*cell_pt] x [y0 + i*cell_pt, ...]
+        # (samples sit at the cell centres), so an nx-by-ny image placed at
+        # bbox registers to the sheet without a half-cell shift
+        out["grid"] = {
+            "dz": np.where(ok, dz_grid, np.nan),
+            "ok": ok,
+            "x0_pt": float(lo[0]), "y0_pt": float(lo[1]),
+            "cell_pt": float(cell_pt), "nx": int(nx), "ny": int(ny),
+            "bbox_pt": [float(lo[0]), float(lo[1]),
+                        float(lo[0] + nx * cell_pt),
+                        float(lo[1] + ny * cell_pt)],
+        }
+    return out
+
+
+def render_cut_fill_map(grid: dict) -> tuple[bytes, dict]:
+    """Paint a dz grid as an RGBA PNG: cut (dz < 0) blue, fill (dz > 0)
+    yellow-orange, |dz| -> alpha 0.15..0.75, undefined cells transparent.
+
+    Colour convention is the client's (Beaumont: "cut blue, fill yellow"),
+    not an industry standard. Alpha saturates at the 95th percentile of
+    |dz| so one deep pad corner does not wash out the rest of the map;
+    the reference depth is returned so a legend can say what full
+    opacity means.
+    """
+    import io
+
+    from PIL import Image
+
+    dz = np.asarray(grid["dz"], float)
+    ok = np.asarray(grid["ok"], bool)
+    mag = np.abs(np.where(ok, dz, 0.0))
+    # below a millimetre is TIN floating-point noise, not earth: leave clear
+    EPS = 0.003
+    nz = mag[ok & (mag > EPS)]
+    ref = float(np.percentile(nz, 95)) if nz.size else 1.0
+    if ref <= EPS:
+        ref = 1.0
+    t = np.clip(mag / ref, 0.0, 1.0)
+    alpha = np.where(ok & (mag > EPS), 0.15 + 0.60 * t, 0.0)
+    H, W = dz.shape
+    rgba = np.zeros((H, W, 4), np.uint8)
+    cut = ok & (dz < -EPS)
+    fill = ok & (dz > EPS)
+    rgba[cut] = (30, 100, 255, 0)       # blue
+    rgba[fill] = (255, 190, 20, 0)      # yellow-orange
+    rgba[..., 3] = np.round(alpha * 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(rgba, "RGBA").save(buf, format="PNG")
+    meta = {
+        "bbox_pt": grid["bbox_pt"], "cell_pt": grid["cell_pt"],
+        "nx": grid["nx"], "ny": grid["ny"],
+        "ref_dz_ft": round(ref, 3),
+        "cut_cells": int(cut.sum()), "fill_cells": int(fill.sum()),
+    }
+    return buf.getvalue(), meta
 
 
 def suggest_elevations(chains: list, words: list,

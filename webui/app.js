@@ -276,7 +276,7 @@ async function loadResult(gen = state.gen) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
   state.tr = null; state.sym = null; state.symMarks = null;
-  $("ewPanel").hidden = true; $("ewBtn").hidden = false;
+  $("ewPanel").hidden = true; $("ewBtn").hidden = false; $("ewMap").checked = false;
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
@@ -1125,7 +1125,7 @@ const SECTIONS = [
   ["legendHead", ["legendBox"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
-  ["ewHead", ["ewRows", "ewHint", "ewActions"]],
+  ["ewHead", ["ewRows", "ewHint", "ewLayers", "ewActions"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
@@ -1165,10 +1165,92 @@ $("ewBtn").onclick = async () => {
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
       })),
       result: null,
+      // layer stacks (Beaumont workflow): what comes OFF the existing
+      // ground before cut/fill starts (topsoil strip, old asphalt, road
+      // base) and what gets BUILT on the proposed side (base, paving).
+      // Session-only like the rest of this panel. {name, thickness_in}
+      layers: { existing: [], proposed: [] },
+      map: null,   // {img, bbox} once "Show cut/fill map" is on
     };
   }
   renderEw();
+  renderEwLayers();
 };
+
+function renderEwLayers() {
+  if (!state.ew) return;
+  for (const [side, boxId] of [["existing", "ewExLayers"], ["proposed", "ewPrLayers"]]) {
+    const box = $(boxId);
+    box.innerHTML = "";
+    state.ew.layers[side].forEach((lay, i) => {
+      const row = document.createElement("div");
+      row.className = "ew-layer-row";
+      const name = document.createElement("input");
+      name.type = "text"; name.value = lay.name; name.placeholder = "layer name";
+      name.name = `ew-layer-${side}-${i}-name`;
+      name.oninput = () => { lay.name = name.value; };
+      const th = document.createElement("input");
+      th.type = "number"; th.step = "0.5"; th.min = "0"; th.value = lay.thickness_in;
+      th.name = `ew-layer-${side}-${i}-in`;
+      th.oninput = () => { lay.thickness_in = parseFloat(th.value); };
+      const unit = document.createElement("span");
+      unit.className = "unit"; unit.textContent = "in";
+      const x = document.createElement("button");
+      x.className = "mini x"; x.textContent = "×"; x.title = "remove layer";
+      x.onclick = () => { state.ew.layers[side].splice(i, 1); renderEwLayers(); };
+      row.append(name, th, unit, x);
+      box.appendChild(row);
+    });
+  }
+}
+
+$("ewStrip").onclick = () => {
+  if (!state.ew) return;
+  // Topsoil is stripped first on every job; 12" is a placeholder for the
+  // soils-report thickness (Beaumont quoted 12"; their Barn bid works out
+  // to ~8.3") - editable like any other row
+  if (!state.ew.layers.existing.some(l => /topsoil/i.test(l.name)))
+    state.ew.layers.existing.unshift({ name: "Topsoil", thickness_in: 12 });
+  renderEwLayers();
+};
+$("ewAddEx").onclick = () => {
+  if (!state.ew) return;
+  state.ew.layers.existing.push({ name: "", thickness_in: 4 });
+  renderEwLayers();
+  const rows = $("ewExLayers").querySelectorAll("input[type=text]");
+  if (rows.length) rows[rows.length - 1].focus();
+};
+$("ewAddPr").onclick = () => {
+  if (!state.ew) return;
+  state.ew.layers.proposed.push({ name: "", thickness_in: 8 });
+  renderEwLayers();
+  const rows = $("ewPrLayers").querySelectorAll("input[type=text]");
+  if (rows.length) rows[rows.length - 1].focus();
+};
+
+// the request body the volumes AND the map endpoints both take
+function ewBody() {
+  const lay = side => state.ew.layers[side]
+    .filter(l => isFinite(l.thickness_in) && l.thickness_in > 0)
+    .map(l => ({ name: (l.name || "").trim() || "layer", thickness_in: l.thickness_in }));
+  return {
+    existing: state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z))
+      .map(r => ({ chain_id: r.chain_id, z: r.z })),
+    proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
+      .map(r => ({ chain_id: r.chain_id, z: r.z })),
+    cell_ft: 2.0,
+    existing_layers: lay("existing"),
+    proposed_layers: lay("proposed"),
+  };
+}
+
+// Bid-sheet names (Beaumont's 22-item sheet) for the itemized takeoff
+function ewItemLabel(layer) {
+  if (layer.side === "existing")
+    return /topsoil/i.test(layer.name) ? "Strip Topsoil" : `Remove ${layer.name}`;
+  return `Place ${layer.name}`;
+}
+const EW_ITEM_RE = /^(Site Cut|Site Fill|Strip Topsoil|Remove |Place |(Cut|Fill) \(earthwork\))/;
 
 function renderEw() {
   const box = $("ewRows");
@@ -1215,13 +1297,7 @@ function renderEw() {
 
 $("ewCalc").onclick = async () => {
   if (!state.ew) return;
-  const body = {
-    existing: state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z))
-      .map(r => ({ chain_id: r.chain_id, z: r.z })),
-    proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
-      .map(r => ({ chain_id: r.chain_id, z: r.z })),
-    cell_ft: 2.0,
-  };
+  const body = ewBody();
   $("ewResult").textContent = "calculating…";
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1234,14 +1310,63 @@ $("ewCalc").onclick = async () => {
   }
   const j = await r.json();
   state.ew.result = j;
+  const off = [];
+  if (j.existing_offset_ft) off.push(`existing −${j.existing_offset_ft.toFixed(2)} ft`);
+  if (j.proposed_offset_ft) off.push(`proposed −${j.proposed_offset_ft.toFixed(2)} ft`);
+  // the engine reports -0.0 when nothing is cut (negated empty sum); show 0
+  const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
   $("ewResult").innerHTML =
-    `<b>cut ${j.cut_yd3.toLocaleString()} CY</b> · <b>fill ${j.fill_yd3.toLocaleString()} CY</b>` +
-    ` · net ${j.net_yd3.toLocaleString()} CY over ${Number(j.area_sf).toLocaleString()} SF`;
-  // land the volumes in the itemised takeoff like any other priced row
-  state.extraItems = state.extraItems.filter(it => !/^(Cut|Fill) \(earthwork\)/.test(it.label));
-  if (j.cut_yd3 > 0) state.extraItems.push({ label: "Cut (earthwork)", qty: j.cut_yd3, unit: "CY" });
-  if (j.fill_yd3 > 0) state.extraItems.push({ label: "Fill (earthwork)", qty: j.fill_yd3, unit: "CY" });
+    `<b>cut ${cutQ.toLocaleString()} CY</b> · <b>fill ${fillQ.toLocaleString()} CY</b>` +
+    ` · net ${j.net_yd3.toLocaleString()} CY over ${Number(j.area_sf).toLocaleString()} SF` +
+    (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
+  // per-layer slabs: area x thickness, shown under the stacks
+  const out = $("ewLayerOut");
+  out.innerHTML = "";
+  for (const lay of (j.layers || [])) {
+    const d = document.createElement("div");
+    d.innerHTML = `<span>${ewItemLabel(lay)} <span class="sub">· ${lay.thickness_in}" over ` +
+      `${Number(j.layer_area_sf || j.area_sf).toLocaleString()} SF</span></span><b>${lay.volume_yd3.toLocaleString()} CY</b>`;
+    out.appendChild(d);
+  }
+  // land the volumes in the itemised takeoff like any other priced row,
+  // named as on Beaumont's bid sheet; every earthwork row is replaced
+  // on each Calculate so edits never double-count
+  state.extraItems = state.extraItems.filter(it => !EW_ITEM_RE.test(it.label));
+  if (j.cut_yd3 > 0) state.extraItems.push({ label: "Site Cut", qty: j.cut_yd3, unit: "CY" });
+  if (j.fill_yd3 > 0) state.extraItems.push({ label: "Site Fill", qty: j.fill_yd3, unit: "CY" });
+  for (const lay of (j.layers || []))
+    if (lay.volume_yd3 > 0) state.extraItems.push({ label: ewItemLabel(lay), qty: lay.volume_yd3, unit: "CY" });
   renderItemized();
+  if ($("ewMap").checked) await ewFetchMap();
+};
+
+// cut/fill map: the server paints the dz grid (cut blue, fill yellow,
+// depth -> opacity) and tells us the page-pt box it covers; draw() lays
+// it under the chains. Refetched on every Calculate while the toggle is on.
+async function ewFetchMap() {
+  if (!state.ew) return;
+  const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/map`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ewBody()),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    $("ewResult").textContent = e.detail || ("map failed (" + r.status + ")");
+    state.ew.map = null; draw();
+    return;
+  }
+  const bbox = (r.headers.get("X-Map-Bbox") || "").split(",").map(Number);
+  const refDz = r.headers.get("X-Map-Ref-Dz");
+  const blob = await r.blob();
+  const img = await createImageBitmap(blob);
+  if (!state.ew) return;
+  state.ew.map = { img, bbox, refDz: refDz ? parseFloat(refDz) : null };
+  draw();
+}
+$("ewMap").onchange = async () => {
+  if (!state.ew) { $("ewMap").checked = false; return; }
+  if ($("ewMap").checked) await ewFetchMap();
+  else { state.ew.map = null; draw(); }
 };
 
 // ---------- pipe trench calculator ----------
@@ -1873,6 +1998,18 @@ function draw() {
     // dim the sheet toward white so detected colors pop like ink on paper
     ctx.globalAlpha = 0.62;
     ctx.fillRect(0, 0, state.img.width, state.img.height);
+    ctx.globalAlpha = 1.0;
+  }
+  // state.result gate: on a page switch state.ew outlives the old result
+  // until the new one lands (which resets it) - without the gate the old
+  // page's map would paint over the new page's image in that window
+  if (state.result && state.ew && state.ew.map && state.ew.map.img) {
+    // cut/fill map under the linework: the PNG is one pixel per grid
+    // cell, stretched to its page-pt bbox (pt -> image px like the chains)
+    const fm = IMG_DPI / 72;
+    const [bx0, by0, bx1, by1] = state.ew.map.bbox;
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(state.ew.map.img, bx0 * fm, by0 * fm, (bx1 - bx0) * fm, (by1 - by0) * fm);
     ctx.globalAlpha = 1.0;
   }
   if (state.result) {
