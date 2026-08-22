@@ -298,6 +298,10 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .sh-chip.ok { background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent); }
 .sh-chip.warn { background: rgba(229,100,90,.16); color: #e5645a; }
+/* the drawn scale bar contradicts the printed caption - louder than warn,
+   because every length, area and volume on the sheet is downstream of it */
+.sh-chip.bad { background: rgba(229,60,50,.28); color: #ff8a80;
+               border-color: rgba(229,60,50,.55); font-weight: 700; }
 
 /* ---------- page thumbnail strip ---------- */
 .page-strip { width: 128px; background: var(--panel); border-right: 1px solid var(--line);

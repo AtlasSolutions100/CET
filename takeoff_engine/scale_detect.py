@@ -103,16 +103,40 @@ class ScaleResult:
     best: ScaleCandidate | None
     candidates: list = field(default_factory=list)
     has_nts: bool = False
-    source: str = ""  # "text" | "ocr"
+    source: str = ""  # "text" | "ocr" | "graphic-bar"
+    # Independent second opinion from the drawn GRAPHIC SCALE bar, whose tick
+    # spacing is geometry rather than text. A wrong scale is the most
+    # expensive silent failure this engine has - 14 corpus pages were wrong
+    # and every one reached the UI as a confident green chip (F92) - and on
+    # the sheets that carry both readings the two agree everywhere except
+    # exactly where the bug was. Cross-checking is therefore the cheapest
+    # detector of the whole failure class, and it costs nothing when there
+    # is no bar. This NEVER changes which scale is chosen; it only records
+    # whether a second source backs it.
+    bar_ft_per_paper_inch: float | None = None
+    agrees: bool | None = None      # None = no bar to compare against
+
+    @property
+    def delta_pct(self) -> float | None:
+        if not self.best or self.bar_ft_per_paper_inch in (None, 0):
+            return None
+        a = self.best.ft_per_paper_inch
+        if not a:
+            return None
+        return abs(a - self.bar_ft_per_paper_inch) / self.bar_ft_per_paper_inch * 100.0
 
     def to_dict(self) -> dict | None:
         if not self.best:
             return None
+        d = self.delta_pct
         return {
             **self.best.to_dict(),
             "source": self.source,
             "has_nts": self.has_nts,
             "candidates": [c.to_dict() for c in self.candidates],
+            "bar_ft_per_paper_inch": self.bar_ft_per_paper_inch,
+            "agrees": self.agrees,
+            "delta_pct": None if d is None else round(d, 1),
         }
 
 
@@ -366,12 +390,48 @@ def _row_text(words: list) -> str:
     return " ".join(out)
 
 
-def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True) -> ScaleResult:
+# Two independent readings within this much of each other corroborate. The
+# bar is read off tick geometry and its labels, so a percent or two of slack
+# is normal; the errors this catches were 3% (a welded pipe callout) up to
+# 387% (a dimension read as a caption), so the threshold is not delicate.
+BAR_AGREE_PCT = 2.0
+
+
+def _corroborate(res: ScaleResult, words: list) -> ScaleResult:
+    """Attach the graphic bar's opinion to an already-chosen text reading.
+
+    Purely additive - `res.best` is never replaced. If the two disagree the
+    UI says so and the estimator calibrates, which is the whole point: every
+    one of F92's 14 wrong pages reached the screen as a confident green chip.
+    """
+    if not res.best:
+        return res
+    try:
+        bar = graphic_scale_bar(words)
+    except Exception:
+        return res
+    if not bar or not bar.ft_per_paper_inch:
+        return res
+    res.bar_ft_per_paper_inch = bar.ft_per_paper_inch
+    d = res.delta_pct
+    res.agrees = (d is not None and d <= BAR_AGREE_PCT)
+    return res
+
+
+def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
+                 corroborate: bool = True) -> ScaleResult:
     text = page.get_text()
     cands = _scan(text)
     nts = bool(_NTS.search(text))
     if cands:
-        return ScaleResult(_choose(cands), cands, nts, "text")
+        res = ScaleResult(_choose(cands), cands, nts, "text")
+        if corroborate:
+            try:
+                from .extract import page_words
+                res = _corroborate(res, page_words(page))
+            except Exception:
+                pass
+        return res
 
     try:
         from .extract import page_words
@@ -383,7 +443,8 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True) -> ScaleResult:
         # words by (row, x) puts it back: "1 inch = 10 ft.".
         cands = _scan(_row_text(words))
         if cands:
-            return ScaleResult(_choose(cands), cands, nts, "text")
+            res = ScaleResult(_choose(cands), cands, nts, "text")
+            return _corroborate(res, words) if corroborate else res
 
         # No stated ratio: try the drawn GRAPHIC SCALE bar off the text layer
         # before paying for OCR. Its tick labels ("0", "50'", "100'") are

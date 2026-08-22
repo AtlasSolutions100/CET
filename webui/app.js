@@ -308,7 +308,12 @@ async function loadResult(gen = state.gen) {
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
   const sc = state.result.scale;
   setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
-    (sc ? ` · scale ${sc.text} (${sc.source})` : " · no scale found"));
+    (sc ? ` · scale ${sc.text} (${sc.source}` +
+      (sc.agrees === true ? ", matches the drawn bar"
+        : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
+        : "") + ")"
+      : " · no scale found"),
+    sc && sc.agrees === false ? "err" : "");
 }
 
 // ---------- sidebar ----------
@@ -628,9 +633,28 @@ function renderSheetHead() {
   meta.append(chip(`Sheet ${state.page + 1} / ${state.kinds.length}`));
   const kind = state.kinds[state.page];
   if (kind && kind !== "unknown") meta.append(chip(kind));
+  // Scale, with its second opinion. A wrong scale is this engine's most
+  // expensive silent failure - 14 corpus pages read wrong and every one
+  // reached this chip in confident green (F92). Where the sheet also draws a
+  // GRAPHIC SCALE bar, its tick geometry is an independent reading, so the
+  // chip now says whether the two agree instead of implying certainty it
+  // does not have.
   const sc = state.result && state.result.scale;
-  if (state.result)
-    meta.append(chip(sc ? sc.text : "no scale", sc ? "ok" : "warn"));
+  if (state.result) {
+    if (!sc) {
+      meta.append(chip("no scale — calibrate", "warn"));
+    } else if (sc.agrees === false) {
+      meta.append(chip(sc.text, "bad"));
+      meta.append(chip(`drawn bar says ${sc.bar_ft_per_paper_inch} ft/in` +
+        ` · ${sc.delta_pct}% apart — CHECK`, "bad"));
+    } else if (sc.agrees === true) {
+      meta.append(chip(sc.text + " ✓ matches drawn bar", "ok"));
+    } else {
+      // one source only: honest, but not corroborated
+      meta.append(chip(sc.text + (sc.source === "ocr" ? " (read off a scan)" : ""),
+        sc.source === "ocr" ? "warn" : "ok"));
+    }
+  }
   const st = state.result ? "detected"
     : (state.pageStatus || [])[state.page] === "running" ? "detecting…"
     : (state.pageStatus || [])[state.page] === "error" ? "detect failed"
