@@ -34,6 +34,21 @@ import pymupdf
 _IN = r"""(?:["”″]|(?:inch(?:es)?|in)\.?(?![a-z]))"""
 _FT = r"""(?:['’′]|(?:feet|ft)\.?(?![a-z]))"""
 
+# OCR does not always give the inch mark back as an inch mark. Tesseract
+# reads Beaumont's structural title blocks - SCALE: 1/4"=1'-0" - as
+# `1/4�=1'-0"`, mangling the double prime into U+FFFD. The pattern then
+# cannot advance past that character and the whole caption is missed, which
+# is why all 37 Barn Structural and 17 Guide Structural pages reported no
+# scale even though OCR had read the text correctly at every dpi tried
+# (150/300/450 all produce `SCALE: 1/4�=1'-0"`).
+#
+# One stray non-word character is therefore allowed where a unit mark
+# belongs. It is captured into its OWN group and is deliberately NOT counted
+# as evidence by the F92 shape guard: a caption still has to carry a real
+# paper term plus either a genuine inch mark or a separator. Here `1/4` and
+# `=` supply both, so the match is legitimate on its own merits.
+_NOISE = r"""(?P<noise>[^\w\s=:\-])?"""
+
 # 1/4" = 1'-0"   |   1" = 20'   |   1"= 50'   |   1 inch = 10 ft.
 # separators = - :  (required here - no keyword to vouch for the match)
 _PAT = re.compile(
@@ -55,6 +70,7 @@ _NTS = re.compile(r"(?i)\bN\.?\s*T\.?\s*S\.?\b|NOT\s+TO\s+SCALE")
 _PAT_KEYWORD = re.compile(
     rf"""(?i)scale\s*(?P<kwsep>[:=])?\s*
         (?P<paper>\d+(?:/\d+)?)?\s*(?P<inmark>{_IN})?\s*   # OCR may eat the 1"
+        {_NOISE}\s*                                        # ... or mangle it
         (?P<sep>(?:[=:\-]\s*){{0,2}})                      # ... or the separator
         (?P<feet>\d+)\s*(?P<ftmark>{_FT})?
         (?:\s*-\s*(?P<inches>\d+)\s*{_IN}?)?""",
