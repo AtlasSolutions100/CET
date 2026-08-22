@@ -731,6 +731,35 @@ _FULL_ELEV = re.compile(r"^\d{3,4}$")
 _SPOT_LINE = re.compile(
     r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)"
     r"\s*[:=]?\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s*$", re.I)
+# These sheets DECLARE their datum in the spot-elevation legend:
+#   "NOTE: ALL SPOT ELEVATIONS ARE TRUNCATED CIVIL ELEVATIONS
+#    (IE. EXAMPLE: TOP OF PATIO @ 7705.25' = FIN:05.25')"
+# That single line is worth more than any amount of consensus guessing, and
+# it is the sheet's own statement rather than an inference. Barn civil p3
+# says 7705.25 (datum 7700) while its labelled contours pushed consensus to
+# 7900 - so every one of its 272 spot grades came out exactly 200.00 ft
+# high, resolved and confident. Guide civil p2 says 7905.25 and consensus
+# happened to agree, which is why the defect hid.
+_SPOT_DATUM_LINE = re.compile(
+    r"(?i)(?:EXAMPLE|\bIE\b|\bI\.E\.)[^0-9]{0,30}(\d{3,5})\.(\d{1,2})")
+
+
+def read_spot_datum(lines: list) -> float | None:
+    """The hundreds band the sheet's own legend declares, or None.
+
+    Returns e.g. 7700.0 for a legend reading "@ 7705.25'". Only a 3-5 digit
+    whole part counts, so a date or a dimension cannot be mistaken for one.
+    """
+    for ln in (lines or ()):
+        m = _SPOT_DATUM_LINE.search(" ".join(str(ln[4]).split()))
+        if not m:
+            continue
+        whole = int(m.group(1))
+        if 100 <= whole <= 99999:
+            return float(whole // 100 * 100)
+    return None
+
+
 # Two readings of the same tag closer than this are the same printed label.
 # The two passes place one label 2.5-3.4 pt apart on Guide civil p2, and the
 # nearest genuinely distinct same-tag labels there are far further off, so
@@ -859,10 +888,19 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     if len(band) < 2:
         band = []          # one lone number is not a datum
 
+    # The sheet's own declared datum outranks the consensus guess. Consensus
+    # reads other numbers ON the sheet and infers; this line is the drafter
+    # telling us. Where they disagree the guess has been wrong by a clean
+    # multiple of 100 ft, which is invisible in a review because every value
+    # still looks like a plausible elevation.
+    declared = read_spot_datum(lines)
+
     for g in out:
         val = g["value"]
         if val >= 1000.0:
             g.update(z=val, base=None, resolved=True)
+        elif declared is not None and val < 100.0:
+            g.update(z=declared + val, base=declared, resolved=True)
         elif band:
             ax, ay, av = min(band, key=lambda a: (a[0] - g["x"]) ** 2
                                                  + (a[1] - g["y"]) ** 2)
