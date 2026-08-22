@@ -207,8 +207,35 @@ def _scan(text: str) -> list[ScaleCandidate]:
         if feet <= 0:
             return
         fpi = feet / paper
-        # plausible drawing scales: 1/8"=1' (8) up to 1"=200'
-        if not (0.5 <= fpi <= 400):
+        # Plausible drawing scales: 1/8"=1' (8) up to 1"=200'.
+        #
+        # The 0.5 floor was discarding a real and frequently printed scale.
+        # Barn Landscaping L804 prints `SCALE: 3" = 1'-0"` FOUR times - more
+        # often than any other caption on that sheet - and 3 paper inches to
+        # the foot is 0.3333 ft/in, so every one was thrown away and the
+        # engine settled on the 3/4" detail scale instead.
+        #
+        # The floor cannot simply be lowered, because a dimension string
+        # computes to the same number: `6" - 2'` on Thielen p18 is also
+        # 0.3333, and `6" - 1'` and `8" - 1'` sit below it. What separates
+        # them is the RELATION - a scale says "=" or ":" between its two
+        # sides, a dimension callout is joined by a hyphen. So the floor
+        # relaxes only for a reading that states one.
+        #
+        # CONVENTION: 3" = 1'-0" is the LARGEST scale on an architect's rule
+        # (3/32, 1/8, 3/16, 1/4, 3/8, 1/2, 3/4, 1, 1-1/2, 3 inches to the
+        # foot), and 3 paper inches to the foot is exactly 1/3 ft/in - so 0.33
+        # is the floor, sitting just under it. Source: 3" is also the largest
+        # caption printed anywhere in the Beaumont or Thielen sets. Anything
+        # larger is half- or full-size shop detailing and stays rejected until
+        # a sheet shows otherwise. INFERENCE for other drawing standards.
+        #
+        # Confirmed against drawn geometry, not the caption: on Barn
+        # Landscaping L804 detail 6 the three stacked dimensions measure
+        # tick-to-tick 36.00 / 72.00 / 108.00 pt for 2" / 4" / 6", which is
+        # 18.000 pt per real inch on all three - exactly 3" = 1'-0".
+        floor = 0.33 if _REL.search(m.group(0)) else 0.5
+        if not (floor <= fpi <= 400):
             return
         key = (round(fpi, 4), near)
         if key in found:
