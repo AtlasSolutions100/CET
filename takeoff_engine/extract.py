@@ -508,10 +508,34 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         if not (0.55 * r_lo <= u.length <= 2.5 * r_hi):
             continue
         p = np.asarray(u.pts, dtype=float)
+        if u.closed:
+            continue
         # 4-point floor: a 30deg fragment flattens to 4 vertices at the
         # drafting tool's ~9deg/vertex (Belle p1 measured); the circle
-        # fit needs 3, and the fit-std gate below rejects degenerates
-        if len(p) < 4 or u.closed:
+        # fit needs 3. Count DISTINCT POSITIONS, not vertices: an
+        # algebraic circle fit through points that sit in two tight
+        # clusters is underdetermined and returns the circle whose
+        # DIAMETER is the cluster gap - radius = gap/2, sweep = 180deg,
+        # radial residual ~0.01pt - so it sails through the fit-std gate
+        # and lands in the 165-195deg double-acting branch. That is the
+        # phantom factory: measured 2026-08-22 on SWR Barn Residence
+        # Civil (15 sheets, no doors anywhere), 92 of its 112 reported
+        # openings are these hairpins, e.g. a 5-vertex unit with segment
+        # lengths [0.19, 30.21, 0.19, 0.19] fitted r=15.1 std=0.009.
+        # Dedupe radius-relative - what counts as "the same place"
+        # scales with the arc being claimed - using the chord as the
+        # radius proxy available before the fit runs.
+        if len(p) < 4:
+            continue
+        _eps = max(0.4, 0.025 * float(np.hypot(*(p[-1] - p[0]))))
+        _keep = [p[0]]
+        for _q in p[1:]:
+            if min(np.hypot(_q[0] - _k[0], _q[1] - _k[1])
+                   for _k in _keep) > _eps:
+                _keep.append(_q)
+                if len(_keep) >= 4:
+                    break
+        if len(_keep) < 4:
             continue
         chord = float(np.hypot(*(p[-1] - p[0])))
         # arc/chord: 90deg sweep = 1.111, 55deg = 1.039, 45deg = 1.026,
@@ -544,6 +568,19 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         vb = p[-1] - (cx, cy)
         sweep = float(np.degrees(np.arccos(np.clip(
             (va @ vb) / (np.hypot(*va) * np.hypot(*vb) + 1e-9), -1, 1))))
+        # The polyline must be AS LONG AS the arc it claims. That is the
+        # definition of an arc, and the cheapest way to reject a fit the
+        # data did not determine: r x sweep is what the drawn line would
+        # measure if it really ran round this circle. Measured over the
+        # 1267 openings the corpus reported before this gate: every
+        # flattened real arc sits at 0.93-1.00 (Belle Structural door
+        # swings 0.998-1.000, Thielen Biggerstaff p1 0.999, C3.0 0.997),
+        # while the two-cluster hairpins sit at 0.645-0.836 and
+        # wandering fits reach 1.8-3.7. The 1.20 ceiling also leaves room
+        # for a true 190deg sweep, which arccos reports back as 170.
+        _arc = r * np.radians(sweep)
+        if _arc < 1e-6 or not (0.90 * _arc <= u.length <= 1.20 * _arc):
+            continue
         # 35deg is the confident floor (half-open doors draw at 45deg);
         # 25-35deg admits FRAGMENTS - arcs a crossing line split (Belle
         # Structural p1: two doors survive only as 30.0deg r=27 pieces,
@@ -565,15 +602,72 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
     # pass 2 - straight-unit endpoints, the leaf-line pool (length
     # pre-filtered to the door-leaf range to bound the search)
     rows = []
+    strt = []   # the WALL pool: every straight unit >= 6pt, any length
     for u in units:
         p = u.pts
         chord = float(np.hypot(*(p[-1] - p[0])))
         if chord < 1e-6 or u.length > 1.02 * chord:
             continue  # not straight enough to be a drawn leaf
+        if u.length >= 6.0:
+            strt.append((p[0][0], p[0][1], p[-1][0], p[-1][1]))
         if not (0.8 * r_lo <= u.length <= 1.2 * r_hi):
             continue
         rows.append((p[0][0], p[0][1], p[-1][0], p[-1][1], u.length))
     E = np.asarray(rows) if rows else np.zeros((0, 5))
+    S = np.asarray(strt) if strt else np.zeros((0, 4))
+
+    def _near_straight(x, y, tol, dirv=None, cos_min=0.978):
+        """Mask of straight units passing within tol of (x, y).
+
+        With dirv set only units running within 12deg of that direction
+        count - the difference between "some line happens to touch this
+        point" and "the wall this door hangs in runs through it"."""
+        if not len(S):
+            return np.zeros(0, dtype=bool)
+        dx = S[:, 2] - S[:, 0]
+        dy = S[:, 3] - S[:, 1]
+        L2 = dx * dx + dy * dy
+        t = np.clip(((x - S[:, 0]) * dx + (y - S[:, 1]) * dy)
+                    / np.maximum(L2, 1e-9), 0.0, 1.0)
+        m = np.hypot(x - (S[:, 0] + t * dx), y - (S[:, 1] + t * dy)) <= tol
+        if dirv is not None:
+            L = np.sqrt(np.maximum(L2, 1e-9))
+            m = m & ((np.abs(dx * dirv[0] + dy * dirv[1]) / L) >= cos_min)
+        return m
+
+    def jamb_ok(cx, cy, r, ends):
+        # A drafted door hangs IN A WALL: the hinge sits on the jamb and
+        # the closed-leaf position lies along that same wall one radius
+        # away, so the hinge and one arc endpoint both sit on a single
+        # straight unit running along that radius. Measured 2026-08-22
+        # against source crops: true for 25/25 Belle Structural p0 door
+        # swings and 24/25 Thielen Biggerstaff p1 swings (both sheets
+        # eyeballed as real doors), and for 0/6 of the road-edge curve
+        # returns SWR Barn Civil p0 reports - those corroborate through
+        # pair_ok, two mirrored driveway returns being geometrically
+        # indistinguishable from a double door without this test.
+        # max(3.0, 0.15r), not max(2.0, 0.10r). Measured 2026-08-22 over
+        # the five layered Beaumont documents using the drafter's own CAD
+        # layer as truth: at 2.0/0.10 this gate deletes 9 arcs drawn on
+        # layer A-DOOR (SWR Barn Landscaping p7/p11/p14/p15/p20, arc-length
+        # ratio 0.998-1.000). The p7 case misses by 0.26 pt - its leaf, also
+        # on A-DOOR, starts 2.26 pt from the fitted hinge. Note 2.0 is
+        # TIGHTER than leaf_ok's own 2.7 pt tolerance at r=18, so the wall
+        # test was vetoing doors the leaf test had already corroborated.
+        # Loosening recovers 5 of them and adds ZERO phantoms across all 15
+        # Barn Civil and all 9 Guide Civil sheets.
+        tol = max(3.0, 0.15 * r)
+        for ea in ends:
+            vx, vy = float(ea[0]) - cx, float(ea[1]) - cy
+            n = float(np.hypot(vx, vy))
+            if n < 1e-6:
+                continue
+            d = (vx / n, vy / n)
+            if bool((_near_straight(cx, cy, tol, d)
+                     & _near_straight(float(ea[0]), float(ea[1]),
+                                      tol, d)).any()):
+                return True
+        return False
 
     def leaf_ok(cx, cy, r, ends):
         # length window 0.8-1.2r and summed endpoint tolerance
@@ -586,7 +680,14 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         lok = (E[:, 4] >= 0.8 * r) & (E[:, 4] <= 1.2 * r)
         if not bool(lok.any()):
             return False
-        tol = max(1.5, 0.15 * r)
+        # ...capped at 3.0pt absolute. Measured 2026-08-22 across 58
+        # human-checked real door leaves (Belle Structural p0 25,
+        # Thielen Biggerstaff p1 24, C3.0 Site Plan 9) the worst
+        # mismatch is 2.84pt; the pipe-elbow flange lines that
+        # impersonate leaves on SWR Barn Civil p14 (a NOT-TO-SCALE
+        # piping detail) sit at 3.25-3.30pt. Without the cap the 0.15r
+        # term buys them 3.69pt of slack at r=24.6.
+        tol = min(max(1.5, 0.15 * r), 3.0)
         for ex, ey in ends:
             da = (np.hypot(E[:, 0] - cx, E[:, 1] - cy)
                   + np.hypot(E[:, 2] - ex, E[:, 3] - ey))
@@ -639,6 +740,8 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
     for i, (cx, cy, r, e0, e1, _mid, sweep) in enumerate(cands):
         if sweep < 35.0:
             continue   # fragments resolved in a second pass below
+        if not jamb_ok(cx, cy, r, (e0, e1)):
+            continue
         if leaf_ok(cx, cy, r, (e0, e1)) or pair_ok(i):
             # mx,my = arc midpoint: tells the consumer which SIDE of the
             # hinge the opening spans (the door chord), so a wall run is
@@ -660,6 +763,8 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             continue
         if not any(abs(r - cr) <= 0.15 * max(r, cr) for cr in confirmed_r):
             continue
+        if not jamb_ok(cx, cy, r, (e0, e1)):
+            continue
         if leaf_ok(cx, cy, r, (e0, e1)):
             out.append({"cx": round(cx, 1), "cy": round(cy, 1),
                         "r": round(r, 1),
@@ -670,29 +775,18 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
     # measured on Belle Structural p1 vs its own callout bubbles:
     #  - no text inside the circle (bubbles carry sheet numbers; the two
     #    real glass-connector doors are empty)
-    #  - both arc endpoints sit ON straight linework (the wall/track line
-    #    the door hangs from), within 3pt
+    #  - both arc endpoints sit on the WALL: a straight unit running
+    #    along the CHORD, which is the track the door hangs from. The
+    #    old test took any straight line touching either endpoint from
+    #    any direction, and that is precisely the signature of a STADIUM
+    #    (rounded-rectangle) outline - its two semicircular end caps have
+    #    the tank's parallel sides landing on both endpoints, but
+    #    PERPENDICULAR to the chord. Measured 2026-08-22: the chord test
+    #    keeps both real glass-connector doors on Belle Structural
+    #    p0/p1/p2 and rejects all 16 propane-tank / circle-symbol
+    #    semicircles that survive the arc-length gate on SWR Barn and
+    #    Guide Civil (CAD layer '34008 Site|P-PROPANE').
     if da_cands:
-        strt = []
-        for u in units:
-            pu = u.pts
-            ch2 = float(np.hypot(*(pu[-1] - pu[0])))
-            if ch2 > 1e-6 and u.length <= 1.02 * ch2 and u.length >= 6.0:
-                strt.append((pu[0][0], pu[0][1], pu[-1][0], pu[-1][1]))
-        S = np.asarray(strt) if strt else np.zeros((0, 4))
-
-        def on_straight(x, y, tol=3.0):
-            if not len(S):
-                return False
-            dx = S[:, 2] - S[:, 0]
-            dy = S[:, 3] - S[:, 1]
-            L2 = dx * dx + dy * dy
-            t = ((x - S[:, 0]) * dx + (y - S[:, 1]) * dy) / np.maximum(L2, 1e-9)
-            t = np.clip(t, 0.0, 1.0)
-            qx = S[:, 0] + t * dx
-            qy = S[:, 1] + t * dy
-            return bool((np.hypot(x - qx, y - qy) <= tol).any())
-
         def center_crossed(cx, cy, r, chord_dir, ex0, ey0):
             # equipment symbols (substation breakers on bus lines) are
             # circles with straight feeds THROUGH the middle in non-chord
@@ -742,7 +836,10 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             n = float(np.hypot(*ch)) or 1.0
             if center_crossed(cx, cy, r, ch / n, float(e0[0]), float(e0[1])):
                 continue
-            if on_straight(*e0) and on_straight(*e1):
+            cu = (float(ch[0]) / n, float(ch[1]) / n)
+            if (bool(_near_straight(float(e0[0]), float(e0[1]), 3.0, cu).any())
+                    and bool(_near_straight(float(e1[0]), float(e1[1]),
+                                            3.0, cu).any())):
                 out.append({"cx": round(float(cx), 1),
                             "cy": round(float(cy), 1),
                             "r": round(float(r), 1),
