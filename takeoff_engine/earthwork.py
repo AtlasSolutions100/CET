@@ -449,7 +449,19 @@ _NON_PLAN_LAYER = re.compile(
 
 
 def _is_plan_chain(c) -> bool:
-    """False for chains that live in a non-plan view or in the title block."""
+    """False for chains that cannot be a contour.
+
+    Two tests, because the layer one is not always available. On Beaumont's
+    Guide civil grading sheet ALL plan linework carries an empty CAD layer,
+    so a layer guard is vacuous there - but the chainer has already decided
+    that a traced numeral is `annotation`, and a contour is linework by
+    definition. Measured across Guide civil p2/p3 and Barn civil p3/p6:
+    exactly one elevation suggestion sits on an annotation-class chain, and
+    it is the printed number "7919" traced off layer C-TOPO-TEXT and handed
+    to the TIN as a contour at 7919 ft. Zero other suggestions are touched.
+    """
+    if getattr(c, "klass", "") == "annotation":
+        return False
     return not _NON_PLAN_LAYER.search(getattr(c, "layer", "") or "")
 
 
