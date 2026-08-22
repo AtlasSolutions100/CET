@@ -902,7 +902,7 @@ function tradeFor(label) {
   const L = label.toUpperCase();
   const has = (...ws) => ws.some(w => L.includes(w));
   if (has("CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO", "SLOPE",
-          "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL")) return "Earthwork & Grading";
+          "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL", "TOPSOIL")) return "Earthwork & Grading";
   if (has("WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
           "HYDRANT", "MANHOLE", "CULVERT", "IRRIG", "FORCE", "CLEANOUT",
           "TRENCH", "VALVE", "WELL", "FIREWATER")) return "Wet Utilities";
