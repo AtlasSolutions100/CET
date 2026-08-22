@@ -1174,11 +1174,22 @@ $("ewBtn").onclick = async () => {
       // base) and what gets BUILT on the proposed side (base, paving).
       // Session-only like the rest of this panel. {name, thickness_in}
       layers: { existing: [], proposed: [] },
+      // Spot grades: the FG/TS/TW elevations the sheet prints as "FG: 15.96".
+      // On a detailed grading sheet these outnumber labelled contours many to
+      // one, and they are POINT elevations, not lines. Ground tags default ON;
+      // structure tops (RIM, wall, step) are not ground and stay off.
+      spots: j.spot_grades || [],
+      spotOn: { FG: true, ME: true, EG: true },
+      spotSide: "proposed",
+      spotDatum: null,
+      areaSf: null,
       map: null,   // {img, bbox} once "Show cut/fill map" is on
     };
   }
   renderEw();
   renderEwLayers();
+  renderEwSpots();
+  renderEwArea();
 };
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
@@ -1328,7 +1339,100 @@ function ewBody() {
     cell_ft: 2.0,
     existing_layers: lay("existing"),
     proposed_layers: lay("proposed"),
+    ...(function () {
+      const pts = ewActiveSpots().map(g => ({ x: g.x, y: g.y, z: g.z }));
+      const key = state.ew.spotSide === "existing" ? "existing_points" : "proposed_points";
+      const o = pts.length ? { [key]: pts } : {};
+      if (isFinite(state.ew.areaSf) && state.ew.areaSf > 0) o.strip_area_sf = state.ew.areaSf;
+      return o;
+    })(),
   };
+}
+
+// spot grades the estimator switched on, with the datum applied when the
+// sheet gave us no contour label to anchor them against
+function ewActiveSpots() {
+  if (!state.ew || !state.ew.spots) return [];
+  const base = state.ew.spotDatum;
+  return state.ew.spots
+    .filter(g => state.ew.spotOn[g.tag])
+    .map(g => {
+      if (g.resolved && isFinite(g.z)) return g;
+      if (!isFinite(base)) return null;
+      return { ...g, z: base + g.value };   // datum = the hundreds the sheet omitted
+    })
+    .filter(g => g && isFinite(g.z));
+}
+
+function renderEwSpots() {
+  const box = $("ewSpots");
+  const sp = state.ew && state.ew.spots;
+  if (!sp || !sp.length) { if (box) box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = "";
+  const counts = {};
+  for (const g of sp) counts[g.tag] = (counts[g.tag] || 0) + 1;
+  const head = document.createElement("div");
+  head.className = "sp-head";
+  head.innerHTML = `<span>Spot grades on this sheet</span><b>${sp.length}</b>`;
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"]]) {
+    const b = document.createElement("button");
+    b.textContent = lab;
+    if (state.ew.spotSide === key) b.className = key === "existing" ? "on-ex" : "on-pr";
+    b.onclick = () => { state.ew.spotSide = key; renderEwSpots(); };
+    seg.appendChild(b);
+  }
+  head.appendChild(seg);
+  box.appendChild(head);
+  const tags = document.createElement("div");
+  tags.className = "sp-tags";
+  for (const t of Object.keys(counts).sort()) {
+    const l = document.createElement("label");
+    l.className = "sp-tag" + (state.ew.spotOn[t] ? " on" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!state.ew.spotOn[t];
+    cb.onchange = () => { state.ew.spotOn[t] = cb.checked; renderEwSpots(); draw(); };
+    l.append(cb, document.createTextNode(` ${t} ${counts[t]}`));
+    tags.appendChild(l);
+  }
+  box.appendChild(tags);
+  if (!sp.some(g => g.resolved)) {
+    const d = document.createElement("div");
+    d.className = "sp-datum";
+    d.append(document.createTextNode("No contour label on this sheet to anchor them. Datum:"));
+    const i = document.createElement("input");
+    i.type = "number"; i.step = "100"; i.placeholder = "7700";
+    i.value = isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
+    d.appendChild(i);
+    box.appendChild(d);
+  }
+  const n = ewActiveSpots().length;
+  const note = document.createElement("div");
+  note.className = "sp-note";
+  note.textContent = n
+    ? `${n} of ${sp.length} will be used as ${state.ew.spotSide} surface points. RIM / TW / BW / TS / BS are structure tops, not ground — leave them off unless you mean them.`
+    : `None selected. FG is finished ground; the rest are structure tops.`;
+  box.appendChild(note);
+}
+
+function renderEwArea() {
+  const note = $("ewAreaNote"), inp = $("ewAreaIn");
+  if (!note || !inp || !state.ew) return;
+  inp.value = isFinite(state.ew.areaSf) ? state.ew.areaSf : "";
+  inp.oninput = () => {
+    const v = parseFloat(inp.value);
+    state.ew.areaSf = isFinite(v) && v > 0 ? v : null;
+    renderEwArea();
+  };
+  const auto = state.ew.result ? state.ew.result.area_sf : null;
+  note.textContent = isFinite(state.ew.areaSf)
+    ? "Layer volumes use the area you typed."
+    : "Blank = where the two surfaces overlap"
+      + (auto ? ` (last run: ${Number(auto).toLocaleString()} SF)` : "")
+      + ". Topsoil is stripped over the whole disturbed area, which is usually larger — type that here.";
 }
 
 // Bid-sheet names (Beaumont's 22-item sheet) for the itemized takeoff

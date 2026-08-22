@@ -946,6 +946,11 @@ class EarthworkBody(BaseModel):
     # [{chain_id, z}] per surface, elevations in feet
     existing: list[dict] = []
     proposed: list[dict] = []
+    # [{x, y, z}] spot grades in page pt - the printed FG/TS/TW elevations.
+    # A detailed grading sheet often prints far more of these than labelled
+    # contours, and a TIN can be built from them alone.
+    existing_points: list[dict] = []
+    proposed_points: list[dict] = []
     cell_ft: float = 2.0
     # Layer stacks (Beaumont workflow, F52). Each {name, thickness_in}.
     # existing_layers come OFF first (topsoil strip from the soils report,
@@ -1017,7 +1022,16 @@ def earthwork_suggest(job_id: str, page: int):
     for r in sug:
         w = by_id[r["chain_id"]].width
         r["width"] = w
+    # Spot grades ("FG: 15.96") are the elevations a detailed grading sheet
+    # actually prints - Barn C3.4 has 45 of them against 2 labelled contours,
+    # and the whole population used to be invisible. They are POINT
+    # elevations, so they ride alongside the contour rows.
+    from takeoff_engine.earthwork import read_spot_grades
+    spots = read_spot_grades(words)
     return {"suggestions": sug,
+            "spot_grades": spots,
+            "spot_datum_needed": bool(spots) and not any(
+                g.get("resolved") for g in spots),
             "scale": res.get("scale"),
             "note": "confirm/edit in the UI; split into existing vs "
                     "proposed before calculating"}
@@ -1060,17 +1074,22 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     pts_by_id = {c["chain_id"]: _np.asarray(c["points"], float)
                  for c in res["chains"]}
 
-    def build(name, rows):
+    def build(name, rows, points=()):
         surf = Surface(name)
         for r in rows:
             cid = int(r["chain_id"])
             if cid in pts_by_id:
                 surf.contours.append((pts_by_id[cid], float(r["z"])))
+        for q in points:
+            try:
+                surf.points.append((float(q["x"]), float(q["y"]), float(q["z"])))
+            except (KeyError, TypeError, ValueError):
+                continue
         return surf
     ex_layers, ex_off = _layer_stack(body.existing_layers)
     pr_layers, pr_off = _layer_stack(body.proposed_layers)
-    result = cut_fill(build("existing", body.existing),
-                      build("proposed", body.proposed),
+    result = cut_fill(build("existing", body.existing, body.existing_points),
+                      build("proposed", body.proposed, body.proposed_points),
                       ft_per_pt, cell_ft=body.cell_ft,
                       existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
                       return_grid=return_grid)

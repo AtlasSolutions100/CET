@@ -14,6 +14,7 @@ Units: page geometry in pt, elevations in ft. ft_per_pt converts plan
 distance; volumes report in cubic yards (ft^3 / 27).
 """
 
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -27,6 +28,7 @@ from .chain import _sample_polyline
 class Surface:
     name: str
     contours: list = field(default_factory=list)  # (pts Nx2 pt-space, z_ft)
+    points: list = field(default_factory=list)    # (x_pt, y_pt, z_ft) spot grades
 
     def interpolator(self, step_pt: float = 6.0):
         xs, zs = [], []
@@ -36,6 +38,17 @@ class Surface:
             if len(s):
                 xs.append(s)
                 zs.append(np.full(len(s), float(z)))
+        # spot grades are single points, not polylines: a surveyed FG/TS/TW
+        # elevation at one location. On detailed grading sheets they vastly
+        # outnumber labelled contours (Barn C3.4: 45 spot grades vs 2 labelled
+        # contours), so a TIN built from them is often the ONLY surface the
+        # sheet can give.
+        if self.points:
+            P2 = np.asarray([[float(x), float(y)] for x, y, _ in self.points],
+                            dtype=float)
+            xs.append(P2)
+            zs.append(np.asarray([float(z) for _, _, z in self.points],
+                                 dtype=float))
         if not xs:
             return None, None
         P = np.vstack(xs)
@@ -388,3 +401,116 @@ def gap_label_elevations(chains: list, page_img: np.ndarray,
             if len(zs) == 1:
                 found[int(c.chain_id)] = vals[0]
     return found
+
+
+# --- spot grades: the elevations a grading sheet actually prints ----------
+
+# The grade type printed before the value. FG finish grade, FIN finished
+# floor, TS/BS top/bottom of step or stair, TW/BW top/bottom of wall,
+# EG existing grade, TC top of curb, RIM structure rim, INV invert,
+# ME match existing, HP/LP high/low point. Verified against the Beaumont
+# SWR sheets 2026-08-21; the list is the sheet's own vocabulary, not a
+# guess (each appears with a colon and a value to its right).
+_SPOT_TAG = re.compile(r"^(FG|FIN|TS|BS|TW|BW|EG|FF|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
+# EXISTING-ground tags. Everything else describes the built surface.
+_SPOT_EXISTING = {"EG", "ME"}
+_SPOT_VALUE = re.compile(r"^\d{1,4}(\.\d{1,2})?$")
+_FULL_ELEV = re.compile(r"^\d{3,4}$")
+
+
+def read_spot_grades(words: list, max_dx: float = 26.0,
+                     row_tol: float = 6.0) -> list:
+    """Spot elevations printed as `FG: 15.96` / `TW: 7918.60`.
+
+    Civil sheets abbreviate: the value carries only the last two digits and
+    the hundreds come from the nearest full contour label (`7715` written in
+    a break in its own contour). Beaumont's own sheets do this everywhere -
+    125 spot grades on C3.1 alone - and none of them match the 3-4-digit
+    pattern `suggest_elevations` looks for, so the whole population was
+    invisible.
+
+    Resolving the hundreds needs care, because a sheet is full of other
+    4-digit numbers - the DATE (2026) and the legend's own sample text
+    (7900) both look like contour labels. Rule, measured on the Beaumont
+    sheets:
+      1. value already >= 1000 -> a full elevation, use as printed;
+      2. otherwise find the page DATUM by consensus. A real contour label's
+         own last two digits must fall inside the spread of the spot values
+         (a labelled contour sits at an elevation the spot grades cover),
+         and at least TWO surviving labels must agree on the same hundreds
+         band. That kills the date (one lone 20xx) and the legend 7900
+         (its last two digits, 00, sit outside the 12-31 spread). The
+         hundreds then come from the nearest label in that band, choosing
+         the multiple of 100 that lands closest to it - so 15.96 near 7715
+         gives 7715.96, and 98.20 near 7700 gives 7698.20.
+      3. no credible datum -> z is None and resolved is False. The caller
+         asks the human for the datum; we never invent one. (Barn C3.1
+         prints 125 spot grades and NO usable contour label - one typed
+         number unlocks the whole sheet.)
+
+    words: (x0, y0, x1, y1, text) in the SAME space as chain geometry -
+    pass takeoff_engine.extract.page_words(page), not page.get_text("words"),
+    or rotated sheets silently mis-place every grade.
+
+    Returns [{tag, value, z, base, x, y, resolved}].
+    """
+    ws = [w for w in words if str(w[4]).strip()]
+    raw_anchors = [((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, float(w[4]))
+                   for w in ws if _FULL_ELEV.fullmatch(str(w[4]).strip())]
+    out = []
+    for w in ws:
+        t = str(w[4]).strip()
+        m = _SPOT_TAG.match(t)
+        if not m:
+            continue
+        tag = m.group(1).upper()
+        cy = (w[1] + w[3]) / 2
+        best = None
+        for v in ws:
+            if v is w:
+                continue
+            if abs(((v[1] + v[3]) / 2) - cy) > row_tol:
+                continue
+            dx = v[0] - w[2]
+            if not (-2.0 < dx < max_dx):
+                continue
+            if not _SPOT_VALUE.fullmatch(str(v[4]).strip()):
+                continue
+            if best is None or dx < best[0]:
+                best = (dx, v)
+        if best is None:
+            continue
+        val = float(best[1][4])
+        x = (w[0] + best[1][2]) / 2
+        y = cy
+        out.append({"tag": tag, "value": val, "x": round(float(x), 1),
+                    "y": round(float(y), 1),
+                    "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
+
+    # --- page datum by consensus (see the docstring) ---
+    partial = [g["value"] for g in out if g["value"] < 1000.0]
+    anchors = []
+    if partial:
+        vlo, vhi = min(partial), max(partial)
+        for ax, ay, av in raw_anchors:
+            if vlo - 15.0 <= (av % 100.0) <= vhi + 15.0:
+                anchors.append((ax, ay, av))
+    bands = {}
+    for a in anchors:
+        bands.setdefault(int(a[2] // 100), []).append(a)
+    band = max(bands.values(), key=len) if bands else []
+    if len(band) < 2:
+        band = []          # one lone number is not a datum
+
+    for g in out:
+        val = g["value"]
+        if val >= 1000.0:
+            g.update(z=val, base=None, resolved=True)
+        elif band:
+            ax, ay, av = min(band, key=lambda a: (a[0] - g["x"]) ** 2
+                                                 + (a[1] - g["y"]) ** 2)
+            k = round((av - val) / 100.0)
+            g.update(z=val + 100.0 * k, base=av, resolved=True)
+        else:
+            g.update(z=None, base=None, resolved=False)
+    return out

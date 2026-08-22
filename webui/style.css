@@ -144,10 +144,10 @@ canvas#view.panning { cursor: grabbing; }
 .ew-rows-head { display: flex; gap: 6px; align-items: center; color: var(--dim); padding: 5px 12px 0; }
 .ew-rows-head span { flex: 1; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; font-size: 10px; }
 .ew-rows-head #ewAddRow.active { background: #b3369a; border-color: #b3369a; color: #fff; }
-.ew-row .seg { display: flex; gap: 2px; }
-.ew-row .seg button { font-size: 10px; padding: 3px 7px; border-radius: 4px; }
-.ew-row .seg button.on-ex { background: #1f4d33; border-color: #35b26b; color: #9fe0bb; }
-.ew-row .seg button.on-pr { background: #1f2c4d; border-color: #4f8ff7; color: #a9c6f5; }
+.ew-row .seg, .ew-spots .seg { display: flex; gap: 2px; }
+.ew-row .seg button, .ew-spots .seg button { font-size: 10px; padding: 3px 7px; border-radius: 4px; }
+.ew-row .seg button.on-ex, .ew-spots .seg button.on-ex { background: #1f4d33; border-color: #35b26b; color: #9fe0bb; }
+.ew-row .seg button.on-pr, .ew-spots .seg button.on-pr { background: #1f2c4d; border-color: #4f8ff7; color: #a9c6f5; }
 .ew-actions { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); }
 #ewCalc { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
 .ew-result { font-size: 12px; color: var(--text); }
@@ -339,3 +339,21 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .st-row-in input { width: 100%; padding: 2px 4px; font-size: 11px; }
 .st-total { font-family: var(--mono); font-size: 10.5px; color: var(--text); padding: 6px 6px 2px;
   border-top: 1px solid var(--line); margin-top: 4px; }
+
+/* spot grades + strip-area control (earthwork) */
+.ew-spots { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
+.ew-spots .sp-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); }
+.ew-spots .sp-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.ew-spots label.sp-tag { display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 3px; padding: 2px 7px; cursor: pointer; }
+.ew-spots label.sp-tag.on { border-color: var(--accent); color: var(--text); }
+.ew-spots .sp-note { font-size: 11px; color: var(--dim); margin-top: 7px; line-height: 1.45; }
+.ew-spots .sp-datum { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; }
+.ew-spots .sp-datum input { width: 78px; }
+.ew-area { display: flex; align-items: center; gap: 7px; padding: 8px 10px;
+  border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.ew-area input { width: 92px; }
+.ew-area .ew-unit { color: var(--dim); }
+.ew-area .ew-area-note { flex: 1 1 100%; color: var(--dim); font-size: 11px; line-height: 1.45; }

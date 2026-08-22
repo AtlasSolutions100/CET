@@ -61,6 +61,7 @@
       <div class="ew-rows-head"><span>Contours</span>
         <button id="ewAddRow" class="mini" title="Sheet prints no elevation on a contour? Click the line yourself and type the value (from the overview sheet)">+ Add contour</button></div>
       <div id="ewRows" class="ew-rows"></div>
+      <div id="ewSpots" class="ew-spots" hidden></div>
       <div id="ewLayers" class="ew-layers">
         <div class="ew-layers-head"><span>Existing layers to remove</span>
           <button id="ewStrip" class="mini" title="Topsoil comes off first; thickness is from the soils report, not the plans">Strip topsoil</button>
@@ -70,6 +71,12 @@
           <button id="ewAddPr" class="mini" title="What gets built on the proposed side (base, paving): the dig stops this much below the finish grade drawn">+ add layer</button></div>
         <div id="ewPrLayers" class="ew-layer-rows"></div>
         <div id="ewLayerOut" class="ew-layer-out"></div>
+      </div>
+      <div class="ew-area" id="ewArea">
+        <label for="ewAreaIn">Area for layer volumes</label>
+        <input id="ewAreaIn" type="number" min="0" step="100" placeholder="auto">
+        <span class="ew-unit">SF</span>
+        <span class="ew-area-note" id="ewAreaNote"></span>
       </div>
       <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
