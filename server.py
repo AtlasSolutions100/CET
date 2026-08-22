@@ -1464,14 +1464,24 @@ def symbols_suggest(job_id: str, page: int):
     and template-matches at 300 dpi). Caching it per page is what makes a
     whole-document rollup affordable: /marks-rollup reads these files rather
     than recomputing six floor plans."""
+    from takeoff_engine.detect_page import engine_sig
+
+    sig = engine_sig()
     f = _job_dir(job_id) / f"p{page}_symbols.json"
     if f.exists():
         try:
-            return JSONResponse(json.loads(f.read_text()))
+            js = json.loads(f.read_text())
+            # Same rule as a detect result (F96): a cache keyed only on the
+            # PDF happily serves counts the current code would not produce.
+            # This one feeds /marks-rollup, so a stale entry becomes a stale
+            # quantity in the number Bill faxes a supplier.
+            if js.get("engine_sig") == sig:
+                return JSONResponse(js)
         except (OSError, ValueError):
             pass
     out = _symbols_compute(job_id, page)
     try:
+        out["engine_sig"] = sig
         _job_dir(job_id).mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(out))
     except OSError:
@@ -1714,6 +1724,9 @@ def marks_rollup(job_id: str):
     architect's own printed quantity where the schedule carries one, so the
     row doubles as the reconciliation an estimator is actually paid for.
     """
+    from takeoff_engine.detect_page import engine_sig
+
+    _sig = engine_sig()
     job = JOBS.get(job_id) or _404()
     d = _job_dir(job_id)
     npages = int(job.get("pages") or 0)
@@ -1729,6 +1742,12 @@ def marks_rollup(job_id: str):
         try:
             js = json.loads(f.read_text())
         except (OSError, ValueError):
+            pending.append(pno)
+            continue
+        # a count produced by older engine code is not a count for this
+        # document - report the sheet as still needing Count rather than
+        # folding a stale quantity into the total (F96)
+        if js.get("engine_sig") != _sig:
             pending.append(pno)
             continue
         if not sched and js.get("schedule"):

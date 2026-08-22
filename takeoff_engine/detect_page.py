@@ -49,7 +49,7 @@ def error_path(job_dir: str, page: int) -> Path:
 # for exactly this reason; this is the same idea one level up.
 _ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
                  "legend_detect.py", "detect_page.py", "raster.py",
-                 "text_detect.py", "areas.py")
+                 "text_detect.py", "areas.py", "marks.py")
 
 
 def engine_sig() -> str:
