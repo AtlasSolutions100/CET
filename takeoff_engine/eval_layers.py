@@ -294,6 +294,9 @@ def main():
         tag = " [tex]" if r["textural"] else (" [sym]" if r.get("symbolic") else "")
         print(f"{r['layer'][:46]:46} {r['unit_ink']:8.0f} {r['recall']:7.1%} "
               f"{r['purity']:7.1%} {r['n_chains']:5}  {r['dom'][:38]}{tag}")
+    # the same name-derived truth the gate scores, for one sheet
+    print_derived_metrics(derived_layer_metrics(chains, units))
+    doc.close()
 
 
 # --- per-class milestone metrics -------------------------------------------
@@ -369,26 +372,42 @@ def class_metrics(chains, units) -> dict:
     return {"per_class": per_class, "truth_layers": truth}
 
 
-def _coverage(lay_units, chains, tol: float = 3.0):
-    """Decoration-aware recall: fraction of the layer's stroke ink whose
-    units sit on (within tol of) an emitted chain. Fence X-marks and swale
-    arrowheads live ON their line, so a found line covers them - unlike raw
-    ink recall, which punishes every decorative stroke as 'missed'."""
+def _chain_sample_tree(chains, step: float = 2.0):
+    """KD-tree of points sampled along every chain. Built once per sheet so
+    the any-chain coverage below does not rebuild it per layer."""
     import numpy as np
     from scipy.spatial import cKDTree
 
     from .chain import _sample_polyline
 
-    if not lay_units or not chains:
-        return None
     samples = []
     for c in chains:
-        s, _ = _sample_polyline(np.asarray(c.pts), step=2.0, max_n=100000)
+        s, _ = _sample_polyline(np.asarray(c.pts), step=step, max_n=100000)
         if len(s):
             samples.append(s)
     if not samples:
-        return 0.0
-    tree = cKDTree(np.vstack(samples))
+        return None
+    return cKDTree(np.vstack(samples))
+
+
+def _coverage(lay_units, chains, tol: float = 3.0, tree=None):
+    """Decoration-aware recall: fraction of the layer's stroke ink whose
+    units sit on (within tol of) an emitted chain. Fence X-marks and swale
+    arrowheads live ON their line, so a found line covers them - unlike raw
+    ink recall, which punishes every decorative stroke as 'missed'.
+
+    Pass ``tree`` (from _chain_sample_tree) to score against a chain set
+    that is not the layer's own - that is how the gate separates "we never
+    traced this" from "we traced it but filed it under another layer".
+    """
+    import numpy as np
+
+    if not lay_units or (tree is None and not chains):
+        return None
+    if tree is None:
+        tree = _chain_sample_tree(chains)
+        if tree is None:
+            return 0.0
     covered = total = 0.0
     for u in lay_units:
         # a decoration counts as covered when any part of it touches the
@@ -463,6 +482,260 @@ def print_class_metrics(m: dict) -> None:
         for lay, s in m["truth_layers"].items():
             cov = f"{s['coverage']:.1%}" if s.get("coverage") is not None else "-"
             print(f"{lay[:46]:46} {s['want']:7} {s['class_acc']:10.1%} {s['recall']:8.1%} {cov:>9}")
+
+
+# --- derived layer-role truth ----------------------------------------------
+#
+# TRUTH_CLASSES above is a hand list: seven layer paths, all from the one
+# Loves Lane civil set, asserting a DASH CLASS each. It cannot grow by hand
+# fast enough to matter - the corpus already carries 700+ distinct layer
+# names - and a dash class is not derivable from a name anyway (linetype is
+# a plotting property, not a semantic one).
+#
+# What IS derivable from the name is the layer's ROLE: is this measurable
+# linework, or is it lettering / fill / sheet furniture that the junk pruner
+# is SUPPOSED to drop? That expectation needs no human confirmation per
+# sheet, so it turns every layered PDF into ground truth for coverage.
+#
+# The tokens below were read off the layer names actually present in this
+# corpus - not from an industry standard. Sources, with an example each:
+#
+#   ../TakeoffPro AI/Plans/C{3.0,4.0,8.0,9.0}-*.pdf p0   (Loves Lane civil)
+#       P1-PVMT-HATCH, P6-TEXT, P6-SHEET, O-SURFACE-LBL-FG,
+#       E3-ROADNAME-TEXT, P1-PVMT-CORR, E1-MISC (NO HATCH)
+#   ../../client_meet/beaumont/SWR_Guide_Residence_-_Civil_5.8.26.pdf
+#       G-ANNO-TTLB, C-TOPO-TEXT, TXT-SPOT GRD, SE-P-CONC HATCH AB,
+#       SE-P-GRAVEL HTCH AB RD, BG-L-Beach NON PLOT
+#   ../../client_meet/beaumont/SWR_Barn_Residence_-_Landscaping_4.7.26.pdf
+#       BG-ANNO-TEXT, BG-ANNO-DIMS, BG-ANNO-LGND, BG-ANNO-DETL-IDEN,
+#       BG-ANNO-SHEET-SYMB, A-WALL-PATT, BG-SHEET MATCHLINE, BG-TOPO-NONPLOT
+#   ../../client_meet/beaumont/260603 Thielen Biggerstaff Residence.pdf
+#       TTL-BLK-B4UDIG, UTIL-NOTES, DETAIL-DIM
+#
+# INFERENCE, not a documented standard: that a layer whose leaf name carries
+# one of these tokens holds no measurable linework. It is cross-checkable
+# without trusting the inference - the engine prunes annotation-named layers
+# to far lower coverage than linework-named ones on every sheet measured, and
+# the independent geometry detectors above (_textural_by_geometry,
+# _strip_field, _scatter_glyphs) agree on the large ones. Both checks are
+# written up in out/verify/2026-08-22/gate/VERIFY.md.
+#
+# Deliberately NOT treated as annotation:
+#   XREF / X-Ref / XR-*  - container names; the strokes under them are the
+#                          real drawing (BG-XREF scores 100% coverage on
+#                          Guide Civil p3, i.e. it is found linework)
+#   PEN3 / BG-01 THIN    - lineweight buckets, they carry real geometry
+#   BOULDER              - measured LF on some sheets, counted EA on others;
+#                          calling it either way would be inventing a
+#                          convention the project owner cannot check
+ANNOTATION_TOKENS = (
+    "ANNO", "TEXT", "TXT", "HATCH", "HTCH", "-HAT", "PATT", "DIM", "LBL",
+    "NOTE", "TTLB", "TTL-BLK", "LGND", "LEGEND", "IDEN", "MATCHLINE",
+    "SHEET", "BORDER", "NON PLOT", "NONPLOT",
+)
+
+# Symbols are countable EA, not measurable LF (a tree is one tree, not 40 ft
+# of canopy outline). Scored on their own line rather than folded into the
+# linework headline: a low number here means "symbols not vectorised", which
+# is a different defect from "a pipe run was missed". Same inference caveat -
+# read off BG-L-PLNT-TREE / BG-L-PLNT-SHRB / BG-Tree Aerial / I-FURN /
+# BG-ANNO-SYMB in the Beaumont sets, and it matches what the existing
+# _symbolic_by_congruence and _radial_bursts detectors flag by geometry.
+SYMBOL_TOKENS = ("PLNT", "TREE", "SHRB", "FURN", "SYMB")
+
+# A layer under this much ink is a stray, not a scoreable expectation.
+# 200 pt is roughly 28 ft at the 1"=10' these sheets plot at.
+MIN_TRUTH_INK = 200.0
+
+
+def is_letterform(u) -> bool:
+    """Is this stroke a vector LETTER OUTLINE rather than linework?
+
+    chain._glyph_blobs' seed test, reused verbatim rather than reinvented:
+    a letter stroke is a FOLDED path inside a small box - its path length
+    far exceeds its bounding diagonal - which no real dash ever is.
+
+    Why the gate reports this instead of subtracting it: CAD plots some
+    text as outlines, so glyph ink lands in the stroke pool and inflates
+    the recall denominator with material no detector should ever chain
+    (C8.0's sheet-number callouts "C8.2" etc. are drawn this way, on layer
+    '0' and P6-SHEET). But subtracting it would be worse, because on this
+    corpus most letterform ink on a LINEWORK layer is not stray lettering
+    at all - it is the inline mark of a dash-text utility run, the "W" in
+    "- W -" on P2-WATER-LINE (38.7% letterform), the "SD" on P2-GAS-LINE
+    (29.1%), the flow chevron on P2-STORM-SWALE (20.7%). Deleting those
+    would delete the only thing that tells a water line from a firewater
+    line. So the ink stays in the denominator, the share is printed beside
+    the numbers, and COVERAGE - which credits a decoration sitting ON its
+    line - is the headline rather than raw recall.
+    """
+    import numpy as np
+    if len(u.pts) < 3 or not (2.0 <= u.length <= 40.0):
+        return False
+    bb = u.pts.max(axis=0) - u.pts.min(axis=0)
+    diag = float(np.hypot(*bb))
+    if diag > 15.0 or diag <= 0:
+        return False
+    return diag / u.length <= 0.78
+
+
+def layer_role(layer: str) -> str:
+    """'annotation' | 'symbol' | 'linework', from the LEAF layer name only.
+
+    Leaf, for the same reason is_textural() uses it: an xref path prefix
+    describes the file a layer came from, not what the layer holds.
+    Name-only on purpose - a role decided by geometry would be derived from
+    the very output being scored, which is not ground truth.
+    """
+    leaf = (layer or "").split("|")[-1].strip().upper()
+    if not leaf:
+        return "unlayered"
+    if "NO HATCH" in leaf or "NOHATCH" in leaf:
+        return "linework"   # named for NOT being hatch - see is_textural
+    if leaf.endswith("-CORR"):
+        return "annotation"  # corridor surface texture, per is_textural
+    if any(t in leaf for t in ANNOTATION_TOKENS):
+        return "annotation"
+    if any(t in leaf for t in SYMBOL_TOKENS):
+        return "symbol"
+    return "linework"
+
+
+def layer_role_rows(chains, units, min_ink: float = MIN_TRUTH_INK) -> list:
+    """Per-leaf-layer recall + decoration-aware coverage, for EVERY layer.
+
+    The same two numbers class_metrics() reports for the seven hand-asserted
+    layers, computed for all of them, with the expectation coming from
+    layer_role() instead of from a human. Unlayered ink ("") is excluded: it
+    carries no expectation either way.
+    """
+    from collections import defaultdict
+
+    per = defaultdict(lambda: {"unit_ink": 0.0, "chain_ink": 0.0,
+                               "glyph_ink": 0.0,
+                               "units": [], "chains": [], "n_chains": 0})
+    for u in units:
+        if u.color and min(u.color) > 0.92 and not getattr(u, "on_fill", False):
+            continue   # invisible whiteout, excluded from scoring as in build
+        if getattr(u, "_absorbed", False):
+            continue   # twin copy merged into a survivor - one printed line
+        s = per[(u.layer or "").split("|")[-1]]
+        s["unit_ink"] += u.length
+        s["units"].append(u)
+        if is_letterform(u):
+            s["glyph_ink"] += u.length
+    for c in chains:
+        s = per[(c.layer or "").split("|")[-1]]
+        s["chain_ink"] += (getattr(c, "ink", None) or c.length)
+        s["chains"].append(c)
+        s["n_chains"] += 1
+
+    # one tree over ALL chains on the sheet: scoring a layer against every
+    # chain, not just its own, separates "never traced" from "traced but
+    # filed under another layer". Measured 2026-08-22: on the 7 layered gate
+    # sheets same-layer coverage is 92.1% and any-chain coverage 99.2%, so
+    # 7.1 of the 7.9 missing points are attribution, not detection.
+    all_tree = _chain_sample_tree(chains)
+    rows = []
+    for leaf, s in per.items():
+        if not leaf.strip() or s["unit_ink"] < min_ink:
+            continue
+        role = layer_role(leaf)
+        rows.append({
+            "layer": leaf,
+            "role": role,
+            "unit_ink": s["unit_ink"],
+            "chain_ink": s["chain_ink"],
+            "n_chains": s["n_chains"],
+            "n_units": len(s["units"]),
+            "recall": min(s["chain_ink"] / s["unit_ink"], 1.0),
+            "coverage": _coverage(s["units"], s["chains"]),
+            # upper bound, not a second opinion: on a dense sheet an
+            # unrelated chain passing within 3 pt also satisfies this.
+            # Linework only - it is the only role that reports it, and the
+            # hatch layers this would otherwise scan run to 300k units.
+            "coverage_any": (_coverage(s["units"], None, tree=all_tree)
+                             if role == "linework" else None),
+            "glyph_ink": s["glyph_ink"],
+        })
+    rows.sort(key=lambda r: -r["unit_ink"])
+    return rows
+
+
+def derived_layer_metrics(chains, units, min_ink: float = MIN_TRUTH_INK,
+                          miss_at: float = 0.5) -> dict:
+    """Ink-weighted recall/coverage per role, plus the layers that missed.
+
+    Reported per role rather than pooled, because the three roles want
+    opposite outcomes: linework coverage should be high, annotation coverage
+    should be LOW (that is the junk pruner earning its keep), and symbol
+    coverage says whether glyph layers were vectorised at all.
+    """
+    rows = layer_role_rows(chains, units, min_ink)
+    out = {"rows": rows, "roles": {}}
+    for role in ("linework", "symbol", "annotation"):
+        rs = [r for r in rows if r["role"] == role]
+        ink = sum(r["unit_ink"] for r in rs)
+        if not ink:
+            out["roles"][role] = {"n": 0, "ink": 0.0, "glyph_ink": 0.0,
+                                  "recall": None, "coverage": None,
+                                  "coverage_any": None}
+            continue
+        out["roles"][role] = {
+            "n": len(rs),
+            "ink": ink,
+            "glyph_ink": sum(r["glyph_ink"] for r in rs),
+            "recall": sum(r["recall"] * r["unit_ink"] for r in rs) / ink,
+            "coverage": sum((r["coverage"] or 0.0) * r["unit_ink"]
+                            for r in rs) / ink,
+            # None, not 0, when the role never computes it - a printed 0.0%
+            # would read as "nothing on this role was traced"
+            "coverage_any": (sum((r["coverage_any"] or 0.0) * r["unit_ink"]
+                                 for r in rs) / ink
+                             if any(r["coverage_any"] is not None for r in rs)
+                             else None),
+        }
+    # two different defects, never pooled: a LOST layer was not traced by
+    # anything (a real hole in the takeoff), a MISFILED one was traced by a
+    # chain that kept a different layer (the footage is there, the style
+    # list attributes it wrongly). Reporting them as one number is how the
+    # 92.1% headline would get read as 8 points of missing linework.
+    low = [r for r in rows
+           if r["role"] == "linework" and (r["coverage"] or 0.0) < miss_at]
+    out["lost"] = sorted(
+        [r for r in low if (r["coverage_any"] or 0.0) < miss_at],
+        key=lambda r: -r["unit_ink"])
+    out["misfiled"] = sorted(
+        [r for r in low if (r["coverage_any"] or 0.0) >= miss_at],
+        key=lambda r: -r["unit_ink"])
+    out["misses"] = sorted(low, key=lambda r: -r["unit_ink"])
+    return out
+
+
+def print_derived_metrics(d: dict, top: int = 12) -> None:
+    print(f"\n{'role':11} {'layers':>7} {'ink':>10} {'recall':>8} "
+          f"{'coverage':>9} {'any-chain':>10}")
+    for role, s in d["roles"].items():
+        r = f"{s['recall']:.1%}" if s["recall"] is not None else "-"
+        c = f"{s['coverage']:.1%}" if s["coverage"] is not None else "-"
+        a = f"{s['coverage_any']:.1%}" if s.get("coverage_any") is not None \
+            else "-"
+        print(f"{role:11} {s['n']:7} {s['ink']:10.0f} {r:>8} {c:>9} {a:>10}")
+    for kind in ("lost", "misfiled"):
+        rs = d.get(kind) or []
+        if not rs:
+            continue
+        what = ("traced by NOTHING - a real hole in the takeoff"
+                if kind == "lost"
+                else "traced, but the chain kept another layer")
+        print(f"\n{kind}: linework layers under 50% own-layer coverage, "
+              f"{what} ({len(rs)}):")
+        for r in rs[:top]:
+            print(f"   {r['layer'][:40]:40} ink={r['unit_ink']:9.0f} "
+                  f"recall={r['recall']:6.1%} "
+                  f"cov={(r['coverage'] or 0.0):6.1%} "
+                  f"any={(r['coverage_any'] or 0.0):6.1%} "
+                  f"chains={r['n_chains']}")
 
 
 if __name__ == "__main__":
