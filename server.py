@@ -35,6 +35,56 @@ JOBS_DIR = ROOT / "out" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 SAMPLES_DIR = (ROOT / ".." / "TakeoffPro AI").resolve()
 
+# Filesystem exposure. /api/open-path and /api/legend-sheet take a path
+# from the client, and /api/samples lists plans on disk - fine on a laptop,
+# an arbitrary-file read on a hosted box. Both are confined to PLAN_ROOTS:
+#   TAKEOFF_PLAN_ROOTS  os.pathsep-separated directories (default: the
+#                       local plan corpus + client_meet next to this repo,
+#                       and our own upload dir)
+#   TAKEOFF_HOSTED=1    hosted mode - open-path/legend-sheet paths are
+#                       refused outright (uploads only) and /api/samples
+#                       is empty, so one tenant never sees another's files
+_os = __import__("os")
+HOSTED = _os.environ.get("TAKEOFF_HOSTED", "").strip().lower() in ("1", "true", "yes")
+_roots_env = _os.environ.get("TAKEOFF_PLAN_ROOTS", "").strip()
+PLAN_ROOTS = [Path(r).expanduser().resolve()
+              for r in (_roots_env.split(_os.pathsep) if _roots_env else [])
+              if r.strip()] or [
+    SAMPLES_DIR,
+    (ROOT / ".." / "client_meet").resolve(),
+    JOBS_DIR.resolve(),
+]
+
+
+def _under_roots(p: Path) -> bool:
+    """True when the RESOLVED path sits inside one of PLAN_ROOTS. Resolving
+    first defeats ../ traversal and symlink tricks; a non-existent path is
+    never allowed."""
+    try:
+        rp = p.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    for root in PLAN_ROOTS:
+        try:
+            rp.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _client_pdf(raw: str) -> Path:
+    """Validate a client-supplied PDF path or raise the right HTTP error."""
+    if HOSTED:
+        raise HTTPException(403, "path access is disabled on the hosted "
+                                 "service - upload the PDF instead")
+    p = Path(raw).expanduser()
+    if not _under_roots(p) or p.suffix.lower() != ".pdf" or not p.is_file():
+        # one message for missing and forbidden: a probe must not learn
+        # which paths exist outside the roots
+        raise HTTPException(404, "not an accessible PDF")
+    return p.resolve()
+
 app = FastAPI(title="Takeoff Detection Service")
 
 # Optional site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic
@@ -125,17 +175,22 @@ class OpenPathBody(BaseModel):
 
 @app.get("/api/samples")
 def list_samples():
-    """Convenience: sample plans on this machine, for quick opening."""
+    """Convenience: sample plans on this machine, for quick opening.
+    Confined to PLAN_ROOTS (minus our own upload dir); empty when hosted."""
     out = []
-    if SAMPLES_DIR.exists():
-        for p in sorted(SAMPLES_DIR.rglob("*.pdf")):
+    if HOSTED:
+        return out
+    for root in PLAN_ROOTS:
+        if root == JOBS_DIR.resolve() or not root.is_dir():
+            continue
+        for p in sorted(root.rglob("*.pdf")):
             try:
                 size = p.stat().st_size
             except OSError:
                 continue
             if size > 50_000:
                 out.append({"path": str(p), "name": p.name, "mb": round(size / 1e6, 1)})
-    return out[:80]
+    return out[:200]
 
 
 def _register(path: Path, classify: bool = True) -> dict:
@@ -181,10 +236,7 @@ def _register(path: Path, classify: bool = True) -> dict:
 
 @app.post("/api/open-path")
 def open_path(body: OpenPathBody):
-    p = Path(body.path).expanduser()
-    if not p.exists() or p.suffix.lower() != ".pdf":
-        raise HTTPException(404, f"not a PDF: {p}")
-    return _register(p)
+    return _register(_client_pdf(body.path))
 
 
 @app.post("/api/upload")
@@ -565,9 +617,9 @@ def legend_sheet(job_id: str, body: LegendSheetBody):
     from takeoff_engine.legend_detect import read_legend_sheet
 
     job = JOBS.get(job_id) or _404()
-    src = Path(body.path).expanduser() if body.path else Path(job["path"])
+    src = _client_pdf(body.path) if body.path else Path(job["path"])
     if not src.exists():
-        raise HTTPException(404, f"not found: {src}")
+        raise HTTPException(404, "not found")
     doc = pymupdf.open(src)
     best: list = []
     scanned = []

@@ -45,6 +45,13 @@ python -m takeoff_engine.batch "path/to/plans-dir" --out out/batch
 python3 -m uvicorn server:app --port 8100   # review UI at localhost:8100
 ```
 
+Service environment (all optional): `TAKEOFF_UI_PASSWORD` (HTTP Basic on every
+request), `TAKEOFF_PLAN_ROOTS` (os.pathsep-separated directories that
+`/api/open-path`, `/api/legend-sheet` and `/api/samples` may touch; default =
+`../TakeoffPro AI`, `../client_meet`, `out/jobs`), `TAKEOFF_HOSTED=1` (refuse
+client paths entirely - uploads only - and hide the samples list; set this on
+any shared/hosted deployment).
+
 `server.py` + `webui/` is the classify-and-approve product loop: open a
 plan, Detect, review discovered styles (isolate/relabel/include), Approve
 -> elements JSON in TakeoffDraft2 format. See INTEGRATION.md for the
