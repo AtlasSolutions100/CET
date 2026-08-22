@@ -1145,11 +1145,13 @@ for (const [headId, contentIds] of SECTIONS) {
 }
 
 // ---------- earthwork calculator ----------
-$("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; draw(); };
+$("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; ewDisarmPick(); draw(); };
 $("ewBtn").onclick = async () => {
   const panel = $("ewPanel");
-  if (!panel.hidden) { panel.hidden = true; return; }
+  if (!panel.hidden) { panel.hidden = true; ewDisarmPick(); return; }
   panel.hidden = false;
+  // a page switch nulls state.tool without touching this button's class
+  $("ewAddRow").classList.remove("active");
   if (!state.ew) {
     $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
     const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
@@ -1176,6 +1178,89 @@ $("ewBtn").onclick = async () => {
   renderEw();
   renderEwLayers();
 };
+
+// ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
+// The estimator clicks a contour line and types the elevation they read
+// off the overview sheet. Session-only, like every other row here.
+function ewDisarmPick(msg) {
+  if (state.tool !== "ew-pick") return;
+  state.tool = null;
+  $("ewAddRow").classList.remove("active");
+  setStatus(msg || "");
+}
+function ewAppendRow(cid) {
+  const ch = chainById(cid);
+  if (!ch) return setStatus(`chain ${cid} not found`, "err");
+  if (ch.custom) {
+    // volumes are computed server-side from the DETECTED result file;
+    // locally drawn/edited copies don't exist there and would be
+    // silently ignored - refuse loudly instead
+    return setStatus("that line is a local edit — pick an original detected line", "err");
+  }
+  if (state.ew.rows.some(r => r.chain_id === cid)) {
+    state.hotChain = cid; draw();
+    return setStatus(`chain ${cid} is already in the list`, "err");
+  }
+  state.ew.rows.push({ chain_id: cid, z: NaN, width: ch.width || 0, dist: null,
+                       surface: null, manual: true });
+  state.hotChain = cid;
+  renderEw();
+  draw();
+  const inp = $("ewRows").querySelector(`input[name="ew-z-${cid}"]`);
+  if (inp) inp.focus();
+  setStatus(`chain ${cid} added — type its elevation, then EXIST or PROP`);
+}
+$("ewAddRow").onclick = () => {
+  if (!state.ew) return setStatus("run Detect first", "err");
+  if (state.tool === "ew-pick") { ewDisarmPick("add contour cancelled"); return; }
+  // a line already selected on the canvas is what the user means - take it
+  if (state.selected !== null && chainById(state.selected) !== null) {
+    ewAppendRow(state.selected);
+    return;
+  }
+  state.tool = "ew-pick";
+  $("ewAddRow").classList.add("active");
+  setStatus("add contour: click the contour line on the sheet — Esc cancels", "busy");
+};
+// nearest VISIBLE chain, same eligibility + zoom-scaled tolerance as a
+// plain canvas click (handleCanvasClick)
+function ewPickAt(px, py) {
+  const { k } = state.view;
+  const f = IMG_DPI / 72;
+  const tolPt = 6 / k / f * 4 + 1.5;
+  let best = null, bestD = tolPt;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    for (let i = 1; i < ch.points.length; i++) {
+      const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
+      if (d < bestD) { bestD = d; best = ch; }
+    }
+  }
+  if (!best) return setStatus("no line there — click closer to the contour, or Esc to cancel", "err");
+  ewDisarmPick();
+  ewAppendRow(best.chain_id);
+}
+// clicks land in the contour picker while it is armed; declared before the
+// structure tool's wrapper, which chains onto this one at load time
+const _ewClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "ew-pick") {
+    const [px, py] = ptFromEvent(e);
+    return ewPickAt(px, py);
+  }
+  return _ewClickBefore(e);
+};
+// capture phase so the generic Esc (clear selection) never fires while the
+// picker owns the key - same pattern as the structure tool
+addEventListener("keydown", (e) => {
+  if (typing() || state.tool !== "ew-pick") return;
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    ewDisarmPick("add contour cancelled");
+  }
+}, true);
 
 function renderEwLayers() {
   if (!state.ew) return;
@@ -1256,14 +1341,17 @@ function renderEw() {
   const box = $("ewRows");
   box.innerHTML = "";
   if (!state.ew || !state.ew.rows.length) {
-    box.innerHTML = '<div class="ew-hint">No elevation labels found near contours on this page. ' +
-      'Elevations can still be assigned by selecting lines and using Separate, then entering values here later.</div>';
+    box.innerHTML = '<div class="ew-hint">No elevations printed on this sheet — ' +
+      'click <b>+ Add contour</b>, click the line, type its elevation.</div>';
     return;
   }
-  state.ew.rows.sort((a, b) => (a.z ?? 1e9) - (b.z ?? 1e9));
+  // blank (not-yet-typed) elevations sink to the bottom; NaN must never
+  // reach the comparator (NaN-returning comparators scramble the sort)
+  const zk = v => Number.isFinite(v) ? v : 1e9;
+  state.ew.rows.sort((a, b) => zk(a.z) - zk(b.z));
   for (const row of state.ew.rows) {
     const div = document.createElement("div");
-    div.className = "ew-row";
+    div.className = "ew-row has-x";
     div.title = "click to select this contour on the sheet";
     div.onclick = (ev) => {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
@@ -1272,12 +1360,25 @@ function renderEw() {
       draw();
     };
     const z = document.createElement("input");
-    z.className = "z"; z.type = "number"; z.step = "0.1"; z.value = row.z;
+    z.className = "z"; z.type = "number"; z.step = "0.1";
+    z.value = Number.isFinite(row.z) ? row.z : "";
+    z.placeholder = "elev";
     z.name = "ew-z-" + row.chain_id;
     z.oninput = () => { row.z = parseFloat(z.value); };
+    // Enter commits (blur), never submits anything; Esc leaves the field
+    // without reaching the global Esc (which clears the canvas selection)
+    z.onkeydown = (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); z.blur(); }
+      else if (ev.key === "Escape") { ev.stopPropagation(); z.blur(); }
+    };
+    // no re-render on change/blur: rebuilding the rows mid-click would
+    // swallow the first click on EXIST/PROP; the next renderEw (surface
+    // click, add, remove) re-sorts anyway
     const meta = document.createElement("div");
     meta.className = "ew-meta";
-    meta.textContent = `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
+    meta.textContent = row.manual
+      ? `chain ${row.chain_id} · w ${row.width} · manual`
+      : `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
     const seg = document.createElement("div");
     seg.className = "seg";
     for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"], [null, "skip"]]) {
@@ -1288,7 +1389,16 @@ function renderEw() {
       b.onclick = () => { row.surface = key; renderEw(); };
       seg.appendChild(b);
     }
-    div.append(z, meta, seg);
+    const x = document.createElement("button");
+    x.className = "mini x"; x.textContent = "×";
+    x.title = "remove this contour from the calculation";
+    x.onclick = () => {
+      state.ew.rows = state.ew.rows.filter(r => r !== row);
+      if (state.hotChain === row.chain_id) state.hotChain = null;
+      renderEw();
+      draw();
+    };
+    div.append(z, meta, seg, x);
     div.onmouseenter = () => { state.hotChain = row.chain_id; draw(); };
     div.onmouseleave = () => { state.hotChain = null; draw(); };
     box.appendChild(div);
