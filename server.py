@@ -994,6 +994,21 @@ class EarthworkBody(BaseModel):
     # (where both surfaces are defined) - override with the clear & grub
     # area when the strip extends beyond the graded region.
     strip_area_sf: float | None = None
+    # --- material balance (F87 B7) -------------------------------------
+    # Each existing_layers row may also carry {reuse_pct, respread_pct,
+    # destination}: what share of that removal is reused as structural
+    # fill, what share is respread on site, and where the rest goes. The
+    # remainder is exported. The defaults leave every removal at 100%
+    # export - Beaumont Estimate #853 shows the stripped topsoil is NOT
+    # structural reuse (earthwork.material_balance carries the arithmetic).
+    # Site cut IS reused 1:1 against site fill in #853, so this defaults to
+    # 100 - the only defaulted assumption in the balance.
+    cut_reuse_pct: float = 100.0
+    # Volumes are in-place yards between the two surfaces. #853 applies no
+    # swell / shrink / compaction factor, so these default to 1.0; they
+    # exist only so a user whose job needs one can enter it.
+    export_factor: float = 1.0
+    import_factor: float = 1.0
 
 
 @app.get("/api/job/{job_id}/page/{page}/earthwork/suggest")
@@ -1117,7 +1132,12 @@ def earthwork_suggest(job_id: str, page: int):
 
 
 def _layer_stack(rows: list) -> tuple[list, float]:
-    """[{name, thickness_in}] -> (clean rows, total thickness ft)."""
+    """[{name, thickness_in}] -> (clean rows, total thickness ft).
+
+    A removal row may also carry the material-balance disposition
+    (reuse_pct / respread_pct / destination). It rides along untouched for
+    material_balance() to read; it never affects the surface offset.
+    """
     out, tot_in = [], 0.0
     for r in rows or []:
         try:
@@ -1127,7 +1147,10 @@ def _layer_stack(rows: list) -> tuple[list, float]:
         if t <= 0:
             continue
         out.append({"name": str(r.get("name") or "layer").strip() or "layer",
-                    "thickness_in": t})
+                    "thickness_in": t,
+                    "reuse_pct": r.get("reuse_pct"),
+                    "respread_pct": r.get("respread_pct"),
+                    "destination": r.get("destination")})
         tot_in += t
     return out, tot_in / 12.0
 
@@ -1139,7 +1162,8 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     difference them. Adds the per-layer volumes and the offsets used."""
     import numpy as _np
 
-    from takeoff_engine.earthwork import Surface, cut_fill
+    from takeoff_engine.earthwork import (Surface, clamp_pct, cut_fill,
+                                          material_balance)
 
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if not rf.exists():
@@ -1185,10 +1209,29 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     layers = []
     for side, rows in (("existing", ex_layers), ("proposed", pr_layers)):
         for r in rows:
-            layers.append({"name": r["name"], "side": side,
-                           "thickness_in": r["thickness_in"],
-                           "volume_yd3": round(area * r["thickness_in"] / 12.0 / 27.0, 1)})
+            row = {"name": r["name"], "side": side,
+                   "thickness_in": r["thickness_in"],
+                   "volume_yd3": round(area * r["thickness_in"] / 12.0 / 27.0, 1)}
+            if side == "existing":
+                # only a REMOVAL has anywhere to go. A proposed layer is
+                # purchased material sitting above subgrade, not site dirt.
+                row["reuse_pct"] = clamp_pct(r.get("reuse_pct"), 0.0)
+                row["respread_pct"] = clamp_pct(r.get("respread_pct"), 0.0)
+                row["destination"] = str(r.get("destination") or "on site")[:40]
+            layers.append(row)
     result["layers"] = layers
+    # Where the dirt goes: export / reuse / import (F87 B7, Beaumont). The
+    # two areas differ on purpose and every row says which one it used -
+    # removal layers are stripped over the disturbed area (layer_area_sf),
+    # cut and fill exist only where the two TINs overlap (area_sf). #853
+    # bids it the same way: Strip Topsoil over the Clear & Grub area,
+    # Site Cut / Site Fill over the graded region.
+    result["balance"] = material_balance(
+        result["cut_yd3"], result["fill_yd3"], layers,
+        cut_reuse_pct=body.cut_reuse_pct,
+        export_factor=body.export_factor,
+        import_factor=body.import_factor,
+        cut_area_sf=result["area_sf"], layer_area_sf=area)
     return result
 
 

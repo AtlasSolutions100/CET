@@ -93,6 +93,16 @@
         <span id="ewResult" class="ew-result"></span>
         <label class="ew-map-toggle" title="Paint where the dirt moves: cut blue, fill yellow; deeper = stronger"><input type="checkbox" id="ewMap"> Show cut/fill map</label>
       </div>
+      <div class="ew-balance" id="ewBalance">
+        <div class="ew-layers-head"><span>Material balance</span></div>
+        <label class="ew-bal-cut" title="Beaumont Estimate #853: Import Structural 11,581 CY = Site Fill 17,123 - Site Cut 5,551 (11,572), so their site cut is reused against site fill 1:1"><input type="checkbox" id="ewCutReuse" checked> Site cut is reusable as structural fill</label>
+        <div id="ewBalOut" class="ew-bal-out"></div>
+        <div class="ew-bal-factors">
+          <span>Multiply export volumes by</span><input id="ewFacExp" type="number" min="0" step="0.05" value="1">
+          <span>Multiply import volumes by</span><input id="ewFacImp" type="number" min="0" step="0.05" value="1">
+        </div>
+        <div class="ew-bal-note" id="ewBalNote"></div>
+      </div>
     </div>
     <div id="trPanel" class="ew-panel" hidden>
       <div class="side-head" id="trHead"><h2>Pipe trench</h2>

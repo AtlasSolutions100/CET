@@ -141,6 +141,252 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
     return out
 
 
+# --- material balance: export / reuse / import ---------------------------
+#
+# The estimator's second question, after "how much moves?": how much LEAVES,
+# how much gets REUSED, how much must be BOUGHT. Beaumont, 2026-08-21
+# transcript line 186 - HIS words, not the interviewer's: "in a building or
+# something, I can't reuse that top soil. So, yeah, now I need to know,
+# structural dirt wise, what I can use to replace that."
+#
+# Their vocabulary is EXPORT and IMPORT (Estimate #853 line items; bid-sheet
+# exclusion 23, "All import and export is subject to loading and knock down
+# fee's"). Deliberately NOT "haul off": that phrasing came from the
+# interviewer, and exclusion 6 ("Topsoil and fill material required fro the
+# job will be stockpiled onsite") plus the "On site" suffix on both #853
+# balance lines show their export frequently never leaves the property.
+# Hence the per-row destination note, defaulting to "on site".
+#
+# Every default below is measured against Beaumont Estimate #853 (SWR Barn
+# Residence, 4/29/2026) - their own priced takeoff, not an industry prior:
+#
+#     Strip Topsoil        5,730 CYD     Site Cut            5,551 CYD
+#     Rough Place Topsoil  2,865 CYD     Site Fill          17,123 CYD
+#     Export Topsoil       2,865 CYD     Import Structural  11,581 CYD
+#
+#   * 2,865 + 2,865 = 5,730 exactly. The strip splits between respread and
+#     export - but that split is the estimator's judgement (soils report,
+#     landscape area), so NO default is seeded for it. #853's exact 50/50 is
+#     a fact about that job, not a rule.
+#   * 17,123 - 5,551 = 11,572 against their 11,581: a 9 CYD / 0.078%
+#     residual. Two consequences, both measurements:
+#       - site cut IS reused against site fill 1:1, so cut_reuse_pct
+#         defaults to 100 - the only defaulted assumption here;
+#       - NO swell / shrink / compaction factor is applied anywhere. A
+#         factor would put tens of percent between those two numbers, not
+#         0.078%. export_factor / import_factor therefore default to 1.0 and
+#         exist only so a user whose job needs one can type it. Volumes are
+#         in-place yards measured between two surfaces; this module does not
+#         convert between in-place, loose and compacted volume, because
+#         #853 does not.
+#   * Had the stripped topsoil counted as structural reuse, their import
+#     would read 11,572 - 5,730 = 5,842. It reads 11,581 - so #853 confirms
+#     line 186 as a NUMBER. Removal layers therefore default to 100% export.
+#
+# The 9 CYD residual is an OPEN QUESTION for the client, not an assumption.
+
+_BALANCE_UNIT = "CY"
+# #853 writes CYD. The app writes CY on every existing earthwork row and CY
+# is the commoner abbreviation, so one client's house style does not get to
+# churn the whole app; revisit as a per-client display preference.
+
+
+def clamp_pct(v, default: float = 0.0) -> float:
+    """A percentage the UI may hand us blank, negative or over 100."""
+    try:
+        p = float(v)
+    except (TypeError, ValueError):
+        return default
+    if p != p:                      # NaN
+        return default
+    return min(max(p, 0.0), 100.0)
+
+
+def material_balance(cut_yd3: float, fill_yd3: float, layers: list,
+                     cut_reuse_pct: float = 100.0,
+                     export_factor: float = 1.0,
+                     import_factor: float = 1.0,
+                     cut_area_sf: float | None = None,
+                     layer_area_sf: float | None = None) -> dict:
+    """Split the computed volumes into export / reuse / import.
+
+        reuse_pool  = cut x cut_reuse%  +  SUM(layer x layer.reuse%)
+        fill_demand = fill
+        reuse       = min(reuse_pool, fill_demand)
+        import      = fill_demand - reuse       -> "Import Structural"
+        surplus     = reuse_pool  - reuse       -> "Export Surplus Cut"
+        per layer:  volume x export%            -> "Export <name>"
+                    volume x respread%          -> "Rough Place <name>"
+
+    `layers` is the list `_earthwork_run` already builds - each
+    {name, side, thickness_in, volume_yd3} plus the UI's reuse_pct /
+    respread_pct / destination.
+
+    Returns the summary plus `rows`, ready to become takeoff line items.
+    """
+    cut = max(float(cut_yd3 or 0.0), 0.0)
+    fill = max(float(fill_yd3 or 0.0), 0.0)
+    cut_reuse = clamp_pct(cut_reuse_pct, 100.0)
+    try:
+        ef = max(float(export_factor), 0.0) or 1.0
+    except (TypeError, ValueError):
+        ef = 1.0
+    try:
+        imf = max(float(import_factor), 0.0) or 1.0
+    except (TypeError, ValueError):
+        imf = 1.0
+
+    def r1(v: float) -> float:
+        return round(float(v), 1)
+
+    removals = []
+    for lay in layers or []:
+        # TRAP 2 - PROPOSED LAYERS MUST NOT ENTER THE BALANCE. The proposed
+        # stack (road base, paving) LOWERS the proposed surface in cut_fill,
+        # so fill_yd3 is fill to SUBGRADE and that stack sits on top of it,
+        # already priced as its own "Place <name>" row. Adding it to
+        # fill_demand double-counts it; treating it as site dirt is worse -
+        # nobody backfills a driveway section with the spoil pile.
+        if str(lay.get("side")) != "existing":
+            continue
+        vol = max(float(lay.get("volume_yd3") or 0.0), 0.0)
+        reuse_p = clamp_pct(lay.get("reuse_pct"), 0.0)
+        respread_p = clamp_pct(lay.get("respread_pct"), 0.0)
+        if reuse_p + respread_p > 100.0:     # UI clamps, but never trust it
+            respread_p = max(100.0 - reuse_p, 0.0)
+        export_p = max(100.0 - reuse_p - respread_p, 0.0)
+        removals.append({
+            "name": str(lay.get("name") or "layer"),
+            "volume_yd3": vol,
+            "reuse_pct": reuse_p, "respread_pct": respread_p,
+            "export_pct": export_p,
+            "destination": str(lay.get("destination") or "on site")[:40],
+            "offer_yd3": r1(vol * reuse_p / 100.0),
+            "used_yd3": 0.0,
+        })
+
+    # TRAP 1 - fill_yd3 ALREADY CONTAINS THE TOPSOIL REPLACEMENT. cut_fill()
+    # lowers the existing surface by the strip thickness, which shifts every
+    # dz by (e - p), so stripping a foot raises fill by a foot across the
+    # overlap. That IS Beaumont's "structural dirt to replace that" and it is
+    # already inside this number. Do not add the strip volume to fill_demand.
+    fill_demand = fill
+
+    # Round FIRST, then subtract, so the arithmetic an estimator reads off
+    # the panel closes exactly instead of drifting a tenth.
+    cut_r, demand_r = r1(cut), r1(fill_demand)
+    cut_offer_r = r1(cut_r * cut_reuse / 100.0)
+    pool_r = r1(cut_offer_r + sum(rm["offer_yd3"] for rm in removals))
+    reuse_r = min(pool_r, demand_r)
+    import_r = r1(demand_r - reuse_r)
+    surplus_r = r1(pool_r - reuse_r)
+
+    # Draw the reuse from the site cut first, then from any removal layer the
+    # estimator marked reusable, in list order. The ordering only bites when a
+    # removal layer is ALSO marked reusable; otherwise the cut is the only
+    # thing in the pool, which is #853's shape and the ordinary case. "Cut
+    # first" is an INFERENCE (it is already in the machine and already being
+    # moved), not a rule Beaumont stated - it is on the open-questions list.
+    cut_used_r = min(cut_offer_r, reuse_r)
+    left = r1(reuse_r - cut_used_r)
+    for rm in removals:
+        rm["used_yd3"] = min(rm["offer_yd3"], left)
+        left = r1(left - rm["used_yd3"])
+    # Cut that is NOT reused has to leave: the part the estimator never
+    # offered (cut_reuse_pct < 100) plus the offered part fill did not need.
+    # Dropping the un-offered part would delete real truckloads from the bid.
+    cut_export_r = r1(cut_r - cut_used_r)
+
+    cut_area = float(cut_area_sf) if cut_area_sf else None
+    lay_area = float(layer_area_sf) if layer_area_sf else None
+    rows = []
+    for rm in removals:
+        # "Export Topsoil" and "Rough Place Topsoil" are #853's own line
+        # names and fall out of a layer named Topsoil. "Export <anything
+        # else>" follows the same shape and is an INFERENCE, exactly like the
+        # existing "Remove <name>" / "Place <name>" rows.
+        # what this layer exports = the share never offered for reuse, plus
+        # any offered share the fill did not actually need
+        spare = r1(rm["offer_yd3"] - rm["used_yd3"])
+        base = r1(rm["volume_yd3"] * rm["export_pct"] / 100.0)
+        if base + spare > 0:
+            q = r1((base + spare) * ef)
+            if q > 0:
+                rows.append({
+                    "label": f'Export {rm["name"]}'.strip(),
+                    "qty": q, "unit": _BALANCE_UNIT, "kind": "export",
+                    "basis": f'{r1(rm["volume_yd3"]):,} CY x '
+                             f'{rm["export_pct"]:g}% export'
+                             + (f' + {spare:,} CY offered but not needed'
+                                if spare > 0 else '')
+                             + (f' x {ef:g}' if ef != 1.0 else ''),
+                    "area_sf": lay_area, "area_source": "layer area",
+                    "destination": rm["destination"],
+                })
+        if rm["respread_pct"] > 0:
+            q = r1(rm["volume_yd3"] * rm["respread_pct"] / 100.0)
+            if q > 0:
+                rows.append({
+                    "label": f'Rough Place {rm["name"]}'.strip(),
+                    "qty": q, "unit": _BALANCE_UNIT, "kind": "respread",
+                    "basis": f'{r1(rm["volume_yd3"]):,} CY x '
+                             f'{rm["respread_pct"]:g}% respread',
+                    "area_sf": lay_area, "area_source": "layer area",
+                    "destination": rm["destination"],
+                })
+    if cut_export_r > 0:
+        # PROVISIONAL NAME - not Beaumont's. #853's nearest line is
+        # "Allowances- Export rocks and boulders to lower field". Open
+        # question: what do they call surplus cut?
+        q = r1(cut_export_r * ef)
+        rows.append({
+            "label": "Export Surplus Cut", "qty": q, "unit": _BALANCE_UNIT,
+            "kind": "export",
+            "basis": f'site cut {cut_r:,} CY - reused {cut_used_r:,} CY'
+                     + (f' (only {cut_reuse:g}% offered for reuse)'
+                        if cut_reuse < 100.0 else '')
+                     + (f' x {ef:g}' if ef != 1.0 else ''),
+            "area_sf": cut_area, "area_source": "cut/fill area",
+            "destination": "on site",
+        })
+    if import_r > 0:
+        q = r1(import_r * imf)
+        rows.append({
+            "label": "Import Structural", "qty": q, "unit": _BALANCE_UNIT,
+            "kind": "import",
+            "basis": f'fill {demand_r:,} CY - reused {reuse_r:,} CY'
+                     + (f' x {imf:g}' if imf != 1.0 else ''),
+            "area_sf": cut_area, "area_source": "cut/fill area",
+            "destination": "on site",
+        })
+
+    export_total = r1(sum(r["qty"] for r in rows if r["kind"] == "export"))
+    return {
+        "reuse_pool_yd3": pool_r,
+        "fill_demand_yd3": demand_r,
+        "reuse_yd3": reuse_r,
+        "import_yd3": r1(import_r * imf),
+        "surplus_yd3": r1(surplus_r * ef),
+        # the site cut's own fate, so the panel can show that every yard of
+        # it is accounted for even when the estimator says none is reusable
+        "cut_yd3": cut_r,
+        "cut_reused_yd3": cut_used_r,
+        "cut_export_yd3": r1(cut_export_r * ef),
+        "export_total_yd3": export_total,
+        "respread_total_yd3": r1(sum(r["qty"] for r in rows
+                                     if r["kind"] == "respread")),
+        "cut_reuse_pct": cut_reuse,
+        "export_factor": ef, "import_factor": imf,
+        "cut_area_sf": cut_area, "layer_area_sf": lay_area,
+        "rows": rows,
+        # every volume here is in-place yards between the two surfaces; see
+        # the module comment for why no swell/compaction factor is applied
+        "basis": "in-place cubic yards; no swell or compaction factor "
+                 "applied" if (ef == 1.0 and imf == 1.0) else
+                 "in-place cubic yards; user factors applied",
+    }
+
+
 def render_cut_fill_map(grid: dict) -> tuple[bytes, dict]:
     """Paint a dz grid as an RGBA PNG: cut (dz < 0) blue, fill (dz > 0)
     yellow-orange, |dz| -> alpha 0.15..0.75, undefined cells transparent.

@@ -1427,7 +1427,7 @@ const SECTIONS = [
   ["arHead", ["arList", "arScale", "arUnmatched"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
-  ["ewHead", ["ewRows", "ewHint", "ewLayers", "ewActions"]],
+  ["ewHead", ["ewRows", "ewHint", "ewLayers", "ewActions", "ewBalance"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
@@ -1598,8 +1598,67 @@ function renderEwLayers() {
       x.onclick = () => { state.ew.layers[side].splice(i, 1); renderEwLayers(); };
       row.append(name, th, unit, x);
       box.appendChild(row);
+      // material balance: only a REMOVAL has anywhere to go. A proposed
+      // layer is purchased material sitting above subgrade, not site dirt,
+      // so it gets no disposition and never enters the reuse pool.
+      if (side === "existing") box.appendChild(ewDispRow(lay, i));
     });
   }
+}
+
+// ---------- material balance: where each removal goes ----------
+// Defaults to 100% export. Beaumont Estimate #853 shows the stripped topsoil
+// is NOT structural reuse: their Import Structural reads 11,581 CY, and had
+// the 5,730 CY strip counted as reuse it would read 5,842. The respread /
+// export split is the estimator's judgement (soils report, landscape area),
+// so nothing is seeded - #853's exact 50/50 is a fact about that job, not a
+// rule.
+const EW_DISP_DEFAULT = { reuse_pct: null, respread_pct: null, destination: "on site" };
+
+function ewDispRow(lay, i) {
+  const d = document.createElement("div");
+  d.className = "ew-layer-disp";
+  const pctIn = (key) => {
+    const el = document.createElement("input");
+    el.type = "number"; el.min = "0"; el.max = "100"; el.step = "5";
+    el.placeholder = "0";
+    el.name = `ew-disp-${i}-${key}`;
+    el.value = isFinite(lay[key]) ? lay[key] : "";
+    el.oninput = () => {
+      const v = parseFloat(el.value);
+      lay[key] = isFinite(v) ? Math.min(Math.max(v, 0), 100) : null;
+      paint();
+    };
+    return el;
+  };
+  const reuse = pctIn("reuse_pct"), resp = pctIn("respread_pct");
+  const exp = document.createElement("span");
+  exp.className = "exp";
+  const dest = document.createElement("input");
+  dest.type = "text"; dest.placeholder = "on site";
+  dest.name = `ew-disp-${i}-dest`;
+  dest.value = lay.destination === undefined ? "on site" : lay.destination;
+  // Bid-sheet exclusion 6: "Topsoil and fill material required fro the job
+  // will be stockpiled onsite" - their export often never leaves the
+  // property, and exclusion 23 says import/export carries its own fee.
+  dest.title = 'Where it goes. Both #853 export lines say "On site".';
+  dest.oninput = () => { lay.destination = dest.value; };
+  function paint() {
+    const r = isFinite(lay.reuse_pct) ? lay.reuse_pct : 0;
+    const s = isFinite(lay.respread_pct) ? lay.respread_pct : 0;
+    exp.textContent = `${Math.max(100 - r - s, 0)}% export`;
+    exp.style.color = (r + s > 100) ? "var(--bad, #c0483c)" : "";
+  }
+  paint();
+  const span = (cls, txt) => {
+    const e = document.createElement("span");
+    e.className = cls; e.textContent = txt;
+    return e;
+  };
+  d.append(span("", "reuse"), reuse, span("", "%"),
+           span("", "respread"), resp, span("", "%"),
+           span("sep", "\u2192"), exp, span("sep", "\u00b7"), dest);
+  return d;
 }
 
 $("ewStrip").onclick = () => {
@@ -1608,12 +1667,13 @@ $("ewStrip").onclick = () => {
   // soils-report thickness (Beaumont quoted 12"; their Barn bid works out
   // to ~8.3") - editable like any other row
   if (!state.ew.layers.existing.some(l => /topsoil/i.test(l.name)))
-    state.ew.layers.existing.unshift({ name: "Topsoil", thickness_in: 12 });
+    state.ew.layers.existing.unshift({ name: "Topsoil", thickness_in: 12,
+      ...EW_DISP_DEFAULT });
   renderEwLayers();
 };
 $("ewAddEx").onclick = () => {
   if (!state.ew) return;
-  state.ew.layers.existing.push({ name: "", thickness_in: 4 });
+  state.ew.layers.existing.push({ name: "", thickness_in: 4, ...EW_DISP_DEFAULT });
   renderEwLayers();
   const rows = $("ewExLayers").querySelectorAll("input[type=text]");
   if (rows.length) rows[rows.length - 1].focus();
@@ -1630,7 +1690,16 @@ $("ewAddPr").onclick = () => {
 function ewBody() {
   const lay = side => state.ew.layers[side]
     .filter(l => isFinite(l.thickness_in) && l.thickness_in > 0)
-    .map(l => ({ name: (l.name || "").trim() || "layer", thickness_in: l.thickness_in }));
+    .map(l => {
+      const o = { name: (l.name || "").trim() || "layer", thickness_in: l.thickness_in };
+      // the balance rides on removals only; blank means 0, i.e. 100% export
+      if (side === "existing") {
+        o.reuse_pct = isFinite(l.reuse_pct) ? l.reuse_pct : 0;
+        o.respread_pct = isFinite(l.respread_pct) ? l.respread_pct : 0;
+        o.destination = l.destination === undefined ? "on site" : l.destination;
+      }
+      return o;
+    });
   return {
     existing: state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z))
       .map(r => ({ chain_id: r.chain_id, z: r.z })),
@@ -1639,6 +1708,12 @@ function ewBody() {
     cell_ft: 2.0,
     existing_layers: lay("existing"),
     proposed_layers: lay("proposed"),
+    // #853 reuses site cut against site fill 1:1 (import 11,581 against
+    // fill - cut 11,572, a 0.08% residual), so this is on by default - the
+    // only defaulted assumption in the balance.
+    cut_reuse_pct: ($("ewCutReuse") && $("ewCutReuse").checked) ? 100 : 0,
+    export_factor: ewFactor("ewFacExp"),
+    import_factor: ewFactor("ewFacImp"),
     ...(function () {
       const pts = ewActiveSpots().map(g => ({ x: g.x, y: g.y, z: g.z }));
       const key = state.ew.spotSide === "existing" ? "existing_points" : "proposed_points";
@@ -1647,6 +1722,16 @@ function ewBody() {
       return o;
     })(),
   };
+}
+
+// A factor left blank, zeroed or nonsense means NO factor. Volumes are
+// in-place yards between the two surfaces, and #853 applies no swell,
+// shrink or compaction factor anywhere, so 1.0 is the evidenced default;
+// these fields exist only for a job that needs one.
+function ewFactor(id) {
+  const el = $(id);
+  const v = el ? parseFloat(el.value) : NaN;
+  return (isFinite(v) && v > 0) ? v : 1;
 }
 
 // spot grades the estimator switched on, with the datum applied when the
@@ -1741,7 +1826,10 @@ function ewItemLabel(layer) {
     return /topsoil/i.test(layer.name) ? "Strip Topsoil" : `Remove ${layer.name}`;
   return `Place ${layer.name}`;
 }
-const EW_ITEM_RE = /^(Site Cut|Site Fill|Strip Topsoil|Remove |Place |(Cut|Fill) \(earthwork\))/;
+// every earthwork row is replaced on each Calculate, so this has to match
+// the material-balance rows too. "Rough Place " does NOT start with
+// "Place ", so it needs its own alternative.
+const EW_ITEM_RE = /^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Place |Export |Import Structural$|(Cut|Fill) \(earthwork\))/;
 
 function renderEw() {
   const box = $("ewRows");
@@ -1852,9 +1940,75 @@ $("ewCalc").onclick = async () => {
   if (j.fill_yd3 > 0) state.extraItems.push({ label: "Site Fill", qty: j.fill_yd3, unit: "CY" });
   for (const lay of (j.layers || []))
     if (lay.volume_yd3 > 0) state.extraItems.push({ label: ewItemLabel(lay), qty: lay.volume_yd3, unit: "CY" });
+  // where the dirt goes. These price like any other row, but tradeFor()
+  // would file "Import Structural" under General (it matches no keyword)
+  // and "Export Asphalt" under Paving, so seed the trade the way
+  // stApplyItems does - session default only, the reviewer's pick wins.
+  for (const r of ((j.balance && j.balance.rows) || [])) {
+    if (!(r.qty > 0)) continue;
+    state.extraItems.push({ label: r.label, qty: r.qty, unit: r.unit });
+    if (!store.getItem(tradeKey(r.label)))
+      store.setItem(tradeKey(r.label), "Earthwork & Grading");
+  }
+  renderEwBalance(j);
   renderItemized();
   if ($("ewMap").checked) await ewFetchMap();
 };
+
+// The balance panel. Every row states WHICH AREA produced it on the row
+// itself, not in a tooltip: removal layers are stripped over the disturbed
+// area, cut and fill exist only where the two surfaces overlap, and an
+// estimator reading a strip volume beside a cut volume has to see that.
+function renderEwBalance(j) {
+  const box = $("ewBalOut"), note = $("ewBalNote");
+  if (!box) return;
+  box.innerHTML = "";
+  const b = j && j.balance;
+  if (!b) { if (note) note.textContent = ""; return; }
+  const n = v => Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  for (const r of (b.rows || [])) {
+    const d = document.createElement("div");
+    d.className = "bal-row k-" + r.kind;
+    const lab = document.createElement("div");
+    lab.className = "lab";
+    lab.textContent = r.label;
+    const why = document.createElement("span");
+    why.className = "why";
+    why.textContent = r.basis
+      + (r.area_sf ? ` \u00b7 over ${n(r.area_sf)} SF (${r.area_source})` : "")
+      + (r.destination ? ` \u00b7 ${r.destination}` : "");
+    lab.appendChild(why);
+    const q = document.createElement("b");
+    q.textContent = `${n(r.qty)} ${r.unit}`;
+    d.append(lab, q);
+    box.appendChild(d);
+  }
+  const sum = document.createElement("div");
+  sum.className = "bal-sum";
+  const line = (...parts) => {
+    const el = document.createElement("div");
+    for (const p of parts) {
+      if (typeof p === "string") el.append(document.createTextNode(p));
+      else { const bb = document.createElement("b"); bb.textContent = n(p); el.append(bb); }
+    }
+    sum.appendChild(el);
+  };
+  line("site cut ", b.cut_yd3, " = reused ", b.cut_reused_yd3,
+       " + exported ", b.cut_export_yd3);
+  line("reuse pool ", b.reuse_pool_yd3, " = reused ", b.reuse_yd3,
+       " + surplus ", b.surplus_yd3);
+  line("fill needed ", b.fill_demand_yd3, " = reused ", b.reuse_yd3,
+       " + imported ", b.import_yd3);
+  line("total export ", b.export_total_yd3, " \u00b7 respread ",
+       b.respread_total_yd3, " (CY)");
+  box.appendChild(sum);
+  if (note)
+    note.textContent = b.basis
+      + ". Beaumont Estimate #853 applies none: its Import Structural "
+      + "(11,581) equals Site Fill \u2212 Site Cut (11,572) to 0.08%. "
+      + '"Export" is their word, not "haul off" \u2014 both #853 export '
+      + 'lines say "On site".';
+}
 
 // cut/fill map: the server paints the dz grid (cut blue, fill yellow,
 // depth -> opacity) and tells us the page-pt box it covers; draw() lays
