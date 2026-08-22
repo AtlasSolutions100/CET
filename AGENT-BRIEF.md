@@ -161,6 +161,18 @@ Working recipes, learned the hard way:
 **If the browser and the engine JSON disagree, the browser is the truth and the gap is a
 bug to file.**
 
+**Every capture must be self-describing**, because a separate auditor who does not have
+your context will check it (§9). On the image or in its `VERIFY.md`, state: the document
+filename, the page **both ways** ("engine page index 29 = printed sheet 30"), the sheet id
+if printed, the region in page coordinates, the zoom, what each circle marks, and — for a
+before/after pair — which commit or patch each side was produced under. A capture that
+cannot be re-derived from its own caption does not count as evidence.
+
+**A before/after pair must be genuinely before and after.** Capturing the same state twice
+and labelling them differently is the easiest way to produce a convincing lie, and it has
+to be ruled out by construction: name the commit or patch state for each side, and prefer
+capturing "before" from a clean tree rather than from memory.
+
 ---
 
 ## 5. Measure it wide
@@ -238,3 +250,45 @@ bug to file.**
   propose counts for a human to confirm rather than inventing one.
 - Work in a worktree, report a `.patch`, confirm `git apply --3way --check` is clean, and
   **do not commit**. The lead applies after gating. Do not push.
+
+---
+
+## 9. How your work will be checked
+
+Nothing you produce merges on your own report. Every change passes three independent
+gates, run by agents who do not share your context and who are told to default to
+rejecting. Knowing this should change what you write, not just how carefully you work:
+**state your uncertainty, name your weakest number, and say what you did not look at.** An
+honest limitation costs you nothing here. A confident claim that fails audit costs the
+whole change.
+
+The three gates, in order:
+
+**Gate 1 — the adversarial verifier.** Independently re-derives your numbers with its own
+harness, hunts for collateral you did not sample, and checks the sites you deliberately
+left alone. It defaults to **hold** if it cannot reproduce your improvement. This has
+already earned its place: a door fix reported "one real door lost" and the verifier,
+scoring against the drafter's own `A-DOOR` layer, found **eleven** — and separately
+re-measured the author's rejected remedy and found its stated cost did not reproduce at
+all, which is why the better fix shipped.
+
+**Gate 2 — the annotation auditor.** Reads your captures *without* your report and asks
+whether each image actually shows what its caption claims. Is the circled region the
+region named? Do the numbers on the image match the numbers in the code? Is the "before"
+genuinely before? Does the source-PDF crop cover the same area as the app capture? Is
+anything marked clean actually clean? This gate exists because an annotated capture is the
+most persuasive artefact we produce and therefore the most dangerous one to get wrong.
+
+**Gate 3 — the integration verifier.** Applies your patch **together with every other
+patch in flight** and checks that your measured claims still hold in their presence.
+Your numbers were taken against a tree that did not contain the others; that is the whole
+problem. It checks textual conflict, the gate under the combination, and — the part that
+actually bites — **semantic interaction**: a change that demotes more chains moves another
+change's denominators; a change to the classifier moves which pages a third change ever
+sees; a change to openings moves what the UI deletes. If your change assumes something
+another in-flight change is altering, say so in your report so this gate knows where to
+look.
+
+You can make all three cheaper by writing your report for them rather than for a reader
+who already agrees with you: exact commands, exact page indices, the scripts you used left
+runnable in your verify folder, and every number tied to the source it came from.
