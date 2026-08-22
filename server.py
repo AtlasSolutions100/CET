@@ -30,6 +30,7 @@ from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
 from takeoff_engine.detect_page import error_path, result_path, run_detect
 from takeoff_engine.extract import extract_strokes, page_words
+from takeoff_engine.marks import read_mark_schedule
 from takeoff_engine.scale_detect import detect_scale
 
 ROOT = Path(__file__).parent
@@ -1306,15 +1307,84 @@ def callouts(job_id: str, page: int):
     return JSONResponse(out)
 
 
+def _doc_schedule(job_id: str, path: str, page: int) -> dict:
+    """The mark schedule for this DOCUMENT, not just this page.
+
+    An estimator's schedule usually lives on its own sheet - Bill Dunn's
+    Aqua Vista set puts the window schedule on A830 (page 0) and the floor
+    plans he counts on pages 1-5 - so a per-page lookup finds nothing on
+    exactly the pages that need it.  This page first, then the rest of the
+    document; the answer is cached per job because the OCR fallback on a
+    scanned schedule sheet is slow.
+    """
+    from takeoff_engine import marks as _marks
+
+    cache = _job_dir(job_id) / "schedule.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text())
+        except (OSError, ValueError):
+            pass
+    doc = pymupdf.open(path)
+    best: dict = {"marks": [], "qty": {}, "header": "", "source": "none",
+                  "page": None}
+    order = [page] + [i for i in range(doc.page_count) if i != page]
+    ocr_left = 3          # OCRing a scanned sheet costs ~40 s; bound it
+    try:
+        for i in order[:12]:
+            pg = doc[i]
+            words = list(page_words(pg))
+            s = _marks.read_mark_schedule(words) if words else None
+            if not (s and s["marks"]) and len(words) < 40 and ocr_left > 0:
+                ocr_left -= 1
+                # a scanned schedule sheet has no text layer at all; OCR it
+                # upright (these sheets are landscape scanned onto portrait)
+                # and read the mark column through the lookalike map
+                try:
+                    import numpy as _np
+
+                    from takeoff_engine.text_detect import ocr_words
+                    dpi = 600
+                    pix = pg.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72),
+                                        colorspace="rgb")
+                    img = _np.frombuffer(pix.samples, _np.uint8).reshape(
+                        pix.height, pix.width, 3)
+                    deg = _marks.orient_ccw(img[:, :, ::-1])
+                    ow = ocr_words(_marks._rot_ccw(img, deg), px_to_pt=72.0 / dpi)
+                    s = _marks.read_mark_schedule(list(ow), fuzzy=True)
+                except Exception:
+                    s = None
+            if s and len(s["marks"]) > len(best["marks"]):
+                best = dict(s)
+                best["page"] = i
+            # the first sheet that yields a real mark column IS the schedule
+            # sheet - pages are visited current-first, and a floor plan does
+            # not carry one, so stop rather than OCR the whole set
+            if len(best["marks"]) >= 3:
+                break
+    finally:
+        doc.close()
+    try:
+        cache.write_text(json.dumps(best))
+    except OSError:
+        pass
+    return best
+
+
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
 def symbols_suggest(job_id: str, page: int):
     """Repeated congruent small shapes on the page - the countable symbols
     (grid bubbles, fixtures, window/door glyphs). Geometry does the finding
     and counting so the number is verifiable; the human (or the AI's
-    inline-legend read) supplies the NAME."""
-    import numpy as np
+    inline-legend read) supplies the NAME.
 
+    Two finders, one contract. Vector sheets group congruent closed stroke
+    units. Scanned sheets have no strokes at all, so they go through
+    takeoff_engine.marks, which matches the bubble as a picture and reads
+    the code inside it. Either way the answer is {groups, schedule}."""
     import re as _re
+
+    import numpy as np
 
     job = JOBS.get(job_id) or _404()
     doc = pymupdf.open(job["path"])
@@ -1323,44 +1393,25 @@ def symbols_suggest(job_id: str, page: int):
     words = page_words(pg)
     doc.close()
 
-    # mark schedule, when the sheet carries one: a header row containing
-    # MARK and QTY anchors a table whose rows map mark -> quantity. Used
-    # two ways: cross-check counted symbols, and EXCLUDE the table's own
-    # cell rectangles from symbol grouping (they are congruent boxes and
-    # count themselves otherwise - measured on the window benchmark).
-    MARK_RE = _re.compile(r"^[A-Z]{1,3}-?\d+$")
-    sched: dict = {}
-    table_box = None
-    heads = [w for w in words if str(w[4]).strip().upper() == "MARK"]
-    for hw in heads:
-        hy = (hw[1] + hw[3]) / 2
-        row = [w for w in words if abs((w[1] + w[3]) / 2 - hy) <= 5.0]
-        texts = {str(w[4]).strip().upper() for w in row}
-        if "QTY" not in texts:
-            continue
-        qty_col = next(w for w in row if str(w[4]).strip().upper() == "QTY")
-        qcx = (qty_col[0] + qty_col[2]) / 2
-        x0 = min(w[0] for w in row) - 8
-        x1 = max(w[2] for w in row) + 8
-        y_max = hw[3]
-        for w in words:
-            if w[1] <= hw[3] or w[0] < x0 or w[2] > x1:
-                continue
-            t = str(w[4]).strip().upper()
-            if MARK_RE.match(t):
-                wy = (w[1] + w[3]) / 2
-                mates = [m for m in words
-                         if abs((m[1] + m[3]) / 2 - wy) <= 5.0
-                         and str(m[4]).strip().isdigit()]
-                if mates:
-                    q = min(mates, key=lambda m: abs((m[0] + m[2]) / 2 - qcx))
-                    if abs((q[0] + q[2]) / 2 - qcx) <= 30.0:
-                        sched[t] = int(str(q[4]).strip())
-                        y_max = max(y_max, w[3])
-        if sched:
-            table_box = (x0, hw[1] - 4, x1, y_max + 8)
-            break
+    # mark schedule, when the SET carries one: a header row containing
+    # MARK (or WINDOW TYPE) anchors a table whose rows map mark -> quantity.
+    # Used three ways: cross-check the counted symbols, EXCLUDE the table's
+    # own cell rectangles from symbol grouping (they are congruent boxes and
+    # count themselves otherwise - measured on the window benchmark), and
+    # constrain what a scanned bubble is allowed to be read as.
+    doc_sched = _doc_schedule(job_id, job["path"], page)
+    here = read_mark_schedule(words) if words else {"marks": [], "qty": {},
+                                                    "box": None}
+    sched: dict = dict(here.get("qty") or {})
+    table_box = here.get("box")
+    if not sched and doc_sched.get("qty"):
+        sched = dict(doc_sched["qty"])
+    vocab = here.get("marks") or doc_sched.get("marks") or []
 
+    if not units and not words:
+        return _symbols_raster(job, page, vocab, sched, doc_sched)
+
+    MARK_WORD = _re.compile(r"^[A-Z]{1,3}-?\d+[A-Z]?$")
     groups: dict = {}
     for u in units:
         if not u.closed or not (4.0 <= u.length <= 160.0):
@@ -1383,7 +1434,7 @@ def symbols_suggest(job_id: str, page: int):
         # box containing (or within 3pt of) the symbol center names it
         for w in words:
             t = str(w[4]).strip().upper()
-            if not MARK_RE.match(t):
+            if not MARK_WORD.match(t):
                 continue
             if w[0] - 3 <= c[0] <= w[2] + 3 and w[1] - 3 <= c[1] <= w[3] + 3:
                 return t
@@ -1424,7 +1475,57 @@ def symbols_suggest(job_id: str, page: int):
         else:
             out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
     out.sort(key=lambda g: -g["n"])
-    return {"groups": out[:15], "schedule": sched}
+    return {"groups": out[:15], "schedule": sched,
+            "schedule_marks": doc_sched.get("marks") or [],
+            "schedule_page": doc_sched.get("page"),
+            "schedule_header": doc_sched.get("header", ""),
+            "schedule_source": doc_sched.get("source", "none")}
+
+
+def _symbols_raster(job: dict, page: int, vocab: list, sched: dict,
+                    doc_sched: dict) -> dict:
+    """Scanned sheet: count mark bubbles as pictures (takeoff_engine.marks).
+
+    Same {groups, schedule} contract as the vector path, so the Count panel
+    needs no idea which finder ran. Centres come back in page points."""
+    from takeoff_engine import marks as _marks
+
+    mp = _marks.detect_marks(job["path"], page, vocab or None)
+    by: dict = {}
+    for t in mp.tags:
+        if t.kind == "legend":
+            continue
+        # three buckets, not two: a schedule mark, a bubble read confidently
+        # as something the schedule does not list (a neighbouring tag family
+        # - the WALL tags read L04/L06 on Bill's floor plans), and a bubble
+        # nothing could be read from. Collapsing the middle one into "not
+        # read" hides a real answer from the estimator.
+        key = t.code or ("~" + t.off_schedule if t.off_schedule else "")
+        by.setdefault(key, []).append([round(t.cx_pt, 1), round(t.cy_pt, 1)])
+    px_pt = 72.0 / _marks.RENDER_DPI
+    w_pt = round(mp.tag_size[0] * px_pt, 1)
+    h_pt = round(mp.tag_size[1] * px_pt, 1)
+    out = []
+    for code, cs in by.items():
+        g = {"w": w_pt, "h": h_pt, "n": len(cs), "centers": cs,
+             "source": "raster"}
+        if code.startswith("~"):
+            g["off_schedule"] = code[1:]
+        elif code:
+            g["name"] = code
+            if code in sched:
+                g["schedule_qty"] = sched[code]
+        out.append(g)
+    out.sort(key=lambda g: (0 if g.get("name") else 1 if g.get("off_schedule")
+                            else 2, -g["n"]))
+    return {"groups": out[:15], "schedule": sched,
+            "schedule_marks": doc_sched.get("marks") or [],
+            "schedule_page": doc_sched.get("page"),
+            "schedule_header": doc_sched.get("header", ""),
+            "schedule_source": doc_sched.get("source", "none"),
+            "raster": True, "notes": mp.notes,
+            "tag_px": list(mp.tag_size), "orient": mp.orient,
+            "skew_deg": mp.skew_deg}
 
 
 class StructureBody(BaseModel):

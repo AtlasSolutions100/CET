@@ -275,7 +275,7 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
-  state.tr = null; state.sym = null; state.symMarks = null;
+  state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
   $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch
@@ -1719,50 +1719,119 @@ $("symBtn").onclick = async () => {
   if (!panel.hidden) { panel.hidden = true; state.symMarks = null; draw(); return; }
   panel.hidden = false;
   if (!state.sym) {
-    $("symRows").innerHTML = '<div class="ew-hint">scanning for repeated shapes…</div>';
+    $("symRows").innerHTML = '<div class="ew-hint">scanning for repeated shapes…' +
+      '<br><span class="dim">a scanned sheet is read as a picture and takes ~20-40s the first time</span></div>';
     const r = await fetch(`/api/job/${state.job}/page/${state.page}/symbols/suggest`);
     if (!r.ok) { $("symRows").textContent = "scan failed (" + r.status + ")"; return; }
-    state.sym = (await r.json()).groups;
+    const j = await r.json();
+    state.sym = j.groups;
+    state.symInfo = j;
   }
   renderSym();
 };
 
+// One takeoff line per mark: "W1L × 27 EA". Bill Dunn's trade counts by
+// mark, not by symbol, so the mark IS the label.
+function symAdd(g) {
+  const label = (g.name || "").trim();
+  if (!label) { setStatus("name the mark first", "err"); return false; }
+  state.extraItems = state.extraItems.filter(it => it.label !== label);
+  state.extraItems.push({ label, qty: g.n, unit: "EA" });
+  return true;
+}
+
+$("symAddAll").onclick = () => {
+  const named = (state.sym || []).filter(g => (g.name || "").trim());
+  if (!named.length) { setStatus("nothing is named yet", "err"); return; }
+  named.forEach(symAdd);
+  setStatus(`${named.length} mark${named.length > 1 ? "s" : ""} added to takeoff`);
+  renderItemized();
+};
+
 function renderSym() {
-  const box = $("symRows");
+  const box = $("symRows"), info = state.symInfo || {};
   box.innerHTML = "";
+
+  // what the sheet's own schedule says, and where it was read from - the
+  // estimator needs to know whether the cross-check column is trustworthy
+  const sb = $("symSched");
+  const sm = info.schedule_marks || [];
+  if (sm.length) {
+    const where = info.schedule_page === state.page ? "this sheet"
+      : `sheet ${(info.schedule_page ?? 0) + 1}`;
+    sb.innerHTML = `${info.schedule_header || "MARK"} schedule on ${where}: ` +
+      sm.map(m => `<b>${m}</b>`).join(" ") +
+      (info.schedule_source === "ocr"
+        ? ' <span class="dim">(read by OCR off a scan — check it)</span>' : "");
+    sb.hidden = false;
+  } else { sb.hidden = true; }
+
   if (!state.sym || !state.sym.length) {
     box.innerHTML = '<div class="ew-hint">no repeated closed shapes found on this page</div>';
+    $("symTotal").hidden = true;
     return;
   }
   state.sym.forEach((g, k) => {
     const row = document.createElement("div");
-    row.className = "sym-row";
+    row.className = "sym-row" + (g.name ? "" : " sym-unnamed");
+    const n = document.createElement("div");
+    n.className = "sym-n"; n.textContent = g.n;
+    const mid = document.createElement("div");
+    const nm = document.createElement("input");
+    nm.className = "sym-name";
+    nm.placeholder = "name it (e.g. WINDOW)";
+    nm.name = "sym-name-" + k;
+    nm.value = g.name || "";
+    nm.oninput = () => { g.name = nm.value; };
     const meta = document.createElement("div");
     meta.className = "sym-meta";
-    let mtxt = `${g.w}×${g.h}pt · ×${g.n}`;
-    if (g.schedule_qty !== undefined)
-      mtxt += ` · schedule says ${g.schedule_qty} ${g.schedule_qty === g.n ? "✓" : "✗ CHECK"}`;
+    let mtxt = `${g.w}×${g.h}pt`;
+    if (g.source === "raster") mtxt += " · read off the scan";
     meta.textContent = mtxt;
-    const name = document.createElement("input");
-    name.placeholder = "name it (e.g. WINDOW)";
-    name.name = "sym-name-" + k;
-    name.value = g.name || "";
-    name.oninput = () => { g.name = name.value; };
+    if (g.off_schedule) {
+      // a real read that is simply not one of this schedule's marks - say so
+      // rather than filing it under "could not read"
+      const os = document.createElement("span");
+      os.className = "sym-off";
+      os.textContent = ` · reads "${g.off_schedule}" — not in the schedule`;
+      meta.appendChild(os);
+      nm.placeholder = "not a schedule mark — name it only if you want it";
+    }
+    if (g.schedule_qty !== undefined) {
+      const chk = document.createElement("span");
+      const ok = g.schedule_qty === g.n;
+      chk.className = ok ? "sym-chk-ok" : "sym-chk-bad";
+      chk.textContent = ok ? ` · schedule says ${g.schedule_qty} ✓`
+        : ` · schedule says ${g.schedule_qty} — CHECK`;
+      meta.appendChild(chk);
+    }
+    mid.append(nm, meta);
     const add = document.createElement("button");
     add.className = "add"; add.textContent = "Add";
     add.onclick = () => {
-      const label = (g.name || "").trim();
-      if (!label) { setStatus("name the symbol first", "err"); return; }
-      state.extraItems = state.extraItems.filter(it => it.label !== label);
-      state.extraItems.push({ label, qty: g.n, unit: "EA" });
-      setStatus(`${label} × ${g.n} added to takeoff`);
+      if (!symAdd(g)) return;
+      setStatus(`${g.name.trim()} × ${g.n} added to takeoff`);
       renderItemized();
     };
-    row.append(meta, name, add);
+    row.append(n, mid, add);
     row.onmouseenter = () => { state.symMarks = g.centers; draw(); };
     row.onmouseleave = () => { state.symMarks = null; draw(); };
     box.appendChild(row);
   });
+
+  const tot = $("symTotal");
+  const named = state.sym.filter(g => g.name);
+  const sum = named.reduce((a, g) => a + g.n, 0);
+  const off = state.sym.filter(g => g.off_schedule).reduce((a, g) => a + g.n, 0);
+  const un = state.sym.filter(g => !g.name && !g.off_schedule)
+    .reduce((a, g) => a + g.n, 0);
+  let t = `<b>${sum}</b> counted across ${named.length} named mark` +
+    (named.length === 1 ? "" : "s");
+  if (off) t += ` &middot; <b>${off}</b> read as a tag this schedule does not list`;
+  if (un) t += ` &middot; <b>${un}</b> bubble${un === 1 ? "" : "s"} found but not read`;
+  (info.notes || []).forEach(nt => { t += `<br><span class="dim">${nt}</span>`; });
+  tot.innerHTML = t;
+  tot.hidden = false;
 }
 
 // ---------- sheet callouts: the leaders as data ----------
