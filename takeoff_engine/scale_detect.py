@@ -34,6 +34,34 @@ import pymupdf
 _IN = r"""(?:["”″]|(?:inch(?:es)?|in)\.?(?![a-z]))"""
 _FT = r"""(?:['’′]|(?:feet|ft)\.?(?![a-z]))"""
 
+# The paper term of a ratio. Architectural scales coarser than one inch to
+# the foot are written as MIXED numbers - 1-1/2" = 1'-0", 1 1/2" = 1'-0" -
+# and a bare `\d+(?:/\d+)?` cannot hold one: it matched only the "1/2" and
+# reported 2.0 ft/in where the truth is 0.667, a 3x error on length and 9x
+# on area. Found on three sheets independently by the 201-sheet audit
+# (Barn Structural S6-0.0, Guide Structural S6-0.0, Barn Landscaping L801),
+# and confirmed against drawn geometry: L801 detail 2's printed 6" dimension
+# spans exactly 54.000 pt, i.e. 0.75 paper inches, which is 0.667 ft/in.
+# Alternation order matters - mixed, then fraction, then integer - or `\d+`
+# would swallow the "1" of "1/2" and stop.
+#
+# The mixed form is deliberately restricted to ONE AND A HALF. A general
+# `\d+[-\s]\d+/\d+` regressed two pages in the 208-page sweep, because the
+# space-separated form is ambiguous: `A5.20 1 1/2" = 1'-0"` is a real scale,
+# but `SWR - GR 1 3/4" = 1'-0"` is the 3/4" scale with a detail reference in
+# front of it, and `2 3/4" 1 3/4" 1/2"` is a row of dimensions. Read greedily
+# those became 1.75 and 2.75 paper inches.
+#
+# CONVENTION, and the reason the restriction is safe: an architect's scale
+# rule carries fixed graduations - 3/32, 1/8, 3/16, 1/4, 3/8, 1/2, 3/4, 1,
+# 1-1/2 and 3 inches to the foot - and 1-1/2 is the only one of them that is
+# a mixed number. Source: every scale caption in the Beaumont and Thielen
+# sets is drawn from that set; 1-3/4 and 2-3/4 appear in the corpus only as
+# dimensions. Labelled an INFERENCE for other drawing standards. If a real
+# mixed scale outside 1-1/2 ever turns up, widen this with its sheet as
+# evidence rather than by generalising the pattern.
+_NUM = r"""(?:1[-\s]1/2|\d+/\d+|\d+)"""
+
 # OCR does not always give the inch mark back as an inch mark. Tesseract
 # reads Beaumont's structural title blocks - SCALE: 1/4"=1'-0" - as
 # `1/4�=1'-0"`, mangling the double prime into U+FFFD. The pattern then
@@ -52,7 +80,7 @@ _NOISE = r"""(?P<noise>[^\w\s=:\-])?"""
 # 1/4" = 1'-0"   |   1" = 20'   |   1"= 50'   |   1 inch = 10 ft.
 # separators = - :  (required here - no keyword to vouch for the match)
 _PAT = re.compile(
-    rf"""(?P<paper>\d+(?:/\d+)?)\s*{_IN}\s*
+    rf"""(?P<paper>{_NUM})\s*{_IN}\s*
         (?:[=:\-]\s*){{1,2}}          # OCR sometimes doubles the separator
         (?P<feet>\d+)\s*{_FT}
         (?:\s*-\s*(?P<inches>\d+)\s*{_IN})?""",
@@ -69,7 +97,7 @@ _NTS = re.compile(r"(?i)\bN\.?\s*T\.?\s*S\.?\b|NOT\s+TO\s+SCALE")
 # apart and rejected: see the guard in _scan.
 _PAT_KEYWORD = re.compile(
     rf"""(?i)scale\s*(?P<kwsep>[:=])?\s*
-        (?P<paper>\d+(?:/\d+)?)?\s*(?P<inmark>{_IN})?\s*   # OCR may eat the 1"
+        (?P<paper>{_NUM})?\s*(?P<inmark>{_IN})?\s*   # OCR may eat the 1"
         {_NOISE}\s*                                        # ... or mangle it
         (?P<sep>(?:[=:\-]\s*){{0,2}})                      # ... or the separator
         (?P<feet>\d+)\s*(?P<ftmark>{_FT})?
@@ -85,7 +113,7 @@ _PAT_KEYWORD = re.compile(
 # ground term must declare its own foot mark, or the two numbers are merely
 # adjacent rather than related.
 _PAT_KEYWORD_PRE = re.compile(
-    rf"""(?i)(?P<paper>\d+(?:/\d+)?)\s*{_IN}
+    rf"""(?i)(?P<paper>{_NUM})\s*{_IN}
         (?P<sep>\s*(?:[=:\-]\s*){{0,2}})
         (?P<feet>\d+)\s*(?P<gmark>{_FT}|[°º])?\s*
         (?:-\s*(?P<inches>\d+)\s*{_IN}?\s*)?
@@ -157,6 +185,11 @@ class ScaleResult:
 
 
 def _frac(s: str) -> float:
+    """A scale's paper term: "3", "1/2", or the mixed "1-1/2" / "1 1/2"."""
+    s = s.strip()
+    m = re.fullmatch(r"(\d+)[-\s](\d+)/(\d+)", s)
+    if m:
+        return float(m.group(1)) + float(m.group(2)) / float(m.group(3))
     if "/" in s:
         a, b = s.split("/")
         return float(a) / float(b)
