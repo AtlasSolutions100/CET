@@ -832,7 +832,15 @@ def report_pdf(job_id: str):
         tp.insert_text((500, y), f"{total:,.2f}", fontsize=11)
 
     pdf_path = jd / "takeoff_report.pdf"
-    out.save(pdf_path)
+    # deflate=True, garbage=4 - NOT cosmetic. Measured on one Beaumont sheet
+    # (engine page 6, 5460x3900 overlay at 130 dpi): out.save() alone writes
+    # 63.89 MB against a 4.30 MB source stream, because the image goes in
+    # uncompressed and the xref is never collected. With these two arguments
+    # it is 3.45 MB - 18.5x smaller, pixels byte-identical (verified by
+    # comparing re-rendered pixmaps). The ratio varies with ink density; a
+    # sparser sheet measured 25.1x. A 15-sheet job was ~958 MB, i.e. the
+    # product's only deliverable could not be emailed. Do not remove.
+    out.save(pdf_path, deflate=True, garbage=4)
     return FileResponse(pdf_path, media_type="application/pdf",
                         filename=f"takeoff_{Path(job['path']).stem[:30]}.pdf")
 
