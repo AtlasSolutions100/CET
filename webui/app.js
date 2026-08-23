@@ -700,20 +700,30 @@ function renderSheetHead() {
 }
 
 // ---------- more than one scale on the sheet -----------------------------
-// A sheet with a plan AND details carries several scale captions, and the
-// engine picks by how many times each appears. On a detail sheet that runs
-// exactly backwards: many small details, one big plan. Measured across the
-// client sets, 15 of 208 text-scale pages carry two or more distinct
-// candidates, spread 1.50x to 6.00x, and on several the count picks the
-// detail over the plan - 4x length and 16x area on one landscape sheet,
-// 12.5x linear on a sheet whose only caption belongs to a vicinity-map
-// inset. The engine already computed the right answer on every one of those
-// pages and put it in `candidates`, where nothing read it.
+// A sheet with a plan AND details carries several scale captions. The engine
+// USED to pick by how many times each appears, which on a detail sheet runs
+// exactly backwards: many small details, one big plan. Over the whole plan
+// corpus, 67 of 6,714 pages carry two or more distinct candidates, and on one
+// landscape sheet the count picked a detail over the plan - 4x on every
+// length, 16x on every area.
 //
-// Rather than guess which caption governs the drawing - which needs to know
-// what the caption is attached to - show the estimator every reading the
-// sheet offers and let one click switch. The choice is remembered per
-// document and page, like the style decisions.
+// scale_detect._rank now does read what each caption is attached to (the
+// linework above its title bar) and ranks on that, so the default is no
+// longer a tally. It is still ONE default for a sheet that genuinely has
+// several - it does not scale each detail separately - and on a thin margin
+// it can still be the wrong one. So the picker stays: show the estimator
+// every reading the sheet offers and let one click switch. The choice is
+// remembered per document and page, like the style decisions.
+//
+// DEFERRED, not fixed here - this run owns the confidence banner and was told
+// to leave the picker as it stands. The button tooltip below prints `count`
+// as "printed Nx". `count` is REGEX MATCHES, not printed captions, and runs
+// at exactly 2x: on Barn Landscaping engine page index 29 the 3/4" caption is
+// printed at 3 sites and the tooltip advertises 6, and all 11 candidates
+// measured across engine page indices 29, 18 and 27 are 2x. The honest field
+// is the candidate's `sites`, which the engine now emits alongside `count`;
+// the fix is `c.sites` in place of `c.count` on the line below and nothing
+// else. Nobody is on it.
 function scaleKey() {
   return "scale::" + (state.docName || "?") + "::p" + state.page;
 }
@@ -836,42 +846,130 @@ function confTagCheck() {
            ratio: Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2) };
 }
 
-// What actually decided which of several printed scales the engine used,
-// replayed from the engine's own candidate list rather than described from
-// memory. scale_detect._choose is exactly one line:
+// Why the engine used the scale it used - READ from what the engine reports,
+// not replayed from the candidate list.
 //
-//     sorted(cands, key=lambda c: (-c.near_scale_keyword, -c.count))[0]
+// This function used to re-run scale_detect._choose's ranking in JavaScript.
+// That stopped being the truth when scale_detect gained `_rank`: a sheet
+// printing several scales is now ranked by how much of the DRAWING sits under
+// each caption's title bar, and `ScaleResult.pick` states the outcome. A
+// replay is wrong two ways against that engine, and the second way is worse.
+// Measured over the whole plan corpus - 6,714 pages, 67 of which print two or
+// more distinct scales and so render the banner block below
+// (out/verify/2026-08-23/pickwhy/work/replay_vs_read.log):
 //
-// so the PRIMARY key is "does this reading sit next to the word SCALE", the
-// secondary key is how many times the scanner matched it, and - Python's
-// sort being stable - an exact tie on BOTH is settled by the order _scan
-// happened to emit them in. That last case is not a reason, and the banner
-// must not offer it as one: Barn Landscaping engine p23 prints 1/8"=1'-0"
-// and 3/4"=1'-0" once each, ties on both keys, and the two are 6x apart on
-// every length and 36x on every area.
+//   26 pages  the replay does not land on the scale in force and falls to
+//             its honest "we cannot show what picked it" arm. Wasteful.
+//   41 pages  the replay DOES land on it and names a mechanism the engine no
+//             longer uses - 25 "its text matched more times than the others",
+//             6 "the only one printed next to the word SCALE", and 10 "nothing
+//             on the sheet separated them, so the pick fell to whichever the
+//             reader reached first" on pages the engine had in fact ranked
+//             (63.8% against 36.2% on two of them). A false mechanism, printed
+//             on the one line whose whole job is to tell the estimator how far
+//             to trust the pick - and the last of the three is false in the
+//             other direction, manufacturing doubt about a measured answer.
+//
+// So: read `pick`, and where it says anything this function does not
+// recognise, abstain. `pick.why` is one of:
+//   "governs"   ranked by the linework each printed caption governs; with
+//               `governs_pct`, `runner_up`, `runner_up_pct`, `margin`,
+//               `unassigned_pct`
+//   "unranked"  no ranking could be made - `reason` says what stopped it, and
+//               the value in force is the OLD keyword-then-count order, which
+//               must be presented as UNCHECKED rather than explained
+//   "single"    one distinct value - nothing to rank
+//   "bar"       the drawn graphic bar; no printed caption at all
 //
 // One thing this must never quote as a number: `count`. It counts REGEX
-// MATCHES, not captions printed on paper - _scan runs three patterns over
-// the same text and a single printed caption commonly scores 2 - so no
-// branch below turns it into "printed N times".
+// MATCHES, not captions printed on paper - _scan runs several patterns over
+// the same text - so no branch below turns it into "printed N times". Each
+// candidate now also carries `sites`, which IS the printed-location count:
+// on all 11 candidates of Barn Landscaping engine page indices 29, 18 and 27,
+// `sites` equals pymupdf page.search_for's own count of the caption on the
+// page and `count` is exactly 2x it (A8_DEFERRED_picker_tooltip_counts.png).
+// `sites` is still not quoted below - the governed SHARE is the story, and a
+// second tally on the same line invites the reader straight back into the
+// count reasoning this change exists to remove.
+
+// Below what margin does "we picked this" become "we could not really tell"?
+//
+// `margin` is the winner's governed linework divided by the runner-up's. Two
+// things fix where the copy has to change.
+//
+// 1. What the sentence claims. "It barely leads" has to be TRUE where it
+//    fires. A runner-up governing more than two thirds of what the winner
+//    governs is a lead worth calling thin; at 66.1% against 33.9% - a clean
+//    2:1 - it is not, and saying so would be over-warning on a banner whose
+//    warnings have to keep meaning something. Two thirds is margin 1.5.
+//
+// 2. Where the corpus actually separates. Of the 67 multi-scale pages, the 59
+//    with a finite margin run 1.02, 1.16, 1.26, 1.29 | 1.75, 1.76, 1.76, 1.93,
+//    1.95, 2.08, 2.18, ... (margins_full.json). The widest gap anywhere below
+//    4.0 is that one, 1.29 -> 1.75, and 1.5 sits inside it - 0.21 clear of the
+//    page below, 0.25 clear of the page above. It is not one drafter's habit
+//    either: the four pages under it come from three documents in two separate
+//    corpora, the three over it from two more.
+//
+// What this number does NOT do is make the pick reliable, and the measurement
+// says so plainly. The app ranks on a PROXY - raw stroke units, because
+// detect_page calls detect_scale without the page's live chains. Re-ranking
+// every corpus page reported at 8.5 or under on those chains instead
+// (proxy_shift.log, 37 pages) moves the margin by 0.54x to 2.14x, and on 2 of
+// the 37 the two measures do not even agree WHICH scale wins - at reported
+// margins of 1.02 and 2.33. So:
+//   - the 1.02 page is caught here;
+//   - the 2.33 page (Town Pump 007^S-01 New Foundation p0, reported 2.33,
+//     1.09 the other way on chains) is NOT, and nothing below 2.35 would
+//     catch it - at which point "barely leads" would be firing on 2:1 leads
+//     and claim (1) would be false. Left uncaught deliberately;
+//   - two more read clear here and thin on chains (061^S2.1 p0 1.75 -> 1.38,
+//     Barn Landscaping p27 1.93 -> 1.45), and two read thin on this side of
+//     nothing and clearer on chains (the Church p3 pair, 1.76 -> 1.93).
+// That residue is why the clear arm below states the mechanism and both
+// shares instead of asserting confidence, and why BOTH arms stay amber. The
+// threshold moves emphasis, never the colour, and never which scale is in
+// force - so it cannot move a quantity.
+//
+// Direction of error is chosen: calling a decisive lead thin costs the
+// estimator a moment; calling a thin lead decisive is a confident wrong story.
+const PICK_THIN_MARGIN = 1.5;
+
 function scalePickWhy() {
   const sc = state.result && state.result.scale;
-  const cands = (sc && sc.candidates) || [];
-  if (!sc || !sc.ft_per_paper_inch || cands.length < 2) return null;
-  const same = (a, b) => Math.abs(+a - +b) < 1e-6;
-  const near = c => (c.near_scale_keyword ? 1 : 0);
-  const nearMax = Math.max(...cands.map(near));
-  const top = cands.filter(c => near(c) === nearMax);
-  const cMax = Math.max(...top.map(c => +c.count || 0));
-  const win = top.filter(c => (+c.count || 0) === cMax);
-  // If replaying _choose does not land on the scale actually in force, we do
-  // not know what decided it. Say that, rather than pick a story that fits.
-  if (!win.length || !same(win[0].ft_per_paper_inch, sc.ft_per_paper_inch))
+  if (!sc || !sc.ft_per_paper_inch) return null;
+  const p = sc.pick;
+  if (!p || typeof p !== "object" || !p.why) return { kind: "unknown" };
+  if (p.why === "single" || p.why === "bar") return { kind: p.why };
+  if (p.why === "unranked")
+    return { kind: "unranked", reason: String(p.reason || "") };
+  if (p.why !== "governs") return { kind: "unknown" };
+  const pct = +p.governs_pct;
+  const runnerPct = +p.runner_up_pct;
+  const runnerUp = +p.runner_up;
+  if (!isFinite(pct) || !isFinite(runnerPct) || !isFinite(runnerUp))
     return { kind: "unknown" };
-  if (win.length > 1) return { kind: "tie", others: win.slice(1) };
-  if (top.length === 1) return { kind: "keyword" };
-  if (top.length === cands.length) return { kind: "count" };
-  return { kind: "keyword-then-count" };
+  // `pick` describes the value the ENGINE ranked first. If the scale in force
+  // is not that value the story belongs to a different number, so abstain
+  // rather than attach it - the same refusal the replay made, kept. (A
+  // reviewer's own pick is caught before this is called; this guards every
+  // other way the two can come apart.) governs_pct 0.0 is a MEASURED zero, so
+  // the winner's share is tested for null, never for truthiness.
+  const win = (sc.candidates || []).find(
+    c => c && Math.abs(+c.ft_per_paper_inch - +sc.ft_per_paper_inch) < 1e-6);
+  const wg = (win && win.governs_pct !== null && win.governs_pct !== undefined)
+    ? +win.governs_pct : null;
+  if (wg === null || !isFinite(wg) || Math.abs(wg - pct) > 0.05)
+    return { kind: "unknown" };
+  // margin is null when the runner-up governs nothing at all: the most
+  // decisive case there is, never the thin one. Test for null, not falsiness.
+  const margin = (p.margin === null || p.margin === undefined
+                  || !isFinite(+p.margin)) ? null : +p.margin;
+  const un = +p.unassigned_pct;
+  return { kind: "governs", pct: pct, runnerUp: runnerUp,
+           runnerPct: runnerPct, margin: margin,
+           thin: margin !== null && margin <= PICK_THIN_MARGIN,
+           unassigned: (isFinite(un) && un > 0) ? un : 0 };
 }
 
 function confLines() {
@@ -937,7 +1035,7 @@ function confLines() {
   }
 
   // ---- several scales printed: which one governs the drawing? -----------
-  // The reason clause states what _choose actually keyed on, branch by
+  // The reason clause states what the ENGINE reports it keyed on, branch by
   // branch, and REFUSES to give one where nothing decided. A fabricated
   // mechanism is at its most expensive inside the sentence whose whole job
   // is to teach the estimator to distrust the pick.
@@ -956,34 +1054,89 @@ function confLines() {
     const kind = (why && why.kind) || "unknown";
     if (kind === "reviewer") {
       say("warn", head + `You picked ${used}.` + swap);
-    } else if (kind === "tie") {
-      const other = why.others
-        .map(c => `<span class="conf-num">`
-          + `${confScale(c.ft_per_paper_inch)}</span>`).join(" and ");
-      say("warn", head + `<b>We could not tell which of these governs this `
-        + `drawing.</b> ${used} and ${other} came out level on both of the `
-        + `only things this app can compare — whether the reading sits next `
-        + `to the word SCALE, and how many times its text matched while the `
-        + `sheet was read. Nothing on the sheet separated them, so the pick `
-        + `fell to whichever one the reader reached first, which is not a `
-        + `reason and is not being offered as one. Pick the scale that `
-        + `governs the drawing you are taking off, with the buttons just `
-        + `above.`);
-    } else if (kind === "keyword") {
-      say("warn", head + `We used ${used} because it is the only one of them `
-        + `printed next to the word SCALE. Where a caption sits is not `
-        + `evidence of which drawing it governs — a detail's caption sits `
-        + `next to that word too.` + swap);
-    } else if (kind === "count") {
-      say("warn", head + `We used ${used} because its text matched more `
-        + `times than the others while the sheet was read. That is a tally `
-        + `of readings, not evidence of which drawing it governs — on a `
-        + `details sheet it points the wrong way.` + swap);
-    } else if (kind === "keyword-then-count") {
-      say("warn", head + `We used ${used} because it sits next to the word `
-        + `SCALE where some of the others do not, and among the ones that `
-        + `do, its text matched the most times. Neither of those says which `
-        + `drawing it governs.` + swap);
+    } else if (kind === "governs") {
+      const other = `<span class="conf-num">${confScale(why.runnerUp)}</span>`;
+      const share = `<span class="conf-num">${confFt(why.pct)}%</span>`;
+      const oshare = `<span class="conf-num">${confFt(why.runnerPct)}%</span>`;
+      // DENOMINATORS, because the engine reports these two out of different
+      // wholes and a sentence that blurs them is a wrong number:
+      //   governs_pct / runner_up_pct  are shares of the linework that sits
+      //     under SOME caption ("assigned"), so both are introduced that way;
+      //   unassigned_pct is a share of the whole drawing - assigned plus
+      //     unassigned - the title-block strip having been cut off as sheet
+      //     furniture and counted in neither.
+      // So `rest` says "of the drawing", the shares say "of what sits under a
+      // caption", and the two never get added together. This is not academic:
+      // 8 of the corpus' 67 multi-scale pages are plan-and-profile sheets
+      // whose winner takes 100% of the assigned linework while 41-52% of the
+      // drawing sits under no caption at all - there, 100% means under half
+      // the sheet, and any phrasing like "most of the drawing belongs to it"
+      // would be plainly false. Hence "more ... than under any other".
+      const rest = why.unassigned
+        ? ` A further ${confFt(why.unassigned)}% of the drawing on this sheet `
+          + `sat under no caption at all, and is outside both figures.`
+        : ``;
+      if (why.thin) {
+        say("warn", head + `We used ${used}, but <b>it barely leads</b>. Of `
+          + `the drawing that sits under a scale caption, ${share} sits under `
+          + `that one and ${oshare} under ${other} — close enough that `
+          + `measuring this sheet a slightly different way could put the `
+          + `other one in front.${rest} <b>Treat the choice as unsettled:</b> `
+          + `set the scale for the drawing you are actually taking off, with `
+          + `the buttons just above.`);
+      } else {
+        say("warn", head + `We used ${used} because more of this drawing sits `
+          + `under its caption than under any other: of the linework sitting `
+          + `under a scale caption, ${share} sits under that one, against `
+          + `${oshare} under ${other}. That is measured from where the `
+          + `drawings sit on the page — not from how often the caption is `
+          + `printed.${rest}` + swap);
+      }
+    } else if (kind === "unranked") {
+      const r = why.reason || "";
+      let stopped;
+      if (r === "tie")
+        stopped = `Two of them cover so nearly the same amount of this `
+          + `drawing that nothing on the sheet separates them.`;
+      else if (r === "compound caption")
+        stopped = `One printed caption gives two different scales on the one `
+          + `line — the way a profile prints its sideways scale and its `
+          + `up-and-down scale together — so there is no telling which of `
+          + `them the drawing under it was drawn to.`;
+      else if (r.indexOf("no caption located") === 0)
+        stopped = `One of the scales this sheet prints could not be found `
+          + `anywhere on the page, so there was nothing to measure it `
+          + `against.`;
+      else if (r === "no linework beneath any caption")
+        stopped = `None of the captions has any drawing beneath it that `
+          + `could be measured.`;
+      else if (r === "no geometry" || r.indexOf("geometry failed") === 0)
+        stopped = `This sheet's linework could not be measured.`;
+      else
+        stopped = `Something on this sheet stopped that measurement.`;
+      say("warn", head + `<b>We could not work out which of them governs `
+        + `this drawing.</b> ${stopped} So ${used} is in force only because `
+        + `of the older rule — the reading printed next to the word SCALE, `
+        + `then the one whose text matched most often while the sheet was `
+        + `read — and neither of those says which drawing a caption belongs `
+        + `to. <b>Treat it as unchecked:</b> set the scale for the drawing `
+        + `you are taking off, with the buttons just above.`);
+    // "single" and "bar" are DEFENSIVE, and neither fires on any page of the
+    // corpus. The two counts disagree only at the edges: the engine calls a
+    // sheet "single" when its readings match to 4 decimal places, this block
+    // renders when any two differ by 1e-6, so "single" reaches here only for
+    // a pair between those - and "bar" reaches here never, because a graphic
+    // -bar result carries exactly one candidate and this block needs two.
+    // Both are kept so that if the engine ever does hand the banner one, it
+    // says something true instead of abstaining. Exercised synthetically only
+    // (out/verify/2026-08-23/pickwhy/).
+    } else if (kind === "single") {
+      say("warn", head + `Those readings all come out to the same scale once `
+        + `rounded, so there was nothing to choose between them. We used `
+        + `${used}.` + swap);
+    } else if (kind === "bar") {
+      say("warn", head + `No scale caption was read on this sheet, so the `
+        + `ruler drawn on it was measured instead: ${used}.` + swap);
     } else {
       say("warn", head + `We used ${used}. <b>We cannot show what picked it</b> `
         + `out of what this sheet gave us, so treat that as unchecked: `

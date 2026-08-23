@@ -60,7 +60,19 @@ _FT = r"""(?:['’′]|(?:feet|ft)\.?(?![a-z]))"""
 # dimensions. Labelled an INFERENCE for other drawing standards. If a real
 # mixed scale outside 1-1/2 ever turns up, widen this with its sheet as
 # evidence rather than by generalising the pattern.
-_NUM = r"""(?:1[-\s]1/2|\d+/\d+|\d+)"""
+#
+# The mixed number's joiner is SPACE, TAB or HYPHEN - deliberately not `\s`,
+# which matches a NEWLINE. get_text() separates lines with newlines, so with
+# `\s` a whole number ending one line welds onto a fraction starting the
+# next: Barn Structural engine page index 25 = printed sheet S5.1 prints
+# `PROJECT #24004520.01` in the title block directly above `1/2" = 1'-0"`,
+# and the weld read `1\n1/2" = 1'-0"` as 1-1/2" = 0.6667 ft/in - a scale the
+# sheet does not print, and since 36f3dd5 a clickable picker option that
+# divides every length on the page by three. A caption's own paper term
+# never wraps (it is one token in one title bar), so nothing real is lost
+# by refusing the line break; the 208-page sweep confirms exactly one
+# candidate-set change from this line, that page, that value.
+_NUM = r"""(?:1[ \t-]1/2|\d+/\d+|\d+)"""
 
 # OCR does not always give the inch mark back as an inch mark. Tesseract
 # reads Beaumont's structural title blocks - SCALE: 1/4"=1'-0" - as
@@ -132,6 +144,15 @@ class ScaleCandidate:
     ft_per_paper_inch: float
     near_scale_keyword: bool
     count: int = 1
+    # What this reading GOVERNS: the linework sitting above the title bars
+    # that print it, in pt and as a share of everything assigned on the
+    # sheet (see _rank). None = not measured - single candidate, ranking
+    # skipped, or ranking failed. 0.0 is a MEASURED zero (a caption whose
+    # detail has no linework), so test `is None`, never truthiness.
+    # `sites` is how many printed caption locations were found for it.
+    governs_pt: float | None = None
+    governs_pct: float | None = None
+    sites: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -139,6 +160,11 @@ class ScaleCandidate:
             "ft_per_paper_inch": self.ft_per_paper_inch,
             "near_scale_keyword": self.near_scale_keyword,
             "count": self.count,
+            "governs_pt":
+                None if self.governs_pt is None else round(self.governs_pt, 1),
+            "governs_pct":
+                None if self.governs_pct is None else round(self.governs_pct, 1),
+            "sites": self.sites,
         }
 
 
@@ -159,6 +185,23 @@ class ScaleResult:
     # whether a second source backs it.
     bar_ft_per_paper_inch: float | None = None
     agrees: bool | None = None      # None = no bar to compare against
+    # Why `best` is best, stated by the engine instead of replayed from the
+    # candidate list by a reader who has to guess (the banner's
+    # scalePickWhy() replays _choose's old branches; against this module it
+    # lands on its honest "unknown" arm until it is taught to read this).
+    # `pick["why"]` is one of:
+    #   "single"    one distinct value - nothing to rank
+    #   "governs"   ranked by the linework each printed caption governs;
+    #               the winner leads strictly (see `margin`)
+    #   "unranked"  several values and no ranking could be made - `reason`
+    #               says why; `best` is then the old keyword-then-count
+    #               order and must be presented as UNCHECKED, not explained
+    #   "bar"       the drawn graphic bar - no printed caption at all
+    # Alongside: the winner's governed share, the runner-up and its share,
+    # their ratio, how much linework had no caption beneath it, how much
+    # was excluded as sheet furniture, and which measure was used ("paths"
+    # = raw page geometry; "chains" = the caller's own live chains).
+    pick: dict = field(default_factory=dict)
 
     @property
     def delta_pct(self) -> float | None:
@@ -181,6 +224,7 @@ class ScaleResult:
             "bar_ft_per_paper_inch": self.bar_ft_per_paper_inch,
             "agrees": self.agrees,
             "delta_pct": None if d is None else round(d, 1),
+            "pick": dict(self.pick),
         }
 
 
@@ -308,12 +352,429 @@ def _scan(text: str) -> list[ScaleCandidate]:
     return list(found.values())
 
 
-def _choose(cands: list[ScaleCandidate]) -> ScaleCandidate | None:
+# ---------------------------------------------------------------------------
+# Which of several printed scales governs the drawing
+# ---------------------------------------------------------------------------
+# A sheet that carries a plan and its details prints one caption per drawing,
+# and the choice used to be "keyword-adjacent, then most repeated". On a
+# detail sheet that runs exactly backwards: many small details, one big
+# plan, so caption count is INVERSELY related to how much drawing a scale
+# governs. Audit RC-2, root of eight findings; live regression F113: 08e818d
+# made `3" = 1'-0"` readable and count promptly handed Barn Landscaping L804
+# (engine page index 29 = printed sheet 30) to it over the `3/4"` scale.
+#
+# So rank by WHAT EACH CAPTION GOVERNS. The document asserts the binding:
+# every multi-scale sheet in the corpus prints a detail's caption in a TITLE
+# BAR beneath the detail - bubble number, title, `SCALE: ...`, and a
+# horizontal rule - and the drawing is the linework above that rule. Three
+# independent drafters agree (SWR landscaping/structural, Thielen): all 104
+# caption sites on the corpus' 16 multi-candidate pages sit on such a rule
+# (per-page counts in the sweep's sites/rules fields, 2026-08-22 choose
+# sweep). Measured rule-to-caption gaps: 7.1 pt on L804, 3.2 on Guide
+# Structural S6-0.0, 1.0 on Thielen A1.2; the next horizontal stroke above
+# a caption is the detail's own linework, 20+ pt up. CONVENTION, from these
+# sheets: the title bar sits BELOW its drawing. Labelled an INFERENCE for
+# drafters outside the corpus; where it fails to locate a caption the sheet
+# reports "unranked" rather than a wrong answer.
+#
+# Assignment, per stroke unit: the caption beneath it (rule y >= centre y)
+# with the least cost, cost = vertical gap to the rule + horizontal excess
+# outside the rule's x-span. Nothing is bucketed; a unit with no caption
+# beneath it is UNASSIGNED and reported as such. The measure is
+# extract_strokes' own units - the geometry the chain stage prices, before
+# chaining - minus whiteout and HATCH-layer strokes (the chain stage's own
+# two cheapest demotions). That is a PROXY for the live chains: checked
+# against build_chains' live chains under the same assignment on 15 of the
+# corpus' 16 multi-candidate pages (the 16th, Barn Structural engine p1,
+# is OCR-sourced and was not cross-checked): same winner on 15 of 15,
+# winner's share within 8.5 points everywhere (worst: Thielen p8, 73.6%
+# raw vs 65.1% chains; see chains_vs_paths.log in
+# out/verify/2026-08-22/choose/work/). A caller that already built the
+# page's chains can pass them to detect_scale(linework=...) and the
+# ranking uses those instead.
+#
+# What this does NOT do: apply different scales to different regions of one
+# sheet. That is per-viewport scaling and a separate design. This picks one
+# default, and states why - including the margin, because on a sheet of ten
+# details the "winner" can govern under 40% of the linework and the reader
+# deserves to know how thin that is.
+
+# How far above a caption's top edge its title-bar rule may sit (measured:
+# 7.1 / 3.2 / 1.0 pt across the three drafters), and how far below (the
+# rule never sits below the caption on any corpus sheet; 2 pt of slop).
+_RULE_ABOVE = 12.0
+_RULE_BELOW = 2.0
+# The shortest horizontal stroke read as a rule candidate. Thielen draws
+# the narrowest title bars in the corpus; its shortest rule measures
+# 100.7 pt (A1.2). Text underlines in note blocks are shorter than 60.
+_RULE_MIN_PT = 60.0
+# A straight stroke spanning at least this fraction of the page in one
+# axis, sitting in the outer quarter of the page on the other axis, with
+# every caption on the interior side, cuts a SHEET-FURNITURE strip off the
+# drawing area (the title-block column: logo, consultant list, revision
+# grid). The far side is not counted at all - neither governed nor
+# unassigned. Both conditions are load-bearing: the SWR template's divider
+# at x = 2736 of 3024 spans 0.93 of the page height and its strip holds
+# 24,111 pt of exploded logo and consultant text (L804, measured), which
+# would otherwise be assigned to whatever detail column sits nearest - on
+# L804 that flips the sheet to `3"`, the exact wrong answer this ranking
+# exists to prevent; but a long drawn line in the MIDDLE of a sheet - a
+# road centreline, a property line - must never cut, so the strip must hug
+# an edge. chain.py's _demote_sheet_furniture solves the same problem by
+# layer name + edge position; the L804 title block carries NO layer name
+# (463 unnamed units), so geometry has to carry it here.
+_DIVIDER_FRAC = 0.8
+_EDGE_STRIP = 0.25
+# Two leaders closer than this fraction of all assigned linework are a
+# TIE: the sheet does not have a single governing scale that this measure
+# can name, and saying so beats picking by 0.4% of a proxy. This is a
+# numerical-equality guard, not a tuned threshold - the closest real
+# margin in the corpus is 1.16x (L804), more than thirty times wider.
+_TIE_FRAC = 0.005
+
+
+def _text_lines(words: list) -> list[list]:
+    """Word boxes grouped into printed lines, each sorted left to right.
+
+    Text-layer words carry mupdf's own (block, line) ids - the drafter's
+    line breaks - and those are used as they stand (the document asserts,
+    we do not re-infer). OCR words are 5-tuples with no ids, so they are
+    walked by vertical overlap and the height-keyed column gap already
+    measured for _row_text. Sweep LEFT TO RIGHT, not top to bottom: OCR
+    puts "SCALE:" a point or two below its own ratio often enough that a
+    top-down walk reaches the ratio first, opens a row, and then cannot
+    accept a word to its left.
+    """
+    if words and len(words[0]) >= 7:
+        grp: dict = {}
+        for w in words:
+            grp.setdefault((w[5], w[6]), []).append(w)
+        return [sorted(v, key=lambda w: float(w[0])) for v in grp.values()]
+    rows: list[list] = []
+    for w in sorted(words, key=lambda w: (float(w[0]), float(w[1]))):
+        if not str(w[4]).strip():
+            continue
+        best, best_ov = None, 0.0
+        for r in rows:
+            p = r[-1]
+            h = min(float(p[3]) - float(p[1]), float(w[3]) - float(w[1]))
+            ov = min(float(p[3]), float(w[3])) - max(float(p[1]), float(w[1]))
+            gap = float(w[0]) - float(p[2])
+            if ov > 0.5 * max(h, 1.0) and ov > best_ov and -2.0 <= gap <= max(
+                    _ROW_GAP_MIN, _ROW_GAP_HEIGHTS * max(h, 1.0)):
+                best, best_ov = r, ov
+        if best is None:
+            rows.append([w])
+        else:
+            best.append(w)
+    return rows
+
+
+def _caption_sites(words: list, hlines: list) -> list[dict]:
+    """Every printed scale caption, where it sits, and its title-bar rule.
+
+    One site per (printed line, scale value). `rule` is the LONGEST
+    horizontal stroke in the band just above the caption that starts at or
+    left of the caption's left edge and is at least as wide as the caption
+    - an explicit ranking, not first-found. None when the caption has no
+    rule; the caption's own box then stands in for it.
+
+    `compound` marks the sites of a line that yielded MORE THAN ONE distinct
+    value. Those sites are all given the identical box and rule - they are
+    the same printed characters - so nothing downstream can tell them apart
+    and the assignment in `_governance` cannot honestly be made. See _rank,
+    which refuses to rank such a page. A line printing the SAME value twice
+    is not compound: the set below collapses it to one site.
+    """
+    out = []
+    for L in _text_lines(words):
+        txt = " ".join(str(w[4]) for w in L)
+        cs = _scan(txt)
+        if not cs:
+            continue
+        x0 = min(float(w[0]) for w in L)
+        y0 = min(float(w[1]) for w in L)
+        x1 = max(float(w[2]) for w in L)
+        y1 = max(float(w[3]) for w in L)
+        rule = None
+        for idx, (hx0, hx1, hy) in hlines:
+            if (y0 - _RULE_ABOVE <= hy <= y1 + _RULE_BELOW
+                    and hx0 - 4.0 <= x0 <= hx1
+                    and hx1 - hx0 >= x1 - x0
+                    and (rule is None or hx1 - hx0 > rule[1] - rule[0])):
+                rule = (hx0, hx1, hy, idx)
+        vals = sorted({round(c.ft_per_paper_inch, 4) for c in cs})
+        for v in vals:
+            out.append({"fpi": v, "text": txt, "box": (x0, y0, x1, y1),
+                        "rule": rule, "compound": len(vals) > 1})
+    return out
+
+
+def _page_linework(page: pymupdf.Page) -> tuple[list, list, list]:
+    """The page's stroked linework, read through extract_strokes itself
+    so clip regions, hidden OCG layers, rotation and thin-rect centrelines
+    are handled by the ONE implementation that already handles them.
+
+    Returns (paths, hlines, dividers):
+      paths    [(length, cx, cy), ...] one entry per stroke unit that is
+               not whiteout and not on a HATCH layer (the chain stage's own
+               two cheapest demotions, same tests), minus the page frame;
+               (cx, cy) is the unit's bbox centre.
+      hlines   [(path index, (x0, x1, y)), ...] horizontal strokes >=
+               _RULE_MIN_PT - the title-bar rule candidates.
+      dividers [("v", x, path index) | ("h", y, path index), ...] straight
+               strokes spanning >= _DIVIDER_FRAC of the page in one axis.
+    """
+    from .extract import extract_strokes
+
+    W, H = float(page.rect.width), float(page.rect.height)
+    paths: list = []
+    hlines: list = []
+    dividers: list = []
+    for u in extract_strokes(page):
+        if u.color and min(u.color) > 0.92 and not u.on_fill:
+            continue                    # whiteout (chain.py's skip, verbatim)
+        lay = (u.layer or "").upper()
+        if "HATCH" in lay and "NO HATCH" not in lay and "NOHATCH" not in lay:
+            continue                    # hatch decoration (chain.py's test)
+        if len(u.pts) < 2 or u.length <= 0.0:
+            continue
+        mn = u.pts.min(axis=0)
+        mx = u.pts.max(axis=0)
+        w, h = float(mx[0] - mn[0]), float(mx[1] - mn[1])
+        if w >= _DIVIDER_FRAC * W and h >= _DIVIDER_FRAC * H:
+            continue                    # the page frame (finding #10)
+        idx = len(paths)
+        paths.append((float(u.length),
+                      float(mn[0] + mx[0]) / 2.0, float(mn[1] + mx[1]) / 2.0))
+        # "Straight" tolerances are sliver widths, not hairlines: a rule or
+        # a divider is routinely PLOTTED as a thin filled box, and
+        # extract_strokes collapses those to centrelines that keep a little
+        # width (the SWR divider at x=2736 is a 4.5 pt sliver whose
+        # centreline units carry 2.3-4.5 pt of bbox width; a 0.6 pt test
+        # missed all three and the title block silently rejoined the
+        # drawing). 4 pt for a rule, 6 for a divider - both far under the
+        # 12 pt of _RULE_ABOVE headroom and the quarter-page edge strip
+        # that consume them.
+        if h <= 4.0 and w >= _RULE_MIN_PT:
+            hlines.append((idx, (float(mn[0]), float(mx[0]),
+                                 float(mn[1] + mx[1]) / 2.0)))
+            if w >= _DIVIDER_FRAC * W:
+                dividers.append(("h", float(mn[1] + mx[1]) / 2.0, idx))
+        elif w <= 6.0 and h >= _DIVIDER_FRAC * H:
+            dividers.append(("v", float(mn[0] + mx[0]) / 2.0, idx))
+    return paths, hlines, dividers
+
+
+def _chain_linework(chains) -> list:
+    """(length, cx, cy) per LIVE chain, for a caller that already built
+    them: objects with .pts/.length/.klass, or plain (length, cx, cy)
+    triples. Annotation chains are the chain stage's own junk verdict and
+    stay out of the measure."""
+    out = []
+    for c in chains:
+        if isinstance(c, (tuple, list)) and len(c) == 3:
+            out.append((float(c[0]), float(c[1]), float(c[2])))
+            continue
+        if getattr(c, "klass", None) == "annotation":
+            continue
+        pts = np.asarray(getattr(c, "pts", ()), dtype=float)
+        if len(pts) < 2:
+            continue
+        mn, mx = pts.min(axis=0), pts.max(axis=0)
+        out.append((float(getattr(c, "length", 0.0)),
+                    float(mn[0] + mx[0]) / 2.0, float(mn[1] + mx[1]) / 2.0))
+    return out
+
+
+def _governance(sites: list, paths: list, dividers: list, skip: set,
+                page_wh: tuple) -> tuple[dict, float, float]:
+    """Linework governed per scale value.
+
+    Returns ({fpi: pt}, unassigned pt, furniture pt). A divider whose far
+    side is an edge strip holding no caption brackets the drawing area;
+    paths beyond it are sheet furniture and count toward neither share nor
+    denominator. Paths in `skip` - the title-bar rules and the dividers
+    themselves - are not counted either: a rule is one per caption, and
+    counting it would be the caption-count bias coming back in through the
+    geometry (531 pt per caption on the SWR template).
+    """
+    W, H = page_wh
+    far: list = []
+    for kind, pos, _ in dividers:
+        ext = W if kind == "v" else H
+        j = 0 if kind == "v" else 1
+        lo = min(s["box"][j] for s in sites)
+        hi = max(s["box"][j + 2] for s in sites)
+        if pos >= (1.0 - _EDGE_STRIP) * ext and hi < pos:
+            far.append((kind, pos, +1))     # strip beyond pos is furniture
+        elif pos <= _EDGE_STRIP * ext and lo > pos:
+            far.append((kind, pos, -1))
+    tot: dict = {}
+    unassigned = 0.0
+    furniture = 0.0
+    for i, (L, cx, cy) in enumerate(paths):
+        if i in skip:
+            continue
+        if any((cx if kind == "v" else cy) * sgn > pos * sgn
+               for kind, pos, sgn in far):
+            furniture += L
+            continue
+        best, bc = None, None
+        for s in sites:
+            if s["rule"]:
+                rx0, rx1, ry = s["rule"][0], s["rule"][1], s["rule"][2]
+            else:
+                rx0, _, rx1, ry = s["box"]
+            if ry < cy - _RULE_BELOW:
+                continue           # caption sits above this: not its drawing
+            cost = (ry - cy) + max(0.0, rx0 - cx, cx - rx1)
+            if bc is None or cost < bc:
+                best, bc = s, cost
+        if best is None:
+            unassigned += L
+        else:
+            tot[best["fpi"]] = tot.get(best["fpi"], 0.0) + L
+    return tot, unassigned, furniture
+
+
+def _rank(cands: list[ScaleCandidate], page: pymupdf.Page | None = None,
+          words: list | None = None, linework=None
+          ) -> tuple[ScaleCandidate | None, dict]:
+    """The default scale for the sheet, and why.
+
+    One distinct value: it wins, why="single". Several: each is scored by
+    the linework above whose title bars it is printed (see the section
+    comment) and the strict leader wins, why="governs", with the margin
+    stated. When that cannot be done - no geometry, one printed line
+    carrying two scales, a value whose caption cannot be located, nothing
+    assigned, or two leaders too close to call - the old keyword-then-count
+    order stands in and why="unranked" with the reason, so a reader knows
+    the pick is UNCHECKED rather than explained.
+    """
     if not cands:
-        return None
-    # keyword-adjacent first, then most repeated, then largest paper scale
-    # (the main plan is usually the coarsest-precision, most repeated note)
-    return sorted(cands, key=lambda c: (-c.near_scale_keyword, -c.count))[0]
+        return None, {}
+    order = sorted(cands, key=lambda c: (-c.near_scale_keyword, -c.count))
+    values = sorted({round(c.ft_per_paper_inch, 4) for c in cands})
+    if len(values) == 1:
+        return order[0], {"why": "single"}
+
+    def rep(v):   # the reading standing for a value: keyword first, then count
+        return next(c for c in order if round(c.ft_per_paper_inch, 4) == v)
+
+    def unranked(reason):
+        return order[0], {"why": "unranked", "reason": reason,
+                          "values": values}
+
+    if page is None and linework is None:
+        return unranked("no geometry")
+    try:
+        if words is None:
+            from .extract import page_words
+            words = page_words(page)
+        if page is not None:
+            paths, hlines, dividers = _page_linework(page)
+            page_wh = (float(page.rect.width), float(page.rect.height))
+        else:
+            paths, hlines, dividers = [], [], []
+            page_wh = (0.0, 0.0)
+        measure = "paths"
+        if linework is not None:
+            # the caller's live chains replace the raw units; the title-bar
+            # rules and dividers are still read off the page for placement
+            paths = _chain_linework(linework)
+            measure = "chains"
+        sites = _caption_sites(words, hlines)
+    except Exception as e:  # noqa: BLE001 - ranking must never take the reading down
+        return unranked(f"geometry failed: {type(e).__name__}")
+    for c in cands:
+        c.sites = sum(1 for s in sites
+                      if s["fpi"] == round(c.ft_per_paper_inch, 4))
+    # A plan-and-profile sheet prints BOTH its scales on ONE printed line:
+    #   PROFILE 1"=80' (HOR), 1"=20' (VERT)
+    #     Belle Farms Upper Parcel ROAD GRADING 1 of 2.pdf engine page index 0
+    #   H: 1" = 20';  V: 1" = 5'
+    #     East Gallatain River sheet C101, engine page index 3 of both
+    #     Plans/Plans.pdf and Addenda/Addenda/1.pdf - the same drawing twice
+    # `_caption_sites` makes one site per (line, value), so those two get an
+    # IDENTICAL box and rule, and `_governance`'s strict `cost < bc` then
+    # hands the WHOLE line's ink to whichever value it visits first - the
+    # smaller, since the sites are emitted sorted. Defect shape B,
+    # first-writer-wins, inside the new ranker: the runner-up gets a literal
+    # zero, so the near-tie guard cannot fire either (East Gallatain C101
+    # reported `governs 100.0%` with `runner_up_pct 0.0` while taking the
+    # profile's VERTICAL exaggeration as the sheet scale - 4x wrong on every
+    # length, 16x on every area, and `agrees` null because the sheet draws
+    # no bar).
+    #
+    # There is no honest split. The compound line's drawing is a PROFILE: a
+    # graph whose X axis is at one scale and whose Y axis is at another, so
+    # its ink is governed by both at once and by neither alone. Halving it,
+    # or reading the (HOR)/(VERT) markers to pick a side, would turn an
+    # unknown into a guess and still report `governs`. So the whole page is
+    # unrankable: the old keyword-then-count order stands in and is flagged
+    # UNCHECKED. That is a lost ranking, never a wrong number.
+    #
+    # Whole page, not just the compound site: once a line's ink has gone
+    # somewhere arbitrary, every share on the sheet is fiction even when the
+    # winner happens to survive. Belle Farms 2 of 2 engine page index 0 is
+    # exactly that - it still reads 60.0, but on a reported 71.4/28.6 whose
+    # 28.6 belongs to 20' and 80' jointly. Measured before this guard:
+    # 1 of 2 p0 flipped 60.0 -> 20.0 (3x wrong, no symptom); 2 of 2 p0 held
+    # by luck. Verified against the drawn geometry on 1 of 2 p0: the plan's
+    # own unlabelled bar spans 143.96 pt for its 0-120' ticks = 60.02 ft/in,
+    # while the profile's axes measure 1890.11 pt / 2100 ft = 79.995 (HOR)
+    # and 540.12 pt / 150 ft = 19.996 (VERT).
+    #
+    # Tested before `missing`: an unattributable line is the stronger
+    # statement - the attribution itself is unsafe, not merely incomplete.
+    if any(s["compound"] for s in sites):
+        return unranked("compound caption")
+    missing = [v for v in values if not any(s["fpi"] == v for s in sites)]
+    if missing:
+        return unranked(f"no caption located for {missing}")
+    skip = set()
+    if measure == "paths":
+        skip = {s["rule"][3] for s in sites if s["rule"]}
+        skip |= {d[2] for d in dividers}
+    tot, unassigned, furniture = _governance(sites, paths, dividers, skip,
+                                             page_wh)
+    assigned = sum(tot.values())
+    if assigned <= 0.0:
+        return unranked("no linework beneath any caption")
+    for c in cands:
+        v = round(c.ft_per_paper_inch, 4)
+        c.governs_pt = tot.get(v, 0.0)
+        c.governs_pct = 100.0 * c.governs_pt / assigned
+    ranked = sorted(values, key=lambda v: -tot.get(v, 0.0))
+    top, second = tot.get(ranked[0], 0.0), tot.get(ranked[1], 0.0)
+    denom = assigned + unassigned
+    info = {
+        "values": values,
+        "measure": measure,
+        "governs_pct": round(100.0 * top / assigned, 1),
+        "runner_up": ranked[1],
+        "runner_up_pct": round(100.0 * second / assigned, 1),
+        "margin": None if second <= 0.0 else round(top / second, 2),
+        "unassigned_pct":
+            0.0 if denom <= 0.0 else round(100.0 * unassigned / denom, 1),
+        "furniture_pct": 0.0 if furniture <= 0.0 else round(
+            100.0 * furniture / (denom + furniture), 1),
+        "sites": len(sites),
+        "rules": sum(1 for s in sites if s["rule"]),
+    }
+    if top - second <= _TIE_FRAC * assigned:
+        info.update(why="unranked", reason="tie")
+        return order[0], info
+    info["why"] = "governs"
+    return rep(ranked[0]), info
+
+
+def _choose(cands: list[ScaleCandidate]) -> ScaleCandidate | None:
+    """The geometry-free pick: keyword-adjacent first, then most repeated.
+    Kept for callers with no page in hand; detect_scale ranks through
+    _rank, which falls back to exactly this order when it cannot rank."""
+    return _rank(cands)[0]
 
 
 _TICK = re.compile(r"^(\d{1,4})\s*[\'’]?$")
@@ -576,18 +1037,24 @@ def _corroborate(res: ScaleResult, words: list) -> ScaleResult:
 
 
 def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
-                 corroborate: bool = True) -> ScaleResult:
+                 corroborate: bool = True, linework=None) -> ScaleResult:
+    """Read the sheet's scale. `linework` - the page's already-built chains,
+    when the caller has them - replaces the raw-geometry proxy that ranks
+    several printed scales by what each governs (see _rank); it never
+    changes which captions are found."""
     text = page.get_text()
     cands = _scan(text)
     nts = bool(_NTS.search(text))
     if cands:
-        res = ScaleResult(_choose(cands), cands, nts, "text")
-        if corroborate:
-            try:
-                from .extract import page_words
-                res = _corroborate(res, page_words(page))
-            except Exception:
-                pass
+        try:
+            from .extract import page_words
+            words = page_words(page)
+        except Exception:
+            words = None
+        best, pick = _rank(cands, page, words, linework)
+        res = ScaleResult(best, cands, nts, "text", pick=pick)
+        if corroborate and words is not None:
+            res = _corroborate(res, words)
         return res
 
     try:
@@ -600,7 +1067,8 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         # words by (row, x) puts it back: "1 inch = 10 ft.".
         cands = _scan(_row_text(words))
         if cands:
-            res = ScaleResult(_choose(cands), cands, nts, "text")
+            best, pick = _rank(cands, page, words, linework)
+            res = ScaleResult(best, cands, nts, "text", pick=pick)
             return _corroborate(res, words) if corroborate else res
 
         # No stated ratio: try the drawn GRAPHIC SCALE bar off the text layer
@@ -608,7 +1076,8 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         # real text on most CAD sheets, and OCR mangles them ("100'" -> "00").
         bar = graphic_scale_bar(words)
         if bar:
-            return ScaleResult(bar, [bar], nts, "graphic-bar")
+            return ScaleResult(bar, [bar], nts, "graphic-bar",
+                               pick={"why": "bar"})
     except Exception:
         pass
 
@@ -626,10 +1095,12 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
             cands = _scan(ocr_text)
             nts = nts or bool(_NTS.search(ocr_text))
             if cands:
-                return ScaleResult(_choose(cands), cands, nts, "ocr")
+                best, pick = _rank(cands, page, words, linework)
+                return ScaleResult(best, cands, nts, "ocr", pick=pick)
             bar = graphic_scale_bar(words)
             if bar:
-                return ScaleResult(bar, [bar], nts, "graphic-bar")
+                return ScaleResult(bar, [bar], nts, "graphic-bar",
+                                   pick={"why": "bar"})
         except Exception:
             pass
 
