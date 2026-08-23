@@ -49,7 +49,13 @@ def error_path(job_dir: str, page: int) -> Path:
 # for exactly this reason; this is the same idea one level up.
 _ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
                  "legend_detect.py", "detect_page.py", "raster.py",
-                 "text_detect.py", "areas.py", "marks.py")
+                 "text_detect.py", "areas.py", "marks.py",
+                 # classify_page.py picks WHICH of the above even runs, so a
+                 # change there can swap every chain on the page. It was
+                 # missing from this list until 2026-08-22, which meant the
+                 # routing fix for Thielen A0.0 would have read back out of
+                 # the cache as the old raster result.
+                 "classify_page.py")
 
 
 def engine_sig() -> str:
