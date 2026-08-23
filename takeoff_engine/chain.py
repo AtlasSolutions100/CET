@@ -857,6 +857,84 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         merged, cid = _compound_merge(
             group_lcs, solid_pool, stray_dots, units, color, width, layer, cid
         )
+        # KNOWN DEFECT, MEASURED, NOT FIXED HERE - read this before you touch
+        # _pickup_end_marks or `chained_units`.
+        #
+        # `chained_units` is incomplete from this point on. _compound_merge
+        # emits EVERY solid_pool member exactly once - consumed into an
+        # assembly, or passed through as its own solid LineChain - and records
+        # NONE of them in `chained_units`. So a stroke that is already an
+        # emitted chain is still "free" inside _pickup_end_marks, which can
+        # absorb it into a dashed chain of the same group. One stroke, two
+        # chains, and its length is added twice by every consumer that sums
+        # chain lengths: webui/app.js computeTakeoffRows (tally bar, itemized
+        # panel, CSV) and server.py approve(), which emits one element per
+        # chain. The pickup also adds its own approach gap (c.length +=
+        # u.length + d), which was never ink at all.
+        #
+        # Worked case, Grey Bear sheet 6 (006^06 Fence Removal Plan p0):
+        # post-merge unit 312 is 54.02 pt, so SOLID_MIN_LEN 30 < 54.02 <=
+        # DASH_MAX_LEN 80 puts it in dash_cand AND in solid_pool. It ships as
+        # chain c92 and is then absorbed into chain c88, whose length reads
+        # 219.66 instead of 165.64. The published reconciliation row for that
+        # fence is 761.6 ft against the engineer's 600 LF; without the double
+        # count it is 611.3 ft.
+        #
+        # The fix is one line, right here, and it is bookkeeping - no
+        # tolerance, no threshold, no pairwise pass, no chain created and none
+        # deleted:
+        #
+        #     chained_units.update(solid_pool)
+        #
+        # Measured over the same 354 sheets as the containment population,
+        # both arms in one process on byte-identical extraction (2026-08-23):
+        # it suppresses 4,279 pickups on 270 sheets, drops corpus containment
+        # excess from 925,968 pt to 746,028 pt (1.62% -> 1.31% of summed chain
+        # length; UI-included 1.60% -> 1.26%), and the chain set entering
+        # _stitch_across_styles is IDENTICAL on 354/354 sheets, so it emits and
+        # deletes nothing.
+        #
+        # WHY IT IS NOT APPLIED: it moves the pinned gate, and re-pinning is
+        # not this file's call. `python -m takeoff_engine.regress` goes
+        #   chains  1429/573/749/713/350/314/589/886/2096/927
+        #        -> 1428/573/750/714/349/314/590/886/2100/927
+        #   spikes  1/1/1/1/0/1/0/0/2/0 -> 0/0/0/0/0/1/0/0/3/0
+        #   phantom / mean truth 98.0% / per-class precision 100%: unchanged.
+        # AND IT MOVES ATTRIBUTION, which the first write-up of this comment
+        # omitted and Gate 1 caught. Same regress runs, full-text diff:
+        #   hand truth  plain recall 78.1 -> 77.8, ink-weighted 83.8 -> 83.4
+        #   derived layer recall      C4.0 93.0->91.6  C8.0 90.5->88.4
+        #                             C3.0 93.6->91.5  C9.0 89.6->87.7
+        #   derived attribution       91.9->90.2  89.7->86.4  92.5->89.1
+        #                             91.4->86.6   Landscaping p5 93.2->92.7
+        #   rollup: correctly attributed 92.1 -> 91.2, raw ink recall
+        #   92.9 -> 91.2, MISFILED 32 -> 33 layers, A-GENM 18.4 -> 11.1
+        # `traced by SOMETHING` stays at 99.2%, so on the gate sheets this
+        # is MIS-ATTRIBUTION, not lost ink: declining the pickup strands a
+        # 30-80 pt dash as its own solid chain and the parent's cadence is
+        # then re-read. THAT is the real reason this is deferred - a fix
+        # that trades 0.31% of double-counted length for 0.9% of correct
+        # attribution is not obviously worth taking, and the gate movement
+        # is the symptom rather than the objection. Anyone reviving this
+        # must price both columns, not just the chains and spikes rows.
+        # The movement is NOT this line creating or deleting chains. It is
+        # _stitch_across_styles and _join_chain_ends, which run after it and
+        # CONSUME chains when they merge: correcting one endpoint flips which
+        # merges fire. Four of the ten pinned spikes ARE this defect - a
+        # P1-PARKING dashed chain welded onto a stroke that was already its own
+        # chain, on C4.0/C8.0/C3.0/C9.0 p0 - so no correct version can leave
+        # the spike row unmoved, and picking a subset that does would be
+        # fitting to the gate (AGENT-BRIEF s7). Costs found, corpus-wide:
+        # SWR Barn Landscaping p5 GAINS a spike (c1187, dash2, layer
+        # CSA-SW-CB|A-WALL, backtracks at 936.66,1194.18); 7 pens
+        # (colour+width+layer) lose their style row entirely, 2,921 pt, worst
+        # SE-P-EOG DRVWAY 3 at 1,944.8 pt; 9 of 354 sheets move their
+        # UI-included total by >=1% more than the double-count removed.
+        #
+        # Full before/after, both patches, and the live-app pair are in
+        # out/verify/2026-08-23/containment-fix/ (CONTAINMENT-FIX.md) and
+        # out/verify/2026-08-22/containment/pickup-fix.patch. FINDINGS F130.
+        # DEFERRED - nobody is on it.
         _pickup_end_marks(merged, units, dash_cand, chained_units)
         chains.extend(merged)
 
