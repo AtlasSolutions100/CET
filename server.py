@@ -524,6 +524,188 @@ def page_confidence(job_id: str, page: int):
     }
 
 
+# ---------- the scale a human chose --------------------------------------
+# Every foot, square foot and cubic yard on a sheet is one multiplication away
+# from `ft_per_paper_inch`, and on a quarter of the pages that return a scale
+# at all the sheet prints more than one - a plan and its details. The review
+# UI lets the estimator pick which one governs the drawing and redraws every
+# number on screen from it (webui/app.js renderScalePick). Until this file
+# learned to read that pick, `approve` recomputed every length from the
+# ENGINE's choice, so the screen and the exported takeoff disagreed with no
+# symptom - Barn Landscaping L604 exported 4x low - and the export still
+# stamped the number `(auto, text)` with the estimator's approval on it.
+#
+# The pick is stored BESIDE the detect result, never inside it, for two
+# reasons that both matter:
+#   * `_result_stale` throws the cached result away whenever engine code
+#     changes (detect_page.engine_sig). A human's reading of which caption
+#     governs the drawing is not invalidated by an engine edit.
+#   * a re-detect rewrites p<N>_result.json wholesale.
+# It is a judgement about the DRAWING, not an engine output, so it outlives
+# both. `set_by` is the provenance, and it travels with the number all the
+# way into the elements JSON and onto the face of the report PDF.
+
+_BY_REVIEWER = "reviewer"
+
+
+def _scale_pick_path(job_id: str, page: int) -> Path:
+    return _job_dir(job_id) / f"p{page}_scale.json"
+
+
+def _stored_scale_pick(job_id: str, page: int) -> dict | None:
+    f = _scale_pick_path(job_id, page)
+    if not f.exists():
+        return None
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return None
+    try:
+        v = float(d.get("ft_per_paper_inch") or 0)
+    except (TypeError, ValueError):
+        return None
+    return d if v > 0 else None
+
+
+def _page_scale(job_id: str, page: int, res: dict,
+                sent: "ApproveScale | None" = None) -> dict | None:
+    """The scale this page's quantities are computed from, and who set it.
+
+    Returns the engine's scale dict with `set_by` added ("auto" or
+    "reviewer"), plus `engine_*` recording what the engine had thought when a
+    human overruled it - or None when the sheet has no scale at all.
+
+    `sent` is what the review UI had ON SCREEN when Approve was pressed, and
+    it wins: the deliverable must never disagree with the screen the human
+    approved (CLAUDE.md 1). A pick is written to disk so a reload, a
+    re-detect and a later re-approve all agree with it; approving the
+    engine's own reading retires an earlier pick rather than letting it
+    outlive the screen.
+    """
+    eng = res.get("scale") or None
+    eng_ft = None
+    if eng:
+        try:
+            eng_ft = float(eng.get("ft_per_paper_inch") or 0) or None
+        except (TypeError, ValueError):
+            eng_ft = None
+    pick = None
+    try:
+        want = float(sent.ft_per_paper_inch) if sent is not None else 0.0
+    except (TypeError, ValueError):
+        want = 0.0
+    if want > 0:
+        # A screen that DIFFERS from the engine had a person change it,
+        # whatever flag came with it. The converse is not true, and the
+        # flag alone must NOT record a pick: renderScalePick stamps
+        # picked_by_reviewer on every click including the button already
+        # ON, so clicking away and back again would land here with the
+        # engine's own value and make the export say 'set by the reviewer;
+        # the engine had read <the same number>' - self-contradicting, and
+        # it writes a sidecar where the rule below says to retire one.
+        # Found by Gate 1 on the live UI. Value only.
+        same_as_engine = eng_ft is not None and abs(eng_ft - want) < 1e-9
+        if not same_as_engine:
+            pick = {"ft_per_paper_inch": want,
+                    "text": (sent.text or "").strip() or None,
+                    "set_by": _BY_REVIEWER,
+                    "set_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            try:
+                _scale_pick_path(job_id, page).write_text(
+                    json.dumps(pick, indent=1))
+            except OSError:
+                pass  # unwritable: this approve still honours the screen
+        else:
+            try:
+                _scale_pick_path(job_id, page).unlink(missing_ok=True)
+            except OSError:
+                pass
+    else:
+        # Nothing on the wire (an older UI, or a re-approve from a script):
+        # an earlier human decision is still the best information this page
+        # has, and it deliberately survived the re-detect.
+        pick = _stored_scale_pick(job_id, page)
+    if pick is None:
+        return None if eng is None else {**eng, "set_by": "auto"}
+    out = dict(eng or {})
+    out.update({
+        "text": pick.get("text") or (eng or {}).get("text"),
+        "ft_per_paper_inch": float(pick["ft_per_paper_inch"]),
+        "set_by": _BY_REVIEWER,
+        "set_at": pick.get("set_at"),
+        # read off the CURRENT result, so the comparison printed next to the
+        # human's number is what the engine thinks NOW, not a stale copy
+        "engine_ft_per_paper_inch": eng_ft,
+        "engine_text": (eng or {}).get("text"),
+        "engine_source": (eng or {}).get("source"),
+        # both were measured against the engine's number, not this one
+        "agrees": None,
+        "delta_pct": None,
+    })
+    return out
+
+
+def _ft(v) -> str:
+    """4.0 -> "4", 5.3333 -> "5.33". Estimators read feet per paper inch."""
+    try:
+        return f"{float(v):.2f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _scale_name(det: dict) -> str:
+    """What the export calls this scale. A number a person chose must never
+    be labelled `auto`: his approval is on it, and a reader downstream has no
+    other way to know the engine was overruled."""
+    text = det.get("text") or f'1 inch = {_ft(det.get("ft_per_paper_inch"))} ft'
+    if det.get("set_by") != _BY_REVIEWER:
+        return f'{text} (auto, {det.get("source") or "unknown"})'
+    if det.get("engine_ft_per_paper_inch"):
+        return (f'{text} (set by the reviewer; the engine had read '
+                f'{det.get("engine_text") or "?"} = '
+                f'{_ft(det["engine_ft_per_paper_inch"])} ft per inch)')
+    return f'{text} (set by the reviewer; the engine read no scale here)'
+
+
+def _scale_report_lines(sc: dict | None, image_dpi=None) -> list[str]:
+    """The scale statement printed on the face of the report PDF. A printed
+    takeoff whose scale a person overrode has to say so where it is read.
+
+    `ftPerPaperInch` is only written for a reviewer pick, and elements files
+    approved before this endpoint learned about picks have neither - so the
+    auto case is recovered from the pixels-per-foot the export already
+    carried, which is exactly image_dpi / ft_per_paper_inch."""
+    if not sc:
+        return ["Scale: none was read on this sheet - no footage can be "
+                "quoted from it."]
+    ppu = sc.get("pixelsPerUnit")
+    ft = sc.get("ftPerPaperInch")
+    if ft is None and ppu and image_dpi:
+        ft = image_dpi / ppu
+    head = f"Scale: 1 inch = {_ft(ft)} ft" if ft else "Scale"
+    if sc.get("setBy") != _BY_REVIEWER:
+        return [f'{head}   [{sc.get("name", "")}]']
+    eng = sc.get("engineFtPerPaperInch")
+    out = [f"{head}   - SET BY THE REVIEWER, not read by the engine."]
+    if eng:
+        out.append(f'The engine had read 1 inch = {_ft(eng)} ft '
+                   f'({sc.get("engineText") or "?"}). Every length below is '
+                   f"computed from the reviewer's scale.")
+    else:
+        out.append("The engine found no scale on this sheet. Every length "
+                   "below is computed from the reviewer's scale.")
+    return out
+
+
+class ApproveScale(BaseModel):
+    # the scale in force ON SCREEN when Approve was pressed, in feet of real
+    # world per paper inch. `picked_by_reviewer` is the review UI's own flag
+    # for "a human chose this instead of the engine's reading".
+    ft_per_paper_inch: float
+    text: str | None = None
+    picked_by_reviewer: bool = False
+
+
 class ApproveBody(BaseModel):
     # style_id -> final label; only listed styles are exported
     labels: dict[int, str]
@@ -550,6 +732,9 @@ class ApproveBody(BaseModel):
     # [{label, qty, unit, unit_price?}] - they price and report like any
     # other takeoff row, they just are not linear footage
     extra_items: list[dict] = []
+    # the scale the reviewer had on screen. Omitted = keep whatever this page
+    # already decided (a stored pick, else the engine's). See _page_scale.
+    scale: ApproveScale | None = None
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -585,17 +770,26 @@ def approve(job_id: str, page: int, body: ApproveBody):
         "pageHeightPt": res["page"]["height_pt"],
         "elements": elements,
     }
-    det = res.get("scale")
+    det = _page_scale(job_id, page, res, body.scale)
     if det:
         # pixels-per-foot in the export's own pixel space; the app rescales
         # to its stored image width at import
         export["scale"] = {
             "pixelsPerUnit": body.image_dpi / det["ft_per_paper_inch"],
             "unit": "ft",
-            "name": f'{det["text"]} (auto, {det["source"]})',
+            "name": _scale_name(det),
         }
+        if det.get("set_by") == _BY_REVIEWER:
+            # machine-readable twin of the sentence in `name`, so no consumer
+            # has to parse English to learn that a human set this number
+            export["scale"].update({
+                "setBy": _BY_REVIEWER,
+                "ftPerPaperInch": det["ft_per_paper_inch"],
+                "engineFtPerPaperInch": det.get("engine_ft_per_paper_inch"),
+                "engineText": det.get("engine_text"),
+                "setAt": det.get("set_at"),
+            })
     # itemization: per-label count + footage (when scale known) + pricing
-    det = res.get("scale")
     ft_per_in = det["ft_per_paper_inch"] if det else None
     totals: dict = {}
     for el in elements:
@@ -653,7 +847,7 @@ def approve(job_id: str, page: int, body: ApproveBody):
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
     return JSONResponse({"exported": len(elements), "file": str(out),
-                         "items": items})
+                         "items": items, "scale": export.get("scale")})
 
 
 class LegendSheetBody(BaseModel):
@@ -717,6 +911,36 @@ def legend_sheet(job_id: str, body: LegendSheetBody):
                          "names": names, "count": len(names)})
 
 
+@app.get("/api/job/{job_id}/page/{page}/scale")
+def get_scale_pick(job_id: str, page: int):
+    """The scale decision recorded for this page: what the engine reads NOW,
+    and whether a human overruled it and with what.
+
+    Read-only, and it changes nothing. It exists so the recorded decision is
+    inspectable without opening the job directory - and so the review UI can
+    one day restore a pick after a browser reload, which today it cannot:
+    the pick lives in an in-memory Map (webui/app.js `store`), so a reload
+    forgets it, the screen falls back to the engine's reading, and approving
+    that screen correctly retires the recorded pick. See _page_scale.
+    """
+    f = _job_dir(job_id) / f"p{page}_result.json"
+    eng = None
+    if f.exists():
+        try:
+            eng = (json.loads(f.read_text()).get("scale") or {}) or None
+        except (OSError, ValueError):
+            eng = None
+    pick = _stored_scale_pick(job_id, page)
+    return {
+        "engine": None if not eng else {
+            "ft_per_paper_inch": eng.get("ft_per_paper_inch"),
+            "text": eng.get("text"), "source": eng.get("source")},
+        "reviewer": pick,
+        "in_force": (pick or {}).get("ft_per_paper_inch")
+                    or (eng or {}).get("ft_per_paper_inch"),
+    }
+
+
 @app.get("/api/job/{job_id}/page/{page}/elements")
 def get_elements(job_id: str, page: int):
     f = _job_dir(job_id) / f"p{page}_elements.json"
@@ -773,7 +997,14 @@ def report_pdf(job_id: str):
         y = 60
         tp.insert_text((50, y), f"Page {pno + 1} - Itemized takeoff",
                        fontsize=16)
-        y += 30
+        y += 17
+        # Every number in the table below is this multiplication. When a
+        # person overrode the engine's reading, the printed takeoff says so
+        # on its own face - the reader of the PDF has no other way to know.
+        for _ln in _scale_report_lines(exp.get("scale"), exp.get("imageDpi")):
+            tp.insert_text((50, y), _ln[:118], fontsize=8)
+            y += 11
+        y += 8
         tp.insert_text((50, y), "Label", fontsize=9)
         tp.insert_text((300, y), "Count", fontsize=9)
         tp.insert_text((360, y), "Length (ft)", fontsize=9)
@@ -809,7 +1040,16 @@ def report_pdf(job_id: str):
     y = 60
     tp.insert_text((50, y), f"{Path(job['path']).name} - Takeoff summary",
                    fontsize=16)
-    y += 30
+    y += 17
+    # Truth in labelling, not de-duplication. These rows add each approved
+    # sheet's footage together; the same run drawn on four sheets is in here
+    # four times. Matching runs ACROSS sheets is a rotation-invariant problem
+    # whose first attempt failed on a bucket edge, and getting it wrong
+    # deletes real footage - so the row says what it is instead of pretending.
+    tp.insert_text((50, y), f"{len(pages)} approved sheet(s), added together. "
+                            "Nothing is de-duplicated across sheets.",
+                   fontsize=8)
+    y += 21
     tp.insert_text((50, y), "Label", fontsize=9)
     tp.insert_text((300, y), "Count", fontsize=9)
     tp.insert_text((360, y), "Length (ft)", fontsize=9)
@@ -828,8 +1068,12 @@ def report_pdf(job_id: str):
         y += 13
     if total:
         y += 10
-        tp.insert_text((360, y), "PROJECT TOTAL:", fontsize=11)
+        tp.insert_text((277, y), "SUM OF APPROVED SHEETS:", fontsize=11)
         tp.insert_text((500, y), f"{total:,.2f}", fontsize=11)
+        y += 14
+        tp.insert_text((50, y), "Not a project total: a run drawn on several "
+                                "sheets is counted once per sheet.",
+                       fontsize=8)
 
     pdf_path = jd / "takeoff_report.pdf"
     # deflate=True, garbage=4 - NOT cosmetic. Measured on one Beaumont sheet

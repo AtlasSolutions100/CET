@@ -247,6 +247,44 @@ canvas#view.panning { cursor: grabbing; }
   text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
   padding: 10px 10px 2px; }
 canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
+
+/* ---------- the CAD layer, on the row ----------
+   Its own line under the label, spanning from the label column to the row's
+   right edge (grid-column 3 / -1, so it stays aligned if the columns move).
+   Not appended to .style-meta: that lives in a 109px main column of a 330px
+   panel, where 57 of C4.3's 151 meta lines already hit their ellipsis, so a
+   layer put there is cut off first on exactly the rows with the longest
+   names. Here the name gets the flexible width and truncates with an
+   ellipsis (0 of 126 layered rows on C4.3, 0 of 87 on C5.1, actually needed
+   it); the `layer` tag never shrinks, so the line can never decay into an
+   unexplained monospace string.
+
+   Height is held down deliberately: font-size and line-height are set on the
+   line itself, not inherited. Left to inherit the 13px/1.45 body rule the
+   line box came out 19px and the row went 53px -> 76px, +43% on a 151-row
+   sheet; at 10px/1.2 the row lands at 66px. */
+/* .style-row sets `gap: 8px`, which is column AND row gap. It was a
+   single-row grid, so the row half never applied and zeroing it changes
+   nothing that exists today - but the layer line makes a second grid row,
+   and the 8px would have been charged to every row on top of the 13px the
+   line actually needs (measured: 53 -> 74 instead of 53 -> 66). */
+.style-row { row-gap: 0; }
+.style-layer { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
+  align-items: baseline; margin-top: 1px; overflow: hidden;
+  font-size: 10px; line-height: 1.2; }
+.sl-tag { flex: none; font-size: 9px; line-height: 1.2; letter-spacing: .1em;
+  opacity: .75; text-transform: uppercase; color: var(--dim); }
+.sl-name { min-width: 0; font-family: var(--mono); font-size: 10px;
+  line-height: 1.2; letter-spacing: .01em; color: var(--text); opacity: .82;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the sheet names layers but this row has none: stated, not shouted */
+.style-layer.none { font-family: var(--mono); font-size: 9.5px;
+  line-height: 1.2; letter-spacing: .04em; color: var(--dim); opacity: .5; }
+/* the sheet names no layers at all: said once at the top of the list,
+   because 60 rows each reading "no CAD layer" is noise, not evidence */
+.layer-none-note { margin: 8px 8px 0; padding: 6px 9px; border-radius: 7px;
+  background: var(--chip); border: 1px solid var(--line);
+  color: var(--dim); font-size: 10.5px; line-height: 1.4; }
 .tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
   color: var(--accent); white-space: nowrap; }
 

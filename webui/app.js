@@ -1320,6 +1320,49 @@ function renderConfidence() {
         + `<span class="conf-txt">${l.html}</span></div>`).join("");
 }
 
+// ---------- what the drafter called it -----------------------------------
+// `s.layer` is the CAD layer name and it is the only field on a style row
+// that comes from the DOCUMENT rather than from our measurements. It matters
+// most exactly where it is least likely to be looked for: read_legend's
+// label OVERWRITES the layer-derived name (detect_page's
+// `label = _legend_labels.get(sid, label)`), so on a row whose legend match
+// is wrong the layer is the only surviving evidence that it is wrong - and
+// until this it was not on screen anywhere. Barn Civil engine page index 12
+// = printed sheet 13 = C4.3 emits style 106, 23 chains / 380.9 LF, layer
+// `BR FND - BARN EAST|A-WALL`, labelled `PROPOSED PVC SURFACE STORM DRAIN
+// PIPE (legend)` and ticked on: at the $50/LF rate on the client's own
+// Estimate #853 that is $19,045 of foundation wall priced as pipe, with
+// nothing on the row saying A-WALL. Isolating the style on the canvas draws
+// the building footprint, not the pipe
+// (out/verify/2026-08-23/stylelayer/PLATE-2-app-vs-source-it-is-a-wall.png).
+//
+// ONE layer per row, not a representative. detect_page writes
+// `s["layer"] = c.layer` inside a loop over the style's chains - a
+// last-writer-wins shape - but it cannot lose anything, because
+// chain._assign_styles keys the style family on `c.layer` itself and nothing
+// mutates `c.layer` afterwards. Measured over every detect result cached on
+// this machine (114 pages, 12,634 style rows): 0 rows whose chains span more
+// than one layer, 0 that mix a layer with the blank, 0 where the emitted
+// value is not some chain's own. So the line below states the layer flatly
+// and does not hedge it as "one of several"; if that ever stops being true
+// the hedge has to come back.
+//
+// PyMuPDF hands back an xref-qualified name for anything that arrived
+// through an external reference: `<xref block>|<layer>`. Over the 9,207
+// cached style rows that carry a layer, 63.9% are xref-qualified, and the
+// prefix names the DRAWING the layer came in through, not the thing drawn -
+// five separate C4.3 rows share `BR FND - BARN EAST|`. Printing the string
+// left to right therefore spends the readable width on the half that repeats
+// and truncates the half that identifies. Full strings run 27 / 42 / 73
+// characters at p50 / p90 / max; the part after the last `|` runs 13 / 21 /
+// 44, and only 1.2% of tails pass 28 characters against 47.7% of full
+// strings. So print the tail, mark the elision with a leading ellipsis, and
+// keep the complete string one hover away.
+function layerTail(lay) {
+  const parts = String(lay).split("|");
+  return parts.length > 1 ? "…" + parts[parts.length - 1] : parts[0];
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -1327,6 +1370,22 @@ function renderStyles() {
   $("csvBtn").disabled = !state.result;
   if (!state.result) return;
   const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
+  // Roughly 23% of chains corpus-wide carry no CAD layer, and it is not
+  // spread thinly - whole documents have none: 42 of the 114 detect results
+  // cached here carry not one layer on any style row. Absence is the common
+  // case and has to read as "the drafter did not write it down", never as a
+  // missing feature. So: per row where the sheet HAS layers, and once for
+  // the sheet where it has none, because 60 rows each reading "no CAD layer"
+  // is noise rather than evidence.
+  const anyLayer = state.result.styles.some(s => (s.layer || "").trim());
+  if (!anyLayer && state.result.styles.length) {
+    const note = document.createElement("div");
+    note.className = "layer-none-note";
+    note.textContent = "This PDF carries no CAD layer names. Every name below "
+      + "comes from the legend or from the line's own pattern — there is "
+      + "nothing the drafter wrote to check them against.";
+    box.appendChild(note);
+  }
   const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
   const CLASS_NAME = { solid: "Solid lines", dash1: "Dashed",
     dash2: "Dash-dot", dash3: "Compound (dash-dot-dot)",
@@ -1337,8 +1396,22 @@ function renderStyles() {
   let lastClass = null;
   for (const s of styles) {
     const label = state.labels.get(s.style_id) ?? "";
-    if (q && !((label + " " + s.signature + " " + s.class)
-               .toUpperCase().includes(q)))
+    // The layer joins the searchable text as the WHOLE string, not the
+    // displayed tail: typing `A-WALL` has to find `BR FND - BARN EAST|A-WALL`
+    // (substring, so the tail matches anyway) and typing `BARN EAST` has to
+    // find it too.
+    //
+    // The failure this repairs is nastier than "the field was not searchable".
+    // 31 of C4.3's 151 styles carry A-WALL in their layer, and the unpatched
+    // box returns 30 of them - because `suggested_label` DEFAULTS to the layer
+    // tail, so a layer-named row is findable by accident, through its label.
+    // The single row it cannot return is the single row whose label the legend
+    // overwrote: style 106, 380.9 LF, labelled PROPOSED PVC SURFACE STORM
+    // DRAIN PIPE. Searching the sheet's walls quietly omitted the one wall
+    // that is not filed as a wall. Both counts measured live off
+    // #styleList .style-row (PLATE-3-search-a-wall-30-of-31.png).
+    if (q && !((label + " " + s.signature + " " + s.class
+                + " " + (s.layer || "")).toUpperCase().includes(q)))
       continue;
     if (s.class !== lastClass) {
       lastClass = s.class;
@@ -1407,7 +1480,47 @@ function renderStyles() {
       row.title = (ai.keep ? "AI: measure this — " : "AI: not takeoff — ") + (ai.why || "");
     }
 
+    // Its OWN line, spanning the row from the label column out, rather than
+    // a fourth item on the meta line. The meta line has no room, and this is
+    // measured, not guessed: the panel is 330px and the row's main column is
+    // 109px of it, in which 57 of C4.3's 151 meta lines ALREADY hit their
+    // ellipsis. A layer appended there is cut off first on exactly the rows
+    // whose names are longest. A tooltip alone fails the way the missing
+    // field failed: nobody hovers 90 rows looking for a contradiction he has
+    // not been told exists. The cost is real and worth stating plainly -
+    // measured live on C4.3, the row goes 53px -> 66px and the 151-style
+    // list 8,111px -> 10,059px, +24.0% of scroll. On a sheet with no layers
+    // at all nothing is added and the row stays at 53px.
+    let layerEl = null;
+    if (anyLayer) {
+      layerEl = document.createElement("div");
+      const lay = (s.layer || "").trim();
+      layerEl.className = "style-layer" + (lay ? "" : " none");
+      if (lay) {
+        const tag = document.createElement("span");
+        tag.className = "sl-tag"; tag.textContent = "layer";
+        const nm = document.createElement("span");
+        nm.className = "sl-name"; nm.textContent = layerTail(lay);
+        layerEl.append(tag, nm);
+        // The full string, un-elided, plus what the field IS - the row shows
+        // both names side by side and says nothing about which is right,
+        // because deciding that is the estimator's job and a wrong verdict
+        // here would be worse than the silence it replaces.
+        layerEl.title = "CAD layer: " + lay
+          + "\n\nWhat the drafter filed this linework under, read out of the "
+          + "PDF. The name in the box above can instead have come from the "
+          + "sheet's legend, and where the two disagree this is the one the "
+          + "document itself asserts.";
+      } else {
+        layerEl.textContent = "no CAD layer";
+        layerEl.title = "This PDF does name layers, but not on this line "
+          + "type — so there is nothing from the drafter to check the name "
+          + "above against.";
+      }
+    }
+
     row.append(cb, sw, main, mm, badge);
+    if (layerEl) row.appendChild(layerEl);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
     row.onmouseleave = () => { state.hot = null; draw(); };
     row.onclick = () => { state.isolate = state.isolate === s.style_id ? null : s.style_id; draw(); };
@@ -1744,6 +1857,11 @@ function renderLegend() {
 }
 
 $("styleSearch").oninput = () => renderStyles();
+// The box now matches CAD layer names too, and a capability nobody is told
+// about is one nobody uses - `A-WALL` is not a thing an estimator would try
+// in a field advertising "water, dash, solid". Set here rather than in
+// index.html so the promise and the filter that keeps it live in one file.
+$("styleSearch").placeholder = "Filter line types… (water, dash, solid, A-WALL)";
 $("allBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, true); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 $("noneBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, false); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
@@ -3345,9 +3463,21 @@ function undoAiFocus() {
 $("approveBtn").onclick = async () => {
   const labels = {};
   for (const [sid, inc] of state.include) if (inc) labels[sid] = state.labels.get(sid) || "unlabeled";
+  // The scale the estimator is LOOKING AT. Send it or the server recomputes
+  // every length from the engine's own pick, and a sheet where he switched
+  // 1.0 -> 4.0 ft/in exports 4x low with his approval on it, stamped "auto".
+  // Sent on every approve, not only when he switched: pressing Approve on
+  // the engine's reading is also a decision, and it has to be able to
+  // retire an override this page recorded earlier.
+  const scOn = state.result && state.result.scale;
+  const scaleOnScreen = (scOn && +scOn.ft_per_paper_inch > 0)
+    ? { ft_per_paper_inch: +scOn.ft_per_paper_inch,
+        text: scOn.text || null,
+        picked_by_reviewer: !!scOn.picked_by_reviewer }
+    : null;
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ labels, image_dpi: 300,
+    body: JSON.stringify({ labels, image_dpi: 300, scale: scaleOnScreen,
       object_counts: Object.fromEntries((() => {
         const pools = new Map();
         for (const st of state.result.styles) {
@@ -3384,7 +3514,10 @@ $("approveBtn").onclick = async () => {
   });
   const j = await r.json();
   setStatus(`exported ${j.exported} elements` +
-    (j.items ? ` · ${j.items.length} items itemized` : ""));
+    (j.items ? ` · ${j.items.length} items itemized` : "") +
+    (j.scale && j.scale.setBy === "reviewer"
+      ? " · footage computed from the scale YOU set, not the engine's"
+      : ""));
   const a = $("dlLink");
   a.href = url(`/api/job/${state.job}/page/${state.page}/elements`);
   a.hidden = false;
