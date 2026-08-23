@@ -1,0 +1,69 @@
+{
+  "sheet": "Scanned Take-off by Floor Plan.pdf",
+  "page_index": 0,
+  "printed_page": 1,
+  "printed_page_of": 6,
+  "sheet_id": "A-2.00",
+  "sheet_title": "BASEMENT LEVEL - B1 PLAN",
+  "sheet_title_source": "read by eye from the title block at 150-300 dpi (out/verify/2026-08-22/bill-truth/work/p0_tb_rot_ccw.png / tally crops); project 'Mixed Use Project, 1101 & 1115 Mission Street, South Pasadena CA 91030', Mission Bell Properties LLC, architect Dwight S. Bond C-33276",
+  "orientation": "Scan is 792x1224 pt portrait with the landscape sheet rotated: the title block is along the bottom edge and text runs bottom-to-top. Rotate the scan 90 degrees COUNTER-CLOCKWISE to read upright (title block then sits on the right, as drawn). All coordinates in this file are UNROTATED scan page points (MuPDF page space, origin top-left, y down), so they can be used directly with page.get_pixmap(clip=...). Page /Rotate is 0; the rotation is baked into the raster.",
+  "feature": "Bill's marks: every printed opening tag he highlighted (window-type hexagons, door-number circles), plus his pen notes and the hand tally by the title block",
+  "expected_counts": {
+    "106": 1,
+    "107": 1
+  },
+  "expected_total": 2,
+  "source": "human-confirmed by eye: every mark rendered at 4.5x (324 dpi, 20-pt grid tiles p0_tile_r*c*.png) and ambiguous ones at 6x-12x (p0_*_zoom/sat.png) in out/verify/2026-08-22/bill-truth/work/; transcribed 2026-08-22. Positions +/-5 pt. Independently re-checked against Bill's own handwritten tally on the same sheet (bill_tally below) and against his three supplier takeoffs (see TRUTH.md).",
+  "convention": "From this sheet set's own FLOOR SYMBOLS legend (A-2.10): a CIRCLE with a 3-digit number is a (N) DOOR SYMBOL = door number from the door schedule; a HEXAGON with a letter is a (N) WINDOW SYMBOL = window/storefront type from the window schedule. Bill highlights the printed tag of every opening in his trade (windows, balcony doors, interior storefront doors 100-107, exterior storefront N-Z with doors 004/005). He does NOT number openings himself: the numbers on the sheets are the architect's door numbers. On the residential floors he then writes one count per type beside the title block; on A-2.00/A-2.10 he lists the interior-storefront door numbers instead. Highlighter colour is his per-type key and is not consistent across sheets (D is pink on A-2.20, H is green on A-2.30 and yellow on A-2.40), so read the printed code, not the colour.",
+  "coordinate_note": "x,y = centre of the printed tag in unrotated scan points, +/-5 pt. kind: window-tag = printed hexagon, door-tag = printed circle, hand = Bill's pen. attached_to: room/wall read from the nearest printed labels; for A-2.20/A-2.30 the UNIT numbers are inferred from the identical layout on A-2.40/A-2.50 where the labels were read in the same tiles, and should be treated as approximate.",
+  "openings": [
+    {
+      "code": "106",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 612,
+      "y": 686,
+      "attached_to": "door between HALLWAY C.A. B02 and the room west of it (basement)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "107",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 627,
+      "y": 710,
+      "attached_to": "door into GYM C.A. B03 (supplier line says 'Gym')",
+      "confidence": "high",
+      "note": ""
+    }
+  ],
+  "bill_tally": {
+    "rect_scan_pts": [
+      480,
+      1070,
+      525,
+      1115
+    ],
+    "meaning": "list of interior-storefront door numbers on this sheet",
+    "items": [
+      {
+        "code": "107",
+        "written": "107",
+        "value": 107,
+        "confidence": "high",
+        "note": "cyan-highlighted"
+      },
+      {
+        "code": "106",
+        "written": "10?",
+        "value": null,
+        "confidence": "medium",
+        "note": "last digit reads 6 or 4 in isolation (open loop); plan tag at (612,686) is 106 and supplier list has 106, so 106"
+      }
+    ],
+    "capture": "out/verify/2026-08-22/bill-truth/work/p0_tally_grid*.png (300 dpi = 4.2x)"
+  },
+  "handwritten_marks": [],
+  "notes": "Pure raster page (one 3300x5100 JPEG, 0 text chars). Crawl method: plan area scan x 215-745, y 150-835 tiled 3x3 at 324 dpi with a 20-pt grid; every highlighted tag read by eye and positioned off the grid; an HSV highlighter-blob detector (work/blobs.json) used only as a completeness cross-check - every reading has a blob within 14 pt and every plan-area blob is either a reading or the outer arc of a ring already read. The tally was read AFTER the plan so the two readings are independent. No per-type tally on this sheet; the list by the title block is door numbers (see bill_tally)."
+}

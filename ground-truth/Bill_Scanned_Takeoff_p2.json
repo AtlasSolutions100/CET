@@ -1,0 +1,799 @@
+{
+  "sheet": "Scanned Take-off by Floor Plan.pdf",
+  "page_index": 2,
+  "printed_page": 3,
+  "printed_page_of": 6,
+  "sheet_id": "A-2.20",
+  "sheet_title": "SECOND LEVEL - L2 PLAN",
+  "sheet_title_source": "read by eye from the title block at 150-300 dpi (out/verify/2026-08-22/bill-truth/work/p2_tb_rot_ccw.png / tally crops); project 'Mixed Use Project, 1101 & 1115 Mission Street, South Pasadena CA 91030', Mission Bell Properties LLC, architect Dwight S. Bond C-33276",
+  "orientation": "Scan is 792x1224 pt portrait with the landscape sheet rotated: the title block is along the bottom edge and text runs bottom-to-top. Rotate the scan 90 degrees COUNTER-CLOCKWISE to read upright (title block then sits on the right, as drawn). All coordinates in this file are UNROTATED scan page points (MuPDF page space, origin top-left, y down), so they can be used directly with page.get_pixmap(clip=...). Page /Rotate is 0; the rotation is baked into the raster.",
+  "feature": "Bill's marks: every printed opening tag he highlighted (window-type hexagons, door-number circles), plus his pen notes and the hand tally by the title block",
+  "expected_counts": {
+    "001": 20,
+    "003": 3,
+    "A": 1,
+    "B": 4,
+    "C": 6,
+    "D": 4,
+    "E": 8,
+    "F": 1,
+    "G": 2,
+    "H": 1,
+    "J": 1,
+    "K": 3,
+    "M": 8,
+    "MM": 2
+  },
+  "expected_total": 64,
+  "source": "human-confirmed by eye: every mark rendered at 4.5x (324 dpi, 20-pt grid tiles p2_tile_r*c*.png) and ambiguous ones at 6x-12x (p2_*_zoom/sat.png) in out/verify/2026-08-22/bill-truth/work/; transcribed 2026-08-22. Positions +/-5 pt. Independently re-checked against Bill's own handwritten tally on the same sheet (bill_tally below) and against his three supplier takeoffs (see TRUTH.md).",
+  "convention": "From this sheet set's own FLOOR SYMBOLS legend (A-2.10): a CIRCLE with a 3-digit number is a (N) DOOR SYMBOL = door number from the door schedule; a HEXAGON with a letter is a (N) WINDOW SYMBOL = window/storefront type from the window schedule. Bill highlights the printed tag of every opening in his trade (windows, balcony doors, interior storefront doors 100-107, exterior storefront N-Z with doors 004/005). He does NOT number openings himself: the numbers on the sheets are the architect's door numbers. On the residential floors he then writes one count per type beside the title block; on A-2.00/A-2.10 he lists the interior-storefront door numbers instead. Highlighter colour is his per-type key and is not consistent across sheets (D is pink on A-2.20, H is green on A-2.30 and yellow on A-2.40), so read the printed code, not the colour.",
+  "coordinate_note": "x,y = centre of the printed tag in unrotated scan points, +/-5 pt. kind: window-tag = printed hexagon, door-tag = printed circle, hand = Bill's pen. attached_to: room/wall read from the nearest printed labels; for A-2.20/A-2.30 the UNIT numbers are inferred from the identical layout on A-2.40/A-2.50 where the labels were read in the same tiles, and should be treated as approximate.",
+  "openings": [
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 667,
+      "y": 189,
+      "attached_to": "UNIT 211 south wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 612,
+      "y": 188,
+      "attached_to": "UNIT 211/212 south wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 575,
+      "y": 189,
+      "attached_to": "UNIT 212 south wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "H",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 679,
+      "y": 207,
+      "attached_to": "UNIT 211 north-east",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 681,
+      "y": 240,
+      "attached_to": "UNIT 211 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "J",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 681,
+      "y": 270,
+      "attached_to": "UNIT 209 west",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "D",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 700,
+      "y": 297,
+      "attached_to": "UNIT 209 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 700,
+      "y": 343,
+      "attached_to": "UNIT 209 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 700,
+      "y": 388,
+      "attached_to": "UNIT 207 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "D",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 700,
+      "y": 418,
+      "attached_to": "UNIT 207 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 700,
+      "y": 462,
+      "attached_to": "UNIT 207 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 700,
+      "y": 507,
+      "attached_to": "UNIT 205 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "K",
+      "kind": "window-tag",
+      "highlight": "green",
+      "x": 696,
+      "y": 513,
+      "attached_to": "UNIT 205 north-east",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "K",
+      "kind": "window-tag",
+      "highlight": "green",
+      "x": 697,
+      "y": 604,
+      "attached_to": "UNIT 203 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 700,
+      "y": 622,
+      "attached_to": "UNIT 203 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 700,
+      "y": 656,
+      "attached_to": "UNIT 203 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "C",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 700,
+      "y": 690,
+      "attached_to": "UNIT 201 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 700,
+      "y": 733,
+      "attached_to": "UNIT 201 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "A",
+      "kind": "window-tag",
+      "highlight": "green",
+      "x": 700,
+      "y": 772,
+      "attached_to": "UNIT 201 north-east",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "F",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 698,
+      "y": 795,
+      "attached_to": "UNIT 201 east wall",
+      "confidence": "high",
+      "note": "faint yellow swipe under the hexagon (p2_F_zoom.png)"
+    },
+    {
+      "code": "G",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 668,
+      "y": 796,
+      "attached_to": "UNIT 201 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "K",
+      "kind": "window-tag",
+      "highlight": "green",
+      "x": 624,
+      "y": 796,
+      "attached_to": "UNIT 201 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 518,
+      "y": 200,
+      "attached_to": "UNIT 213 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "B",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 478,
+      "y": 185,
+      "attached_to": "UNIT 213 south wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 492,
+      "y": 320,
+      "attached_to": "UNIT 210 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 488,
+      "y": 372,
+      "attached_to": "courtyard unit patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "B",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 487,
+      "y": 407,
+      "attached_to": "UNIT 208 courtyard wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 487,
+      "y": 465,
+      "attached_to": "UNIT 206 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "B",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 487,
+      "y": 500,
+      "attached_to": "UNIT 206 courtyard wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 487,
+      "y": 557,
+      "attached_to": "UNIT 204 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "B",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 487,
+      "y": 593,
+      "attached_to": "UNIT 204 courtyard wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 413,
+      "y": 403,
+      "attached_to": "UNIT 208 patio door (west courtyard wall)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 412,
+      "y": 583,
+      "attached_to": "UNIT 204 patio door (west courtyard wall)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "D",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 497,
+      "y": 660,
+      "attached_to": "UNIT 202 courtyard wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 505,
+      "y": 772,
+      "attached_to": "UNIT 219 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "MM",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 480,
+      "y": 752,
+      "attached_to": "UNIT 219 east wall, beside door 003",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "003",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 480,
+      "y": 763,
+      "attached_to": "UNIT 219 patio single door (with MM)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 425,
+      "y": 772,
+      "attached_to": "UNIT 220 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "MM",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 400,
+      "y": 752,
+      "attached_to": "UNIT 220 east wall, beside door 003",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "003",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 400,
+      "y": 763,
+      "attached_to": "UNIT 220 patio single door (with MM)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 365,
+      "y": 210,
+      "attached_to": "UNIT 215 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "D",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 332,
+      "y": 184,
+      "attached_to": "UNIT 215 south wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 277,
+      "y": 184,
+      "attached_to": "UNIT 215 south-west",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 267,
+      "y": 185,
+      "attached_to": "UNIT 215 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 267,
+      "y": 209,
+      "attached_to": "UNIT 215 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 267,
+      "y": 268,
+      "attached_to": "UNIT 217 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "003",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 267,
+      "y": 295,
+      "attached_to": "UNIT 217 patio single door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 251,
+      "y": 318,
+      "attached_to": "UNIT 218 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 343,
+      "y": 401,
+      "attached_to": "UNIT 216 patio door (west courtyard)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 298,
+      "y": 401,
+      "attached_to": "courtyard unit patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 262,
+      "y": 420,
+      "attached_to": "UNIT 216/218 west patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 251,
+      "y": 398,
+      "attached_to": "west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 251,
+      "y": 421,
+      "attached_to": "west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 343,
+      "y": 583,
+      "attached_to": "courtyard unit patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 298,
+      "y": 583,
+      "attached_to": "courtyard unit patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 262,
+      "y": 565,
+      "attached_to": "west patio door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 251,
+      "y": 565,
+      "attached_to": "west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 251,
+      "y": 586,
+      "attached_to": "west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "G",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 332,
+      "y": 774,
+      "attached_to": "UNIT 223 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 272,
+      "y": 774,
+      "attached_to": "UNIT 223 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "E",
+      "kind": "window-tag",
+      "highlight": "orange",
+      "x": 251,
+      "y": 760,
+      "attached_to": "UNIT 223 south-east",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "M",
+      "kind": "window-tag",
+      "highlight": "pink",
+      "x": 251,
+      "y": 774,
+      "attached_to": "UNIT 223 east wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 251,
+      "y": 666,
+      "attached_to": "UNIT 224 patio double door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "001",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 251,
+      "y": 711,
+      "attached_to": "UNIT 223 patio double door",
+      "confidence": "high",
+      "note": ""
+    }
+  ],
+  "bill_tally": {
+    "rect_scan_pts": [
+      360,
+      1135,
+      680,
+      1215
+    ],
+    "meaning": "per-type count of highlighted tags on this sheet",
+    "items": [
+      {
+        "code": "A",
+        "written": "1",
+        "value": 1,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "B",
+        "written": "4",
+        "value": 4,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "C",
+        "written": "6",
+        "value": 6,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "D",
+        "written": "4",
+        "value": 4,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "E",
+        "written": "8",
+        "value": 8,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "F",
+        "written": "1",
+        "value": 1,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "G",
+        "written": "2",
+        "value": 2,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "H",
+        "written": "1",
+        "value": 1,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "I",
+        "written": "0",
+        "value": 0,
+        "confidence": "high",
+        "note": "struck zero"
+      },
+      {
+        "code": "J",
+        "written": "1",
+        "value": 1,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "K",
+        "written": "3",
+        "value": 3,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "L",
+        "written": "0",
+        "value": 0,
+        "confidence": "high",
+        "note": "struck zero"
+      },
+      {
+        "code": "M",
+        "written": "8",
+        "value": 8,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "MM",
+        "written": "2",
+        "value": 2,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "001",
+        "written": "9,8,3",
+        "value": 20,
+        "confidence": "high",
+        "note": "=20"
+      },
+      {
+        "code": "003",
+        "written": "2,1",
+        "value": 3,
+        "confidence": "high",
+        "note": "=3"
+      }
+    ],
+    "capture": "out/verify/2026-08-22/bill-truth/work/p2_tally_grid*.png (300 dpi = 4.2x)"
+  },
+  "handwritten_marks": [],
+  "notes": "Pure raster page (one 3300x5100 JPEG, 0 text chars). Crawl method: plan area scan x 215-745, y 150-835 tiled 3x3 at 324 dpi with a 20-pt grid; every highlighted tag read by eye and positioned off the grid; an HSV highlighter-blob detector (work/blobs.json) used only as a completeness cross-check - every reading has a blob within 14 pt and every plan-area blob is either a reading or the outer arc of a ring already read. The tally was read AFTER the plan so the two readings are independent."
+}

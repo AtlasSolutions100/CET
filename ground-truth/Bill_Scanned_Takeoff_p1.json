@@ -1,0 +1,401 @@
+{
+  "sheet": "Scanned Take-off by Floor Plan.pdf",
+  "page_index": 1,
+  "printed_page": 2,
+  "printed_page_of": 6,
+  "sheet_id": "A-2.10",
+  "sheet_title": "GROUND LEVEL - L1 PLAN",
+  "sheet_title_source": "read by eye from the title block at 150-300 dpi (out/verify/2026-08-22/bill-truth/work/p1_tb_rot_ccw.png / tally crops); project 'Mixed Use Project, 1101 & 1115 Mission Street, South Pasadena CA 91030', Mission Bell Properties LLC, architect Dwight S. Bond C-33276",
+  "orientation": "Scan is 792x1224 pt portrait with the landscape sheet rotated: the title block is along the bottom edge and text runs bottom-to-top. Rotate the scan 90 degrees COUNTER-CLOCKWISE to read upright (title block then sits on the right, as drawn). All coordinates in this file are UNROTATED scan page points (MuPDF page space, origin top-left, y down), so they can be used directly with page.get_pixmap(clip=...). Page /Rotate is 0; the rotation is baked into the raster.",
+  "feature": "Bill's marks: every printed opening tag he highlighted (window-type hexagons, door-number circles), plus his pen notes and the hand tally by the title block",
+  "expected_counts": {
+    "004": 2,
+    "005": 1,
+    "100": 1,
+    "101": 2,
+    "102": 2,
+    "103": 1,
+    "104": 1,
+    "105": 1,
+    "106": 1,
+    "N": 1,
+    "O": 3,
+    "P": 1,
+    "Q": 1,
+    "R": 1,
+    "S": 1,
+    "T": 1,
+    "U": 2,
+    "V": 1,
+    "W": 1,
+    "X": 1,
+    "Y": 1,
+    "Z": 1
+  },
+  "expected_total": 28,
+  "source": "human-confirmed by eye: every mark rendered at 4.5x (324 dpi, 20-pt grid tiles p1_tile_r*c*.png) and ambiguous ones at 6x-12x (p1_*_zoom/sat.png) in out/verify/2026-08-22/bill-truth/work/; transcribed 2026-08-22. Positions +/-5 pt. Independently re-checked against Bill's own handwritten tally on the same sheet (bill_tally below) and against his three supplier takeoffs (see TRUTH.md).",
+  "convention": "From this sheet set's own FLOOR SYMBOLS legend (A-2.10): a CIRCLE with a 3-digit number is a (N) DOOR SYMBOL = door number from the door schedule; a HEXAGON with a letter is a (N) WINDOW SYMBOL = window/storefront type from the window schedule. Bill highlights the printed tag of every opening in his trade (windows, balcony doors, interior storefront doors 100-107, exterior storefront N-Z with doors 004/005). He does NOT number openings himself: the numbers on the sheets are the architect's door numbers. On the residential floors he then writes one count per type beside the title block; on A-2.00/A-2.10 he lists the interior-storefront door numbers instead. Highlighter colour is his per-type key and is not consistent across sheets (D is pink on A-2.20, H is green on A-2.30 and yellow on A-2.40), so read the printed code, not the colour.",
+  "coordinate_note": "x,y = centre of the printed tag in unrotated scan points, +/-5 pt. kind: window-tag = printed hexagon, door-tag = printed circle, hand = Bill's pen. attached_to: room/wall read from the nearest printed labels; for A-2.20/A-2.30 the UNIT numbers are inferred from the identical layout on A-2.40/A-2.50 where the labels were read in the same tiles, and should be treated as approximate.",
+  "openings": [
+    {
+      "code": "104",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 360,
+      "y": 290,
+      "attached_to": "BIKE REPAIR C.A. 113 door off the parking aisle",
+      "confidence": "high",
+      "note": "Bill also hand-wrote '104' in pen at ~(368,305) on the hatched NO PARKING triangle, inside the same cyan swipe"
+    },
+    {
+      "code": "104",
+      "kind": "hand",
+      "highlight": "cyan",
+      "x": 368,
+      "y": 305,
+      "attached_to": "pen note beside printed door tag 104",
+      "confidence": "high",
+      "note": "handwritten duplicate of the printed tag; NOT a separate opening"
+    },
+    {
+      "code": "102",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 617,
+      "y": 616,
+      "attached_to": "door at the ramp/stair lobby west of ELEVATOR C.A. 104",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "105",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 600,
+      "y": 628,
+      "attached_to": "door at the ramp/stair lobby west of ELEVATOR C.A. 104",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "106",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 662,
+      "y": 508,
+      "attached_to": "door off HALLWAY C.A. 106 (MGMT/OFFICE corridor)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "100",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 665,
+      "y": 727,
+      "attached_to": "LOBBY C.A. 100 -> CO-WORK C.A. 101 door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "101",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 663,
+      "y": 749,
+      "attached_to": "MAIL RM C.A. 102 / PACKAGE C.A. 103 door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "103",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 697,
+      "y": 758,
+      "attached_to": "CO-WORK C.A. 101 north-wall door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "102",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 697,
+      "y": 779,
+      "attached_to": "CO-WORK / MAIL RM north-wall door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "101",
+      "kind": "door-tag",
+      "highlight": "cyan",
+      "x": 697,
+      "y": 795,
+      "attached_to": "MAIL RM C.A. 102 north-wall door",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "Y",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 580,
+      "y": 192,
+      "attached_to": "TENANT SUITE 101 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "X",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 656,
+      "y": 193,
+      "attached_to": "TENANT SUITE 101 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "W",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 684,
+      "y": 217,
+      "attached_to": "TENANT SUITE 101 north wall, beside door 004",
+      "confidence": "high",
+      "note": "faint yellow"
+    },
+    {
+      "code": "004",
+      "kind": "door-tag",
+      "highlight": "pink",
+      "x": 685,
+      "y": 250,
+      "attached_to": "TENANT SUITE 101 entry door (in storefront W)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "U",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 702,
+      "y": 312,
+      "attached_to": "TENANT SUITE 102 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "V",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 702,
+      "y": 344,
+      "attached_to": "TENANT SUITE 102 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "U",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 702,
+      "y": 387,
+      "attached_to": "TENANT SUITE 102 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "Z",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 692,
+      "y": 408,
+      "attached_to": "storefront beside door 005 (north wall near MGMT C.A. 108)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "005",
+      "kind": "door-tag",
+      "highlight": "pink",
+      "x": 692,
+      "y": 426,
+      "attached_to": "entry door in storefront Z",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "T",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 700,
+      "y": 464,
+      "attached_to": "MGMT C.A. 108 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "S",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 700,
+      "y": 499,
+      "attached_to": "OFFICE C.A. 107 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "R",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 686,
+      "y": 513,
+      "attached_to": "OFFICE C.A. 107 east wall",
+      "confidence": "high",
+      "note": "faint yellow"
+    },
+    {
+      "code": "Q",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 667,
+      "y": 563,
+      "attached_to": "HALLWAY C.A. 106 / ARROYO COURT wall, beside door 004",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "004",
+      "kind": "door-tag",
+      "highlight": "pink",
+      "x": 665,
+      "y": 588,
+      "attached_to": "ARROYO COURT entry door (in storefront Q)",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "P",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 688,
+      "y": 615,
+      "attached_to": "LOBBY C.A. 100 west wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "O",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 700,
+      "y": 618,
+      "attached_to": "LOBBY C.A. 100 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "O",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 700,
+      "y": 655,
+      "attached_to": "LOBBY C.A. 100 north wall",
+      "confidence": "high",
+      "note": ""
+    },
+    {
+      "code": "O",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 700,
+      "y": 695,
+      "attached_to": "LOBBY C.A. 100 north wall",
+      "confidence": "medium",
+      "note": "dashed grid line runs through the glyph and makes it look like P/b at 6x; at 12x the 'stem' continues above and below the hexagon so it is the grid line. Read O. Supplier list (O=3, P=1) agrees."
+    },
+    {
+      "code": "N",
+      "kind": "window-tag",
+      "highlight": "yellow",
+      "x": 715,
+      "y": 778,
+      "attached_to": "CO-WORK C.A. 101 north wall",
+      "confidence": "high",
+      "note": ""
+    }
+  ],
+  "bill_tally": {
+    "rect_scan_pts": [
+      495,
+      1040,
+      565,
+      1100
+    ],
+    "meaning": "interior-storefront door numbers with a '2-' prefix where the door occurs twice; pen only, no highlighter",
+    "items": [
+      {
+        "code": "100",
+        "written": "100",
+        "value": 100,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "101",
+        "written": "2-101",
+        "value": null,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "102",
+        "written": "2-102",
+        "value": null,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "103",
+        "written": "103",
+        "value": 103,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "104",
+        "written": "104",
+        "value": 104,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "105",
+        "written": "105",
+        "value": 105,
+        "confidence": "high",
+        "note": ""
+      },
+      {
+        "code": "106",
+        "written": "2-106",
+        "value": null,
+        "confidence": "high",
+        "note": "2 = 1 on A-2.10 + 1 on A-2.00"
+      }
+    ],
+    "capture": "out/verify/2026-08-22/bill-truth/work/p1_tally_grid*.png (300 dpi = 4.2x)"
+  },
+  "handwritten_marks": [
+    {
+      "code": "104",
+      "x": 368,
+      "y": 305,
+      "note": "handwritten duplicate of the printed tag; NOT a separate opening"
+    }
+  ],
+  "notes": "Pure raster page (one 3300x5100 JPEG, 0 text chars). Crawl method: plan area scan x 215-745, y 150-835 tiled 3x3 at 324 dpi with a 20-pt grid; every highlighted tag read by eye and positioned off the grid; an HSV highlighter-blob detector (work/blobs.json) used only as a completeness cross-check - every reading has a blob within 14 pt and every plan-area blob is either a reading or the outer arc of a ring already read. The tally was read AFTER the plan so the two readings are independent. No per-type tally on this sheet; the list by the title block is door numbers (see bill_tally)."
+}
