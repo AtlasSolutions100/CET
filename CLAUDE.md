@@ -133,6 +133,55 @@ create one.
   printed sheet; the engine indexes from 0 and output filenames use `_pN`.
   Always restate both: "engine page index 3 = printed sheet 4".
 
+### Three code shapes that produce silent wrong numbers
+
+Five defects have traced to these. None crashed, none moved the gate, each
+was found only by staring at one sheet - which in a takeoff tool is the
+worst kind, because a confident wrong number reaches a bid.
+
+- **A proximity test is not a bucket.** `round(x / TOL)` answers "which
+  bin", NOT "are these two within TOL of each other". Two things 6.8 pt
+  apart land in different bins whenever an edge falls between them, and
+  widening TOL just moves the edge. That is what shipped Beaumont's Barn
+  civil C4.3 footer drain labelled `> > >`: `read_legend`'s 7.0 pt row
+  bucket put the flow chevrons (cy 469.4) and their description (cy 476.2)
+  on opposite sides of an edge, so the sheet's most valuable item -
+  1,449.6 ft of perimeter drain, $31/ft on the client's own Estimate #853 -
+  lost its name. Same shape: the schedule reader never once found a
+  QUANTITY column on a skewed scan, and a spot-grade dedup double-counted
+  12 labels. **Fix: sort and walk with a gap test, or a radius test for
+  dedup.** A bucket is only legitimate as a *fingerprint* - a key both
+  sides of the comparison share, used to count repeats, where the edge can
+  only split a family and never merge two. `eval_layers._congruence_groups`
+  is one and was measured to be one (7,583 layers, identical verdicts, and
+  a gap-walk there is strictly worse); `marks.size_families` is one only
+  because a radius test does the real work one line later. Prove which kind
+  you have before touching it.
+- **First-writer-wins discards the right answer.** `dict.setdefault(k, v)`
+  keeps whatever arrived first and drops the rest with no ranking and no
+  record. `read_legend` had ALREADY computed
+  `PROPOSED 4" RIGID PERFORATED PVC FOOTER DRAIN PIPE` and joined it to the
+  right style, then lost it to a chevron that got there first - and because
+  a legend label overwrites the CAD layer name, the output was worse than
+  if the legend had never been read. Any either/or needs an **explicit
+  ranking** (`legend_detect._assign_label`: an unusable label never wins, a
+  usable one replaces an unusable one), and where no honest ranking exists,
+  keep the alternatives visible and abstain rather than pick silently -
+  `ScaleResult.candidates` returns every reading with its context. (An
+  `areas.page_areas` change to abstain on a fill two legend rows contest
+  was HELD at review: its "provably no-op over 2,059 pages" claim was a
+  truncated run - the corpus is 6,724 pages and the change moves 40 of
+  them. A silent cap reports as full coverage; say what you skipped.)
+- **0.0 is not None.** `x.ink or x.length` reads measured-zero as
+  unmeasured, because `0.0` is falsy. An attempted zero-ink guard built on
+  that assumption deleted 80% of every sheet's chains; the gate caught it
+  on the first run. Measured on C4.0 p0 (1,429 chains): **1,157 carry
+  `.ink == 0.0` and not one carries `.ink is None`** - 196 of those are
+  ordinary `solid` lines and they hold 44.7% of the sheet's chained length.
+  `.ink` is populated only for dash chains, so the `or` fallback is the
+  intended read and anything treating zero as "no ink" is deleting solid
+  linework. Test `is None`, never truthiness, and say which you measured.
+
 ## 6. Tuning discipline
 
 Tuning constants live in `chain.py` with rationale comments. Change them

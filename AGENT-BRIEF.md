@@ -240,7 +240,7 @@ capturing "before" from a clean tree rather than from memory.
 - `export PYTHONPATH="$PWD"`, `PYTHONIOENCODING=utf-8`,
   `PATH="$PATH:/c/Program Files/Tesseract-OCR"`.
 - `127.0.0.1`, never `localhost`. Git Bash has no `pkill`.
-- **Line endings: `server.py` is CRLF. Every `takeoff_engine/*.py` and all of `webui/` is
+- **Line endings: `server.py` AND `takeoff_engine/marks.py` are CRLF. Every other `takeoff_engine/*.py` and all of `webui/` is
   LF.** Check with `file` before and after; a whole-file rewrite that flips them is a
   silent 1900-line diff.
 - Corpus: `../client_meet/beaumont`, `../client_meet/Bill`, `../TakeoffPro AI/Plans`,

@@ -95,7 +95,27 @@ def _strip_field(lay_units) -> bool:
 
 def _congruence_groups(lay_units):
     """Group strokes by congruence key (bbox + length bucket) - the same
-    fingerprint symbols/suggest counts with. Returns {key: [units]}."""
+    fingerprint symbols/suggest counts with. Returns {key: [units]}.
+
+    THE LENGTH TERM IS A BUCKET ON PURPOSE - it is a fingerprint, not a
+    proximity test, and converting it makes things worse. Both consumers ask
+    only "how many strokes share this key", so a bin edge can SPLIT a repeat
+    family but can never merge two: it errs toward fewer repeats, i.e. toward
+    leaving a layer measurable rather than writing it off as texture, which
+    is the safe direction for a construction quantity.
+
+    Measured over 7,583 layer instances on 168 layered pages
+    (client_meet/beaumont + Plans + Ryno Construction), bucket vs the same
+    grouping done by sorting on length and splitting on a >2pt gap:
+      _symbolic_by_congruence   121 layers either way, zero disagreements
+      _scatter_glyphs           569 -> 583, i.e. 16 layers move, 15 of them
+                                the wrong way
+    The 15 the gap-walk newly calls texture include L-BOULDER-MOSS (8,363 pt,
+    the layer the standing gate reports as LOST on Guide Civil p3), S-COLS,
+    S-BEAM and SECTION - real linework that would silently leave the takeoff
+    - and it stops recognising the genuine hatch layer BG-Hatch Stair type 1.
+    Single-linkage chaining over-merges here. Do not "fix" this.
+    """
     groups = {}
     for u in lay_units:
         bb = u.pts.max(axis=0) - u.pts.min(axis=0)

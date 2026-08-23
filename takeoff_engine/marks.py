@@ -319,6 +319,29 @@ def size_families(seeds: list[tuple]) -> list[tuple]:
     from collections import Counter
     if not seeds:
         return []
+    # The 3 px bucket only PROPOSES candidate centres and the order they are
+    # tried in; family membership is the +/-3 px radius test on the line
+    # below, and THAT is the proximity question. The bucket itself is NOT
+    # bin-shift invariant - adding 1 or 2 px to every seed's w and h (same
+    # relative geometry, every bin edge moved) changes the family list on all
+    # 20 raster pages in client_meet/Bill - so it must never be read as the
+    # answer, only as a seed for the radius test.
+    # Measured end-to-end over 19 of those pages, this bucket vs a bin-free
+    # mode seek (every seed proposes its own centre, same radius membership,
+    # same dedup): 10 pages identical, 9 different, and the differences run
+    # BOTH ways - Mission Bell A-2.0 24/45, 68/92, 101/193, 144/192, 101/153,
+    # 97/136 (mode seek higher) but Windows-and-Balcony p1 48/35 and Interior
+    # Storefront p0 46/37 (lower).
+    #   * Aqua Vista p0-p5, the ONLY sheet family with a human-confirmed key
+    #     (F68/F72), is identical on every page: 0/32/35/34/34/35. Its window
+    #     hexagon is 31x35 and the next family up is 25x28 - many bin widths
+    #     apart, so no edge can fall between them.
+    #   * The 9 that move have no confirmed bubble count, and on Mission Bell
+    #     every extra detection reads as unnamed, i.e. the mode seek is
+    #     pulling in room tags and grid bubbles (F70's failure mode), not
+    #     finding marks. Which number is right there is UNKNOWN.
+    # So the bucket stays until a human-confirmed count exists for one of
+    # those sheets. Do not swap it on principle.
     buckets = Counter((round(w / 3.0) * 3, round(h / 3.0) * 3)
                       for _, _, w, h in seeds)
     out = []
