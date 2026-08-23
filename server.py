@@ -453,6 +453,77 @@ def result(job_id: str, page: int):
     return Response(f.read_text(), media_type="application/json")
 
 
+@app.get("/api/job/{job_id}/page/{page}/confidence")
+def page_confidence(job_id: str, page: int):
+    """Page-level trust signals for the review banner. Read-only.
+
+    Two facts the detect result does not already carry, and both decide
+    whether an operator should believe this sheet's numbers:
+
+      * NOT TO SCALE when the sheet prints no ratio at all. ScaleResult
+        .to_dict() returns None when there is no `best`, so `has_nts` is
+        dropped in exactly the case where it matters most.
+      * where each spot elevation's base elevation came from - the sheet's
+        own legend note (the drafter telling us) or a consensus guess off
+        other numbers on the page. Barn Civil p3 is the cautionary case:
+        the guess landed a clean 200 ft high on all 272 grades and every
+        value still read as a plausible elevation (earthwork.read_spot_datum).
+
+    Text layer only - no OCR, no rasterising - and nothing here feeds a
+    quantity. It costs one page parse (0.4-2.3 s measured), so the UI
+    fetches it once per page and upgrades the banner when it lands, rather
+    than holding up detect. Deliberately NOT folded into the detect result:
+    that would change `detect_page.engine_sig` and stale every cached page
+    in the corpus for a reporting change.
+    """
+    from takeoff_engine.earthwork import read_spot_datum, read_spot_grades
+    from takeoff_engine.extract import page_lines as _page_lines
+    from takeoff_engine.scale_detect import _NTS
+
+    job = JOBS.get(job_id) or _404()
+    doc = pymupdf.open(job["path"])
+    try:
+        if page < 0 or page >= doc.page_count:
+            raise HTTPException(404, "no such page")
+        pg = doc[page]
+        has_nts = bool(_NTS.search(pg.get_text()))
+        words = page_words(pg)
+        lines = _page_lines(pg)
+    finally:
+        doc.close()
+    try:
+        spots = read_spot_grades(words, lines=lines)
+    except Exception:
+        spots = []
+    declared = read_spot_datum(lines)
+    # Which branch of read_spot_grades resolved each grade, reconstructed
+    # from the same three inputs the reader itself used (value >= 1000 ->
+    # printed in full; declared datum -> the sheet's own note; otherwise
+    # the consensus guess). Reconstructed here rather than returned by the
+    # reader so that no stored detect result changes shape.
+    n_printed = n_note = n_inferred = n_unresolved = 0
+    for g in spots:
+        if not g.get("resolved"):
+            n_unresolved += 1
+        elif g["value"] >= 1000.0:
+            n_printed += 1
+        elif declared is not None and g["value"] < 100.0:
+            n_note += 1
+        else:
+            n_inferred += 1
+    return {
+        "has_nts": has_nts,
+        "spots": {
+            "n": len(spots),
+            "printed_in_full": n_printed,
+            "from_sheet_note": n_note,
+            "inferred": n_inferred,
+            "unresolved": n_unresolved,
+            "declared_datum": declared,
+        },
+    }
+
+
 class ApproveBody(BaseModel):
     # style_id -> final label; only listed styles are exported
     labels: dict[int, str]

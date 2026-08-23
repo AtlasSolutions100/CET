@@ -51,6 +51,10 @@ const state = window.state = {
   dragPt: false,
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
+  conf: null,               // /confidence payload for the current page:
+                            // NOT-TO-SCALE + spot-elevation provenance, the
+                            // two trust facts the detect result cannot carry
+  confKey: null,            // "job:page" the payload above belongs to
   hotChain: null,           // chain highlighted from a calculator row
   extraItems: [],           // calculator outputs: {label, qty, unit}
   areaInc: new Map(),       // area group_id -> included in the takeoff
@@ -121,9 +125,11 @@ async function selectPage(p) {
   state.selected = null; state.selPt = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
+  state.conf = null; state.confKey = null; state.confErr = false;
   updateSelBar(null);
-  renderSheetHead();
+  // scaleMemApply BEFORE renderSheetHead, always - see loadResult().
   scaleMemApply();
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
@@ -288,6 +294,7 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  state.conf = null; state.confKey = null; state.confErr = false;
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
   state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
@@ -317,8 +324,18 @@ async function loadResult(gen = state.gen) {
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
-  renderSheetHead();
+  // The remembered scale pick has to be back in state.result BEFORE anything
+  // paints. renderSheetHead draws the scale chip, the picker's ON highlight
+  // AND the confidence banner's opening sentence straight off
+  // state.result.scale; painting first and re-applying after left all three
+  // asserting the ENGINE's scale while every quantity on the sheet was
+  // already computed from the REVIEWER's. It only ever corrected itself
+  // because /confidence happened to answer and repaint - so a 503 on that
+  // endpoint stranded "1 inch = 8 ft" on screen permanently over a sheet
+  // priced at 1.33 (6x on length, 36x on area). Making the first paint true
+  // is not a repaint's job.
   scaleMemApply();
+  renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
@@ -679,6 +696,7 @@ function renderSheetHead() {
     : st === "detect failed" ? "warn" : ""));
   el.append(name, meta);
   renderScalePick(el);
+  renderConfidence();
 }
 
 // ---------- more than one scale on the sheet -----------------------------
@@ -699,15 +717,23 @@ function renderSheetHead() {
 function scaleKey() {
   return "scale::" + (state.docName || "?") + "::p" + state.page;
 }
-function renderScalePick(host) {
+// The distinct scales this sheet prints, in the engine's own order. Shared
+// with the confidence banner on purpose: the sentence that says "this sheet
+// prints 3 different scales" and the buttons that switch between them must
+// never be able to count differently.
+function scaleCandidates() {
   const sc = state.result && state.result.scale;
-  const cands = (sc && sc.candidates) || [];
   const uniq = [];
-  for (const c of cands) {
+  for (const c of ((sc && sc.candidates) || [])) {
     if (!c || !c.ft_per_paper_inch) continue;
     if (!uniq.some(u => Math.abs(u.ft_per_paper_inch - c.ft_per_paper_inch) < 1e-6))
       uniq.push(c);
   }
+  return uniq;
+}
+function renderScalePick(host) {
+  const sc = state.result && state.result.scale;
+  const uniq = scaleCandidates();
   if (uniq.length < 2) return;
   const row = document.createElement("div");
   row.className = "sh-scales";
@@ -753,6 +779,392 @@ function scaleMemApply() {
     text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
     count: hit.count, agrees: null, delta_pct: null, picked_by_reviewer: true,
   });
+}
+
+// ---------- the confidence banner ----------------------------------------
+// This engine's dangerous failure mode is not being wrong. It is being wrong
+// QUIETLY: F92 shipped 14 pages whose scale was wrong and every one reached
+// this screen as a confident green chip. A wrong number that looks right
+// costs the manual work the estimator was already doing PLUS the time to
+// catch it - and if it is missed it goes into a bid. So the review panel
+// opens with a plain-English statement of what corroborates this sheet and
+// what does not, above everything that depends on it.
+//
+// The colour rule is the contract, and it is deliberately pessimistic:
+//   GREEN  only where a SECOND, INDEPENDENT source agrees with the first
+//          (the drawn scale bar against the printed caption; the sheet's own
+//          printed "N sf" area tags against the scale in force; a datum the
+//          sheet states in its own legend)
+//   AMBER  one source only, or a choice the reviewer has to make
+//   RED    two sources contradict each other, or there is no scale at all
+// Absence of evidence is never green. Where nothing corroborates a number
+// the banner says so in words rather than staying silent.
+//
+// Reporting only: nothing here changes a quantity, a detection or a pick.
+
+const CONF_RANK = { ok: 0, warn: 1, stop: 2 };
+
+// 20 -> "20", 5.333 -> "5.33", 0.667 -> "0.67". Estimators read feet per
+// paper inch, never a 3-decimal float.
+function confFt(v) {
+  const n = +v;
+  if (!isFinite(n)) return "?";
+  return n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+function confScale(v) { return `1 inch = ${confFt(v)} ft`; }
+// The sheet's own words, set apart without quote marks: a caption like
+// 1" = 1'-0" ends in an inch mark, and “...” around it prints a stray
+// double quote in the sentence the estimator most needs to read.
+function confQuote(t) { return `<span class="conf-q">${esc(t)}</span>`; }
+function confPlural(n, one, many) { return n === 1 ? one : (many || one + "s"); }
+
+// The sheet's own printed "N sf" area tags are a THIRD reading of the scale,
+// independent of both the caption and the drawn bar: they are areas the
+// drafter typed, measured against regions we traced. areas.py already
+// computes what they imply, and that number does not depend on the scale we
+// chose - so it is compared against the scale in force RIGHT NOW and a
+// reviewer's pick re-runs the check instead of inheriting the engine's.
+function confTagCheck() {
+  const res = state.result;
+  const sc = res && res.scale;
+  const tc = ((res && res.areas && res.areas.scale) || {}).tag_check || {};
+  if (!sc || !sc.ft_per_paper_inch) return null;
+  if (!tc.implied_ft_per_paper_inch || !tc.n_matched) return null;
+  const d = Math.abs(tc.implied_ft_per_paper_inch - sc.ft_per_paper_inch)
+    / sc.ft_per_paper_inch;
+  return { tc, agrees: d <= 0.02, implied: tc.implied_ft_per_paper_inch,
+           ratio: Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2) };
+}
+
+// What actually decided which of several printed scales the engine used,
+// replayed from the engine's own candidate list rather than described from
+// memory. scale_detect._choose is exactly one line:
+//
+//     sorted(cands, key=lambda c: (-c.near_scale_keyword, -c.count))[0]
+//
+// so the PRIMARY key is "does this reading sit next to the word SCALE", the
+// secondary key is how many times the scanner matched it, and - Python's
+// sort being stable - an exact tie on BOTH is settled by the order _scan
+// happened to emit them in. That last case is not a reason, and the banner
+// must not offer it as one: Barn Landscaping engine p23 prints 1/8"=1'-0"
+// and 3/4"=1'-0" once each, ties on both keys, and the two are 6x apart on
+// every length and 36x on every area.
+//
+// One thing this must never quote as a number: `count`. It counts REGEX
+// MATCHES, not captions printed on paper - _scan runs three patterns over
+// the same text and a single printed caption commonly scores 2 - so no
+// branch below turns it into "printed N times".
+function scalePickWhy() {
+  const sc = state.result && state.result.scale;
+  const cands = (sc && sc.candidates) || [];
+  if (!sc || !sc.ft_per_paper_inch || cands.length < 2) return null;
+  const same = (a, b) => Math.abs(+a - +b) < 1e-6;
+  const near = c => (c.near_scale_keyword ? 1 : 0);
+  const nearMax = Math.max(...cands.map(near));
+  const top = cands.filter(c => near(c) === nearMax);
+  const cMax = Math.max(...top.map(c => +c.count || 0));
+  const win = top.filter(c => (+c.count || 0) === cMax);
+  // If replaying _choose does not land on the scale actually in force, we do
+  // not know what decided it. Say that, rather than pick a story that fits.
+  if (!win.length || !same(win[0].ft_per_paper_inch, sc.ft_per_paper_inch))
+    return { kind: "unknown" };
+  if (win.length > 1) return { kind: "tie", others: win.slice(1) };
+  if (top.length === 1) return { kind: "keyword" };
+  if (top.length === cands.length) return { kind: "count" };
+  return { kind: "keyword-then-count" };
+}
+
+function confLines() {
+  const out = [];
+  const say = (level, html) => out.push({ level, html });
+  const res = state.result;
+  if (!res) return out;
+  const sc = res.scale;
+  const cf = state.conf;
+  const tag = confTagCheck();
+  const uniq = scaleCandidates();
+
+  // ---- scale: the number every length, area and volume sits on ----------
+  if (!sc) {
+    say("stop", `<b>No scale could be read off this sheet.</b> Until one `
+      + `is set, nothing here can be quoted in feet, square feet or cubic `
+      + `yards — the lengths below are paper measurements of the drawing, `
+      + `not real-world distances. Set the scale by hand before pricing `
+      + `anything from this sheet: the reader does miss captions that are `
+      + `printed, so check the sheet itself rather than assuming it has none.`);
+    if (cf && cf.has_nts)
+      say("stop", `The sheet also prints <b>NOT TO SCALE</b>. If that note `
+        + `covers the drawing rather than one detail on it, measuring it is `
+        + `unsafe even by hand — take the numbers written on the drawing.`);
+  } else if (sc.agrees === false) {
+    say("stop", `<b>Two readings of this sheet's scale disagree — settle `
+      + `this before pricing.</b> The printed caption reads `
+      + `${confQuote(sc.text)}, which is <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span>. The ruler drawn on the `
+      + `sheet measures <span class="conf-num">`
+      + `${confScale(sc.bar_ft_per_paper_inch)}</span> — they are `
+      + `${confFt(sc.delta_pct)}% apart. One of them is wrong, and every `
+      + `length, area and volume below is wrong with it. We used the caption.`);
+  } else if (sc.agrees === true) {
+    say("ok", `<b>Scale confirmed two ways: <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span>.</b> The sheet prints it `
+      + `in words (${confQuote(sc.text)}) and the ruler drawn on the sheet `
+      + `measures the same thing. Two independent readings agree.`);
+  } else if (sc.picked_by_reviewer) {
+    say("warn", `<b>You set this sheet to <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span></b> (${confQuote(sc.text)}). `
+      + `Nothing on the sheet has been checked against that choice — every `
+      + `number below is computed from it.`);
+  } else if (sc.source === "ocr") {
+    say("warn", `<b>The scale was read off a scanned picture, not from the `
+      + `drawing's own text: <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span></b> (recognised as `
+      + `${confQuote(sc.text)}). Character recognition is the least trustworthy `
+      + `reading this app has, and nothing else found on this sheet backs it `
+      + `up. Check it against a dimension printed on the drawing.`);
+  } else if (sc.source === "graphic-bar") {
+    say("warn", `<b>No scale caption was found on this sheet, so the ruler `
+      + `drawn on it was measured instead: <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span>.</b> That number comes `
+      + `from the spacing of the bar's tick marks. It is one reading, with `
+      + `nothing to confirm it.`);
+  } else {
+    say("warn", `<b>Scale taken from one printed caption: `
+      + `<span class="conf-num">${confScale(sc.ft_per_paper_inch)}</span></b> `
+      + `(the sheet reads ${confQuote(sc.text)}). No drawn scale bar and no `
+      + `printed area figure were found here, so there is nothing on the `
+      + `sheet to check that caption against.`);
+  }
+
+  // ---- several scales printed: which one governs the drawing? -----------
+  // The reason clause states what _choose actually keyed on, branch by
+  // branch, and REFUSES to give one where nothing decided. A fabricated
+  // mechanism is at its most expensive inside the sentence whose whole job
+  // is to teach the estimator to distrust the pick.
+  if (sc && uniq.length > 1) {
+    const lo = Math.min(...uniq.map(c => +c.ft_per_paper_inch));
+    const hi = Math.max(...uniq.map(c => +c.ft_per_paper_inch));
+    const used = `<span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span>`;
+    const head = `<b>This sheet prints ${uniq.length} different scales</b>, `
+      + `from <span class="conf-num">${confScale(lo)}</span> to `
+      + `<span class="conf-num">${confScale(hi)}</span> — a plan and its `
+      + `details, usually. `;
+    const swap = ` The buttons just above switch it, and everything `
+      + `recalculates.`;
+    const why = sc.picked_by_reviewer ? { kind: "reviewer" } : scalePickWhy();
+    const kind = (why && why.kind) || "unknown";
+    if (kind === "reviewer") {
+      say("warn", head + `You picked ${used}.` + swap);
+    } else if (kind === "tie") {
+      const other = why.others
+        .map(c => `<span class="conf-num">`
+          + `${confScale(c.ft_per_paper_inch)}</span>`).join(" and ");
+      say("warn", head + `<b>We could not tell which of these governs this `
+        + `drawing.</b> ${used} and ${other} came out level on both of the `
+        + `only things this app can compare — whether the reading sits next `
+        + `to the word SCALE, and how many times its text matched while the `
+        + `sheet was read. Nothing on the sheet separated them, so the pick `
+        + `fell to whichever one the reader reached first, which is not a `
+        + `reason and is not being offered as one. Pick the scale that `
+        + `governs the drawing you are taking off, with the buttons just `
+        + `above.`);
+    } else if (kind === "keyword") {
+      say("warn", head + `We used ${used} because it is the only one of them `
+        + `printed next to the word SCALE. Where a caption sits is not `
+        + `evidence of which drawing it governs — a detail's caption sits `
+        + `next to that word too.` + swap);
+    } else if (kind === "count") {
+      say("warn", head + `We used ${used} because its text matched more `
+        + `times than the others while the sheet was read. That is a tally `
+        + `of readings, not evidence of which drawing it governs — on a `
+        + `details sheet it points the wrong way.` + swap);
+    } else if (kind === "keyword-then-count") {
+      say("warn", head + `We used ${used} because it sits next to the word `
+        + `SCALE where some of the others do not, and among the ones that `
+        + `do, its text matched the most times. Neither of those says which `
+        + `drawing it governs.` + swap);
+    } else {
+      say("warn", head + `We used ${used}. <b>We cannot show what picked it</b> `
+        + `out of what this sheet gave us, so treat that as unchecked: `
+        + `confirm the scale that governs the drawing you are taking off, `
+        + `with the buttons just above.`);
+    }
+  }
+
+  // ---- the sheet's own printed areas, checked against that scale --------
+  if (tag && tag.agrees) {
+    say("ok", `<b>Checked against the sheet's own figures.</b> `
+      + `${tag.tc.n_matched} area${confPlural(tag.tc.n_matched, "")} printed `
+      + `on this page as “N sf” agree with what we measured at this scale, `
+      + `within 2%.`);
+  } else if (tag) {
+    say("stop", `<b>The sheet's own square-foot figures contradict the `
+      + `scale.</b> ${tag.tc.n_matched} area`
+      + `${confPlural(tag.tc.n_matched, "")} printed on this page imply `
+      + `<span class="conf-num">${confScale(tag.implied)}</span>, not the `
+      + `<span class="conf-num">${confFt(sc.ft_per_paper_inch)} ft</span> we `
+      + `used — so every square-foot number below is out by roughly `
+      + `${tag.ratio >= 10 ? Math.round(tag.ratio) : tag.ratio.toFixed(1)}`
+      + ` times.`);
+  }
+
+  // ---- NOT TO SCALE printed alongside a scale ---------------------------
+  if (sc && ((cf && cf.has_nts) || sc.has_nts))
+    say("warn", `<b>The sheet also says NOT TO SCALE somewhere.</b> That is `
+      + `normally a detail or an inset declaring that it alone must not be `
+      + `measured. If it covers the drawing you are taking off, the scale `
+      + `above does not apply to it.`);
+
+  // ---- spot elevations: whose datum? ------------------------------------
+  // The distinction is worth 200 ft an elevation. A sheet printing
+  // "FG: 05.25" is missing its hundreds; the sheet's own legend note is the
+  // drafter telling us what they are, while consensus off other numbers on
+  // the page is arithmetic that has already come out a clean 200 ft wrong on
+  // a sheet in this client's set - with every value still reading as a
+  // plausible elevation. See takeoff_engine/earthwork.read_spot_datum.
+  const sp = cf && cf.spots;
+  if (sp && sp.n) {
+    if (sp.from_sheet_note)
+      say("ok", `<b>${sp.from_sheet_note} spot elevation`
+        + `${confPlural(sp.from_sheet_note, "")} read from this sheet.</b> `
+        + `The sheet prints them shortened, and its own legend states what `
+        + `they count up from (<span class="conf-num">`
+        + `${confFt(sp.declared_datum)} ft</span>). That is the drafter's `
+        + `statement, not our arithmetic.`);
+    if (sp.printed_in_full)
+      say("ok", `<b>${sp.printed_in_full} spot elevation`
+        + `${confPlural(sp.printed_in_full, "")} printed in full</b> on the `
+        + `sheet — nothing about ${confPlural(sp.printed_in_full, "it", "them")}`
+        + ` had to be worked out.`);
+    if (sp.inferred)
+      say("warn", `<b>${sp.inferred} spot elevation`
+        + `${confPlural(sp.inferred, "")} rest on a guess.</b> The sheet `
+        + `prints them shortened (“FG: 15.96”) and no note saying what the `
+        + `missing hundreds are could be read, so they were worked out `
+        + `instead from other numbers `
+        + `printed on the page. That guess has come out a clean 200 ft high `
+        + `on a sheet in this same set, and every value still looked like a `
+        + `plausible elevation. Confirm one against an elevation you can `
+        + `read before trusting any cut or fill volume.`);
+    if (sp.unresolved)
+      say("warn", `<b>${sp.unresolved} spot elevation`
+        + `${confPlural(sp.unresolved, "")} could not be turned into real `
+        + `elevations at all.</b> The sheet prints them shortened and there `
+        + `is nothing readable on the page to say what the missing `
+        + `hundreds are. Type `
+        + `the base elevation in the Earthwork panel; until then those `
+        + `points carry no height.`);
+  }
+
+  // ---- checks that have not answered yet, or could not be run -----------
+  // /confidence carries the four spot-elevation lines and the NOT-TO-SCALE
+  // note, and it costs a page parse (0.4-2.7 s measured). Until it lands
+  // this page has NOT been checked for a guessed elevation datum, so the
+  // banner says so in a line and the badge above says so too. Absence of
+  // evidence is never green, and "not looked yet" is not evidence.
+  if (!cf) {
+    if (state.confErr)
+      say("warn", `<b>Two of the checks on this sheet could not be run.</b> `
+        + `The reader that says where each spot elevation's base height came `
+        + `from, and whether the sheet prints NOT TO SCALE, did not answer. `
+        + `Nothing here has ruled out a guessed elevation datum on this `
+        + `page. Reload the sheet before pricing any cut or fill from it.`);
+    else
+      say("warn", `<b>Still checking this sheet.</b> Where each spot `
+        + `elevation's base height came from, and whether NOT TO SCALE is `
+        + `printed anywhere, are still being read off the page. Until they `
+        + `land this sheet has not been checked for either, so nothing above `
+        + `is the final word on it.`);
+  }
+
+  // ---- anything else already known to be shaky on this page -------------
+  const trunc = (res.areas || {}).truncated || 0;
+  if (trunc)
+    say("warn", `<b>${trunc} filled area${confPlural(trunc, "")} on this `
+      + `page ${trunc === 1 ? "was" : "were"} not measured</b> — the page `
+      + `carries more shaded regions than the reader takes in one pass, so `
+      + `the square-foot list below is incomplete.`);
+
+  // Repeated shapes the symbol reader counted but nothing named. An
+  // unnamed group means no mark code was found inside the shape (see
+  // server._symbols_compute._mark_at) - NOT that a code was read badly.
+  // Only known once the Counts panel has been opened, so the banner gains
+  // this line then rather than claiming a clean page it has not looked at.
+  if (state.sym && state.sym.length) {
+    const un = state.sym.filter(g => !g.name && !g.off_schedule)
+      .reduce((a, g) => a + g.n, 0);
+    if (un)
+      say("warn", `<b>${un} repeated shape${confPlural(un, "")} on this page `
+        + `${un === 1 ? "was" : "were"} counted but not identified.</b> `
+        + `${un === 1 ? "It was" : "They were"} found by shape, and no `
+        + `name for ${un === 1 ? "it" : "them"} was found on the sheet — no `
+        + `mark code `
+        + `(the “W-3” a drafter writes inside a bubble) is printed inside. `
+        + `${un === 1 ? "It sits" : "They sit"} unnamed in the Counts panel `
+        + `and ${un === 1 ? "is" : "are"} in no takeoff row until you name `
+        + `${un === 1 ? "it" : "them"}.`);
+  }
+  return out;
+}
+
+// One fetch per page for the two facts the stored result cannot carry.
+// Async on purpose: the banner paints immediately from the detect result and
+// gains the elevation and NOT-TO-SCALE lines a second later, rather than
+// making every page switch wait on a page parse. What it must NOT do is
+// present a verdict during that window - see renderConfidence.
+//
+// A failure repaints too. Leaving state.conf null on a 503 used to be called
+// "degrading softly", but it is the same lie held forever: the four
+// elevation lines simply never arrive and a scale-corroborated grading sheet
+// sits there green.
+async function confLoad(gen, key) {
+  let j = null;
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/confidence`);
+    if (r.ok) j = await r.json();
+  } catch (e) { /* network/parse: falls through to the failed branch */ }
+  if (gen !== state.gen || key !== state.confKey) return;   // a later page won
+  if (j) state.conf = j; else state.confErr = true;
+  renderConfidence();
+}
+
+function renderConfidence() {
+  const box = $("confBanner");
+  if (!box) return;
+  if (!state.result) { box.hidden = true; box.innerHTML = ""; return; }
+  const key = state.job + ":" + state.page;
+  if (state.confKey !== key) {
+    state.confKey = key; state.conf = null; state.confErr = false;
+    confLoad(state.gen, key);
+  }
+  const lines = confLines();
+  if (!lines.length) { box.hidden = true; box.innerHTML = ""; return; }
+  // The worst line sets the banner, and green needs a positive: a page whose
+  // every line is merely "nothing contradicts this" is amber, not green.
+  let worst = "ok";
+  for (const l of lines) if (CONF_RANK[l.level] > CONF_RANK[worst]) worst = l.level;
+  if (worst === "ok" && !lines.some(l => l.level === "ok")) worst = "warn";
+  // A verdict is only a verdict once the checks it depends on have answered.
+  // While /confidence is outstanding the banner starts UNRESOLVED and can
+  // only move toward green from there; it never opens on a claim it has to
+  // take back. Measured before this: Barn Civil engine p4 painted "conf ok /
+  // CORROBORATED" at t=210 ms and dropped to "conf warn / check first" at
+  // t=1373 ms - 1.16 s warm, 2.7 s cold - labelling a page whose 104
+  // elevations rest on the consensus guess as corroborated. 5 of the 182
+  // client pages did that.
+  const waiting = !state.conf && !state.confErr;
+  const badge = waiting ? "checking…"
+    : { ok: "corroborated", warn: "check first", stop: "stop" }[worst];
+  box.hidden = false;
+  box.className = "conf " + worst + (waiting ? " checking" : "");
+  box.innerHTML =
+    `<div class="conf-head"><span class="conf-badge `
+    + `${waiting ? "checking" : worst}">${badge}</span>`
+    + `<span class="conf-title">Before you price this sheet</span></div>`
+    + lines.map(l => `<div class="conf-line ${l.level}">`
+        + `<span class="conf-dot ${l.level}"></span>`
+        + `<span class="conf-txt">${l.html}</span></div>`).join("");
 }
 
 function renderStyles() {
@@ -2364,6 +2776,9 @@ $("symBtn").onclick = async () => {
     const j = await r.json();
     state.sym = j.groups;
     state.symInfo = j;
+    // the banner can only warn about counts it could not read once the
+    // reader has actually looked - it gains that line here, not before
+    renderConfidence();
   }
   renderSym();
 };

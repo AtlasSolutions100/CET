@@ -231,7 +231,7 @@ def _scan(text: str) -> list[ScaleCandidate]:
         # a sheet shows otherwise. INFERENCE for other drawing standards.
         #
         # Confirmed against drawn geometry, not the caption: on Barn
-        # Landscaping L804 detail 6 the three stacked dimensions measure
+        # Landscaping L804 detail 9 the three stacked dimensions measure
         # tick-to-tick 36.00 / 72.00 / 108.00 pt for 2" / 4" / 6", which is
         # 18.000 pt per real inch on all three - exactly 3" = 1'-0".
         floor = 0.33 if _REL.search(m.group(0)) else 0.5
