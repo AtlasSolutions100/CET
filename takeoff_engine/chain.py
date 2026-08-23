@@ -918,6 +918,7 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
     _demote_sheet_furniture(chains)
     _demote_page_frame(chains)
+    _demote_frame_lines(chains)
 
     # pages without layer info can't use the demotion above; there, chains
     # living inside text boxes are exploded-glyph junk
@@ -930,8 +931,18 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
 
 # A layer whose name says it belongs to the sheet template rather than the
 # drawing: the border and the title-block grid.
+# TTBL and TTLB are the same abbreviation with the last two letters swapped -
+# both are in live use and neither is a construction word, so both are in.
+# Corpus reach of the TTBL token, measured 2026-08-22: one layer, Thielen's
+# `_IA-Ttbl`, 214 chains / 138,230.19 pt on 11 of the 71 Thielen sheets that
+# build = 0.53% of the undemoted corpus live span. Nothing else in 341 sheets
+# matches TTBL that did not already match TTLB, and it fires zero times on the
+# 145 out-of-sample sheets. 39 of those 214 chains are also taken by
+# _demote_frame_lines below, so the two together are 521,628.84 pt, not the
+# sum. It is worth adding on its own account: 175 of the 214 are reached by
+# nothing else.
 _SHEET_LAYER = re.compile(
-    r"(?i)(?:^|[-_|])(SHEET|TTLB|TITLEBLOCK|BORDER)(?:[-_|]|$)")
+    r"(?i)(?:^|[-_|])(SHEET|TTLB|TTBL|TITLEBLOCK|BORDER)(?:[-_|]|$)")
 # How far in from the nearest page edge a chain's centre may sit and still
 # be sheet furniture. Measured across the gate corpus: every one of the 84
 # P6-SHEET chains per Loves Lane sheet sits at most 0.095 of the way in
@@ -1012,8 +1023,15 @@ _FRAME_SPAN_FRAC = 0.95    # of the page-geometry extent, on BOTH axes;
                            # lowest true border measured 0.9807
 _FRAME_MAX_SHARE = 0.60    # insurance only, nothing in the corpus is near it:
                            # a border is furniture around a drawing, so it is
-                           # never most of the sheet's span. Highest measured
-                           # share of live span is 0.2577 (Barn Civil p13).
+                           # never most of the sheet's span. The denominator
+                           # matters and was previously left implicit: `span`
+                           # below is the live span AS THIS PASS SEES IT, i.e.
+                           # after _demote_sheet_furniture, and against that
+                           # the highest measured share is 0.2577 (Barn Civil
+                           # p13). Against the undemoted live span the same
+                           # sheet reads 0.1828 and the corpus maximum moves
+                           # to 0.2173 (Thielen p42); both re-measured
+                           # 2026-08-22 over the 196-sheet corpus.
                            # Without it, a lone rectangle on an otherwise
                            # empty sheet - a limits-of-work box, say - would
                            # define the extent and be read as a border.
@@ -1042,17 +1060,27 @@ def _demote_page_frame(chains: list) -> None:
     span >=0.95 of the page extent are all borders and the largest remaining
     one spans 0.6304.
 
-    Reach, measured as the border's share of each sheet's live span:
-    26 of 73 Thielen sheets (2.86%-21.73%), 9 of 9 Guide Civil (2.37%-16.65%,
-    including gate sheet p3 at 3.90%), 14 of 15 Barn Civil (2.24%-25.77%),
+    Reach, re-measured 2026-08-22 over the 196 sheets that build, as the
+    border's share of the live span this pass sees (after the name+position
+    rule - the same denominator `_FRAME_MAX_SHARE` is compared against):
+    26 of 71 Thielen sheets (2.85%-21.73%), 9 of 9 Guide Civil (2.37%-16.65%,
+    including gate sheet p3 at 3.90%), 15 of 15 Barn Civil (2.24%-25.77%),
     Barn Landscaping p0 (11.79%) and all three Belle Farms sheets
-    (9.27%-12.47%, including gate sheet p0).
+    (9.27%-12.47%, including gate sheet p0). 54 chains, 544,071.63 pt.
+    Against the UNDEMOTED live span instead, the two ranges that move are
+    Barn Civil 2.16%-18.28% and Guide Civil 2.31%-13.56% (p3 = 3.74%).
+
+    One chain on each of the 54, but that does not generalise: out of sample
+    GCHC Stair Plan - 1 Page and GCHC Stair Sections - 1 Page each get TWO,
+    a thin outer trim rectangle and a heavier inner border, 7,812 + 7,740 pt
+    on layer `LINES` - 25.30% of the Stair Plan's live span and 13.57% of
+    the Stair Sections'. Both firings are correct.
 
     This sits BESIDE _demote_sheet_furniture, not in place of it. The two
     catch disjoint things: the name+position rule catches the 82-84
     fragmented title-block chains per Loves Lane sheet, none of which is a
-    full-page rectangle; this one catches the single closed border, whose
-    centre is dead centre and which is often on no layer at all.
+    full-page rectangle; this one catches the closed border, whose centre is
+    dead centre and which is often on no layer at all.
     """
     pts = [np.asarray(c.pts) for c in chains if len(c.pts) >= 2]
     if not pts:
@@ -1090,6 +1118,241 @@ def _demote_page_frame(chains: list) -> None:
             continue
         c.klass = "annotation"
         c.dash_signature = "page frame"
+
+
+# --- the frame drawn as separate lines ------------------------------------
+# _demote_page_frame needs ONE closed chain that is its own bounding box. Most
+# borders are not drawn that way: they are independent strokes, and the CAD
+# exporter never joins them. This pass takes 228 chains / 443,876.08 pt on 69
+# of the same 196 sheets = 1.77% of the live span the closed-rectangle rule
+# leaves behind - including all 17 Guide Structural, 29 of 37 Barn Structural
+# and all 9 Oncor sheets, none of which the closed-rectangle rule touches at
+# all. Every one of those 228 is on a blank layer or a title-block layer.
+#
+# The safety argument that carried the closed-rectangle rule does NOT carry
+# over. "IS its own bbox" is almost impossible to fake; "is a long straight
+# line near an edge" is not - grid lines, match lines, property boundaries and
+# long walls are all long, straight, axis-aligned and sometimes at an edge. So
+# the unit of decision here is not the line, it is the SET:
+#
+#   the frame          >= 3 of the 4 extent edges carry such a line and the
+#                      corners meet, i.e. every vertical spans past every
+#                      horizontal's position and vice versa
+#   the rule set       >= 3 parallel lines that share ONE span interval to
+#                      0.5 pt and all hug the sheet edge - a border side plus
+#                      the title-block dividers, which a drafter draws as one
+#                      block of rules running corner to corner of the same
+#                      rectangle (inference, corroborated below on five
+#                      independent document families; where the PDF carries
+#                      CAD layers every member is on a title-block layer)
+#
+# Both were measured over 341 sheets: the 196-sheet corpus above plus 145
+# out-of-sample sheets (the ten loose `Plans 2` sets, all four Ryno files, the
+# GCHC stair family, the rest of Loves Lane, the window benchmark). Out of
+# sample it takes a further 103 chains / 194,311.97 pt on 26 sheets. Of all
+# 331 firings, NONE is drawing content and only one group of four is even
+# debatable: Huckleberry Tuff Ranch p1 is a Montana Excavation & Utilities
+# INVOICE bound into the plan PDF, and the four lines are the outer box of
+# that form. It is furniture by the rule's own definition and the page holds
+# no takeoff linework to lose, but it is not a drawing sheet.
+#
+# The one thing the FIRST version of clause 2 got wrong is recorded in its
+# body: filtering members before grouping let a schedule's near-edge rows
+# survive as a set of their own. It ate 8 of Gardiner p261's 13 schedule
+# rows, 5 of Million Air p130's and 5-7 rows on four pages of an estimate
+# PDF - 22,281 pt of table rules across six sheets, none of it caught in the
+# 196-sheet corpus. Grouping first and testing the whole group removes all
+# of it and changes the in-corpus result by 0.00 pt.
+#
+# The single-line case is DELIBERATELY NOT TAKEN, and the counterexamples are
+# the reason. A lone extent-edge line spanning 100% of the extent describes the
+# Barn/Guide Structural paper-trim hairline (50 sheets, 107,990 pt) - and
+# equally describes the top rule of a table on `estimate_19_for_GCHC_Stair_
+# Replacement.pdf` p1-p5, the two lines on `2025 White Sulfer Sewer Project`
+# p212 (which are 100% of that sheet's live span), and the L-shaped pair on
+# Million Air p130. What separates them is paper size: the trim lines span
+# >= 0.98 of the PAGE rectangle and the counterexamples 0.29-0.88. build_chains
+# is never given the page rectangle, so that test cannot be written here.
+_LINE_THIN_TOL = 2.0     # pt, bbox short side. One test for two properties:
+                         # a polyline whose bbox is 2 pt thin is both straight
+                         # and axis-aligned, with no separate chord fit.
+_LINE_SPAN_FRAC = 0.95   # frame clause: of the page-geometry extent, along the
+                         # line's own axis. Accepts run 0.96723-1.00000;
+                         # the largest reject is 0.93184 (`P6-TEXT`, Loves Lane
+                         # C10.2 p0) - the band 0.932..0.967 is empty.
+_LINE_EDGE_TOL = 3.0     # pt to the extent edge. Accepts run 0.00-2.35, the
+                         # nearest rejects are 3.75 (Thielen p57 `_IA-Ttbl`,
+                         # itself a title-block line) and 4.73 out of sample.
+_LINE_SIDES = 3          # of the four extent edges. 3 not 4 because Thielen
+                         # p59/p70 and the Loves Lane cover sheet draw only
+                         # three. 2 is what keeps the non-drawings out: it
+                         # would admit the top-and-bottom rules of the tables
+                         # on `estimate_19_for_GCHC_Stair_Replacement.pdf`
+                         # p1-p5, the two lines that are 100% of `2025 White
+                         # Sulfer Sewer Project` p212, and the L-shaped pair
+                         # on Million Air p130. All three are declined here
+                         # for want of a third side.
+_LINE_CORNER_TOL = 2.0   # pt of slack when testing that the corners meet
+_RULE_SPAN_FRAC = 0.90   # rule-set clause: accepts run 0.9243-1.0000
+_RULE_EDGE_FRAC = 0.15   # of the extent, perpendicular, taken over the WHOLE
+                         # group. Largest accepted 0.0763; smallest rejected
+                         # 0.2364 (Gardiner p261, a 13-row schedule) - the
+                         # band between is empty and 0.15 sits inside it, 2.0x
+                         # above the last accept and 1.6x below the first
+                         # reject.
+_RULE_END_FRAC = 0.05    # the shared interval's own inset from the extent at
+                         # BOTH ends; accepts run 0.0000-0.0379
+_RULE_MIN = 3            # members sharing the interval
+_LINE_MAX_SHARE = 0.60   # CUMULATIVE over everything this pass would demote,
+                         # unlike _FRAME_MAX_SHARE which is per chain, because
+                         # this pass takes a SET and a per-chain cap cannot
+                         # see the total. It has not fired in 341 sheets; the
+                         # closest approach is Oncor p8 at 0.4965 - four
+                         # border lines on a nearly empty sheet - then Oncor
+                         # p1 0.4678 and Barn Structural p33 0.4318. Those are
+                         # correct demotions on sparse sheets, so the cap is
+                         # only 1.21x above real behaviour: if a future sheet
+                         # trips it, check the sheet before moving the number.
+
+
+def _demote_frame_lines(chains: list) -> None:
+    """Demote a sheet border that is drawn as separate straight lines.
+
+    Two clauses, both requiring a SET rather than a line (see the block
+    comment above for why a single line is not enough and is not taken).
+
+    1. THE FRAME. At least three of the four page-geometry extent edges carry
+       a straight axis-aligned line that spans >= 0.95 of the extent along its
+       own axis and sits within 3 pt of that edge, and the corners meet: every
+       vertical's span covers every horizontal's position and vice versa.
+       Measured: Oncor p0-p8 (four sides, 2,449.68 + 1,657.68 pt each, closing
+       the sheet to 0.87 pt), Thielen p59/p68-p72, and out of sample the ten
+       Hurricane Storage sheets on `ACE-24x36-CD|G-LINE-BOLD`, Belle Farms
+       Road Grading on `Title Block - 24x36|TITLE BLOCK - BORDER`, Sheridan on
+       `TITLE BLOCK_LOGO`, C2.1 Grading on a layer literally called `edge`,
+       three RC Ontario sheets and the Loves Lane cover sheet.
+
+    2. THE RULE SET. At least three parallel straight axis-aligned lines share
+       ONE span interval to within 0.5 pt, each spans >= 0.90 of the extent,
+       each sits within 0.15 of the extent from an edge, and the shared
+       interval is itself inset <= 0.05 of the extent at both ends. This is
+       the border side plus the title-block dividers: on Guide Structural p12
+       chains 279 (x = 72.00), 26 (x = 2736.00) and 27 (x = 2740.44) all run
+       y = 71.88 -> 2087.88, i.e. exactly 1 in margins on a 42 x 30 in sheet,
+       to the hundredth of a point. 46 Barn/Guide Structural sheets, nine
+       Thielen `_IA-Ttbl` sheets, and out of sample three `Approved
+       Construction Set` sheets (four to five verticals, same interval) and
+       Sheridan p3 on `Title Block_Logo`.
+
+       The one thing this clause has to keep is a set of long parallel lines
+       that are NOT furniture. It exists: Barn Landscaping p16 has three
+       horizontals spanning [486, 2718] on `BG-SWCR-CB-MATERIALS|BG-L-Conc`
+       and `BG-ANNO-SYMB` - real concrete linework. They sit 974-1,316 pt from
+       the edge (0.4573 of the extent), so `_RULE_EDGE_FRAC` declines them
+       with a 3.0x margin. Gardiner water main p261 (13 rows) and the
+       Million Air lab-figure grids (12-15 rows) are declined the same way.
+
+    Spikes cannot move: the gate counts vertices whose consecutive-segment
+    unit dot product is < -0.8, and every chain this pass can touch is a
+    straight line whose bbox is 2 pt thin, so it has no reversal anywhere.
+    """
+    pts = [np.asarray(c.pts) for c in chains if len(c.pts) >= 2]
+    if not pts:
+        return
+    P = np.vstack(pts)
+    lo, hi = P.min(axis=0), P.max(axis=0)
+    ex = (float(lo[0]), float(lo[1]), float(hi[0]), float(hi[1]))
+    ew, eh = ex[2] - ex[0], ex[3] - ex[1]
+    if ew <= 0 or eh <= 0:
+        return
+    live = [c for c in chains if c.klass != "annotation" and len(c.pts) >= 2]
+    if not live:
+        return
+    span = sum(c.length for c in live)
+
+    # every live chain that is one long straight axis-aligned rule
+    cand = []
+    for c in live:
+        p = np.asarray(c.pts)
+        mn, mx = p.min(axis=0), p.max(axis=0)
+        w, h = float(mx[0] - mn[0]), float(mx[1] - mn[1])
+        if min(w, h) > _LINE_THIN_TOL:
+            continue
+        vert = h >= w
+        if vert:
+            reach, ext, o0, o1 = h, eh, float(mn[1]), float(mx[1])
+            pos = 0.5 * float(mn[0] + mx[0])
+            d0, d1 = pos - ex[0], ex[2] - pos
+            perp = ew
+        else:
+            reach, ext, o0, o1 = w, ew, float(mn[0]), float(mx[0])
+            pos = 0.5 * float(mn[1] + mx[1])
+            d0, d1 = pos - ex[1], ex[3] - pos
+            perp = eh
+        if ext <= 0 or perp <= 0 or reach < _RULE_SPAN_FRAC * ext:
+            continue
+        side = (0 if d0 <= d1 else 1) + (0 if vert else 2)
+        cand.append({"c": c, "vert": vert, "pos": pos, "lo": o0, "hi": o1,
+                     "frac": reach / ext, "near": min(d0, d1),
+                     "nfrac": min(d0, d1) / perp, "side": side,
+                     "elo": (ex[1] if vert else ex[0]),
+                     "ehi": (ex[3] if vert else ex[2]), "ext": ext})
+    if not cand:
+        return
+
+    doomed = {}
+
+    # clause 1 - the frame
+    edge = [[] for _ in range(4)]
+    for k in cand:
+        if k["near"] <= _LINE_EDGE_TOL and k["frac"] >= _LINE_SPAN_FRAC:
+            edge[k["side"]].append(k)
+    if sum(1 for e in edge if e) >= _LINE_SIDES:
+        vs = edge[0] + edge[1]
+        hs = edge[2] + edge[3]
+        t = _LINE_CORNER_TOL
+        ok = bool(vs) and bool(hs)
+        for v in vs:
+            for u in hs:
+                if not (v["lo"] - t <= u["pos"] <= v["hi"] + t):
+                    ok = False
+                if not (u["lo"] - t <= v["pos"] <= u["hi"] + t):
+                    ok = False
+        if ok:
+            for k in vs + hs:
+                doomed.setdefault(id(k["c"]), (k["c"], "page frame"))
+
+    # clause 2 - the rule set. Group FIRST, then test the whole group: a
+    # schedule's rows share one span interval too, and if members were
+    # filtered before grouping, the two or three rows that happen to fall
+    # near the edge would survive as a set on their own. Measured, that is
+    # not hypothetical - it takes 8 of the 13 rows of Gardiner water main
+    # p261's schedule, 5 of Million Air p130's, and 5 to 7 rows on four
+    # pages of `estimate_19_for_GCHC_Stair_Replacement.pdf`.
+    groups = {}
+    for k in cand:
+        key = (k["vert"], round(k["lo"] * 2.0) / 2.0, round(k["hi"] * 2.0) / 2.0)
+        groups.setdefault(key, []).append(k)
+    for key, g in groups.items():
+        if len(g) < _RULE_MIN:
+            continue
+        if max(k["nfrac"] for k in g) > _RULE_EDGE_FRAC:
+            continue
+        k = g[0]
+        if max(k["lo"] - k["elo"], k["ehi"] - k["hi"]) > _RULE_END_FRAC * k["ext"]:
+            continue
+        for k in g:
+            doomed.setdefault(id(k["c"]), (k["c"], "sheet rules"))
+
+    if not doomed:
+        return
+    if span > 0 and sum(c.length for c, _ in doomed.values()) > \
+            _LINE_MAX_SHARE * span:
+        return
+    for c, label in doomed.values():
+        c.klass = "annotation"
+        c.dash_signature = label
+
 
 def _grid_annotation(chains: list, units: list) -> None:
     """Structural grid lines -> annotation.
