@@ -101,12 +101,13 @@ class Tag:
     cy_pt: float = 0.0
     kind: str = "unknown"        # window | storefront | door | legend |
                                  # other-tag | unknown
+    family: int = -1             # which size family matched it
 
     def as_dict(self) -> dict:
         return {"x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "score": round(self.score, 3), "code": self.code,
                 "off_schedule": self.off_schedule,
-                "group": self.group, "kind": self.kind,
+                "group": self.group, "kind": self.kind, "family": self.family,
                 "cx": round(self.cx_pt, 1), "cy": round(self.cy_pt, 1)}
 
 
@@ -121,6 +122,12 @@ class MarkPage:
     groups: list[dict] = field(default_factory=list)
     img_size: tuple = (0, 0)
     notes: list[str] = field(default_factory=list)
+    legend_boxes: list = field(default_factory=list)   # working px, see _legend_boxes
+    legend_rot: int | None = None      # quarter turn that read the heading
+    # What TRADE these bubbles belong to, or why we will not say.  See
+    # `scope_state` - the default is ABSTAIN, and abstaining is the answer
+    # on every sheet measured so far.
+    scope: dict = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         """Schedule marks only - the number the estimator is here for."""
@@ -757,37 +764,331 @@ READ_MIN_WEIGHT = 1.5
 
 # ------------------------------------------------------------------- driver
 
-def _legend_box(img: np.ndarray) -> tuple | None:
-    """The sheet's SYMBOL LEGEND block.
+# How a legend block is HEADED, enumerated from the corpus rather than
+# guessed.  Over the 6,714 vector pages under ../TakeoffPro AI/{Plans,
+# Plans 2,Ryno Construction} and ../client_meet (out/verify/2026-08-22/
+# billscope/work/headings.py, output in HEADINGS.txt) the heading of a block
+# that keys a sheet's symbols reads:
+#     LEGEND (173 lines) / "LEGEND:" (18)      - much the commonest form
+#     <qualifier> LEGEND (24 distinct forms: SPOT ELEVATION LEGEND, LINE
+#         STYLE LEGEND, SURVEY SYMBOL LEGEND, PLUMBING SYMBOLS LEGEND, ...)
+#     <qualifier> SYMBOLS (COMMON FRAMING SYMBOLS:, ELECTRICAL SYMBOLS,
+#         LITHOLOGIC SYMBOLS, WELL CONSTRUCTION SYMBOLS, ... - and Mission
+#         Bell's FLOOR SYMBOLS)
+# The pattern this function used to require - the word SYMBOL immediately
+# followed by a word starting LEGEN - fires on 13 of the corpus's 502,992
+# text lines, in 7 spellings.  The bare phrase "SYMBOL LEGEND" is ONE of
+# those 13; the other 12 all carry a qualifier in front (SURVEY / SITE / DRY
+# UTILITY / WATER UTILITY / SANITARY SEWER / STORM DRAIN SYMBOL LEGEND).
+# The rule below fires on 358 lines in 59 spellings, of which 14 are plainly
+# not headings ("VARIES BY LEGEND" x10, "ENGRAVED LEGEND" x2, "SEE KEYNOTE
+# LEGEND", "LEGEND10").  On Bill's Mission Bell set the old pattern fires on
+# nothing at all: the block is headed FLOOR SYMBOLS, and it counted itself 34
+# times across the six sheets.
+#
+# The invariant that IS stable across all of those is that the block is
+# named by WHAT IT IS - the heading's LAST word is LEGEND(S) or SYMBOL(S).
+# startswith(), not equality, because OCR clips the tail off a scan: Aqua
+# Vista's heading comes back as SYMBOL (with a stray quote glued on the
+# front) followed by LEGEN! , and Mission Bell's as FLOOR SYMBOLS.
+_LEGEND_TAIL = ("LEGEN", "SYMBO")
+_LEGEND_MAX_WORDS = 5        # the longest real form measured is 5 words
+                             # ("SANITARY SEWER UTILITY SYMBOL LEGEND",
+                             # "STORM DRAIN UTILITY SYMBOL LEGEND"), and the
+                             # old rule DID catch those, so stopping at 4
+                             # would regress two corpus sheets.  The cap is
+                             # only there to keep a sentence out of the match.
+# A legend prints ONE key per symbol type, so its key column is short: the
+# biggest measured is 6 (Mission Bell FLOOR SYMBOLS - the 100 door key, the A
+# window key and the SD/CO/OS/DS sensor keys); Aqua Vista's SYMBOL LEGEND puts
+# 1 counted-family key inside the box.  A box holding more than this many is
+# not a key column, it is plan area, and it is REJECTED rather than allowed to
+# drop real openings with no symptom.  That bound matters because the heading
+# rule above casts a far wider net than the pattern it replaces - over the
+# corpus text layer it matches 358 lines where the old one matched 13.
+LEGEND_MAX_KEYS = 12
+# How far LEFT of the heading's left edge the key column may start.  The keys
+# and the heading share the block's left margin, so this is 0 when the OCR
+# reads the heading whole; it is needed because the OCR clips a scan - on
+# A-2.00 "FLOOR SYMBOLS" comes back as "DR SYMBOLS" and the anchor lands 47 px
+# right of the keys.  Measured worst case 47 px over the six Mission Bell and
+# five Aqua Vista sheets; 120 is 2.5x that.  It only widens the SEARCH: the
+# box returned is drawn round the seeds actually found.
+_LEGEND_FIND_LEFT = 120
+_LEGEND_PAD = 6
+# The quarter turns tried, in order.  0 first because that is where the
+# heading is when upright() got the page right, which is every Aqua page.
+_LEGEND_ROTS = (0, 90, 270, 180)
 
-    Its key symbols are real tags with real codes in them, so the legend
-    counts itself unless it is excluded.  Returns a box covering the key
-    column under the heading (narrow, because the legend's TEXT column is
-    beside it and real tags may live further right).
+
+def _legend_lines(d: dict, f: float) -> list[tuple]:
+    """psm-11 words -> heading candidates, in reading order.
+
+    The trigger is the LAST word of the heading (LEGEND / SYMBOLS / ...);
+    the ANCHOR the box hangs off is the FIRST, because heading and key
+    column share the block's left margin.  Finding the first word means
+    walking left from the trigger, and that walk is a baseline + gap test
+    rather than tesseract's own line grouping: psm 11 sometimes puts
+    "SYMBOL" and "LEGEND" in one line group and sometimes swallows the whole
+    legend into one, and a rule that depends on which it did that run stops
+    firing at random (measured on Aqua Vista p4, where the block IS read but
+    the grouping buried it).
+
+    Returns [(text, x0, y0, x1, y1), ...] in FULL-scale px of the OCR frame.
+    """
+    ws = []
+    for i, w in enumerate(d["text"]):
+        t = _clean(w)
+        if not t:
+            continue
+        ws.append((t, d["left"][i] / f, d["top"][i] / f,
+                   (d["left"][i] + d["width"][i]) / f,
+                   (d["top"][i] + d["height"][i]) / f))
+    out = []
+    for i, (t, x0, y0, x1, y1) in enumerate(ws):
+        if not t.startswith(_LEGEND_TAIL):
+            continue
+        hh = max(1.0, y1 - y0)
+        cy = (y0 + y1) / 2.0
+        txt, ax0, ay0, ay1 = t, x0, y0, y1
+        j, n = i - 1, 1
+        while j >= 0 and n < _LEGEND_MAX_WORDS:
+            pt, px0, py0, px1, py1 = ws[j]
+            gap = ax0 - px1
+            if abs((py0 + py1) / 2.0 - cy) > 0.6 * hh or not (0 <= gap <= 1.5 * hh):
+                break
+            txt, ax0, ay0, ay1 = pt + " " + txt, px0, min(ay0, py0), max(ay1, py1)
+            j -= 1
+            n += 1
+        out.append((txt, int(ax0), int(ay0), int(x1), int(ay1)))
+    out.sort(key=lambda t: (t[2], t[1]))
+    return out
+
+
+def _legend_boxes(img: np.ndarray,
+                  seeds: list[tuple] = ()) -> tuple[list, int | None]:
+    """Every symbol-legend block on the sheet, as boxes in `img` pixels.
+
+    A legend's key symbols are real tags with real codes in them, so a
+    legend counts itself unless it is excluded.
+
+    A legend block IS a heading with a COLUMN OF SYMBOLS under it, each
+    paired with descriptive text beside it.  The heading (see _LEGEND_TAIL)
+    says WHERE to look; the symbols found there - seeds, the free-standing
+    outlined shapes seed_tags returns - set how far the box actually
+    reaches, left and down.  Seeds are a refinement, NOT a gate: measured on
+    Aqua Vista, whose SYMBOL LEGEND prints 11 rows, exactly ONE row traces as
+    a seed on p1 and NONE does on p2, p3, p4 or p5 - so requiring a seed
+    would stop excluding a legend this module has excluded correctly since
+    F72.  With no seed under it the search window stands as the box, which
+    is what the function did before this change.
+
+    Two more things this has to survive that the single-phrase version did
+    not:
+
+      * the heading is not one fixed phrase - see _LEGEND_TAIL above;
+      * THE PAGE MAY NOT BE STANDING UP.  upright() asks tesseract's OSD
+        which way is up, and OSD is a quarter turn wrong on five of the six
+        Mission Bell scans (measured 2026-08-22: it stood engine pages
+        0,1,2,4,5 at 0/180 deg where upright is 90).  A heading rule that
+        only reads `img` as handed to it can never fire on those pages, so
+        the OCR is retried at each quarter turn until a heading appears and
+        the box is mapped back through the exact 90-degree transform.  The
+        turn that read it is returned so the caller can say which one did.
+
+    A candidate whose heading sits INSIDE an already-accepted box is
+    dropped: it is a row of that legend, not a new block.  Measured need -
+    on A-2.30 the legend row "(N) DOOR SYMBOL" is itself a line ending in
+    SYMBOL and would otherwise open a second box inside the first.
+
+    Returns ([(x0, y0, x1, y1), ...], rotation_deg or None).
     """
     try:
         import pytesseract
     except Exception:
-        return None
+        return [], None
     h, w = img.shape[:2]
     # the heading is set large, so a half-scale page reads it fine and OCRs
     # in a couple of seconds instead of a couple of minutes
     f = 0.5
-    small = cv2.resize(value(img), None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-    try:
-        d = pytesseract.image_to_data(small, config="--psm 11",
-                                      output_type=pytesseract.Output.DICT)
-    except Exception:
-        return None
-    for i, word in enumerate(d["text"]):
-        if _clean(word) != "SYMBOL":
+    v = value(img)
+    for deg in _LEGEND_ROTS:
+        rot = _rot_ccw(v, deg)
+        rh, rw = rot.shape[:2]
+        small = cv2.resize(rot, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        try:
+            d = pytesseract.image_to_data(small, config="--psm 11",
+                                          output_type=pytesseract.Output.DICT)
+        except Exception:
+            return [], None
+        cands = _legend_lines(d, f)
+        if not cands:
             continue
-        nxt = _clean(d["text"][i + 1]) if i + 1 < len(d["text"]) else ""
-        if not nxt.startswith("LEGEN"):
-            continue
-        x, y = int(d["left"][i] / f), int(d["top"][i] / f)
-        return (max(0, x - 30), max(0, y - 10), min(w, x + 220), min(h, y + 900))
-    return None
+        # px of `img` <-> px of the ROTATED frame: the same quarter turn
+        # upright() undoes (verified there against cv2.rotate).
+        if deg == 90:
+            undo = lambda x, y: (w - 1 - y, x)          # noqa: E731
+            fwd = lambda X, Y: (Y, w - 1 - X)           # noqa: E731
+        elif deg == 270:
+            undo = lambda x, y: (y, h - 1 - x)          # noqa: E731
+            fwd = lambda X, Y: (h - 1 - Y, X)           # noqa: E731
+        elif deg == 180:
+            undo = lambda x, y: (w - 1 - x, h - 1 - y)  # noqa: E731
+            fwd = lambda X, Y: (w - 1 - X, h - 1 - Y)   # noqa: E731
+        else:
+            undo = lambda x, y: (x, y)                  # noqa: E731
+            fwd = lambda X, Y: (X, Y)                   # noqa: E731
+        rseeds = []
+        for (sx, sy, sw, sh) in seeds:
+            cx, cy = fwd(sx + sw / 2.0, sy + sh / 2.0)
+            s = max(sw, sh) / 2.0
+            rseeds.append((cx, cy, s))
+        boxes, taken = [], []
+        for _txt_, x, y, x1, y1 in cands:
+            if any(bx0 <= x <= bx1 and by0 <= y <= by1
+                   for bx0, by0, bx1, by1 in taken):
+                continue
+            # WHERE TO LOOK for the key column.  The 30/220/900 window is
+            # the one this function has always used; the change is that the
+            # symbols found inside it now set the box's real extent:
+            #   * LEFT  - out to the leftmost key, because the OCR can clip
+            #     the heading's first word off a scan and move its anchor
+            #     right (measured: A-2.00's "FLOOR SYMBOLS" reads
+            #     "DR SYMBOLS", anchor 47 px right of the keys it names, and
+            #     the old -30 px margin missed all four of them);
+            #   * BOTTOM - up to the lowest key, so a legend nine rows deep
+            #     does not black out three inches of drawing under it.
+            # With no symbol under the heading the window stands as it did
+            # before, and LEGEND_MAX_KEYS is what stops it deleting a wall
+            # of real openings.
+            win = (x - _LEGEND_FIND_LEFT, y - 10, x + 220, y + 900)
+            taken.append(win)
+            # strictly BELOW the heading: the closed counters of the heading's
+            # own letters trace as seeds too, and counting them collapses the
+            # box onto the heading line (measured: it did, on A-2.50 and on
+            # Aqua Vista p4/p5, and the legend then counted itself again).
+            col = [s for s in rseeds
+                   if win[0] <= s[0] <= win[2] and y1 < s[1] <= win[3]]
+            bx0 = min([x - 30] + [c[0] - c[2] - _LEGEND_PAD for c in col])
+            bx1 = x + 220
+            by0 = y - 10
+            by1 = (min(y + 900, max(c[1] + c[2] for c in col) + _LEGEND_PAD)
+                   if col else y + 900)
+            xs, ys = zip(*(undo(px, py) for px in (bx0, bx1)
+                           for py in (by0, by1)))
+            boxes.append((max(0, int(min(xs))), max(0, int(min(ys))),
+                          min(w, int(max(xs))), min(h, int(max(ys)))))
+        if boxes:
+            return boxes, deg
+    return [], None
+
+
+# ------------------------------------------------------- cross-family dedup
+
+def dedup_across_families(tags: list[Tag]) -> list[Tag]:
+    """Drop a second detection of the SAME printed symbol by another family.
+
+    find_tags suppresses non-maxima INSIDE one family and nothing suppresses
+    them across families, so when size_families legitimately hands the same
+    population to two near-congruent families every symbol in it is emitted
+    twice.  Measured on Bill's Mission Bell A-2.30 (engine page index 3 =
+    printed sheet 4 of 6): families 39x43 (46 tags), 37x37 (54) and 43x42
+    (44) produce 144 detections over 100 sites - 44 pairs, every pair one
+    39x43 with one 43x42, centres at most 0.64 pt apart, and the 37x37
+    circles never involved.  The other nine pages measured (Mission Bell
+    p0/p1/p2/p4/p5, Aqua Vista p1-p5) have ZERO overlapping pairs, including
+    the four that also keep two families - so this is a positional test, not
+    a size test, and it cannot merge two genuinely different symbols that
+    happen to be similar sizes.
+
+    NOT the same change as replacing size_families' 3 px bucket: the bucket
+    is a legitimate seed for the +/-3 px radius test (see the comment there,
+    which stands), and swapping it moves the family list on pages that have
+    no confirmed count.  This drops duplicate SITES and leaves the bucket
+    alone.
+
+    The survivor is explicitly ranked - never first-writer-wins: the higher
+    correlation score, then the family with more seeds behind its templates,
+    then family order, then position, so the result does not depend on the
+    order tags happen to arrive in.
+    """
+    order = sorted(range(len(tags)),
+                   key=lambda i: (-tags[i].score, tags[i].family,
+                                  tags[i].y, tags[i].x))
+    keep: list[int] = []
+    for i in order:
+        t = tags[i]
+        hit = False
+        for j in keep:
+            k = tags[j]
+            nms = max(4, int(max(t.w, k.w) * NMS_FRAC))
+            if (abs((t.x + t.w / 2.0) - (k.x + k.w / 2.0)) < nms
+                    and abs((t.y + t.h / 2.0) - (k.y + k.h / 2.0)) < nms):
+                hit = True
+                break
+        if not hit:
+            keep.append(i)
+    return [tags[i] for i in sorted(keep)]
+
+
+# ------------------------------------------------------------- trade scoping
+
+def scope_state(tags: list[Tag], trade: str | None) -> dict:
+    """Whether these bubbles can be narrowed to one trade, or why not.
+
+    THE DEFAULT IS TO ABSTAIN, and on every sheet measured so far abstaining
+    is the answer.  Refusing to narrow, and saying so, beats guessing a scope
+    and silently dropping real openings - measured against Bill's answer key
+    on the Mission Bell set (out/verify/2026-08-22/bill-truth/SCORE.md, 285
+    openings), where each of the three obvious geometric shortcuts is wrong:
+
+      * SHAPE.  This sheet set's own FLOOR SYMBOLS legend says circle =
+        (N) DOOR SYMBOL, hexagon = (N) WINDOW SYMBOL.  But 100 of Bill's 285
+        openings ARE circles - balcony doors 001 x75 and 003 x10, the one
+        printed 002, storefront doors 004 x2 / 005 x1, and interior
+        storefront doors 100-107 x11 - so "keep the hexagons" throws away 35%
+        of his takeoff and recall falls 0.993 -> 0.646.
+      * CODE SHAPE.  Letter vs number does not separate them either, for the
+        same reason: 001-005 and 100-107 are numeric AND his, while 006-008,
+        108-111, 200-202 and G01-G03 are numeric and somebody else's.
+        Recall would fall to 0.649.
+      * WHICH SCHEDULE.  All 40 of his codes and all 10 of the other trade's
+        are printed on a schedule row of this project, so "is it scheduled"
+        decides nothing at all.
+
+    What DOES separate them is the schedule row's own material cell, read
+    from the vector text layer of Window - Storefront - Door schedules.pdf
+    (dumped in out/verify/2026-08-22/billscope/SCHEDULES.txt): 001/003 VINYL
+    "UNIT PATIO", 004/005 and 100-107 ALUM "WITH TEMPERED GLASS LITE",
+    against 006-008 STEEL "EXIT STAIR"/"TRASH", 108-111 STEEL and 200-208
+    SC,WOOD.  Over the 50 codes this project prints - Bill's 40 and the other
+    trade's 10 - that rule is right on 46; it is wrong on the three aluminium
+    yard GATES G01-G03, which are ALUM but are not glazing work, and it has
+    nothing to say about 002, whose row reads NOT USED.
+
+    But that schedule lives in a DIFFERENT PDF from the plans, and on these
+    sheets no bubble is named at all, so nothing here can act on it.  Two
+    things have to arrive from outside this module first: (1) the schedule
+    rows for the whole PROJECT, not just this file, and (2) the trade being
+    taken off.  Until they do, this returns abstained and the caller shows
+    every symbol it found.
+
+    And even with them, a code the schedules do not list must come back
+    "unknown", never "out" - dropping a real opening with no symptom is the
+    one failure this engine must not have.  Measured on the 151 out-of-trade
+    detections, reading each bubble independently at 8x: 90 read as a
+    scheduled non-glazed door and would go, 49 read as nothing the schedules
+    list and must stay, 12 read as an in-scope code.  Against that, of the
+    283 true positives exactly ONE reads as a scheduled non-glazed door (a
+    003 read as 008) - so a code-driven filter of this OCR quality costs one
+    real opening in 285.
+    """
+    named = sum(1 for t in tags if t.code)
+    counted = sum(1 for t in tags if t.kind != "legend")
+    return {"state": "abstained", "trade": trade,
+            "reason": ("no-code-read" if not named else
+                       "no-trade-scope-supplied"),
+            "counted": counted, "named": named, "unnamed": counted - named}
 
 
 # ------------------------------------------------------- the sheet's schedule
@@ -1117,9 +1418,8 @@ def detect_marks(pdf_path: str, page: int, vocab: list[str] | None = None,
                         "mark from this schedule")
         return mp
     mp.tag_size = (fams[0][0], fams[0][1])
-    lb = _legend_box(work) if with_ocr else None
-    if lb:
-        mp.notes.append("SYMBOL LEGEND key symbols excluded from the count")
+    lbs, lrot = _legend_boxes(work, seeds) if with_ocr else ([], None)
+    mp.legend_boxes, mp.legend_rot = lbs, lrot
 
     all_tags: list[Tag] = []
     dbg_codes, dbg_canon, dbg_groups = [], [], []
@@ -1135,8 +1435,7 @@ def detect_marks(pdf_path: str, page: int, vocab: list[str] | None = None,
         for t in tags:
             cx, cy = t.x + t.w / 2.0, t.y + t.h / 2.0
             t.cx_pt, t.cy_pt = to_page_pt(undo, dpi, cx, cy)
-            if lb and lb[0] <= cx <= lb[2] and lb[1] <= cy <= lb[3]:
-                t.kind = "legend"
+            t.family = fi
         base = len(all_tags)
         if with_ocr:
             codes = [isolate_code(gray, t, fam) for t in tags]
@@ -1188,6 +1487,51 @@ def detect_marks(pdf_path: str, page: int, vocab: list[str] | None = None,
                               "weight": 0.0})
         all_tags += tags
 
+    # One printed symbol, one detection: see dedup_across_families.  Done
+    # after every family has matched, because that is the first moment two
+    # families' answers can be compared, and the group tallies are corrected
+    # so the debug view does not keep counting the tags that were dropped.
+    if len(fams) > 1:
+        kept = dedup_across_families(all_tags)
+        if len(kept) != len(all_tags):
+            mp.notes.append(
+                f"{len(all_tags) - len(kept)} duplicate detections removed: "
+                f"the same printed symbol matched by two size families")
+            live = set(id(t) for t in kept)
+            for g in mp.groups:
+                g["n"] = 0
+            for t in kept:
+                if 0 <= t.group < len(mp.groups):
+                    mp.groups[t.group]["n"] += 1
+            all_tags = [t for t in all_tags if id(t) in live]
+
+    # Legend keys are marked AFTER dedup, so each box is judged on the tags
+    # that would actually be counted.  A box holding more than LEGEND_MAX_KEYS
+    # of them is rejected and SAID SO, rather than quietly deleting whatever
+    # is under it - see the constant for the measurement behind that bound.
+    kept_boxes = 0
+    for b in lbs:
+        inside = [t for t in all_tags
+                  if b[0] <= t.x + t.w / 2.0 <= b[2]
+                  and b[1] <= t.y + t.h / 2.0 <= b[3]]
+        if len(inside) > LEGEND_MAX_KEYS:
+            mp.notes.append(
+                f"a block headed like a legend at ({b[0]},{b[1]}) holds "
+                f"{len(inside)} symbols - too many for a key column, so they "
+                f"are COUNTED, not dropped; check that corner by eye")
+            continue
+        kept_boxes += 1
+        for t in inside:
+            t.kind = "legend"
+    if kept_boxes:
+        mp.notes.append(
+            f"{kept_boxes} symbol-legend block"
+            f"{'' if kept_boxes == 1 else 's'} found on this sheet - their "
+            f"key symbols are excluded from the count"
+            + ("" if not lrot else
+               f" (the heading only read with the page turned {lrot} deg "
+               f"from where it was stood up)"))
+
     # (no point retrying the other way up when the vocabulary was too weak to
     # read either way - nothing would vote)
     if _retry and not weak_vocab and flipped_votes > upright_votes \
@@ -1208,6 +1552,19 @@ def detect_marks(pdf_path: str, page: int, vocab: list[str] | None = None,
                   else "other-tag" if t.off_schedule
                   else "unknown")
     mp.tags = all_tags
+    mp.scope = scope_state(all_tags, None)
+    if mp.scope["state"] == "abstained" and mp.scope["counted"]:
+        s = mp.scope
+        mp.notes.append(
+            f"NOT narrowed to a trade: {s['counted']} symbols were found and "
+            f"{s['unnamed']} of them could not be named, and nothing in this "
+            f"document says which codes belong to your trade - so every "
+            f"symbol found is listed, including any that belong to somebody "
+            f"else. Give the counter this project's window/door schedules, "
+            f"or narrow it by hand."
+            if s["reason"] == "no-code-read" else
+            f"NOT narrowed to a trade: no trade was given, so all "
+            f"{s['counted']} symbols found are listed.")
     if debug is not None:
         debug.update(work=work, gray=gray, codes=dbg_codes, canon=dbg_canon,
                      groups=dbg_groups, undo=undo, families=fams)
