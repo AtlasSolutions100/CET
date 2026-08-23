@@ -1,0 +1,580 @@
+{
+  "sheet": "SWR_Barn_Residence_-_Landscaping_4.7.26.pdf",
+  "page_index": 11,
+  "printed_page": 12,
+  "feature": "door swing arcs (objects, EA; one per drawn leaf)",
+  "expected_count": 56,
+  "source": "DRAFTER-ASSERTED, not human-confirmed: CAD layer names surviving in the PDF (CLAUDE.md section 2 accepts CAD layer names as a ground-truth source). DOOR-named layers on this page: 'CSA-SW-CB|A-DOOR', 'CSA-SW-CB|A-DOOR-FRAM', 'CSA-SW-CB|A-DOOR-GLAZ', 'CSA-SW-CB|A-DOOR-HDLN'. Extracted 2026-08-22 by out/verify/2026-08-22/doors2/scripts/s9_gt.py from the raw stroke extraction. Eyeball status: not eyeballed door by door.",
+  "convention": "A door swing is drafted as an arc about the hinge whose radius is the leaf width; a double door or bi-fold bank draws one arc per LEAF, so expected_count is one per drawn leaf, not one per doorway. Read off these sheets themselves (bi-fold banks on Landscaping p7/p14/p15 draw two 45-deg arcs per fold meeting at a cusp; double doors on p15/p20 draw two mirrored arcs meeting mid-opening), not from an industry prior.",
+  "truth_rule": "(a) arc on a DOOR-named layer, or (b) DOOR-named geometry within 2.0 pt of the fitted hinge; either way the unit must be genuinely drawn round a circle: arc-length ratio 0.90-1.20 (genuine swings measure 0.931-1.000 across the corpus; A-DOOR slab rectangles fit degenerately at <= 0.870) and sweep 20-200 deg, radius in the door band (1.25-6 ft at the detected scale).",
+  "layer_coverage": "196395/197350 units on this page carry a CAD layer name (99.5%)",
+  "expected_by_layer": {
+    "CSA-SW-CB|A-DOOR": 56
+  },
+  "expected_by_rule": {
+    "arc_layer": 56
+  },
+  "notes": "Coordinates are display-space pt from the RAW stroke extraction. detect_page runs build_chains before door_swings and build_chains welds unit endpoints in place, so live-engine centres can sit a fraction of a pt away and coincident twin arcs merge. Match detections to these arcs with a tolerance (4 pt on centre and radius), never by equality. What this truth CANNOT see: doors the drafter did not put on a DOOR-named layer and did not give a DOOR-layer jamb (none known on these pages), and pages with no layer metadata at all (see VERIFY.md for the list).",
+  "arcs": [
+    {
+      "cx": 1223.1,
+      "cy": 1118.2,
+      "r": 27.08,
+      "sweep": 38.8,
+      "ratio": 0.998,
+      "verts": 4,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1213.3,
+      "cy": 1518.5,
+      "r": 22.5,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1222.6,
+      "cy": 1474.6,
+      "r": 22.5,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1305.5,
+      "cy": 1110.4,
+      "r": 22.44,
+      "sweep": 45.1,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1566.4,
+      "cy": 958.7,
+      "r": 18.0,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1161.1,
+      "cy": 1114.7,
+      "r": 17.99,
+      "sweep": 84.1,
+      "ratio": 0.9986,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1196.3,
+      "cy": 1122.1,
+      "r": 17.99,
+      "sweep": 84.1,
+      "ratio": 0.9986,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1046.6,
+      "cy": 1054.4,
+      "r": 17.98,
+      "sweep": 45.0,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1149.5,
+      "cy": 1102.9,
+      "r": 16.52,
+      "sweep": 66.2,
+      "ratio": 0.9826,
+      "verts": 5,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1376.7,
+      "cy": 1363.3,
+      "r": 13.55,
+      "sweep": 83.8,
+      "ratio": 0.9986,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1387.2,
+      "cy": 1289.1,
+      "r": 13.55,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1395.7,
+      "cy": 1342.9,
+      "r": 13.55,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1424.9,
+      "cy": 1382.0,
+      "r": 13.55,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1455.4,
+      "cy": 1247.0,
+      "r": 13.55,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1467.9,
+      "cy": 1214.5,
+      "r": 13.55,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 993.4,
+      "cy": 791.0,
+      "r": 13.54,
+      "sweep": 86.9,
+      "ratio": 0.9985,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 948.9,
+      "cy": 1196.7,
+      "r": 13.53,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 967.0,
+      "cy": 1153.0,
+      "r": 13.53,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1002.0,
+      "cy": 934.0,
+      "r": 13.53,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1327.1,
+      "cy": 1326.5,
+      "r": 13.5,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1332.4,
+      "cy": 1430.9,
+      "r": 13.5,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1353.6,
+      "cy": 1332.1,
+      "r": 13.5,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1457.2,
+      "cy": 1199.9,
+      "r": 13.49,
+      "sweep": 40.0,
+      "ratio": 0.9997,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 966.8,
+      "cy": 1147.1,
+      "r": 13.46,
+      "sweep": 90.2,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 995.0,
+      "cy": 817.9,
+      "r": 13.46,
+      "sweep": 87.3,
+      "ratio": 0.9985,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1003.6,
+      "cy": 960.9,
+      "r": 13.46,
+      "sweep": 90.2,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1353.7,
+      "cy": 1349.1,
+      "r": 13.45,
+      "sweep": 86.7,
+      "ratio": 0.9985,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1372.9,
+      "cy": 1311.9,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1391.5,
+      "cy": 1346.1,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1433.6,
+      "cy": 1282.2,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1481.6,
+      "cy": 1208.7,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1515.7,
+      "cy": 1082.3,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1593.6,
+      "cy": 940.3,
+      "r": 13.45,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1003.2,
+      "cy": 1031.3,
+      "r": 12.75,
+      "sweep": 45.0,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1651.7,
+      "cy": 1014.3,
+      "r": 12.05,
+      "sweep": 89.8,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1573.2,
+      "cy": 1102.7,
+      "r": 11.95,
+      "sweep": 90.3,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 902.5,
+      "cy": 934.4,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 903.7,
+      "cy": 956.9,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 904.2,
+      "cy": 966.9,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 905.4,
+      "cy": 989.3,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 906.0,
+      "cy": 999.3,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 907.2,
+      "cy": 1021.8,
+      "r": 11.25,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 937.7,
+      "cy": 1152.7,
+      "r": 11.25,
+      "sweep": 32.7,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 939.9,
+      "cy": 1194.6,
+      "r": 11.25,
+      "sweep": 32.7,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1336.5,
+      "cy": 1057.7,
+      "r": 11.25,
+      "sweep": 30.0,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1341.2,
+      "cy": 1035.6,
+      "r": 11.25,
+      "sweep": 30.0,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1423.7,
+      "cy": 1349.8,
+      "r": 11.25,
+      "sweep": 32.7,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1520.7,
+      "cy": 1114.9,
+      "r": 11.25,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1230.7,
+      "cy": 1409.6,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1234.4,
+      "cy": 1392.2,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1238.1,
+      "cy": 1374.6,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1241.8,
+      "cy": 1357.0,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1245.5,
+      "cy": 1339.4,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1249.3,
+      "cy": 1321.8,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1251.1,
+      "cy": 1313.0,
+      "r": 8.94,
+      "sweep": 45.2,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1047.4,
+      "cy": 1067.4,
+      "r": 8.72,
+      "sweep": 44.4,
+      "ratio": 1.1315,
+      "verts": 8,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "sheet": "260603 Thielen Biggerstaff Residence.pdf",
+  "page_index": 65,
+  "printed_page": 66,
+  "feature": "door swing arcs (objects, EA; one per drawn leaf)",
+  "expected_count": 2,
+  "source": "DRAFTER-ASSERTED, not human-confirmed: CAD layer names surviving in the PDF (CLAUDE.md section 2 accepts CAD layer names as a ground-truth source). DOOR-named layers on this page: 'A-DOOR', 'A-DOOR-GLAZ'. Extracted 2026-08-22 by out/verify/2026-08-22/doors2/scripts/s9_gt.py from the raw stroke extraction. Eyeball status: not eyeballed door by door.",
+  "convention": "A door swing is drafted as an arc about the hinge whose radius is the leaf width; a double door or bi-fold bank draws one arc per LEAF, so expected_count is one per drawn leaf, not one per doorway. Read off these sheets themselves (bi-fold banks on Landscaping p7/p14/p15 draw two 45-deg arcs per fold meeting at a cusp; double doors on p15/p20 draw two mirrored arcs meeting mid-opening), not from an industry prior.",
+  "truth_rule": "(a) arc on a DOOR-named layer, or (b) DOOR-named geometry within 2.0 pt of the fitted hinge; either way the unit must be genuinely drawn round a circle: arc-length ratio 0.90-1.20 (genuine swings measure 0.931-1.000 across the corpus; A-DOOR slab rectangles fit degenerately at <= 0.870) and sweep 20-200 deg, radius in the door band (1.25-6 ft at the detected scale).",
+  "layer_coverage": "9938/9955 units on this page carry a CAD layer name (99.8%)",
+  "expected_by_layer": {
+    "A-DOOR": 2
+  },
+  "expected_by_rule": {
+    "arc_layer": 2
+  },
+  "notes": "Coordinates are display-space pt from the RAW stroke extraction. detect_page runs build_chains before door_swings and build_chains welds unit endpoints in place, so live-engine centres can sit a fraction of a pt away and coincident twin arcs merge. Match detections to these arcs with a tolerance (4 pt on centre and radius), never by equality. What this truth CANNOT see: doors the drafter did not put on a DOOR-named layer and did not give a DOOR-layer jamb (none known on these pages), and pages with no layer metadata at all (see VERIFY.md for the list).",
+  "arcs": [
+    {
+      "cx": 642.9,
+      "cy": 1055.7,
+      "r": 54.04,
+      "sweep": 90.1,
+      "ratio": 0.9999,
+      "verts": 35,
+      "layer": "A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 686.8,
+      "cy": 733.2,
+      "r": 48.07,
+      "sweep": 90.0,
+      "ratio": 0.9996,
+      "verts": 17,
+      "layer": "A-DOOR",
+      "truth_by": "arc_layer"
+    }
+  ]
+}

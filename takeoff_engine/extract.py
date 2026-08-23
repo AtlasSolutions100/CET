@@ -687,6 +687,16 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         # impersonate leaves on SWR Barn Civil p14 (a NOT-TO-SCALE
         # piping detail) sit at 3.25-3.30pt. Without the cap the 0.15r
         # term buys them 3.69pt of slack at r=24.6.
+        # A radius-relative cap max(3.0, c*r) was MEASURED and REFUTED
+        # 2026-08-22 over all 217 corpus pages (leafpool scan,
+        # out/verify/2026-08-22/doors2): the first phantom admits at
+        # c=0.0481 (an angular-dimension arc on SWR Guide Structural p4,
+        # r=87.7, miss 4.22) - BEFORE the first lost real door at
+        # c=0.0809 (Barn Landscaping p20 r=43.2, on layer A-DOOR, miss
+        # 3.50). The window is empty, so no c both recovers a door and
+        # holds the zero-phantom bar; that door comes back through
+        # pair_ok's template path instead. The elbow flanges sit at
+        # c=0.132-0.134 and were never the binding constraint.
         tol = min(max(1.5, 0.15 * r), 3.0)
         for ex, ey in ends:
             da = (np.hypot(E[:, 0] - cx, E[:, 1] - cy)
@@ -698,7 +708,37 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
         return False
 
     def pair_ok(i):
+        """-> (corroborated, template_corroborated).
+
+        The second flag is the TEMPLATE pair: radii equal within 2% and
+        sweeps within 1.5deg. A drafter places a double door / bi-fold
+        bank by repeating one block, so real pairs are numerically
+        identical; a curve that merely wanders into pair geometry is two
+        DIFFERENT pieces. Measured 2026-08-22 over all 217 corpus pages
+        (pairpool/meetpool scans, out/verify/2026-08-22/doors2): every
+        layer-confirmed A-DOOR pair matches at dR <= 0.9% / dsweep <=
+        0.7deg, while every non-door pair that passes the loose test
+        misses it - road-edge returns on SWR Barn/Guide Civil dR 9.9-13.7%
+        dsweep 8-12deg, existing-ground contour wiggles on C4.0/C8.0/C9.0
+        dR 10-14%, a steel-framing axonometric curve pair on SWR Barn
+        Structural p8 dsweep 2.5deg, a scanned floor plan's two unequal
+        arcs on Bill's set dsweep 49deg. The 2% / 1.5deg cuts sit >= 2.2x
+        from both populations. A template pair is trusted two ways:
+        - it OVERRIDES the jamb veto (the caller): bi-fold banks hang on
+          a closet-front line ~one radius from the fitted hinge, so
+          jamb_ok misses them by 7-36pt (Barn Landscaping p7/p11/p14/p15,
+          20 arcs on layer A-DOOR, all currently deleted);
+        - its meeting-point tolerance is max(1.5, 0.11 x r), not 0.05 x r:
+          large double doors close on an astragal gap that scales with
+          the plot, measured 2.20pt at r=43.2 (Landscaping p20, on
+          A-DOOR, 0.0508r - the shipped 0.05r cap misses it by 0.03pt)
+          and 7.51pt at r=72.0 (p15, 0.1043r). Between 0.1043 and the
+          0.30 scan ceiling the corpus holds NO template pair, so 0.11
+          has the widest usable margin; the loose-pair tolerance stays
+          at 0.05r, which keeps the near-template section-arc fans
+          (Landscaping p17, dR 3.6-14.8%) out."""
         cxi, cyi, ri, a0, a1, mi, _swi = cands[i]
+        found = False
         for j, (cxj, cyj, rj, b0, b1, mj, _swj) in enumerate(cands):
             if j == i:
                 continue
@@ -712,12 +752,14 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             # four Belle Structural p1 pairs; 8% slop for astragal gaps
             if not (0.92 * rsum <= d <= 1.08 * rsum) or d < 1e-6:
                 continue
+            templ = (abs(ri - rj) <= 0.02 * max(ri, rj)
+                     and abs(_swi - _swj) <= 1.5)
             # meeting point: where the closed leaves touch, ri along the
             # hinge-hinge line. Both arcs must END there - measured gap
             # 0.0-0.1pt on real pairs, 14-27pt on the callout-bubble trap.
             mx = cxi + (ri / d) * (cxj - cxi)
             my = cyi + (ri / d) * (cyj - cyi)
-            tol = max(1.5, 0.05 * max(ri, rj))
+            tol = max(1.5, (0.11 if templ else 0.05) * max(ri, rj))
             if min(np.hypot(a0[0] - mx, a0[1] - my),
                    np.hypot(a1[0] - mx, a1[1] - my)) > tol:
                 continue
@@ -732,17 +774,25 @@ def door_swings(units: list, scale_ft_per_in: float | None = None,
             sj = ux * (mj[1] - cyi) - uy * (mj[0] - cxi)
             if si == 0.0 or sj == 0.0 or (si > 0) != (sj > 0):
                 continue
-            return True
-        return False
+            if templ:
+                return True, True
+            found = True
+        return found, False
 
     out = []
     confirmed_r = []
     for i, (cx, cy, r, e0, e1, _mid, sweep) in enumerate(cands):
         if sweep < 35.0:
             continue   # fragments resolved in a second pass below
-        if not jamb_ok(cx, cy, r, (e0, e1)):
-            continue
-        if leaf_ok(cx, cy, r, (e0, e1)) or pair_ok(i):
+        jok = jamb_ok(cx, cy, r, (e0, e1))
+        if jok and leaf_ok(cx, cy, r, (e0, e1)):
+            corrob = True
+        else:
+            po, ps = pair_ok(i)
+            # a TEMPLATE pair overrides the jamb veto (see pair_ok);
+            # a merely loose pair still needs the wall
+            corrob = ps or (jok and po)
+        if corrob:
             # mx,my = arc midpoint: tells the consumer which SIDE of the
             # hinge the opening spans (the door chord), so a wall run is
             # cut only across the actual doorway, not the full swing disk

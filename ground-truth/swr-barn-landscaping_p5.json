@@ -1,0 +1,110 @@
+{
+  "sheet": "SWR_Barn_Residence_-_Landscaping_4.7.26.pdf",
+  "page_index": 5,
+  "printed_page": 6,
+  "feature": "door swing arcs (objects, EA; one per drawn leaf)",
+  "expected_count": 9,
+  "source": "DRAFTER-ASSERTED, not human-confirmed: CAD layer names surviving in the PDF (CLAUDE.md section 2 accepts CAD layer names as a ground-truth source). DOOR-named layers on this page: 'CSA-SW-CB|A-DOOR', 'CSA-SW-CB|A-DOOR-FRAM', 'CSA-SW-CB|A-DOOR-GLAZ', 'CSA-SW-CB|A-DOOR-HDLN'. Extracted 2026-08-22 by out/verify/2026-08-22/doors2/scripts/s9_gt.py from the raw stroke extraction. Eyeball status: not eyeballed door by door.",
+  "convention": "A door swing is drafted as an arc about the hinge whose radius is the leaf width; a double door or bi-fold bank draws one arc per LEAF, so expected_count is one per drawn leaf, not one per doorway. Read off these sheets themselves (bi-fold banks on Landscaping p7/p14/p15 draw two 45-deg arcs per fold meeting at a cusp; double doors on p15/p20 draw two mirrored arcs meeting mid-opening), not from an industry prior.",
+  "truth_rule": "(a) arc on a DOOR-named layer, or (b) DOOR-named geometry within 2.0 pt of the fitted hinge; either way the unit must be genuinely drawn round a circle: arc-length ratio 0.90-1.20 (genuine swings measure 0.931-1.000 across the corpus; A-DOOR slab rectangles fit degenerately at <= 0.870) and sweep 20-200 deg, radius in the door band (1.25-6 ft at the detected scale).",
+  "layer_coverage": "91895/92748 units on this page carry a CAD layer name (99.1%)",
+  "expected_by_layer": {
+    "CSA-SW-CB|A-DOOR": 9
+  },
+  "expected_by_rule": {
+    "arc_layer": 9
+  },
+  "notes": "Coordinates are display-space pt from the RAW stroke extraction. detect_page runs build_chains before door_swings and build_chains welds unit endpoints in place, so live-engine centres can sit a fraction of a pt away and coincident twin arcs merge. Match detections to these arcs with a tolerance (4 pt on centre and radius), never by equality. What this truth CANNOT see: doors the drafter did not put on a DOOR-named layer and did not give a DOOR-layer jamb (none known on these pages), and pages with no layer metadata at all (see VERIFY.md for the list).",
+  "arcs": [
+    {
+      "cx": 835.6,
+      "cy": 1090.8,
+      "r": 14.37,
+      "sweep": 39.0,
+      "ratio": 1.0025,
+      "verts": 4,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 830.6,
+      "cy": 1304.3,
+      "r": 12.03,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 835.5,
+      "cy": 1280.9,
+      "r": 12.03,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 879.7,
+      "cy": 1086.7,
+      "r": 12.03,
+      "sweep": 45.0,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 741.6,
+      "cy": 1056.8,
+      "r": 9.63,
+      "sweep": 45.0,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 802.7,
+      "cy": 1088.9,
+      "r": 9.63,
+      "sweep": 84.0,
+      "ratio": 0.9986,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 821.4,
+      "cy": 1092.9,
+      "r": 9.63,
+      "sweep": 84.0,
+      "ratio": 0.9986,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1018.8,
+      "cy": 1005.7,
+      "r": 9.63,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 795.9,
+      "cy": 1082.5,
+      "r": 9.32,
+      "sweep": 61.9,
+      "ratio": 0.9928,
+      "verts": 5,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    }
+  ]
+}

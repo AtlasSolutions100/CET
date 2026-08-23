@@ -1,0 +1,210 @@
+{
+  "sheet": "SWR_Barn_Residence_-_Landscaping_4.7.26.pdf",
+  "page_index": 20,
+  "printed_page": 21,
+  "feature": "door swing arcs (objects, EA; one per drawn leaf)",
+  "expected_count": 19,
+  "source": "DRAFTER-ASSERTED, not human-confirmed: CAD layer names surviving in the PDF (CLAUDE.md section 2 accepts CAD layer names as a ground-truth source). DOOR-named layers on this page: 'CSA-SW-CB|A-DOOR', 'CSA-SW-CB|A-DOOR-FRAM', 'CSA-SW-CB|A-DOOR-GLAZ'. Extracted 2026-08-22 by out/verify/2026-08-22/doors2/scripts/s9_gt.py from the raw stroke extraction. Eyeball status: the r=43.2 double door at (889.8-976.2, 901.7) eyeballed at 4x (img/src_land_p20_r43_double.png).",
+  "convention": "A door swing is drafted as an arc about the hinge whose radius is the leaf width; a double door or bi-fold bank draws one arc per LEAF, so expected_count is one per drawn leaf, not one per doorway. Read off these sheets themselves (bi-fold banks on Landscaping p7/p14/p15 draw two 45-deg arcs per fold meeting at a cusp; double doors on p15/p20 draw two mirrored arcs meeting mid-opening), not from an industry prior.",
+  "truth_rule": "(a) arc on a DOOR-named layer, or (b) DOOR-named geometry within 2.0 pt of the fitted hinge; either way the unit must be genuinely drawn round a circle: arc-length ratio 0.90-1.20 (genuine swings measure 0.931-1.000 across the corpus; A-DOOR slab rectangles fit degenerately at <= 0.870) and sweep 20-200 deg, radius in the door band (1.25-6 ft at the detected scale).",
+  "layer_coverage": "160600/161063 units on this page carry a CAD layer name (99.7%)",
+  "expected_by_layer": {
+    "CSA-SW-CB|A-DOOR": 19
+  },
+  "expected_by_rule": {
+    "arc_layer": 19
+  },
+  "notes": "Coordinates are display-space pt from the RAW stroke extraction. detect_page runs build_chains before door_swings and build_chains welds unit endpoints in place, so live-engine centres can sit a fraction of a pt away and coincident twin arcs merge. Match detections to these arcs with a tolerance (4 pt on centre and radius), never by equality. What this truth CANNOT see: doors the drafter did not put on a DOOR-named layer and did not give a DOOR-layer jamb (none known on these pages), and pages with no layer metadata at all (see VERIFY.md for the list).",
+  "arcs": [
+    {
+      "cx": 1740.6,
+      "cy": 777.4,
+      "r": 57.62,
+      "sweep": 45.0,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 889.8,
+      "cy": 901.7,
+      "r": 43.23,
+      "sweep": 87.1,
+      "ratio": 0.9985,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 976.2,
+      "cy": 901.6,
+      "r": 43.23,
+      "sweep": 87.1,
+      "ratio": 0.9985,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1434.6,
+      "cy": 898.8,
+      "r": 43.23,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 2023.2,
+      "cy": 1048.4,
+      "r": 43.23,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 2178.4,
+      "cy": 1113.7,
+      "r": 43.23,
+      "sweep": 90.0,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1348.2,
+      "cy": 898.7,
+      "r": 43.16,
+      "sweep": 90.1,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 2041.8,
+      "cy": 1048.3,
+      "r": 43.16,
+      "sweep": 90.1,
+      "ratio": 0.9984,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1659.1,
+      "cy": 912.1,
+      "r": 40.72,
+      "sweep": 45.1,
+      "ratio": 0.9996,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1332.2,
+      "cy": 1217.2,
+      "r": 36.09,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1540.1,
+      "cy": 1217.2,
+      "r": 36.09,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 2170.0,
+      "cy": 1142.4,
+      "r": 36.09,
+      "sweep": 32.7,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1404.3,
+      "cy": 1217.2,
+      "r": 36.04,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1508.3,
+      "cy": 1217.2,
+      "r": 36.04,
+      "sweep": 27.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1612.1,
+      "cy": 1217.2,
+      "r": 35.96,
+      "sweep": 27.9,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 2035.9,
+      "cy": 1142.6,
+      "r": 35.96,
+      "sweep": 32.8,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1436.3,
+      "cy": 1217.2,
+      "r": 35.91,
+      "sweep": 27.9,
+      "ratio": 0.9998,
+      "verts": 9,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1658.5,
+      "cy": 777.6,
+      "r": 25.35,
+      "sweep": 49.1,
+      "ratio": 1.1426,
+      "verts": 8,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    },
+    {
+      "cx": 1779.2,
+      "cy": 777.1,
+      "r": 25.1,
+      "sweep": 49.7,
+      "ratio": 1.1471,
+      "verts": 8,
+      "layer": "CSA-SW-CB|A-DOOR",
+      "truth_by": "arc_layer"
+    }
+  ]
+}
