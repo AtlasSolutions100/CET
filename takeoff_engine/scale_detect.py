@@ -416,12 +416,15 @@ def graphic_scale_bar(words: list) -> ScaleCandidate | None:
     return None
 
 
-# The row-join sorts every word on the sheet into 8pt horizontal bands, so
-# with no gap test it welds text from opposite ends of a 42-inch sheet into
-# one "line" - which is how both keyword misreads were manufactured. On Barn
+# How far apart two words can sit and still read as one line. The
+# row-join used to weld text from opposite ends of a 42-inch sheet into one
+# "line" - which is how both keyword misreads were manufactured. On Barn
 # Civil p1 the bar caption "GRAPHIC SCALE" (x=810..897pt) and an unrelated
-# 5'-2" dimension callout (x=1341pt) shared a band and joined as
-# `SCALE 5'-2"`.
+# 5'-2" dimension callout (x=1341pt) shared a row and joined as
+# `SCALE 5'-2"`. This cap now decides row MEMBERSHIP in _row_text rather
+# than marking a gap after the fact, so a hole this wide starts another row
+# instead of being papered over with a "|"; the measurements behind the
+# number are unchanged.
 #
 # Keyed to glyph height, because OCR word boxes and title text are sized
 # very differently from body text. Measured across the corpus:
@@ -435,34 +438,112 @@ _ROW_GAP_MIN = 24.0      # pt, floor for small text
 _ROW_GAP_HEIGHTS = 6.0   # x the taller of the two neighbouring words
 
 
+# Whether two words sit on the same printed line is a PROXIMITY question -
+# do these two boxes touch the same strip of paper - and it used to be
+# answered with a fixed grid, `round(y0 / 8)`. A grid answers a different
+# question. Two words 1.5pt apart land in different 8pt bins whenever a bin
+# edge falls between them, and the caption is then emitted with a hole in
+# it. Measured on Guide Civil engine page index 8 (printed sheet 9): '20'
+# sits at y0=1245.47 (bin 156) while '1', 'inch', '=' and 'ft.' sit at
+# y0=1243.93 (bin 155), so the join emitted `1 inch = ft.` and the '20'
+# surfaced 40 words later. Thielen engine page indices 11 and 12 lose their
+# '=' to the same edge, 1.9pt low.
+#
+# Replacing the grid with a vertical proximity test alone is NOT enough, and
+# the corpus says so. A 42-inch sheet carries several columns, so two
+# unrelated printed lines two feet apart routinely overlap in y - and any
+# rule that groups on y alone puts them in one row, where the second line's
+# box then defines the band and evicts the first line's own '='. Measured:
+# a "keep the band all the words share" walk drops `1 inch = 10 ft.` on
+# C4 GRADING PLAN p0 (welded to `PAID BY HURRICANE CITY PUBLIC WORKS`,
+# 250pt to its left, whose box ends 0.0pt above the '=') and on Hurricane
+# Storage p3, and C4 p0 then falls through to the graphic bar and reports
+# 6.008 ft/in against the sheet's own 10 - a wrong number where there was a
+# right one. Nearest-neighbour walks fail the other way: "new row when the
+# y gap exceeds half a glyph height" chains rows up to 448pt tall and
+# destroys the Barn Civil p1 and Guide Civil p2 captions.
+#
+# So the row is assembled in BOTH dimensions, which is what "the same
+# printed line" actually means: sweep the words left to right, and a word
+# joins the open line it overlaps most in y, provided that line's right edge
+# is within the column gap above. Both tolerances come from the geometry -
+# the boxes' own overlap, and the height-keyed gap that was already measured
+# for the "|" guard. Nothing is bucketed and no new constant is introduced.
+#
+# Scored against mupdf's own line ids over the 208-page client_meet corpus
+# (60,110 printed lines that are horizontal in display space), printed lines
+# split across more than one row: 8pt grid 948 (1.577%), y-only band 716
+# (1.191%), this 594 (0.988%); worst number of printed lines welded into one
+# row: 90 / 37 / 34. Grouping cost for all 208 pages: 0.07s / 0.14s / 3.6s.
+
+
 def _row_text(words: list) -> str:
-    """Join word boxes into rough lines: sort by (row bucket, x).
+    """Join word boxes into printed lines: rows top to bottom, words left to right.
 
-    A "|" marks a column gap INSIDE a band - two words on the same row
-    bucket that are nowhere near each other. "|" is not a scale separator
-    and \\s* cannot cross it, so no pattern matches over a break, while the
-    30-character keyword lookback in _scan still sees a caption sitting on
-    the near side of one.
+    A "|" separates two rows that are NOT one line continuing into the next:
+    same band, different column (the Barn Civil p1 case - the bar caption
+    "GRAPHIC SCALE" at x=810..897pt and a 5'-2" dimension callout at
+    x=1341pt), or any other pair that is not stacked-and-aligned. "|" is not
+    a scale separator and \\s* cannot cross it, so no pattern matches over a
+    break, while the 30-character keyword lookback in _scan still sees a
+    caption sitting on the near side of one.
 
-    The wrap from the end of one band to the start of the next is left
-    joined on purpose. Sorting by (bucket, x) scrambles a caption whose
-    words straddle a bucket edge - Thielen p57 OCR puts "SCALE:" 2.4pt
-    below its own "1/8"" and the two land in buckets 200 and 199, so the
-    join emits `1/8" 1'-0" SCALE: =`. Recovering that is exactly what
-    _PAT_KEYWORD_PRE is for, and breaking on the wrap would take it away.
+    The wrap into the line printed directly BELOW is left joined, so a
+    caption whose keyword and ratio are on two lines still reads, and
+    _PAT_KEYWORD_PRE still recovers OCR that reports one ratio-first
+    ('1" 10' SCALE:' on the C4.x grading plans).
     """
-    words = sorted(words, key=lambda w: (round(w[1] / 8), w[0]))
+    rows: list[list] = []
+    live: list[list] = []          # [band_lo, band_hi, x_right, h_max, words]
+    for w in sorted(words, key=lambda w: float(w[0])):
+        if not str(w[4]).strip():
+            continue
+        x0, y0 = float(w[0]), float(w[1])
+        x1 = max(float(w[2]), x0)
+        y1 = max(float(w[3]), y0 + 1.0)   # a degenerate box still owns a band
+        h = y1 - y0
+        best, best_ov, still = None, 0.0, []
+        for r in live:
+            # Out of reach to the right: this word cannot belong to that
+            # line, and neither can any later one (the sweep only moves
+            # right), so drop it from the open set.
+            if x0 - r[2] > max(_ROW_GAP_MIN, _ROW_GAP_HEIGHTS * max(r[3], h)):
+                continue
+            still.append(r)
+            ov = min(r[1], y1) - max(r[0], y0)
+            if ov > best_ov:
+                best, best_ov = r, ov
+        live = still
+        if best is None:
+            best = [y0, y1, x1, h, []]
+            live.append(best)
+            rows.append(best)
+        else:
+            best[0] = max(best[0], y0)     # the band the line's words share
+            best[1] = min(best[1], y1)
+            best[2] = max(best[2], x1)
+            best[3] = max(best[3], h)
+        best[4].append(w)
+
+    def extent(r):
+        ws = r[4]
+        return (min(float(w[1]) for w in ws),
+                max(max(float(w[3]), float(w[1]) + 1.0) for w in ws),
+                min(float(w[0]) for w in ws),
+                max(float(w[2]) for w in ws))
+
     out: list[str] = []
-    prev = None  # (row bucket, x1, height)
-    for w in words:
-        row = round(float(w[1]) / 8)
-        h = max(float(w[3]) - float(w[1]), 1.0)
-        if prev is not None and prev[0] == row:
-            cap = max(_ROW_GAP_MIN, _ROW_GAP_HEIGHTS * max(prev[2], h))
-            if float(w[0]) - prev[1] > cap:
+    prev = None
+    for r in sorted(rows, key=lambda r: (min(float(w[1]) for w in r[4]),
+                                         min(float(w[0]) for w in r[4]))):
+        lo, hi, xa, xb = extent(r)
+        if prev is not None:
+            below = min(prev[1], hi) <= max(prev[0], lo)     # stacked, not beside
+            under = min(prev[3], xb) > max(prev[2], xa)      # same column
+            if not (below and under):
                 out.append("|")
-        out.append(str(w[4]))
-        prev = (row, float(w[2]), h)
+        out.extend(str(w[4]) for w in r[4])
+        prev = (lo, hi, xa, xb)
     return " ".join(out)
 
 
