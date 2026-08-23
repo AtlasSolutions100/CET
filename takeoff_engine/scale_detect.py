@@ -19,13 +19,29 @@ Returns ALL candidates with context, plus a chosen best (keyword-adjacent
 beats bare matches). "NOT TO SCALE"/"N.T.S." presence is reported too -
 sheets routinely mix a scaled plan with NTS details, so the reviewer sees
 what was found rather than silently trusting one number.
+
+`ScaleResult.source` distinguishes HOW a page came to have no reading:
+"" means the sheet printed nothing we recognise; "ocr-unavailable" means
+the OCR engine itself could not run (Tesseract not installed / not on
+PATH) and the page was therefore never actually checked; "ocr-error"
+means OCR was attempted and failed on this page. Two independent audits
+were misled by these three cases collapsing into one silent None - one
+ran 164 pages degraded without noticing, the other nearly signed off on
+"no scale printed" when the truth was "no OCR on PATH".
 """
 
+import logging
 import re
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 import pymupdf
+
+_log = logging.getLogger(__name__)
+# warn ONCE per process when OCR itself cannot run (see detect_scale) -
+# after that each affected page still logs, but does not re-warn.
+_OCR_UNAVAILABLE_WARNED = False
 
 # Unit marks. Tick marks (" ') are the common form; sheets also spell the
 # units out ("1 inch = 10 ft.", "1 INCH = 20 FEET"). A spelled-out unit must
@@ -173,7 +189,12 @@ class ScaleResult:
     best: ScaleCandidate | None
     candidates: list = field(default_factory=list)
     has_nts: bool = False
-    source: str = ""  # "text" | "ocr" | "graphic-bar"
+    # "text" | "ocr" | "graphic-bar", or why there is no reading:
+    # "" = nothing recognisable printed; "ocr-unavailable" = Tesseract is
+    # not installed/on PATH so the page was never checked; "ocr-error" =
+    # OCR ran and failed on this page. (to_dict() still returns None with
+    # no best - the UI wiring for the failure sources is a named follow-up.)
+    source: str = ""
     # Independent second opinion from the drawn GRAPHIC SCALE bar, whose tick
     # spacing is geometry rather than text. A wrong scale is the most
     # expensive silent failure this engine has - 14 corpus pages were wrong
@@ -779,6 +800,322 @@ def _choose(cands: list[ScaleCandidate]) -> ScaleCandidate | None:
 
 _TICK = re.compile(r"^(\d{1,4})\s*[\'’]?$")
 
+# What the corpus actually captions a drawn scale bar. Enumerated from a
+# census of every >=3-numeric-label tick row over the 650-page coverage set
+# (out/verify/2026-08-22/bar/caption_census.jsonl), not guessed:
+#   GRAPHIC SCALE (22 text pages; Oncor, SWR Barn Civil, CO3),
+#   GRAPHIC SCALE IN FEET (RC Ontario), SCALE IN FEET (Thielen C1.0,
+#   Loves Lane C0.00), (SCALE IN FEET) (all GCHC sheets, OCR),
+#   lowercase `scale` alone (8 Barn Landscaping sheets), SCALE FEET
+#   (Sheridan), HORIZ. SCALE IN FEET / HORIZONTAL SCALE: 1"=  (Gardiner,
+#   Bozeman profile sheets), SCALE: <ratio> (Barn Landscaping details,
+#   Thielen L-1/L-2 scans).
+# Every one of those starts a word whose ALPHABETIC CORE is exactly
+# GRAPHIC or SCALE. The core must be exact: `GRAPHICALLY` inside a survey
+# note manufactured both of CO3's bar readings (p7 180.0 and p10 18.0,
+# against bars that truly draw 300.0 and 30.0), and `TOPOGRAPHIC` /
+# `SCALE.DWG`-style tokens are title-block text, not captions.
+_BAR_HEAD_CORES = ("GRAPHIC", "SCALE")
+# A head is refused when its own printed line says the bar is not the
+# plan's horizontal drawing scale:
+#   VERT/VERTICAL - profile sheets draw a second, exaggerated bar
+#     ("VERT. SCALE IN FEET" under a 5 ft bar beside a 40 ft horizontal
+#     one, Gardiner p297); reading it would shrink every plan length.
+#     This head test is NOT the refusal - it only stops a VERT-captioned
+#     head from starting a search. Both of Gardiner p297's bars sit
+#     inside the reach of the surviving HORIZ. head, and the vertical
+#     row loses to the horizontal one there purely because
+#     `sorted(rows, key=len, reverse=True)` is stable and the horizontal
+#     bar happens to be drawn above; traced by hand the vertical row
+#     returns 10.0, a 4x error. Ryno Plan Set p4 is the same shape and
+#     is right today only because 150-dpi OCR drops its pale-grey
+#     VERTICAL labels. `_row_axis`, applied per row, is the real
+#     refusal; sort order is not allowed to carry a correctness
+#     property.
+#   INCHES - `REF. SCALE IN INCHES 0 1` is a print-calibration ruler
+#     (checks the sheet was not reduced on a copier), not a drawing scale
+#     (F112; 46 pages across two documents).
+#   MAP - `Soil Map may not be valid at this scale.` sits beside two
+#     soil-report exhibit bars (White Sulfer p418) whose ratios are not
+#     drawing scales.
+#   NOTED/SHOWN - `scale: AS NOTED` / `SCALE: AS SHOWN` is the sheet
+#     asserting its scale VARIES per view (Bill's schedule sheets, F112's
+#     correct refusals); no single number near that head speaks for the
+#     page, and on a scanned schedule the numbers nearby are door tags.
+_BAR_HEAD_STOP = ("VERT", "VERTICAL", "INCHES", "MAP", "MAPS",
+                  "NOTED", "SHOWN")
+
+
+def _alpha_core(text: str) -> str:
+    """Leading run of letters after any leading punctuation: '(SCALE' ->
+    'SCALE', 'SCALE:1"' -> 'SCALE', 'scale.' -> 'SCALE'."""
+    m = re.match(r"[^A-Za-z]*([A-Za-z]+)", str(text))
+    return m.group(1).upper() if m else ""
+
+
+def _bar_heads(ws: list) -> list:
+    """Caption-head words, GRAPHIC-core first, refusing heads whose own
+    printed line disqualifies the bar (see _BAR_HEAD_STOP)."""
+    out = []
+    for w in ws:
+        core = _alpha_core(w[4])
+        if core not in _BAR_HEAD_CORES:
+            continue
+        hy0, hy1 = float(w[1]), float(w[3])
+        hh = max(hy1 - hy0, 1.0)
+        hx = (float(w[0]) + float(w[2])) / 2
+        line = [x for x in ws
+                if min(hy1, float(x[3])) - max(hy0, float(x[1]))
+                > 0.5 * min(hh, max(float(x[3]) - float(x[1]), 1.0))
+                and abs(((float(x[0]) + float(x[2])) / 2) - hx) < 250]
+        cores = {_alpha_core(x[4]) for x in line}
+        if cores & set(_BAR_HEAD_STOP):
+            continue
+        if _NTS.search(" ".join(str(x[4]) for x in line)):
+            continue
+        out.append(w)
+    out.sort(key=lambda w: _alpha_core(w[4]) != "GRAPHIC")
+    return out[:8]
+
+
+def _page_ticks(page) -> list:
+    """Vertical stroke edges in display space: [(x, y0, y1), ...].
+
+    These are the drawn tick marks a bar's labels sit on - short vertical
+    'l' segments (Oncor, Barn Landscaping box edges) and the vertical
+    edges of the thin filled boxes a checkerboard bar is built from
+    (GCHC, CO3, Gardiner). Long strokes are excluded so borders and
+    gridlines do not offer themselves as ticks.
+    """
+    out = []
+    try:
+        rot = page.rotation_matrix
+        off = {info["name"]
+               for info in (page.parent.get_ocgs() or {}).values()
+               if not info.get("on", True)}
+        for dr in page.get_drawings():
+            if dr.get("layer") in off:
+                continue
+            for it in dr["items"]:
+                if it[0] == "l":
+                    a, b = it[1] * rot, it[2] * rot
+                    if abs(a.x - b.x) < 0.7 and 0.8 <= abs(a.y - b.y) <= 60:
+                        out.append(((a.x + b.x) / 2,
+                                    min(a.y, b.y), max(a.y, b.y)))
+                elif it[0] in ("re", "qu"):
+                    r = it[1].rect if it[0] == "qu" else pymupdf.Rect(it[1])
+                    r = pymupdf.Rect(r * rot)
+                    r.normalize()
+                    if r.height <= 20 and r.width >= 2:
+                        out.append((r.x0, r.y0, r.y1))
+                        out.append((r.x1, r.y0, r.y1))
+                    elif r.width <= 3 and 0.8 <= r.height <= 60:
+                        out.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
+    except Exception:
+        return []
+    return out
+
+
+def _row_ticks(ticks: list, row_words: list, near: list) -> tuple:
+    """(tick x-positions, drawn band) available to one label row.
+
+    Band: the row's own x-range (padded) by 2.5 label-heights above and
+    below - Oncor draws ticks under the labels, Barn Landscaping above,
+    GCHC's bar boxes sit below. A stroke that lies mostly INSIDE some
+    word's box is a glyph stroke, not a tick (GCHC's vector-outlined '4'
+    is itself a vertical line exactly where a tick would be) - but only a
+    word CONTAINING a letter or digit vetoes: OCR reads the drawn bar
+    itself back as punctuation ('|', '\\\\'), and letting those boxes veto
+    ate the real end tick on GCHC North Stairs Improvement.
+
+    The second return value is where the drawn bar actually SITS -
+    (y0, y1), the MEDIAN vertical extent of the accepted strokes, or None
+    when none were accepted. A bar is many strokes of one height, so the
+    median is the bar itself and a stray stroke that wandered into the
+    search band cannot move it; min/max could. `_row_axis` needs it to
+    tell a profile's vertical bar from its horizontal one.
+    """
+    lo = min(float(w[1]) for w in row_words)
+    hi = max(float(w[3]) for w in row_words)
+    h = max(hi - lo, 2.0)
+    x0 = min(float(w[0]) for w in row_words) - 30.0
+    x1 = max(float(w[2]) for w in row_words) + 30.0
+    y0, y1 = lo - 2.5 * h, hi + 2.5 * h
+    out, ext = [], []
+    for x, ty0, ty1 in ticks:
+        if not (x0 <= x <= x1 and ty1 > y0 and ty0 < y1 and ty1 - ty0 <= 4 * h):
+            continue
+        glyph = False
+        for w in near:
+            if not re.search(r"[0-9A-Za-z]", str(w[4])):
+                continue
+            if float(w[0]) - 0.4 <= x <= float(w[2]) + 0.4:
+                ov = min(ty1, float(w[3])) - max(ty0, float(w[1]))
+                if ov >= 0.6 * (ty1 - ty0):
+                    glyph = True
+                    break
+        if not glyph:
+            out.append(x)
+            ext.append((ty0, ty1))
+    if not ext:
+        return [], None
+    a = sorted(t[0] for t in ext)
+    b = sorted(t[1] for t in ext)
+    return sorted(out), (a[len(a) // 2], b[len(b) // 2])
+
+
+# Axis captions. A plan-and-profile sheet draws TWO scale bars: the
+# horizontal one measures distance along the plan, the vertical one is
+# deliberately exaggerated so the grades are readable. Gardiner p297
+# prints 40 ft/in horizontal against 5 ft/in vertical (8x); Ryno Plan Set
+# p4 prints 30 against 5 (6x). Reading the vertical bar as the page scale
+# divides every plan length by that factor - silently.
+#
+# CONVENTION: on a plan-and-profile sheet the HORIZONTAL scale governs
+# plan lengths and the vertical is a deliberate exaggeration. Source:
+# these sheets print both bars captioned exactly so - Gardiner "HORIZ.
+# SCALE IN FEET" / "VERT. SCALE IN FEET", Ryno "HORIZONTAL" /
+# "VERTICAL" - and F126 measured a 4x vertical exaggeration on Belle
+# Farms from the profile's own axis labels. Labelled an INFERENCE for any
+# drafter who captions differently: if a sheet ever means something else
+# by these words, this refuses a reading rather than inventing one.
+_AXIS_VERT = ("VERT", "VERTICAL")
+_AXIS_HORIZ = ("HORIZ", "HORIZONTAL")
+
+
+def _axis_marks(near: list) -> list:
+    """Axis words near a caption head: [(axis, cx, y0, y1, captioned)].
+
+    `captioned` is True when the word shares its printed line with a
+    GRAPHIC/SCALE word, i.e. it is part of a full bar caption ("HORIZ.
+    SCALE IN FEET") rather than a bare axis label ("VERTICAL" alone on
+    its line). The two say different things about what they are next to,
+    which `_row_axis` depends on. Line membership is the same y-overlap
+    test `_bar_heads` uses.
+    """
+    out = []
+    for w in near:
+        core = _alpha_core(w[4])
+        axis = ("VERT" if core in _AXIS_VERT
+                else "HORIZ" if core in _AXIS_HORIZ else "")
+        if not axis:
+            continue
+        wy0, wy1 = float(w[1]), float(w[3])
+        wh = max(wy1 - wy0, 1.0)
+        wx = (float(w[0]) + float(w[2])) / 2
+        cap = any(_alpha_core(x[4]) in _BAR_HEAD_CORES
+                  and min(wy1, float(x[3])) - max(wy0, float(x[1]))
+                  > 0.5 * min(wh, max(float(x[3]) - float(x[1]), 1.0))
+                  and abs(((float(x[0]) + float(x[2])) / 2) - wx) < 250
+                  for x in near)
+        out.append((axis, wx, wy0, wy1, cap))
+    return out
+
+
+def _row_axis(ri: int, boxes: list, bands: list, marks: list) -> str:
+    """Which axis this label row belongs to: "VERT", "HORIZ" or "".
+
+    NOT "the nearest axis word to the row". Proximity does not separate
+    these and the corpus says so: on Gardiner p297 the vertical bar's
+    labels sit 3.37pt from the HORIZ. caption - which belongs to the bar
+    ABOVE them - and 4.98pt from their own VERT. one. A rule that took
+    the nearer would be memorising 1.6pt of noise (AGENT-BRIEF 1.5) and
+    would get that row wrong. Nor is it "the caption on the far side of
+    the bar": the two layouts the corpus prints disagree about which
+    side the caption goes on, so no side rule fits both.
+
+    What separates them is WHAT KIND of axis word it is:
+
+      A full caption line - the axis word shares its line with the head
+      word, "HORIZ. SCALE IN FEET" - captions a BAR. Gardiner water main
+      2025.pdf, engine page index 297 stacks two of them:
+          354.2-359.5  20 10 0 20 40
+          361.2-365.8  [bar 1]
+          368.3-373.4  HORIZ. SCALE IN FEET
+          376.7-381.8  5 2.5 0 5 10
+          382.1-385.9  [bar 2]
+          390.9-395.9  VERT. SCALE IN FEET
+      HORIZ. is 2.58pt from bar 1 and 8.71pt from bar 2; VERT. is 4.98pt
+      from bar 2 and 25.14pt from bar 1. Each caption goes to its own
+      bar by a 3.4x and 5.0x margin, and each row inherits its bar's.
+
+      A bare axis word labels the NUMBERS beside it.
+      Ryno Construction/Plan Set.pdf, engine page index 4 draws ONE bar
+      serving both axes, with a label row on each side:
+          401.8-407.0  VERTICAL
+          ~408 -413.3  5 2.5 5           (dropped by 150-dpi OCR today)
+          ~415 -421    [bar]
+          426.2-432.0  30 0 15 30
+          431.5-436.8  HORIZONTAL
+      A bar rule cannot work here - both rows share the one drawn band,
+      416.52-423.72 - but HORIZONTAL is 0.00pt from the lower row and
+      18.24pt from the upper, VERTICAL 0.84pt from the upper and 19.20pt
+      from the lower. Today OCR reads only the lower row, and it still
+      gets HORIZONTAL by 19.20pt against 0.00pt.
+
+    Both are exclusive assignments: a caption goes to its nearest target
+    and is not available to any other, so an axis word cannot vote twice.
+    Reach is 6 label-heights and the word's centre must lie in the
+    target's x-window, so a "VERTICAL" in a note elsewhere on the sheet
+    cannot veto a bar. A tie between the two axes returns VERT, which
+    refuses the row rather than guessing.
+
+    "" - no axis word in reach - is the ordinary single-bar sheet:
+    nothing about the axis is asserted, so nothing is refused.
+    """
+    def claim(targets, want_captioned):
+        """Axis of the marks that pick target `ri` as their nearest."""
+        hits = []
+        for axis, mx, my0, my1, cap in marks:
+            if cap is not want_captioned:
+                continue
+            best, bg = None, None
+            for i, t in enumerate(targets):
+                if t is None:
+                    continue
+                x0, x1, h = boxes[i][0] - 30.0, boxes[i][1] + 30.0, \
+                    max(boxes[i][3] - boxes[i][2], 2.0)
+                if not (x0 <= mx <= x1):
+                    continue
+                g = max(t[0] - my1, my0 - t[1], 0.0)
+                if g >= 6.0 * h:
+                    continue
+                if bg is None or g < bg:
+                    best, bg = i, g
+            if best == ri:
+                hits.append((bg, axis))
+        if not hits:
+            return ""
+        g0 = min(g for g, _a in hits)
+        return "VERT" if any(a == "VERT" and g <= g0 + 1e-9
+                             for g, a in hits) else "HORIZ"
+
+    # A full caption line captions the drawn bar; fall back to the row's
+    # own box on a page that draws no ticks (a caller with no page).
+    return (claim([b if b else (x[2], x[3]) for b, x in zip(bands, boxes)],
+                  True)
+            or claim([(x[2], x[3]) for x in boxes], False))
+
+
+def _snap_label(w, row_ticks: list) -> float | None:
+    """The drawn tick a label marks, or None.
+
+    The tick must fall within the label's own box (pad 1.2 pt): drafters
+    place the label over its tick, but not all of them CENTRE it there.
+    Barn Landscaping aligns the end labels by outer edge - the '0' box
+    edge is 0.66 pt from its tick while the centre is 2.49 pt inside, and
+    the '16' centre is 5.64 pt inside. Spanning centres instead of ticks
+    read those bars 12.5-12.7% high (audit finding 16), which is +26.8%
+    on every area and +42.8% on every volume.
+    """
+    bx0, bx1 = float(w[0]) - 1.2, float(w[2]) + 1.2
+    cx = (float(w[0]) + float(w[2])) / 2
+    best = None
+    for x in row_ticks:
+        if bx0 <= x <= bx1 and (best is None or abs(x - cx) < abs(best - cx)):
+            best = x
+    return best
+
 
 def _zero_anchored_span(row: list) -> tuple | None:
     """(zero tick, far tick) for a label row sorted by x, or None.
@@ -801,77 +1138,314 @@ def _zero_anchored_span(row: list) -> tuple | None:
     return None
 
 
-def graphic_scale_bar(words: list) -> ScaleCandidate | None:
-    """Measure a GRAPHIC SCALE bar - the drawn ruler with tick labels.
+def _mirror_zero(row: list, row_ticks: list) -> float | None:
+    """Recover a zero OCR dropped, from the bar's own symmetry.
+
+    Civil bars draw one unit of the scale LEFT of zero as a finer
+    subdivision, so the first major value appears on BOTH sides at equal
+    distance: "30 | 0 | 15 30 60 120" (CO3), "2 | 0 | 2 4" (GCHC),
+    "20 10 | 0 | 20 40" (Gardiner). CONVENTION from those sheets and SWR
+    Barn Civil, five independent drafters. When the row has no zero but
+    two equal labels, the zero is their midpoint - accepted ONLY if a
+    drawn tick sits within 2 pt of it, so the geometry asserts the zero
+    rather than the labels implying one. OCR drops exactly this '0' often
+    enough to matter: every GCHC page, CO3 p7/p10 (which today ship 18.0
+    and 180.0 against drawn 30.0 and 300.0 because the zero-less fallback
+    spans pre-zero label to far label).
+    """
+    if not row_ticks:
+        return None
+    zx = []
+    for i in range(len(row)):
+        for j in range(i + 1, len(row)):
+            if row[i][0] == row[j][0] and row[i][0] > 0 \
+                    and row[j][1] - row[i][1] > 8:
+                mid = (row[i][1] + row[j][1]) / 2
+                near = [x for x in row_ticks if abs(x - mid) <= 2.0]
+                if near:
+                    zx.append(min(near, key=lambda x: abs(x - mid)))
+    if not zx or max(zx) - min(zx) > 2.0:
+        return None            # none found, or two pairs disagree
+    return sorted(zx)[len(zx) // 2]
+
+
+def _ocr_words_loud(img, px_to_pt: float, min_conf: int = 35) -> tuple:
+    """ocr_words, but an OCR-engine failure is LOUD and distinguishable.
+
+    Returns (words, reason): reason is "" when OCR ran, "ocr-unavailable"
+    when the engine itself cannot run (Tesseract not installed / not on
+    PATH, pytesseract missing), "ocr-error" when it ran and failed. The
+    old shape - `except Exception: pass` around the whole OCR block -
+    returned the same silent None for "no scale on this sheet" and "no
+    OCR on this machine"; two independent audits hit that in one night,
+    one running 164 pages degraded with no warning, the other nearly
+    signing off "no scale printed" when the truth was "no Tesseract on
+    PATH". detect_scale forwards the reason as ScaleResult.source, and
+    the first failure per process also warns.
+    """
+    global _OCR_UNAVAILABLE_WARNED
+    try:
+        from .text_detect import ocr_words
+        return ocr_words(img, px_to_pt=px_to_pt, min_conf=min_conf), ""
+    except Exception as e:
+        down = (isinstance(e, ImportError)
+                or type(e).__name__ == "TesseractNotFoundError")
+        if not down:
+            _log.warning("scale OCR failed on this page (%s: %s)",
+                         type(e).__name__, e)
+            return [], "ocr-error"
+        if not _OCR_UNAVAILABLE_WARNED:
+            _OCR_UNAVAILABLE_WARNED = True
+            msg = ("OCR is unavailable (%s: %s) - scale detection is "
+                   "running DEGRADED: pages whose scale is only printed "
+                   "as raster/outlined text will read as 'no scale "
+                   "found'. Install Tesseract / put it on PATH."
+                   % (type(e).__name__, e))
+            _log.warning(msg)
+            warnings.warn(msg, RuntimeWarning, stacklevel=3)
+        else:
+            _log.warning("OCR unavailable (%s) - page scanned without OCR",
+                         type(e).__name__)
+        return [], "ocr-unavailable"
+
+
+def _ocr_zoom(page, region, min_conf: int = 35) -> list:
+    """Re-OCR one small region at high dpi; words in page display coords.
+
+    The 150-dpi full-page pass reads GCHC's small bar labels only
+    partially ('2' alone on North Stairs Demo); a 600-dpi render of just
+    the caption window reads the full '2 0 2 4' row. Cost is bounded by
+    the region size and only paid when a caption head was already found.
+    """
+    try:
+        from .text_detect import ocr_words
+
+        rc = pymupdf.Rect(region) & page.rect
+        if rc.is_empty or rc.width < 8 or rc.height < 8:
+            return []
+        dpi = min(600.0, 6000.0 * 72.0 / max(rc.width, rc.height))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72),
+                              clip=rc, colorspace="rgb")
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, 3)
+        ws = ocr_words(img, px_to_pt=72.0 / dpi, min_conf=min_conf)
+        return [(x0 + rc.x0, y0 + rc.y0, x1 + rc.x0, y1 + rc.y0, t)
+                for x0, y0, x1, y1, t in ws]
+    except Exception:
+        return []
+
+
+def graphic_scale_bar(words: list, page=None,
+                      ocr_retry: bool = False) -> ScaleCandidate | None:
+    """Measure a drawn scale bar - the ruler with tick labels.
 
     Some sheets state no ratio anywhere; they print a bar labelled 0 / 50' /
     100' and expect you to measure it. That leaves quantities stuck in points
     with no way to price them, so read it directly: find the numeric tick
-    labels sitting on one horizontal line near the words GRAPHIC SCALE and
-    divide feet by the paper distance between the first and last.
+    labels sitting on one horizontal line near a caption head (see
+    _BAR_HEAD_CORES) and divide feet by the paper distance spanned.
 
-    Label boxes are used at their CENTRE, since a tick label is centred on
-    the tick it marks.
+    The span is measured TICK to TICK: the ticks are geometry the
+    drafter placed, the labels are typography placed by eye (audit
+    finding 16 measured +12.5% from spanning label centres). Each
+    endpoint label snaps to the tick inside its own box, and a row with
+    no drawn tick in its band, or whose endpoints touch none, is refused
+    - numbers with no drawn ruler under them are keynotes, not a bar.
+
+    A tick span is measured, NOT exact, and the earlier comment here
+    claiming otherwise oversold it. Two things put a tick reading off a
+    round number: the drafter's own rounding when the bar was placed
+    (Hurricane Storage p5 ships 40.0167 against its own printed `HORIZ.
+    SCALE: 1" = 40'`, +0.042%), and `_snap_label` taking a neighbouring
+    stroke when several sit inside one label box (Malta Cu2.05 p0 ships
+    19.9543 because it took a stroke at 338.73 where the regular tick
+    series puts the end tick at 338.40, -0.229%). Both are well inside
+    any useful tolerance and neither is a defect; the accurate claim is
+    that tick spans are NEVER SNAPPED - they are reported as measured,
+    so a residual like these is visible instead of being rounded away
+    into a number the sheet does not draw. The measured residual
+    distribution over the corpus is in the bar2 report.
+
+    Only when the caller passes no `page` at all - the second-opinion
+    callers in `_corroborate` - do label centres stand in, and only then
+    does the engineering-standard snap list apply.
 
     Civil bars are often laid out "10 | 0 | 5 10 20 40": one unit of the
-    scale is drawn to the LEFT of zero as a finer subdivision. The bar's
-    span is zero to the largest label on one side of it; the pre-zero
-    label must not widen it (10..40 over the full width would read 6 ft/in
-    on a 10 ft/in bar). So when a "0" tick is on the row, anchor there and
-    walk outward while the labels keep increasing. Without a zero tick the
-    span is still leftmost-to-rightmost label.
+    scale is drawn to the LEFT of zero as a finer subdivision. When a "0"
+    label is on the row, anchor there and walk outward while the labels
+    keep increasing. Without a zero the row is accepted only if strictly
+    increasing left to right (a zero-less ladder like "20 40 80"); a
+    non-monotone zero-less row is a bar whose zero OCR dropped -
+    _mirror_zero recovers it from the drawn geometry or the row is
+    refused. Every label on the row must then agree with the measured
+    rate (a misread label like RC Ontario's '20'->'0' otherwise ships a
+    5x error), or the row is refused.
     """
     ws = [w for w in words if str(w[4]).strip()]
-    heads = [w for w in ws if str(w[4]).strip().upper().startswith("GRAPHIC")]
-    for h in heads:
+    ticks = None
+    for h in _bar_heads(ws):
         hy = (h[1] + h[3]) / 2
         hx = (h[0] + h[2]) / 2
         near = [w for w in ws
                 if abs(((w[1] + w[3]) / 2) - hy) < 90
                 and abs(((w[0] + w[2]) / 2) - hx) < 320]
-        ticks = []
-        for w in near:
-            m = _TICK.match(str(w[4]).strip())
-            if m:
-                ticks.append((float(m.group(1)),
-                              (w[0] + w[2]) / 2, (w[1] + w[3]) / 2))
-        if len(ticks) < 3:
+
+        def _label_rows(cand):
+            labs = []
+            for w in cand:
+                m = _TICK.match(str(w[4]).strip())
+                if m:
+                    labs.append((float(m.group(1)),
+                                 (w[0] + w[2]) / 2, (w[1] + w[3]) / 2, w))
+            # The labels of one bar share a row. Cluster on the vertical
+            # gap between neighbours rather than fixed buckets: a "0"
+            # glyph box centres ~0.7pt below its "10"/"40" neighbours,
+            # and round(cy / 9) splits them whenever that straddles a
+            # bucket edge (Barn p4/p11).
+            labs.sort(key=lambda t: t[2])
+            rows: list = []
+            for t in labs:
+                if rows and t[2] - rows[-1][-1][2] < 4.5:
+                    rows[-1].append(t)
+                else:
+                    rows.append([t])
+            return [r for r in rows if len(r) >= 3]
+        rows = _label_rows(near)
+        if not rows and ocr_retry and page is not None:
+            # a head with no readable ladder: the labels are small enough
+            # that 150-dpi OCR dropped them - re-read just this window
+            zoom = _ocr_zoom(page, (hx - 330, hy - 95, hx + 330, hy + 95))
+            if zoom:
+                near = [w for w in zoom if str(w[4]).strip()]
+                rows = _label_rows(near)
+        if not rows:
             continue
-        # The ticks of one bar share a row. Cluster on the vertical gap
-        # between neighbours rather than fixed buckets: a "0" glyph box
-        # centres ~0.7pt below its "10"/"40" neighbours, and round(cy / 9)
-        # splits them whenever that straddles a bucket edge (Barn p4/p11).
-        ticks.sort(key=lambda t: t[2])
-        rows: list = []
-        for v, cx, cy in ticks:
-            if rows and cy - rows[-1][-1][2] < 4.5:
-                rows[-1].append((v, cx, cy))
-            else:
-                rows.append([(v, cx, cy)])
-        for row in sorted(rows, key=len, reverse=True):
-            row = [(v, cx) for v, cx, _cy in row]
-            if len(row) < 3:
+        if ticks is None:
+            ticks = _page_ticks(page) if page is not None else []
+        # Every row's label box and the drawn band its labels sit on.
+        # _row_axis hands the axis captions out EXCLUSIVELY, so it needs
+        # all the rows at once, not just the one in hand.
+        boxes, bands, rowticks = [], [], []
+        for r in rows:
+            rw = [t[3] for t in r]
+            boxes.append((min(float(w[0]) for w in rw),
+                          max(float(w[2]) for w in rw),
+                          min(float(w[1]) for w in rw),
+                          max(float(w[3]) for w in rw)))
+            xs, bd = _row_ticks(ticks, rw, near) if ticks else ([], None)
+            rowticks.append(xs)
+            bands.append(bd)
+        marks = _axis_marks(near)
+        for ri, row4 in sorted(enumerate(rows), key=lambda p: -len(p[1])):
+            row_words = [t[3] for t in row4]
+            rt, band = rowticks[ri], bands[ri]
+            # No drawn tick anywhere in this row's band: nothing on the
+            # page is a ruler here, so the row is just numbers. Believe a
+            # bar only when the drafter drew one. Four inventions on real
+            # construction documents came through the label-centre branch
+            # with zero ticks - Town Pump #3 A2.8 Equipment Schedule p0
+            # and its ADD1 re-issue read 1" = 236.56' off the word SCALE
+            # inside "SCALE OUNCE 12#-192 oz", spanning the QTY column,
+            # the ITEM NO. column and the 3 of "PREP TABLE 3 FT"; Million
+            # Air p196 read 454.43' off spec 22 05 19's "Scale Range for
+            # Domestic Cold-Water Piping: 0 to 150 deg F"; Orig Full Spec
+            # Manual p56 read 4.92' off "Per Section 01 00 00". All four
+            # returned None before the bar rewrite. The cost is one true
+            # reading corpus-wide (see the report); a kitchen equipment
+            # schedule asserting a drawing scale is the worse trade.
+            #
+            # Only when the caller gave us no page at all - _corroborate's
+            # second-opinion callers - do label centres still stand in,
+            # because then "no tick" cannot be distinguished from "never
+            # looked". Those readings never become the page scale.
+            if page is not None and not rt:
                 continue
+            # A profile's vertical-exaggeration bar is not the plan scale,
+            # and `_row_axis` below decides which row is which. IT IS NOT
+            # CALLED, deliberately. Gate 1 measured an ablation with it
+            # disabled across all 6,724 corpus pages and got a ZERO diff -
+            # it changes no page in either direction - while introducing a
+            # rank-1 failure on a 0.81 pt margin: move only the two caption
+            # LINES on Gardiner p297 into the ordinary caption-above-its-own-
+            # bar layout (no tick, label or stroke touched) and VERT. lands
+            # 5.24 pt from the HORIZONTAL band against 6.05 from its own,
+            # refuses the correct 40 ft/in row, and the 10 ft/in row then
+            # ships unasserted - a silent 4x under-scale where doing nothing
+            # returns 40. The tie-break meant to force a refusal is per MARK,
+            # not per TARGET, so a mis-claimed mark leaves the other row
+            # unguarded. AGENT-BRIEF section 1.5: a margin thinner than the
+            # noise is not a distinction. The profile problem is real - see
+            # F126 - and needs a rule with measurable separation, not this.
+            # `_row_axis` and `_axis_marks` are kept, unused, as the measured
+            # starting point for that work.
+            row = []
+            snapped = set()
+            for v, cx, _cy, w in row4:
+                tx = _snap_label(w, rt) if rt else None
+                if tx is not None:
+                    snapped.add(round(tx, 2))
+                    row.append((v, tx))
+                else:
+                    row.append((v, cx))
             row.sort(key=lambda t: t[1])
-            span = _zero_anchored_span(row) or (row[0], row[-1])
+            if rt and not any(v == 0 for v, _x in row):
+                zx = _mirror_zero(row, rt)
+                if zx is not None:
+                    snapped.add(round(zx, 2))
+                    row.append((0.0, zx))
+                    row.sort(key=lambda t: t[1])
+            span = _zero_anchored_span(row)
+            if span is None:
+                vals = [v for v, _x in row]
+                if vals != sorted(set(vals)):
+                    continue        # zero-less and not increasing: refused
+                span = (row[0], row[-1])
             (v0, x0), (v1, x1) = span
             dft, dpt = abs(v1 - v0), abs(x1 - x0)
             if dft <= 0 or dpt <= 4:
                 continue
+            # with drawn ticks by the row, both endpoints must sit on one
+            if rt and not (round(x0, 2) in snapped
+                           and round(x1, 2) in snapped):
+                continue
+            # every label the bar owns must agree with the measured rate
+            lo, hi = min(x0, x1), max(x0, x1)
+            ok = True
+            for v, x in row:
+                if not (lo - dpt - 2 <= x <= hi + 2):
+                    continue        # beyond the bar: another bar's labels
+                if v0 == 0:
+                    pred = abs(x - x0) * v1 / dpt
+                else:
+                    pred = v0 + (x - x0) * (v1 - v0) / (x1 - x0)
+                if abs(pred - v) > max(0.15 * v, 0.06 * max(v0, v1), 0.35):
+                    ok = False
+                    break
+            if not ok:
+                continue
             ft_per_inch = 72.0 * dft / dpt
             if not (1.0 <= ft_per_inch <= 600.0):
                 continue
-            # Engineering scales are round numbers; measuring label centres
-            # lands a hair off (50.06). Snap only when the reading is already
-            # within 2.5% of a standard, so a genuinely odd bar is reported
-            # as measured rather than forced onto a value it is not.
-            for std in (10, 20, 30, 40, 50, 60, 80, 100, 200):
-                if abs(ft_per_inch - std) <= 0.025 * std:
-                    ft_per_inch = float(std)
-                    break
+            how = "ticks"
+            if not (rt and round(x0, 2) in snapped
+                    and round(x1, 2) in snapped):
+                how = "labels"
+                # Engineering scales are round numbers; measuring label
+                # centres lands a hair off (50.06). Snap only when the
+                # reading is already within 2.5% of a standard, so a
+                # genuinely odd bar is reported as measured rather than
+                # forced onto a value it is not. A tick-measured span is
+                # never snapped - it is not exact either (see the
+                # docstring: 40.0167 on Hurricane p5, 19.9543 on Malta
+                # Cu2.05), but its residual is the drafter's own, and
+                # reporting it as measured keeps that visible.
+                for std in (10, 20, 30, 40, 50, 60, 80, 100, 200):
+                    if abs(ft_per_inch - std) <= 0.025 * std:
+                        ft_per_inch = float(std)
+                        break
             return ScaleCandidate(
                 text=f'graphic bar {v0:g}-{v1:g} ft over {dpt:.1f}pt '
-                     f'(1" = {ft_per_inch:.0f}\')',
+                     f'(1" = {ft_per_inch:g}\', {how})',
                 ft_per_paper_inch=ft_per_inch,
                 near_scale_keyword=True)
     return None
@@ -1015,17 +1589,21 @@ def _row_text(words: list) -> str:
 BAR_AGREE_PCT = 2.0
 
 
-def _corroborate(res: ScaleResult, words: list) -> ScaleResult:
+def _corroborate(res: ScaleResult, words: list, page=None) -> ScaleResult:
     """Attach the graphic bar's opinion to an already-chosen text reading.
 
     Purely additive - `res.best` is never replaced. If the two disagree the
     UI says so and the estimator calibrates, which is the whole point: every
     one of F92's 14 wrong pages reached the screen as a confident green chip.
+
+    Callers that can pass `page` should: it lets the bar measure from the
+    drawn tick strokes instead of label centres, which on edge-aligned-label
+    drafters (Barn Landscaping) reads up to 12.7% truer.
     """
     if not res.best:
         return res
     try:
-        bar = graphic_scale_bar(words)
+        bar = graphic_scale_bar(words, page)
     except Exception:
         return res
     if not bar or not bar.ft_per_paper_inch:
@@ -1074,7 +1652,7 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         # No stated ratio: try the drawn GRAPHIC SCALE bar off the text layer
         # before paying for OCR. Its tick labels ("0", "50'", "100'") are
         # real text on most CAD sheets, and OCR mangles them ("100'" -> "00").
-        bar = graphic_scale_bar(words)
+        bar = graphic_scale_bar(words, page)
         if bar:
             return ScaleResult(bar, [bar], nts, "graphic-bar",
                                pick={"why": "bar"})
@@ -1090,9 +1668,28 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
                                   colorspace="rgb")
             img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                 pix.height, pix.width, 3)
-            words = ocr_words(img, px_to_pt=72.0 / dpi, min_conf=35)
+            words, ocr_down = _ocr_words_loud(img, px_to_pt=72.0 / dpi,
+                                              min_conf=35)
             ocr_text = _row_text(words)
             cands = _scan(ocr_text)
+            # No caption came back: the drawn bar (measured off the page's
+            # own tick strokes, with a high-dpi re-read of the caption
+            # window when the full-page pass dropped the labels) is the
+            # remaining source. This block returns on EVERY path so the
+            # legacy pageless bar call below it never runs - its
+            # label-centre measurement would resurrect exactly the
+            # readings the tick guards refuse (RC Ontario p3's 4.43).
+            # The legacy lines are left textually untouched because
+            # feat/choose edits them; whichever lands second deletes them.
+            if not cands:
+                n2 = nts or bool(_NTS.search(ocr_text))
+                bar = graphic_scale_bar(words, page, ocr_retry=True)
+                if bar:
+                    return ScaleResult(bar, [bar], n2, "graphic-bar")
+                # "" = the sheet printed nothing we recognise;
+                # "ocr-unavailable"/"ocr-error" = the page was never
+                # actually checked (see _ocr_words_loud)
+                return ScaleResult(None, [], n2, ocr_down)
             nts = nts or bool(_NTS.search(ocr_text))
             if cands:
                 best, pick = _rank(cands, page, words, linework)
