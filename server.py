@@ -455,7 +455,7 @@ def result(job_id: str, page: int):
 
 
 @app.post("/api/job/{job_id}/reset")
-def reset_job(job_id: str):
+def reset_job(job_id: str, preview: bool = False):
     """Throw away everything DERIVED from this PDF, so the next detect is cold.
 
     This exists for demos. The review UI already forgets a document's saved
@@ -466,8 +466,12 @@ def reset_job(job_id: str):
     one thing a demo is not allowed to be.
 
     What goes: every derived artifact in this job's own directory - detection
-    results, page renders, elements, earthwork maps, callouts, symbols,
-    schedules, and any report PDF already built.
+    results, page renders, earthwork maps, callouts, symbols, schedules, AND
+    the two that are operator work rather than cache: the approved sheet
+    exports (p<N>_elements.json) and any report PDF already built. Those two
+    are counted separately and named in the confirmation dialog, because
+    sweeping a deliverable away under the word "cached" is not consent.
+    Pass preview=1 to get the counts back without deleting anything.
 
     What stays: the source PDF. It is never inside the job directory - a
     sample is opened by path from wherever it lives, and an upload is written
@@ -481,12 +485,41 @@ def reset_job(job_id: str):
     if d.parent != JOBS_DIR.resolve() or not d.is_dir():
         raise HTTPException(404, "unknown job")
 
-    removed, freed = 0, 0
-    for f in sorted(d.iterdir()):
-        if not f.is_file():
-            continue
+    # Classify before touching anything. Two of these are OPERATOR WORK, not
+    # cache: p<N>_elements.json is an approved sheet export, and the report PDF
+    # is the only deliverable this product has. The first version of this route
+    # swept them away with the renders under the word "cached", which is not
+    # informed consent - so the UI asks for a preview first and names them.
+    def kind(name: str) -> str:
+        if name.endswith("_elements.json"):
+            return "approved"
+        if name.endswith(".pdf"):
+            return "report"
+        if name.endswith("_result.json"):
+            return "detection"
+        if name.endswith(".png"):
+            return "render"
+        return "other"
+
+    counts = {"approved": 0, "report": 0, "detection": 0, "render": 0, "other": 0}
+    freed = 0
+    files = [f for f in sorted(d.iterdir()) if f.is_file()]
+    for f in files:
+        counts[kind(f.name)] += 1
         try:
             freed += f.stat().st_size
+        except OSError:
+            pass
+
+    out = {"ok": True, "counts": counts, "total": len(files),
+           "freed_mb": round(freed / 1048576, 2)}
+    if preview:
+        out["preview"] = True
+        return out
+
+    removed = 0
+    for f in files:
+        try:
             f.unlink()
             removed += 1
         except OSError:
@@ -500,7 +533,8 @@ def reset_job(job_id: str):
         if j is not None:
             j["status"] = {}
 
-    return {"ok": True, "removed": removed, "freed_mb": round(freed / 1048576, 2)}
+    out["removed"] = removed
+    return out
 
 
 @app.get("/api/job/{job_id}/page/{page}/confidence")

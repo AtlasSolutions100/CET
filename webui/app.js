@@ -3069,11 +3069,36 @@ $("memBtn").onclick = (e) => {
       : "Open a document first.",
     async () => {
       if (!state.job) return;
+      // Ask the service what is actually there BEFORE asking the operator to
+      // agree to lose it. The first version of this dialog said "every
+      // detection it has cached", which quietly covered the approved sheet
+      // exports and the report PDF - operator work, not cache. Naming them
+      // with real counts is the difference between consent and a surprise.
+      let inv = null;
+      try {
+        const q = await fetch("/api/job/" + state.job + "/reset?preview=1", { method: "POST" });
+        if (q.ok) inv = await q.json();
+      } catch (err) { /* fall through to the generic wording */ }
+      const c = (inv && inv.counts) || {};
+      const bits = [];
+      if (c.detection) bits.push(c.detection + " cached sheet detection(s)");
+      if (c.render) bits.push(c.render + " page render(s)");
+      if (c.approved) bits.push(c.approved + " APPROVED SHEET EXPORT(S)");
+      if (c.report) bits.push(c.report + " REPORT PDF");
+      if (c.other) bits.push(c.other + " other cached file(s)");
+      const willLose = bits.length
+        ? "The service will delete, for this PDF:\n  \u2022 " + bits.join("\n  \u2022 ")
+          + "\n\nso the next detect runs from scratch in front of whoever is watching."
+        : "The service will delete every cached detection for this PDF so the "
+          + "next detect runs from scratch.";
+      const warn = (c.approved || c.report)
+        ? "\n\nNOTE: approved exports and the report PDF are your WORK, not a "
+          + "cache. Download the report first if you still need it.\n"
+        : "\n";
       if (!confirm("Reset \"" + (state.docName || "this document") + "\" for a fresh run?\n\n"
-        + nDoc + " saved decision(s) for this PDF will be forgotten, and the "
-        + "service will delete every detection it has cached for it, so the "
-        + "next detect runs from scratch in front of whoever is watching.\n\n"
-        + "The PDF itself is not touched. Prices and trade assignments, which "
+        + nDoc + " saved decision(s) for this PDF will be forgotten.\n\n"
+        + willLose + warn
+        + "\nThe PDF itself is not touched. Prices and trade assignments, which "
         + "are shared across documents, are NOT cleared - use \"Forget "
         + "everything\" for those.\n\nThis cannot be undone.")) return;
       for (const k of memDocKeys()) store.removeItem(k);
