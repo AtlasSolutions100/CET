@@ -211,7 +211,13 @@ def _register(path: Path, classify: bool = True) -> dict:
             if j.get("path") == str(path) and j.get("mtime") == mtime:
                 kinds0 = j.get("kinds")
                 sizes0 = j.get("sizes")
-                if kinds0 and sizes0:
+                # Gated on SIZES only. It used to require kinds too, so a job
+                # whose classification had not finished (or was interrupted by
+                # a restart) failed the reuse test and was registered again
+                # under a NEW id - orphaning every cached detection in the old
+                # job directory. Sizes are computed synchronously and are
+                # always present; kinds may legitimately still be null.
+                if sizes0:
                     doc.close()
                     return {"job_id": jid, "pages": j["pages"],
                             "kinds": kinds0, "sizes": sizes0,
@@ -221,19 +227,54 @@ def _register(path: Path, classify: bool = True) -> dict:
         JOBS[job_id] = {"path": str(path), "pages": doc.page_count,
                         "mtime": mtime, "status": {}}
         _save_registry()
-    kinds, sizes = [], []
-    for p in range(doc.page_count):
-        kinds.append(classify_page(doc[p]).kind if classify else "unknown")
+    # Page RECTS are free; classification is not. classify_page reads every
+    # drawing on every page, and on a dense package that dominated the cost of
+    # simply opening the file: measured 16.3 s for the 20-page stice.pdf and
+    # 38.0 s for the 15-page Barn Civil, all of it inside the POST /open-path
+    # request thread, with nothing on screen to say the app had not hung.
+    # Sizes are returned at once and the kinds arrive on their own thread; the
+    # UI polls /kinds and fills the page labels in when they land.
+    n_pages = doc.page_count
+    sizes = []
+    for p in range(n_pages):
         r = doc[p].rect
         sizes.append([round(r.width, 2), round(r.height, 2)])
     doc.close()
+    kinds = None if classify else ["unknown"] * n_pages
+    if classify:
+        def _classify_later(job_id=job_id, src=str(path), n=n_pages):
+            try:
+                d2 = pymupdf.open(src)
+                got = []
+                for i in range(n):
+                    got.append(classify_page(d2[i]).kind)
+                    with JOBS_LOCK:
+                        j2 = JOBS.get(job_id)
+                        if j2 is None:
+                            d2.close()
+                            return          # job went away; stop working
+                        j2["kinds_progress"] = len(got)
+                d2.close()
+            except Exception:
+                # A classification failure must not cost the operator the job:
+                # every page falls back to "unknown", which the UI renders as
+                # no kind label at all rather than as an error.
+                got = ["unknown"] * n
+            with JOBS_LOCK:
+                j2 = JOBS.get(job_id)
+                if j2 is not None:
+                    j2["kinds"] = got
+                    j2["kinds_progress"] = n
+                    _save_registry()
+        threading.Thread(target=_classify_later, daemon=True).start()
     with JOBS_LOCK:
         JOBS[job_id]["kinds"] = kinds
+        JOBS[job_id]["kinds_progress"] = 0 if kinds is None else len(kinds)
         JOBS[job_id]["sizes"] = sizes
         _save_registry()
     # sizes let a caller compute exact raster pixel dimensions without
     # decoding an image (a 36x24in sheet at 300dpi is 78 megapixels)
-    return {"job_id": job_id, "pages": len(kinds), "kinds": kinds,
+    return {"job_id": job_id, "pages": n_pages, "kinds": kinds,
             "sizes": sizes, "name": Path(path).name}
 
 
@@ -444,6 +485,24 @@ def status(job_id: str, page: int):
     if st == "running" and _is_queued(job_id, page):
         out["queued"] = True
     return out
+
+
+@app.get("/api/job/{job_id}/kinds")
+def job_kinds(job_id: str):
+    """Per-page vector/hybrid/raster labels, once the background pass has them.
+
+    Opening a document no longer waits for this (see _register): the UI shows
+    the page list immediately and fills the kind in when it arrives.
+    """
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(404, "unknown job")
+        kinds = j.get("kinds")
+        return {"kinds": kinds,
+                "done": kinds is not None,
+                "progress": int(j.get("kinds_progress") or 0),
+                "pages": int(j.get("pages") or 0)}
 
 
 @app.get("/api/job/{job_id}/page/{page}/result")

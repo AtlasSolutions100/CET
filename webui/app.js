@@ -92,15 +92,20 @@ async function openPath(path) {
   if (!r.ok) return setStatus(`could not open (${r.status})`, "err");
   const j = await r.json();
   state.gen++;
-  state.job = j.job_id; state.kinds = j.kinds; state.result = null;
+  state.job = j.job_id; state.result = null;
+  // The server no longer blocks the open on classifying every page (it read
+  // every drawing on every page: 16s for a 20-page set, 38s for a 15-page
+  // one, with nothing on screen saying the app had not hung). The page list
+  // is built immediately and the kind labels arrive on their own.
+  state.kinds = j.kinds || new Array(j.pages).fill(null);
   state.legendNames = []; $("legendVocab").innerHTML = "";
   $("docName").textContent = j.name;
   state.docName = j.name;
   const sel = $("pageSel");
   sel.innerHTML = "";
-  j.kinds.forEach((k, i) => {
+  state.kinds.forEach((k, i) => {
     const o = document.createElement("option");
-    o.value = i; o.textContent = `page ${i + 1} — ${k}`;
+    o.value = i; o.textContent = `page ${i + 1}` + (k ? ` — ${k}` : "");
     sel.appendChild(o);
   });
   sel.hidden = false; $("detectBtn").hidden = false;
@@ -111,6 +116,44 @@ async function openPath(path) {
   refreshPageStatuses();
   selectPage(0);
   setStatus(`${j.pages} pages`);
+  if (!j.kinds) pollKinds(state.job, state.gen);
+}
+
+// The per-page vector/hybrid/raster labels, once the server's background
+// pass has them. Opening no longer waits for it, so the page list is usable
+// immediately and this fills the labels in behind the operator. Guarded on
+// state.gen: a document opened while this is in flight must not have the
+// previous document's kinds written over its page list.
+async function pollKinds(job, gen) {
+  for (let i = 0; i < 400; i++) {
+    if (state.gen !== gen || state.job !== job) return;   // moved on
+    let k = null;
+    try {
+      const r = await fetch(`/api/job/${job}/kinds`);
+      if (r.ok) k = await r.json();
+    } catch (e) { return; }
+    if (!k) return;
+    if (state.gen !== gen || state.job !== job) return;
+    if (k.done && Array.isArray(k.kinds)) {
+      state.kinds = k.kinds;
+      const sel = $("pageSel");
+      state.kinds.forEach((kind, i) => {
+        if (sel.options[i])
+          sel.options[i].textContent = `page ${i + 1}`
+            + (kind && kind !== "unknown" ? ` — ${kind}` : "");
+      });
+      renderPageStrip();
+      renderSheetHead();
+      if (/reading page kinds/.test($("status").textContent))
+        setStatus(`${state.kinds.length} pages`);
+      return;
+    }
+    // Only speak up once it is slow enough to look broken. On a small set
+    // this never fires and the operator sees nothing at all.
+    if (i >= 2 && !state.result)
+      setStatus(`reading page kinds ${k.progress}/${k.pages || "?"} — the sheets are usable now`, "busy");
+    await new Promise(r => setTimeout(r, 600));
+  }
 }
 $("pageSel").onchange = () => selectPage(+$("pageSel").value);
 
@@ -185,7 +228,7 @@ function renderPageStrip() {
   state.kinds.forEach((kind, p) => {
     const t = document.createElement("div");
     t.className = "thumb" + (p === state.page ? " current" : "");
-    t.title = `page ${p + 1} — ${kind}`;
+    t.title = `page ${p + 1}` + (kind ? ` — ${kind}` : "");
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = `page ${p + 1}`;
