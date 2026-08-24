@@ -3782,7 +3782,14 @@ function renderItemized() {
   const box = $("itemized");
   const keepFocus = panelFocus(box);
   box.innerHTML = "";
-  if (!state.result) return;
+  if (!state.result) {
+    // The tally is written far below, after this guard, so it was never
+    // cleared: paging to an undetected sheet emptied the table and left the
+    // PREVIOUS sheet's "12.4k ft measured - $84320" sitting under it. A stale
+    // number with no table under it reads as this sheet's total.
+    $("tallyBar").textContent = "";
+    return;
+  }
   const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
   const u = ftPerIn ? "ft" : "pt";
   const head = document.createElement("div");
@@ -5837,7 +5844,8 @@ $("approveBtn").onclick = async () => {
           [l, styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(
-        [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]
+        [...new Set([...Object.values(labels), ...state.chainLabels.values(),
+                     ...state.extraItems.map(i => i.label)])]
           .filter(Boolean).map(l => [l, tradeFor(l)])),
       excluded_chain_ids: [...state.excluded],
       added_chains: state.result.chains
@@ -5845,8 +5853,18 @@ $("approveBtn").onclick = async () => {
         .map(c => ({ chain_id: c.chain_id, style_id: c.style_id,
           class: c.class, color: c.color, length_pt: c.length_pt,
           points: c.points })),
-      chain_labels: Object.fromEntries(
-        [...state.chainLabels].filter(([id]) => !state.excluded.has(id))),
+      // The SAME gate the screen applies. computeTakeoffRows skips a chain on
+      // an un-ticked style before it ever reads state.chainLabels, but the
+      // server treats a chain label as sufficient authorisation on its own
+      // (`body.chain_labels.get(...) or body.labels.get(...)`). So a line the
+      // operator had SEPARATED and then un-ticked still exported, still drew
+      // on the report overlay, still counted in Length (ft) and still priced -
+      // with nothing on screen saying so.
+      chain_labels: Object.fromEntries((() => {
+        const sid = new Map(state.result.chains.map(c => [c.chain_id, c.style_id]));
+        return [...state.chainLabels].filter(([id]) =>
+          !state.excluded.has(id) && state.include.get(sid.get(id)));
+      })()),
       quantity_overrides: ovRows,
       extra_items: state.extraItems.map(it => ({
         ...it,

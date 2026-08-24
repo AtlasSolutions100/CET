@@ -1308,16 +1308,29 @@ def report_pdf(job_id: str):
         y += 14
         page_total = 0.0
         for it in items:
-            # a starred row prints a second line, so break a little earlier
-            if y > (728 if it.get("qty_set_by") == _BY_REVIEWER else 740):
+            # a row printing a sub-line needs the break a little earlier
+            _sub = (it.get("qty_set_by") == _BY_REVIEWER) \
+                or (it.get("unit") and it.get("length_ft") is not None)
+            if y > (722 if _sub else 740):
                 tp = out.new_page(width=612, height=792)
                 y = 60
             _ov = it.get("qty_set_by") == _BY_REVIEWER
             tp.insert_text((50, y), (str(it["label"])[:50] + " *") if _ov
                            else str(it["label"])[:52], fontsize=9)
             tp.insert_text((300, y), str(it["count"]), fontsize=9)
-            _q = it["length_ft"] if it["length_ft"] is not None else it.get("qty")
-            _u = "" if it["length_ft"] is not None else (" " + it.get("unit", "")).rstrip()
+            # Choose the column by the row's UNIT, not by whether length_ft
+            # happens to be populated. An EA row keeps its footage as a
+            # REFERENCE, so the old test printed that footage in the
+            # "Length (ft)" cell of a row that was priced from a COUNT -
+            # Length x Unit $ did not equal Extended $, which is either an
+            # unnoticed wrong quantity or a visible contradiction. The
+            # reference footage moves to the sub-line below.
+            if it.get("unit"):
+                _q = it.get("qty")
+                _u = (" " + it["unit"]).rstrip()
+            else:
+                _q = it["length_ft"]
+                _u = ""
             # a calculator row that rounded to whole units is a whole
             # number: round(x, 1) leaves 13677.0, which prints
             # "13,677.0 CY" and re-asserts the tenth the rounding removed.
@@ -1329,6 +1342,12 @@ def report_pdf(job_id: str):
             tp.insert_text((500, y), f'{it["extended"]:,.2f}' if it.get("extended") else "-", fontsize=9)
             if it.get("extended"):
                 page_total += it["extended"]
+            # An EA/CY row's reference footage, stated as reference.
+            if it.get("unit") and it.get("length_ft") is not None:
+                y += 11
+                tp.insert_text((60, y),
+                               f'({it["length_ft"]:,} ft of line carries this row)',
+                               fontsize=8)
             if _ov:
                 _e = it.get("engine_length_ft")
                 _eu = "ft"
@@ -1343,12 +1362,24 @@ def report_pdf(job_id: str):
                                + (f". Measured on this sheet: {_e:,} {_eu}."
                                   if _e is not None else "."),
                                fontsize=8)
-            g = grand.setdefault(it["label"], {"count": 0, "ft": 0.0, "ext": 0.0,
-                                               "eng_ft": 0.0, "ov": False})
+            # Keyed by (label, UNIT). Footage-only accumulation printed an EA
+            # row's REFERENCE footage into the project footage total, and gave
+            # a 172,094 CY earthwork row a summary line reading "0.0" under
+            # "Length (ft)" - a real quantity rendered as nothing, on the page
+            # a client is most likely to read.
+            _unit = it.get("unit") or "ft"
+            g = grand.setdefault((it["label"], _unit),
+                                 {"count": 0, "qty": 0.0, "ext": 0.0,
+                                  "eng": 0.0, "ov": False, "unit": _unit})
             g["count"] += it["count"]
-            g["ft"] += it["length_ft"] or 0.0  # summary totals stay footage-only
-            _ef = it.get("engine_length_ft")
-            g["eng_ft"] += (_ef if _ef is not None else it["length_ft"]) or 0.0
+            if _unit == "ft":
+                g["qty"] += it["length_ft"] or 0.0
+                _ef = it.get("engine_length_ft")
+                g["eng"] += (_ef if _ef is not None else it["length_ft"]) or 0.0
+            else:
+                g["qty"] += it.get("qty") or 0.0
+                _eq = it.get("engine_qty")
+                g["eng"] += (_eq if _eq is not None else it.get("qty")) or 0.0
             g["ov"] = g["ov"] or it.get("qty_set_by") == _BY_REVIEWER
             g["ext"] += it.get("extended") or 0.0
             y += 13
@@ -1382,25 +1413,30 @@ def report_pdf(job_id: str):
     y += 10
     tp.insert_text((50, y), "Label", fontsize=9)
     tp.insert_text((300, y), "Count", fontsize=9)
-    tp.insert_text((360, y), "Length (ft)", fontsize=9)
+    tp.insert_text((360, y), "Quantity", fontsize=9)
     tp.insert_text((500, y), "Extended $", fontsize=9)
     y += 14
     total = 0.0
-    for label, g in sorted(grand.items(), key=lambda kv: -kv[1]["ft"]):
+    # Footage rows first and biggest-first within a unit, so the page still
+    # reads the way it did; a CY or EA row can no longer sort as if it were 0.
+    for (label, _u), g in sorted(
+            grand.items(),
+            key=lambda kv: (kv[1]["unit"] != "ft", -kv[1]["qty"])):
         if y > (728 if g["ov"] else 740):
             tp = out.new_page(width=612, height=792)
             y = 60
         tp.insert_text((50, y), (label[:50] + " *") if g["ov"] else label[:52],
                        fontsize=9)
         tp.insert_text((300, y), str(g["count"]), fontsize=9)
-        tp.insert_text((360, y), f'{g["ft"]:,.1f}', fontsize=9)
+        _qs = f'{g["qty"]:,.1f}' if g["unit"] == "ft" else f'{g["qty"]:,g}'
+        tp.insert_text((360, y), f'{_qs} {g["unit"]}', fontsize=9)
         tp.insert_text((500, y), f'{g["ext"]:,.2f}' if g["ext"] else "-", fontsize=9)
         total += g["ext"]
-        if g["ov"] and abs(g["eng_ft"] - g["ft"]) > 0.05:
+        if g["ov"] and abs(g["eng"] - g["qty"]) > 0.05:
             y += 11
             tp.insert_text((60, y),
                            "* includes a quantity set by the reviewer; the "
-                           f'measured total was {g["eng_ft"]:,.1f} ft.',
+                           f'measured total was {g["eng"]:,.1f} {g["unit"]}.',
                            fontsize=8)
         y += 13
     if total:
