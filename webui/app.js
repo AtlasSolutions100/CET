@@ -332,6 +332,10 @@ async function loadResult(gen = state.gen) {
     state.seedLabels.set(s.style_id, s.suggested_label || "");
   }
   memApply();   // the reviewer's saved decisions win over seeds, every load
+  // Calculator rows and area selections are decisions too, and they are
+  // restored here for the same reason: they belong to this sheet, and the
+  // operator committed them.
+  calcRestore();
   // The remembered scale pick has to be back in state.result BEFORE anything
   // paints. renderSheetHead draws the scale chip, the picker's ON highlight
   // AND the confidence banner's opening sentence straight off
@@ -346,7 +350,13 @@ async function loadResult(gen = state.gen) {
   scopeApply();   // verdicts before the first paint; see scopeApply()
   renderSheetHead();
   renderScopeBar();
-  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
+  renderStyles(); renderChips(); renderLegend(); renderAreas();
+  // arApplyItems, not renderItemized: calcRestore brought back WHICH areas the
+  // operator ticked, and the priced rows are DERIVED from that selection at
+  // the scale in force. Rendering without re-deriving would show the
+  // calculator rows returning while the area rows silently did not.
+  arApplyItems();
+  renderMiniLegend(); draw();
   // and the durable one: a scale this page's reviewer approved on an earlier
   // visit lives in the server sidecar, not in this browser. Async on purpose
   // - the first paint above is already true, and this only corrects it.
@@ -3336,6 +3346,59 @@ function priceKey(label) { return "price:" + label; }
 // only means something inside one result; this one names an operator-typed
 // LABEL, which survives a re-detect. Adding the signature would silently
 // discard the estimator's own number on every engine change.
+// Calculator output the operator COMMITTED - earthwork cut and fill, trench
+// volumes, structure rows, symbol counts, and which filled areas they ticked.
+// These were page state and died on a page change, silently: run Earthwork,
+// flick to the next sheet to check something, come back, and the cubic yards
+// were gone with nothing saying so. They are decisions (every one of them is
+// behind an explicit "Add to takeoff" or a tick), so they persist like every
+// other decision.
+//
+// Area rows are stored as the SELECTION, not as the resulting rows: their
+// quantities are re-derived from the geometry at the scale in force every
+// render (see arApplyItems), which is what makes them follow a scale
+// correction. Storing the numbers would freeze exactly what that fixed.
+function calcKey() { return docKey() + "::p" + state.page + "::calc"; }
+function areaSelKey() { return docKey() + "::p" + state.page + "::areasel"; }
+
+function calcSave() {
+  if (!state.result) return;
+  // `_area` rows are derived; never store them.
+  const rows = state.extraItems.filter(it => !it._area)
+    .map(it => ({ label: it.label, qty: it.qty, unit: it.unit }));
+  if (rows.length) store.setItem(calcKey(), JSON.stringify(rows));
+  else store.removeItem(calcKey());
+
+  const sel = {
+    rows: state.areaRows.map(r => ({ group_id: r.group_id, unit: r.unit,
+                                     label: r.label })),
+    inc: [...state.areaInc].filter(([, v]) => v).map(([k]) => k),
+    labels: [...state.areaLabels],
+  };
+  if (sel.rows.length || sel.inc.length || sel.labels.length)
+    store.setItem(areaSelKey(), JSON.stringify(sel));
+  else store.removeItem(areaSelKey());
+}
+
+function calcRestore() {
+  try {
+    const rows = JSON.parse(store.getItem(calcKey()) || "[]");
+    if (Array.isArray(rows))
+      for (const r of rows)
+        if (r && r.label && isFinite(r.qty))
+          state.extraItems.push({ label: String(r.label), qty: +r.qty,
+                                  unit: String(r.unit || "EA") });
+  } catch (e) { /* corrupt entry: start clean rather than throw */ }
+  try {
+    const sel = JSON.parse(store.getItem(areaSelKey()) || "null");
+    if (sel) {
+      state.areaRows = Array.isArray(sel.rows) ? sel.rows : [];
+      state.areaInc = new Map((sel.inc || []).map(k => [k, true]));
+      state.areaLabels = new Map(sel.labels || []);
+    }
+  } catch (e) { /* same */ }
+}
+
 function ovKey(label, unit) {
   return docKey() + "::p" + state.page + "::ov:" + unit + ":"
        + label.trim().toUpperCase();
@@ -4074,6 +4137,11 @@ function renderItemized() {
   // same field. This covers the ~30 callers other than the price box, notably
   // the 350 ms label-typing timer and every spinner click on a quantity box.
   panelRefocus(box, keepFocus);
+  // Every mutation of the takeoff ends here, so this is the one place the
+  // operator's committed calculator rows and area selections can be saved
+  // without a caller being able to forget. store.setItem skips an unchanged
+  // value, so a repaint that changed nothing writes nothing.
+  calcSave();
 }
 
 // ---------- CSV export of the itemized takeoff (client-side blob) ----------
@@ -4635,6 +4703,7 @@ $("ewCalc").onclick = async () => {
   if (j.proposed_offset_ft) off.push(`proposed −${j.proposed_offset_ft.toFixed(2)} ft`);
   // the engine reports -0.0 when nothing is cut (negated empty sum); show 0
   const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
+  renderEwStale();
   $("ewResult").innerHTML =
     `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
     ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
@@ -4684,6 +4753,39 @@ function ewClearItems() {
 }
 
 // The push. Named as on Beaumont's bid sheet, rounded to whole CY.
+// Cut and fill are computed at whatever scale was in force when Calculate was
+// pressed, and the reviewer can change that scale afterwards. The volumes do
+// NOT follow it - the surfaces are re-integrated server-side, so unlike the
+// areas panel this cannot be rescaled by arithmetic on the client. Say so, and
+// offer the one-click redo, rather than leaving cubic yards on screen that
+// belong to a scale nobody is using any more.
+function ewScaleStale() {
+  const j = state.ew && state.ew.result;
+  const was = j && j.ft_per_paper_inch;
+  const now = arFpi();
+  if (!was || now === null) return null;
+  return Math.abs(now - was) > 1e-6 ? { was: +was, now } : null;
+}
+function renderEwStale() {
+  const box = $("ewStale");
+  if (!box) return;
+  const st = ewScaleStale();
+  box.hidden = !st;
+  if (!st) return;
+  box.innerHTML = "";
+  const msg = document.createElement("span");
+  msg.innerHTML = `<b>These cubic yards are not the scale in force.</b> They `
+    + `were computed at 1 inch = ${st.was.toFixed(2)} ft; the sheet is now set `
+    + `to <b>1 inch = ${st.now.toFixed(2)} ft</b>. Volume moves with the square `
+    + `of the scale, so expect about `
+    + `${Math.pow(st.now / st.was, 2).toFixed(1)}\u00d7. Recalculate before pricing.`;
+  const b = document.createElement("button");
+  b.className = "mini";
+  b.textContent = "recalculate at " + st.now.toFixed(2) + " ft/in";
+  b.onclick = () => $("ewCalc").click();
+  box.append(msg, b);
+}
+
 function ewApplyItems(j) {
   ewClearItems();
   if (!j) return;

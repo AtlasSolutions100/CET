@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=31">
+<link rel="stylesheet" href="style.css?v=32">
 </head>
 <body>
 <header>
@@ -126,6 +126,10 @@
         <span class="ew-unit">SF</span>
         <span class="ew-area-note" id="ewAreaNote"></span>
       </div>
+      <!-- Volumes are re-integrated server-side and cannot be rescaled on
+           the client, so a scale change after Calculate leaves them stale.
+           This says so and offers the redo. -->
+      <div id="ewStale" class="ew-stale" hidden></div>
       <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
         <span id="ewResult" class="ew-result"></span>
@@ -288,6 +292,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=70"></script>
+<script src="app.js?v=72"></script>
 </body>
 </html>

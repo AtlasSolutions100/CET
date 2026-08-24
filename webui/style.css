@@ -770,3 +770,20 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   background: #e6efe9;
   box-shadow: inset 3px 0 0 var(--accent);
 }
+
+/* --- earthwork volumes computed at a scale that is no longer in force ----
+   Unlike areas, cut and fill cannot be rescaled by arithmetic on the client:
+   the two surfaces are re-integrated server-side. So the panel says the
+   number is stale and offers the redo, rather than showing cubic yards that
+   quietly belong to a superseded scale. */
+.ew-stale {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: 8px 0; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid #7a5a1c; background: #2c2415; color: #e2b04a;
+  font-size: 12.5px; line-height: 1.45;
+}
+.ew-stale b { color: #f0c86a; }
+:root[data-theme="light"] .ew-stale {
+  border-color: #d9bd7e; background: #fbf3e2; color: #8a5a06;
+}
+:root[data-theme="light"] .ew-stale b { color: #6d4705; }

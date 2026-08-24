@@ -2178,6 +2178,13 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
         export_factor=body.export_factor,
         import_factor=body.import_factor,
         cut_area_sf=result["area_sf"], layer_area_sf=area)
+    # The scale this volume was computed at. Since 2026-08-23 the route
+    # honours a scale the reviewer typed, which means the answer can now
+    # depend on a number they are free to change afterwards - and a cubic
+    # yard figure that silently belongs to a superseded scale is exactly
+    # the confident wrong number this project ranks worst. Reporting it is
+    # what lets the panel notice.
+    result["ft_per_paper_inch"] = det["ft_per_paper_inch"]
     return result
 
 
