@@ -2579,6 +2579,61 @@ const arFmt = (v, d = 0) =>
   v === null || v === undefined ? "—"
     : v.toLocaleString(undefined, { maximumFractionDigits: d });
 
+// ---------- areas follow the scale IN FORCE, not the one at detect --------
+// The server computes area_sf / perim_lf once, at detection, from the ENGINE's
+// reading. A scale the reviewer set afterwards never reached them, so this
+// panel printed one scale while the sheet header printed another - and the
+// code simply said so and told the operator not to price it. It does not have
+// to: every region and group also carries `area_pt2` and `perim_pt`, which are
+// pure geometry, so the real figures are one exact multiplication away.
+//
+//   sf = pt2 / 72^2 * (ft per paper inch)^2      lf = pt / 72 * (ft per inch)
+//
+// Checked against the server's own output on Barn Civil printed sheet 3:
+// 822,301.2 pt2 at 30 ft/in gives 142,760.6 SF, and 3,957.3 pt gives 1,648.9
+// LF - both exact to the tenth the server reported.
+function arFpi() {
+  const sc = state.result && state.result.scale;
+  const f = sc && sc.ft_per_paper_inch;
+  return (typeof f === "number" && isFinite(f) && f > 0) ? f : null;
+}
+function arSf(o) {
+  const f = arFpi();
+  return (f === null || !o || !isFinite(o.area_pt2)) ? null
+       : o.area_pt2 / 5184 * f * f;
+}
+function arLf(o) {
+  const f = arFpi();
+  return (f === null || !o || !isFinite(o.perim_pt)) ? null
+       : o.perim_pt / 72 * f;
+}
+// The regions in this group whose area the DRAFTER printed on the sheet, and
+// what they say about the scale now in force. `printed_sf` is the drafter's
+// own number, so it is ground truth independent of any scale we choose - which
+// makes it a LIVE check on the reviewer's scale rather than a frozen verdict
+// about the engine's.
+function arTagged(g) {
+  const regs = arRegionsOf(g).filter(r => r && r.printed_sf);
+  if (!regs.length) return null;
+  const pt2 = regs.reduce((a, r) => a + (r.area_pt2 || 0), 0);
+  const printed = regs.reduce((a, r) => a + (r.printed_sf || 0), 0);
+  const f = arFpi();
+  let mismatch = 0;
+  if (f !== null)
+    for (const r of regs) {
+      const mine = (r.area_pt2 || 0) / 5184 * f * f;
+      if (Math.abs(mine - r.printed_sf) / r.printed_sf > 0.02) mismatch += 1;
+    }
+  return {
+    n: regs.length,
+    sf: f === null ? null : pt2 / 5184 * f * f,
+    printed,
+    mismatch,
+    // the scale those printed areas imply, solved from the same equation
+    implied: (pt2 > 0 && printed > 0) ? Math.sqrt(printed * 5184 / pt2) : null,
+  };
+}
+
 // Rows are DERIVED from the group every time, so a scale correction or a
 // re-detect flows straight through instead of leaving a stale number.
 function arApplyItems() {
@@ -2589,7 +2644,7 @@ function arApplyItems() {
   for (const row of state.areaRows) {
     const g = arGroup(row.group_id);
     if (!g || !state.areaInc.get(g.group_id)) continue;
-    const qty = row.unit === "LF" ? g.perim_lf : g.area_sf;
+    const qty = row.unit === "LF" ? arLf(g) : arSf(g);
     if (qty === null || qty === undefined) continue;   // no scale: no number
     const base = arLabel(g);
     let label = row.label || (row.unit === "LF" ? `${base} (edge)` : base);
@@ -2626,61 +2681,60 @@ function renderAreas() {
   // the reader must SEE which scale was used and what the sheet's own
   // printed areas say about it.
   const sc = a.scale || {};
-  const tc = sc.tag_check || {};
+  // NOTE: sc is the scale the SERVER used at detection. It is kept only to
+  // report what changed; every figure in this panel is recomputed live by
+  // arSf/arLf. sc.tag_check is deliberately NOT read - it froze a verdict
+  // about the engine's scale, and arTagged re-derives it at the live one.
   const parts = [];
   parts.push(sc.ft_per_paper_inch
     ? `scale used: 1 inch = ${(+sc.ft_per_paper_inch).toFixed(2)} ft`
       + (sc.text ? ` (read as “${esc(sc.text)}”)` : "")
     : `<b>no scale on this sheet</b> — areas shown in pt², no SF`);
   let cls = "ar-scale";
-  // The SF and LF below were computed SERVER-SIDE at detect time, from the
-  // engine's own reading (takeoff_engine/areas.page_areas). A scale the
-  // reviewer set afterwards does not reach them, so this panel could print
-  // one scale while the sheet header printed another - a screen contradicting
-  // itself. Say so instead. DEFERRED, not fixed here: the group payload
-  // already carries `area_pt2` and `perim_pt`, so recomputing SF/LF from the
-  // scale in force is a small client-side change - but it moves priced
-  // quantities, which this run is not scoped to move. Nobody is on it.
-  const inForce = state.result && state.result.scale;
-  const stale = inForce && (!sc.ft_per_paper_inch
-    || Math.abs(+inForce.ft_per_paper_inch - +sc.ft_per_paper_inch) > 1e-6);
-  if (stale) {
-    cls += " bad";
-    parts.push(`<b>These SF and LF figures are NOT the scale in force.</b> `
-      + `The sheet is set to <b>1 inch = `
-      + `${(+inForce.ft_per_paper_inch).toFixed(2)} ft</b>`
-      + (inForce.typed_by_reviewer ? " (set by hand)"
-         : inForce.picked_by_reviewer ? " (you picked it)" : "")
-      + `, but the areas below were measured when the page was detected, at `
-      + (sc.ft_per_paper_inch
-         ? `1 inch = ${(+sc.ft_per_paper_inch).toFixed(2)} ft — every SF here `
-           + `is out by about `
-           + `${Math.pow(+inForce.ft_per_paper_inch / +sc.ft_per_paper_inch, 2)
-                .toFixed(1)}×.`
-         : `no scale at all, so there are no SF figures to show.`)
-      + ` Do not price these until they are recomputed.`);
+  // Every SF and LF in this panel is now recomputed from `area_pt2` /
+  // `perim_pt` at the scale IN FORCE (see arSf / arLf), so the old "these
+  // figures are not the scale in force, do not price them" warning is gone -
+  // there is nothing stale left to warn about. What replaces it is better:
+  // because the drafter's own printed "N sf" tags are ground truth whatever
+  // scale we pick, they now CHECK the reviewer's scale live. Set the wrong
+  // scale by hand and the sheet's own figures contradict you immediately,
+  // instead of agreeing with an engine reading nobody is using any more.
+  const inForce = arFpi();
+  const detected = sc.ft_per_paper_inch ? +sc.ft_per_paper_inch : null;
+  const scSrc = state.result && state.result.scale;
+  if (inForce !== null && detected !== null
+      && Math.abs(inForce - detected) > 1e-6)
+    parts.push(`recomputed at <b>1 inch = ${inForce.toFixed(2)} ft</b>`
+      + (scSrc && scSrc.typed_by_reviewer ? " (set by hand)"
+         : scSrc && scSrc.picked_by_reviewer ? " (you picked it)" : "")
+      + `, not the ${detected.toFixed(2)} ft read at detection.`);
+
+  // The live check, aggregated over every tagged region on the sheet.
+  let tPt2 = 0, tPrinted = 0, tN = 0, tBad = 0;
+  for (const g of groups) {
+    const t = arTagged(g);
+    if (!t) continue;
+    tN += t.n; tBad += t.mismatch; tPrinted += t.printed;
+    if (t.implied) tPt2 += t.printed * 5184 / (t.implied * t.implied);
   }
-  if (tc.implied_ft_per_paper_inch && sc.ft_per_paper_inch) {
-    const d = Math.abs(tc.implied_ft_per_paper_inch - sc.ft_per_paper_inch)
-      / sc.ft_per_paper_inch;
-    if (d > 0.02) {
+  const impliedAll = (tPt2 > 0 && tPrinted > 0)
+    ? Math.sqrt(tPrinted * 5184 / tPt2) : null;
+  if (tN && inForce !== null && impliedAll) {
+    if (tBad) {
       cls += " bad";
-      parts.push(`<b>the sheet disagrees.</b> ${tc.n_matched} printed “N sf” tag`
-        + `${tc.n_matched === 1 ? "" : "s"} on this page imply `
-        + `<b>1 inch = ${tc.implied_ft_per_paper_inch.toFixed(2)} ft</b>. `
-        + `Every SF below is off by about `
-        + `${(Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2)).toFixed(1)}×. `
-        + `Treat these numbers as provisional until the scale is fixed.`);
-    } else if (tc.n_ok && !stale) {
-      // `!stale`: that check compared the sheet's printed tags against the
-      // ENGINE's scale. It says nothing about the one now in force, and a
-      // green tick over figures the header has already contradicted is the
-      // exact shape of a confident wrong number.
+      parts.push(`<b>the sheet disagrees.</b> ${tN} printed “N sf” tag`
+        + `${tN === 1 ? "" : "s"} on this page imply <b>1 inch = `
+        + `${impliedAll.toFixed(2)} ft</b>, not ${inForce.toFixed(2)}. `
+        + `${tBad} of them ${tBad === 1 ? "is" : "are"} out by more than 2% `
+        + `at the scale in force — about `
+        + `${Math.pow(impliedAll / inForce, 2).toFixed(1)}× on area. `
+        + `Fix the scale before pricing these.`);
+    } else {
       cls += " ok";
-      parts.push(`checked against ${tc.n_ok} area${tc.n_ok === 1 ? "" : "s"} `
-        + `printed on the sheet — they agree.`);
+      parts.push(`checked against ${tN} area${tN === 1 ? "" : "s"} printed on `
+        + `the sheet at this scale — they agree.`);
     }
-  } else if (sc.ft_per_paper_inch) {
+  } else if (inForce !== null) {
     parts.push(`no printed “N sf” tag on this sheet to check it against.`);
   }
   scaleBox.className = cls;
@@ -2721,7 +2775,7 @@ function renderAreas() {
           legend: "named from the legend swatch of the same colour",
           layer: "named from the CAD layer" }[g.name_source]
       : "no name on the sheet — type one";
-    meta.textContent = `${arFmt(g.area_sf)} SF · ${arFmt(g.perim_lf)} LF edge · `
+    meta.textContent = `${arFmt(arSf(g))} SF · ${arFmt(arLf(g))} LF edge · `
       + `${g.n} region${g.n === 1 ? "" : "s"}`;
     const why = document.createElement("span");
     why.className = "ar-why " + (g.name_source || "none");
@@ -2736,24 +2790,27 @@ function renderAreas() {
         + "hidden — tick it if the guess is wrong.";
       meta.appendChild(f);
     }
-    if (g.n_printed) {
+    // Recomputed at the scale IN FORCE, so this is a live check on the
+    // reviewer's scale and not a frozen verdict about the engine's.
+    const tg = arTagged(g);
+    if (tg) {
       const chk = document.createElement("span");
-      const bad = g.n_mismatch > 0;
+      const bad = tg.mismatch > 0;
       chk.className = "ar-check " + (bad ? "bad" : "ok");
       chk.textContent = bad
-        ? `sheet says ${arFmt(g.printed_sf)} SF`
-        : `matches the sheet (${g.n_printed})`;
+        ? `sheet says ${arFmt(tg.printed)} SF`
+        : `matches the sheet (${tg.n})`;
       // compare like with like: our measurement of the TAGGED regions only,
       // never the group total against a partial set of tags
       chk.title = bad
-        ? `The sheet prints its own area for ${g.n_printed} of these `
-          + `${g.n} regions, totalling ${arFmt(g.printed_sf)} SF. We measure `
-          + `${arFmt(g.area_sf_tagged)} SF for those same ${g.n_printed}. `
-          + `${g.n_mismatch} disagree by more than 2% — almost always the page scale.`
-        : `${g.n_printed} of these ${g.n} regions carry an area printed on the `
-          + `sheet (${arFmt(g.printed_sf)} SF); we measure `
-          + `${arFmt(g.area_sf_tagged)} SF for those same ${g.n_printed}, `
-          + `agreeing within 2%.`;
+        ? `The sheet prints its own area for ${tg.n} of these `
+          + `${g.n} regions, totalling ${arFmt(tg.printed)} SF. At the scale `
+          + `in force we measure ${arFmt(tg.sf)} SF for those same ${tg.n}. `
+          + `${tg.mismatch} disagree by more than 2% — almost always the `
+          + `page scale.`
+        : `${tg.n} of these ${g.n} regions carry an area printed on the `
+          + `sheet (${arFmt(tg.printed)} SF); at the scale in force we measure `
+          + `${arFmt(tg.sf)} SF for those same ${tg.n}, agreeing within 2%.`;
       meta.appendChild(chk);
     }
     main.append(lab, meta);
