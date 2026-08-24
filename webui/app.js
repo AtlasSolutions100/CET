@@ -2966,6 +2966,10 @@ const memWritable = (() => {
   } catch (e) { return false; }  // private window / quota 0 - session-only
 })();
 let memFull = false;             // quota refused a write: say so, never lie
+// Doc-scoped quantity overrides dropped at load - see the purge below. They
+// are COUNTED because silently deleting numbers the operator typed is the
+// second-worst thing this file can do, and saying so is what keeps it second.
+let memDropped = 0;
 const sessionMem = new Map();    // mirror, and the entire store when !memWritable
 if (memWritable) {
   for (const k of Object.keys(localStorage)) {
@@ -2974,7 +2978,29 @@ if (memWritable) {
     if (/^(doc::|measure::|trade::|price:)/.test(k)) localStorage.removeItem(k);
     // a superseded schema: never read, and not left to rot
     else if (/^tk\d+::/.test(k) && !k.startsWith(MEM_V)) localStorage.removeItem(k);
-    else if (k.startsWith(MEM_V)) sessionMem.set(k.slice(MEM_V.length), localStorage.getItem(k));
+    else if (k.startsWith(MEM_V)) {
+      const lk = k.slice(MEM_V.length);
+      // A quantity override written before ovKey carried a page. It applied to
+      // EVERY sheet of its document and carries no record of which sheet it
+      // was typed on, so it cannot be assigned to one. Assigning it to a guess
+      // - page 0, say - would put a number the operator never typed for that
+      // sheet onto that sheet, rendered identically to one they did: rank-1
+      // harm manufactured by the fix. Dropping it restores the DETECTED
+      // quantity, which is the defensible number, and the emptied box is
+      // visible. Lost work the operator can retype is rank 3.
+      //
+      // Targeted rather than a MEM_V bump. Bumping the schema would also
+      // destroy every key whose shape did NOT change - including the shared
+      // price list and trade assignments the Saved-work menu twice promises
+      // survive a document reset - silently, on the next page load, with none
+      // of the confirmation "Forget everything" demands. That is strictly
+      // more destructive than this app's most dangerous button, fired at a
+      // moment the operator did not choose.
+      if (/^doc::.+::ov:(ft|qty):/.test(lk) && !/::p\d+::ov:/.test(lk)) {
+        localStorage.removeItem(k);
+        memDropped++;
+      } else sessionMem.set(lk, localStorage.getItem(k));
+    }
   }
 }
 const store = {
@@ -3022,9 +3048,14 @@ function renderMemBtn() {
   const b = $("memBtn");
   if (!b) return;
   const n = sessionMem.size;
-  b.hidden = n === 0;
-  b.textContent = "Saved work \u00b7 " + n;
-  b.classList.toggle("warn", memFull || !memWritable);
+  // memDropped keeps the button on screen even when nothing else survived,
+  // because the one thing the operator must not miss is that numbers they
+  // typed are gone.
+  b.hidden = n === 0 && memDropped === 0;
+  b.textContent = (n === 0 && memDropped)
+    ? "Overrides cleared \u00b7 " + memDropped
+    : "Saved work \u00b7 " + n;
+  b.classList.toggle("warn", memFull || !memWritable || memDropped > 0);
   b.title = !memWritable
     ? n + " decisions are being held for THIS SESSION ONLY. This browser will "
       + "not let the page store anything (a private window does this), so "
@@ -3036,6 +3067,11 @@ function renderMemBtn() {
     : n + " decisions remembered in this browser - labels, prices, trades, "
       + "quantity overrides, scales, and which rows are ticked. They come back "
       + "when you reopen a document. Click to forget all of them.";
+  if (memDropped)
+    b.title += "\n\n" + memDropped + " quantity override(s) saved by an older "
+      + "build applied to EVERY sheet of their document and did not record "
+      + "which sheet they were typed on. They have been cleared, so those rows "
+      + "show the DETECTED quantity again.";
 }
 // Which saved keys belong to the document currently open. Everything
 // doc-scoped is built from docKey(), except the two scale keys, which predate
@@ -3196,11 +3232,37 @@ document.addEventListener("keydown", (e) => {
 // this page, so nothing has called memBtnDirty. Paint the count once at start
 // or a returning operator sees no sign that anything was kept.
 renderMemBtn();
+// The button title is a hover; deleting the operator's own numbers has to be
+// readable without one.
+if (memDropped)
+  setStatus(memDropped + " quantity override(s) from an older build were "
+    + "cleared: they applied to EVERY sheet of their document and did not "
+    + "record which sheet you typed them on. Those rows now show the DETECTED "
+    + "quantity. Re-enter any you still want, on the sheet it belongs to.", "err");
 function priceKey(label) { return "price:" + label; }
 // quantity/footage override: the estimator's number beats the detector's.
-// Doc-scoped (this sheet has 24 shear walls; another sheet doesn't).
-function ovKey(label, kind) {
-  return docKey() + "::ov:" + kind + ":" + label.trim().toUpperCase();
+// PAGE-scoped and UNIT-scoped. The comment that stood here argued for exactly
+// that while the key did the opposite: "this sheet has 24 shear walls; another
+// sheet doesn't" is the argument for a page in the key, and there was no page
+// in the key. A LABEL travels across sheets BY DESIGN - labelKey is doc-wide
+// on purpose and measure::<LABEL> is global - so the same named row exists on
+// most sheets of a set, and every one of them read the one override. The
+// calculators do not even need the transfer: "Site Cut", "Site Fill" and the
+// structure labels are literal constants emitted on every sheet. Mirrors
+// includeKey's ::p<N> segment.
+//
+// The UNIT is in the key because a quantity typed while the sheet has NO
+// scale is in raw PDF points, and the old key filed it under "ft" - so the
+// moment a scale was set, a points figure was served back as feet. Different
+// unit, different key, no silent reinterpretation.
+//
+// No engine_sig here, unlike includeKey. That key names a style_id, which
+// only means something inside one result; this one names an operator-typed
+// LABEL, which survives a re-detect. Adding the signature would silently
+// discard the estimator's own number on every engine change.
+function ovKey(label, unit) {
+  return docKey() + "::p" + state.page + "::ov:" + unit + ":"
+       + label.trim().toUpperCase();
 }
 // ---------- style memory: the reviewer's decisions ARE the takeoff -------
 // Deterministic consistency: once a style is labeled / set to EA, that
@@ -3535,11 +3597,18 @@ function computeTakeoffRows() {
   const sheet = unionStats(sheetChains);
   const pt2q = (pt) => ftPerIn ? pt / 72 * ftPerIn : pt;
   // one flat list: measured line families + calculator items, then group
+  // Every row carries its UNIT explicitly. Until 2026-08-24 the unit was
+  // reverse-engineered from `cnt` - which holds a chain COUNT for a measured
+  // row and a UNIT STRING for a calculator row - and the three readers of
+  // that field each guessed differently. That is how "Earthwork & Grading"
+  // came to print (contour feet + cut CY + fill CY + slab SF) as one number
+  // with "ft" after it: the subtotal test was `cnt === "EA"`, and "CY" is not
+  // "EA". `cnt` is left alone so nothing downstream moves yet.
   const items = [...totals.entries()].map(([label, t]) => t.objects
-    ? { label, cnt: "EA", qty: t.objects,
+    ? { label, cnt: "EA", unit: "EA", qty: t.objects,
         qtyText: String(t.objects), priced: true, isObj: true,
         ft: ftPerIn ? t.pt / 72 * ftPerIn : null }
-    : { label, cnt: String(t.count),
+    : { label, cnt: String(t.count), unit: ftPerIn ? "ft" : "pt",
         qty: pt2q(t.pt),
         sumQty: pt2q(t.pt),
         unionQty: pt2q(t.dup.unionPt),
@@ -3547,8 +3616,8 @@ function computeTakeoffRows() {
         dupLegs: t.dup.sharedLegs,
         qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
-    items.push({ label: it.label, cnt: it.unit, qty: it.qty,
-                 qtyText: it.qty.toLocaleString(), priced: true });
+    items.push({ label: it.label, cnt: it.unit, unit: it.unit, qty: it.qty,
+                 qtyText: it.qty.toLocaleString(), priced: true, isCalc: true });
   const byTrade = new Map();
   for (const it of items) {
     const tr = tradeFor(it.label);
@@ -3562,9 +3631,10 @@ function computeTakeoffRows() {
     if (!group) continue;
     group.sort((a, b) => b.qty - a.qty);
     let sub = 0, subQty = 0, subEa = 0;
+    const subByUnit = new Map();
     for (const it of group) {
       const ov = parseFloat(store.getItem(
-        ovKey(it.label, it.cnt === "EA" ? "qty" : "ft")) || "");
+        ovKey(it.label, it.unit)) || "");
       if (!isNaN(ov) && ov > 0) {
         it.auto = it.qty; it.qty = ov;
         if (it.cnt === "EA") it.qtyText = String(ov);
@@ -3575,10 +3645,12 @@ function computeTakeoffRows() {
       it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
       if (it.ext) sub += it.ext;
-      if (it.cnt === "EA") subEa += it.qty; else subQty += it.qty;
+      subByUnit.set(it.unit, (subByUnit.get(it.unit) || 0) + it.qty);
+      if (it.unit === "EA") subEa += it.qty;
+      else if (it.unit === "ft" || it.unit === "pt") subQty += it.qty;
     }
     grand += sub;
-    groups.push({ trade: tr, items: group, sub, subQty, subEa });
+    groups.push({ trade: tr, items: group, sub, subQty, subEa, subByUnit });
   }
   return { groups, grand, ftPerIn, sheet };
 }
@@ -3613,7 +3685,7 @@ function dupNote(it, u) {
     ? "put the summed quantity back in the box"
     : "write the union into this row's quantity override (reversible)";
   b.onclick = () => {
-    const k = ovKey(it.label, "ft");
+    const k = ovKey(it.label, it.unit);
     if (onUnion) store.removeItem(k);
     else store.setItem(k, it.unionQty.toFixed(1));
     renderItemized(); renderChips();
@@ -3622,8 +3694,93 @@ function dupNote(it, u) {
   return n;
 }
 
+// The row's number is the OPERATOR'S. Say so, with the engine's figure beside
+// it and one click to take it back.
+function ovNote(it, u) {
+  const n = document.createElement("div");
+  n.className = "dup-note ov-note";
+  const unit = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  const txt = document.createElement("span");
+  txt.innerHTML = "<b>overridden</b> — this sheet uses " + q1(it.qty) + " "
+    + unit + "; the engine detected <b>" + q1(it.auto) + "</b> " + unit;
+  n.appendChild(txt);
+  // dupNote's "restore sum" removes the SAME key. When the override IS the
+  // union, that button renders directly beneath this one, so do not print two
+  // differently worded buttons that do the same thing.
+  const dupWillOffer = it.dupQty > 0.05
+    && it.unionQty !== undefined && Math.abs(it.qty - it.unionQty) < 0.05;
+  if (!dupWillOffer) {
+    const b = document.createElement("button");
+    b.className = "mini dup-take";
+    b.textContent = "restore detected";
+    b.title = "put the engine's figure back in the box and forget the override";
+    b.onclick = () => {
+      store.removeItem(ovKey(it.label, it.unit));
+      renderItemized(); renderChips();
+    };
+    n.appendChild(b);
+  }
+  return n;
+}
+
+// The quantity box holds a NUMBER, so it must be fed a string that
+// input[type=number] can parse. it.qtyText must NEVER be used here: for a
+// calculator row it is it.qty.toLocaleString(), which yields "1,234.5" - not
+// a valid floating-point number, so the browser's value-sanitisation blanks
+// the control and q.value reads "".
+// One decimal, because that is already this app's canonical precision in
+// three independent places: takeoffCsv writes it.qty.toFixed(1), q1() in
+// dupNote prints one decimal, and server.py rounds length_ft and extra-item
+// qty to one. "Full precision" means the figure the CSV carries, not "3.3k".
+function qtyBoxValue(v, unit) {
+  if (!Number.isFinite(v)) return "";
+  if (unit === "EA") return String(Math.round(v * 100) / 100);
+  return v.toFixed(1);
+}
+
+// A step the operator can feel AT THIS MAGNITUDE. 0.1 on a 3,278 ft run is
+// 32,000 clicks to move it one percent; 1 on a 3.4 EA row cannot express 3.4.
+function qtyStep(v, unit) {
+  const m = Math.abs(v);
+  if (unit === "EA") return m >= 1000 ? "10" : "1";
+  if (m >= 10000) return "100";
+  if (m >= 1000) return "10";
+  if (m >= 100) return "1";
+  return "0.1";
+}
+
+// renderItemized() rebuilds the whole panel with box.innerHTML = "", which
+// DESTROYS whatever input is focused inside it - and roughly thirty call
+// sites reach it, one of them formerly the price box's own oninput. Every
+// input the panel builds carries a unique, stable `name`, so remember the
+// name and put focus back on the replacement.
+// CARET: selectionStart is not available on input[type=number] - the getter
+// returns null per spec and setSelectionRange throws InvalidStateError. Both
+// boxes here are number inputs, so focus is all that can be carried. That is
+// precisely why the price handler below stops rebuilding on every keystroke
+// instead of leaning on this.
+function panelFocus(root) {
+  const el = document.activeElement;
+  if (!el || !el.name || !root.contains(el)) return null;
+  let s = null, e2 = null;
+  try { s = el.selectionStart; e2 = el.selectionEnd; } catch (err) { /* number input */ }
+  return { name: el.name, s, e2 };
+}
+function panelRefocus(root, f) {
+  if (!f) return;
+  // A label can contain a double quote (PROPOSED 4" RIGID ... FOOTER DRAIN),
+  // so match on the property, never on an attribute selector built from it.
+  for (const el of root.querySelectorAll("input,select"))
+    if (el.name === f.name) {
+      el.focus({ preventScroll: true });
+      if (f.s !== null) { try { el.setSelectionRange(f.s, f.e2); } catch (err) {} }
+      return;
+    }
+}
+
 function renderItemized() {
   const box = $("itemized");
+  const keepFocus = panelFocus(box);
   box.innerHTML = "";
   if (!state.result) return;
   const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
@@ -3634,13 +3791,18 @@ function renderItemized() {
     (ftPerIn ? "feet" : "pt") + "</div><div>$/ft</div><div>ext $</div>";
   box.appendChild(head);
   for (const g of groups) {
-    const { trade: tr, items: group, sub, subQty, subEa } = g;
+    const { trade: tr, items: group, sub, subByUnit } = g;
     const th = document.createElement("div");
     th.className = "trade-head";
-    const qtyStr = subQty >= 1000 ? (subQty/1000).toFixed(1) + "k" : subQty.toFixed(0);
+    // One chip per unit, each labelled with its OWN unit. Never add two units
+    // together: a heading reading "31.4k ft" over a group holding 17.5k ft of
+    // contour plus 13,677 CY of cut is a number that exists nowhere on earth.
+    const abbr = (v) => v >= 1000 ? (v/1000).toFixed(1) + "k" : String(Math.round(v * 10) / 10);
+    const unitOrder = (u) => u === "ft" || u === "pt" ? 0 : u === "EA" ? 1 : 2;
     const parts = [];
-    if (subQty) parts.push(ftPerIn ? `${qtyStr} ft` : `${qtyStr} pt`);
-    if (subEa) parts.push(`${subEa} EA`);
+    for (const [u, v] of [...subByUnit].sort(
+           (a, b) => unitOrder(a[0]) - unitOrder(b[0]) || a[0].localeCompare(b[0])))
+      if (v) parts.push(`${abbr(v)} ${u}`);
     if (sub) parts.push(`$${sub.toFixed(0)}`);
     th.innerHTML = `<span>${tr}</span><span class="t-sub">` +
       (parts.join(" · ") || "0") + `</span>`;
@@ -3666,18 +3828,58 @@ function renderItemized() {
       lab.appendChild(pick);
       const cnt = document.createElement("div"); cnt.textContent = it.cnt;
       const q = document.createElement("input");
-      q.type = "number"; q.min = "0";
-      q.step = it.cnt === "EA" ? "1" : "0.1";
-      q.className = "qty-in" + (it.ov ? " ov" : "");
+      q.type = "number";
+      // NO `min`. The HTML step base is the `min` content attribute when one
+      // is present and only otherwise the `value` attribute - and making the
+      // VALUE the step base is the entire point here: the arrows must nudge
+      // from the detected figure (3278.8 -> 3288.8) rather than snap to a
+      // multiple of the step counted from zero. With an empty box and
+      // min="0", one arrow click wrote 0.1 and wiped the quantity. Dropping
+      // min costs nothing: there is no <form> in index.html and nothing calls
+      // checkValidity, so it only ever clamped the spinner, and the handler
+      // below now rejects <= 0 outright.
+      const boxStr = qtyBoxValue(it.qty, it.unit);
+      const detStr = qtyBoxValue(it.ov ? it.auto : it.qty, it.unit);
+      q.step = qtyStep(it.qty, it.unit);
+      q.setAttribute("value", boxStr);   // sets the value AND the step base
+      // The box is no longer empty-vs-filled, so the detected/overridden
+      // state is stated POSITIVELY: dashed border = the engine's figure,
+      // solid accent + bold = yours, plus an ov-note sentence under the row
+      // for anything that has to survive a screenshot or a colour-blind read.
+      q.className = "qty-in " + (it.ov ? "ov" : "auto");
       q.name = "qty-" + it.label;
-      const autoText = it.qtyText ||
-        ((it.ov ? it.auto : it.qty) >= 1000
-          ? ((it.ov ? it.auto : it.qty)/1000).toFixed(1) + "k"
-          : (it.ov ? it.auto : it.qty).toFixed(1));
-      if (it.ov) { q.value = it.qty; q.title = `detected ${it.auto && it.auto.toFixed ? it.auto.toFixed(1) : it.auto} — clear to restore`; }
-      else { q.placeholder = autoText; q.title = "type to override the detected quantity"; }
+      const qUnit = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+      q.title = it.ov
+        ? `YOUR figure. The engine detected ${detStr} ${qUnit}.`
+          + ` Use "restore detected" under the row, or clear the box.`
+        : `Detected by the engine: ${detStr} ${qUnit}.`
+          + ` The arrows step by ${q.step}; typing or stepping makes it yours.`;
+      // A wheel over a FOCUSED number input steps it in Chrome and Firefox,
+      // and this panel lives in a scrolling 330 px sidebar. Scrolling past a
+      // box you just clicked must not change a bid quantity.
+      q.addEventListener("wheel",
+        (ev) => { if (document.activeElement === q) ev.preventDefault(); },
+        { passive: false });
       q.onchange = () => {
-        store.setItem(ovKey(it.label, it.cnt === "EA" ? "qty" : "ft"), q.value);
+        const k = ovKey(it.label, it.unit);
+        const v = parseFloat(q.value);
+        // Empty, zero or negative means NO OVERRIDE, and that has to REMOVE
+        // the key rather than store "" or "0". computeTakeoffRows already
+        // ignores anything not > 0, but a dead entry survived the reload and
+        // counted on the "Saved work" button as a decision nobody made.
+        // dupNote's restore already uses removeItem on this key; now they
+        // agree.
+        // Typing (or stepping back to) the engine's own figure is NOT an
+        // override. Storing it anyway produced a row asserting "this sheet
+        // uses 25,027.8 ft; the engine detected 25,027.8 ft", counted a
+        // decision nobody made on the Saved-work button, and would have sent
+        // a redundant entry to the server. Compared at the box's own display
+        // precision, so what the operator sees is what the test uses.
+        const det = it.ov ? it.auto : it.qty;
+        const eps = it.unit === "EA" ? 0.005 : 0.05;
+        if (!Number.isFinite(v) || v <= 0) store.removeItem(k);
+        else if (Number.isFinite(det) && Math.abs(v - det) < eps) store.removeItem(k);
+        else store.setItem(k, String(v));
         renderItemized(); renderChips();
       };
       const pin = document.createElement("input");
@@ -3686,8 +3888,22 @@ function renderItemized() {
       if (it.price) pin.value = it.price;
       pin.oninput = () => {
         store.setItem(priceKey(it.label), pin.value);
+        // NOT renderItemized(). That clears #itemized, detaching THIS input
+        // mid-keystroke: focus drops to <body>, and a caret cannot be restored
+        // on a number input by any DOM API. Only this row's money can change
+        // on a keystroke, so repaint that one cell in place. The subtotals,
+        // the TOTAL and the tally bar rebuild on blur - one blur behind, which
+        // is the deliberate trade for not deleting the control being typed in.
+        const pv = parseFloat(pin.value);
+        e.textContent = (it.priced && pv > 0) ? (it.qty * pv).toFixed(0) : "—";
+      };
+      pin.onchange = () => {
+        store.setItem(priceKey(it.label), pin.value);
         renderItemized();
       };
+      pin.addEventListener("wheel",
+        (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+        { passive: false });
       const e = document.createElement("div");
       e.textContent = it.ext ? it.ext.toFixed(0) : "—";
       row.append(lab, cnt, q, pin, e);
@@ -3695,6 +3911,10 @@ function renderItemized() {
       // Both numbers, side by side, only where they differ. The row's own
       // quantity box keeps showing the SUM - nothing here changes a total or
       // hides a chain; it discloses how much of the sum is drawn twice.
+      // With the box always filled, detected-vs-overridden can no longer lean
+      // on empty-vs-filled. Say it in words: a border colour does not survive
+      // a screenshot review, a theme swap, or a colour-blind reader.
+      if (it.ov) box.appendChild(ovNote(it, u));
       if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
     }
   }
@@ -3737,6 +3957,10 @@ function renderItemized() {
     row.innerHTML = `<div>TOTAL</div><div></div><div></div><div></div><div>${grand.toFixed(0)}</div>`;
     box.appendChild(row);
   }
+  // The panel was torn down and rebuilt; put the operator's cursor back on the
+  // same field. This covers the ~30 callers other than the price box, notably
+  // the 350 ms label-typing timer and every spinner click on a quantity box.
+  panelRefocus(box, keepFocus);
 }
 
 // ---------- CSV export of the itemized takeoff (client-side blob) ----------
@@ -5586,7 +5810,7 @@ $("approveBtn").onclick = async () => {
           pools.get(label).push(st.style_id);
         }
         return [...pools.entries()].map(([l, sids]) =>
-          [l, parseFloat(store.getItem(ovKey(l, "qty")) || "") ||
+          [l, parseFloat(store.getItem(ovKey(l, "EA")) || "") ||
               styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(

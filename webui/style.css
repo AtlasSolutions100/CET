@@ -111,7 +111,11 @@ canvas#view.panning { cursor: grabbing; }
 .takeoff-head { padding: 12px 12px 4px; border-top: 1px solid var(--line); }
 .takeoff-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
 .itemized { padding: 4px 12px 8px; font-size: 12px; }
-.item-row { display: grid; grid-template-columns: 1fr 52px 62px 54px 62px; gap: 4px; padding: 3px 0; align-items: center; }
+/* The quantity column must FIT its number. .qty-in is right-aligned, so an
+   overflowing value is clipped on the LEFT: 13278.8 in a 62px box renders as
+   "3278.8" - a wrong number with no symptom, the exact harm this change
+   exists to prevent. */
+.item-row { display: grid; grid-template-columns: 1fr 44px 86px 50px 58px; gap: 4px; padding: 3px 0; align-items: center; }
 .item-row.head { color: var(--dim); font-size: 10px; text-transform: uppercase; }
 .item-row input { width: 100%; padding: 2px 4px; font-size: 11px; }
 .item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -408,7 +412,14 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 
 /* editable qty/ft cell in the itemized takeoff */
 .item-row input.qty-in { text-align: right; }
-.item-row input.qty-in.ov { border-color: var(--accent, #4a9); font-weight: 700; }
+.item-row input.qty-in.ov { border-color: var(--accent, #4a9); font-weight: 700;
+  border-style: solid; }
+/* The box always holds a number now, so "this one is the engine's" has to be
+   stated rather than implied by emptiness: dashed rule, normal weight, and
+   full-strength text - the figure is meant to be READ, not greyed out. */
+.item-row input.qty-in.auto { font-weight: 400; border-style: dashed;
+  border-color: color-mix(in srgb, var(--dim) 60%, transparent); }
+.dup-note.ov-note, .dup-note.ov-note b { color: var(--accent); }
 
 /* legend chips render their line sample */
 .legend-chip canvas.chip-line { vertical-align: middle; margin-right: 6px; background: transparent; }
