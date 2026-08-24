@@ -115,7 +115,11 @@ canvas#view.panning { cursor: grabbing; }
    overflowing value is clipped on the LEFT: 13278.8 in a 62px box renders as
    "3278.8" - a wrong number with no symptom, the exact harm this change
    exists to prevent. */
-.item-row { display: grid; grid-template-columns: 1fr 44px 86px 50px 58px; gap: 4px; padding: 3px 0; align-items: center; }
+/* The $/ft cell is also a number input and also right-aligned, so narrowing
+   it to buy width for the quantity box would clip a price on the left by the
+   very mechanism the comment above describes. The width comes from `count`
+   (a small integer) instead. */
+.item-row { display: grid; grid-template-columns: 1fr 40px 86px 54px 58px; gap: 4px; padding: 3px 0; align-items: center; }
 .item-row.head { color: var(--dim); font-size: 10px; text-transform: uppercase; }
 .item-row input { width: 100%; padding: 2px 4px; font-size: 11px; }
 .item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

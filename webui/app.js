@@ -3052,9 +3052,12 @@ function renderMemBtn() {
   // because the one thing the operator must not miss is that numbers they
   // typed are gone.
   b.hidden = n === 0 && memDropped === 0;
-  b.textContent = (n === 0 && memDropped)
-    ? "Overrides cleared \u00b7 " + memDropped
-    : "Saved work \u00b7 " + n;
+  // The deletion is named on the FACE of the button whenever it happened, not
+  // only when nothing else survived. On any real seat labels, prices and
+  // trades survive the purge, so the old condition put the one thing the
+  // operator must not miss behind a hover.
+  b.textContent = "Saved work \u00b7 " + n
+    + (memDropped ? " \u00b7 " + memDropped + " cleared" : "");
   b.classList.toggle("warn", memFull || !memWritable || memDropped > 0);
   b.title = !memWritable
     ? n + " decisions are being held for THIS SESSION ONLY. This browser will "
@@ -3090,7 +3093,16 @@ function memDocKeys() {
 // already on screen. So the button asks which one you meant.
 $("memBtn").onclick = (e) => {
   e.stopPropagation();
-  if (!sessionMem.size) return;
+  // A visible, warning-coloured button that does nothing when clicked is
+  // worse than no button. When the purge is the only thing left to report,
+  // there is nothing to clear - so say that, rather than silently ignoring
+  // the click.
+  if (!sessionMem.size) {
+    if (memDropped)
+      setStatus(memDropped + " quantity override(s) from an older build were "
+        + "cleared at startup. There is nothing else saved in this browser.", "err");
+    return;
+  }
   const open = document.querySelector(".mem-menu");
   if (open) { open.remove(); return; }
 
@@ -3883,9 +3895,15 @@ function renderItemized() {
         // a redundant entry to the server. Compared at the box's own display
         // precision, so what the operator sees is what the test uses.
         const det = it.ov ? it.auto : it.qty;
-        const eps = it.unit === "EA" ? 0.005 : 0.05;
+        // Compared as the BOX RENDERS THEM, not with a tolerance. An epsilon
+        // here would be a tolerance nobody measured, silently swallowing a
+        // value the operator typed just inside it; string equality at the
+        // display precision has no edge to fall the wrong side of, and means
+        // exactly "you typed back what was already showing".
         if (!Number.isFinite(v) || v <= 0) store.removeItem(k);
-        else if (Number.isFinite(det) && Math.abs(v - det) < eps) store.removeItem(k);
+        else if (Number.isFinite(det)
+                 && qtyBoxValue(v, it.unit) === qtyBoxValue(det, it.unit))
+          store.removeItem(k);
         else store.setItem(k, String(v));
         renderItemized(); renderChips();
       };

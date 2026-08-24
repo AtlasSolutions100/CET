@@ -1023,7 +1023,12 @@ def approve(job_id: str, page: int, body: ApproveBody):
         ft = t["length_pt"] / 72.0 * ft_per_in if ft_per_in else None
         price = body.prices.get(label)
         n_obj = body.object_counts.get(label)
-        if n_obj:
+        # PRESENCE, not truthiness. object_counts now carries the DETECTED
+        # count, and a style the reviewer put in object mode that yielded
+        # zero objects sent 0 - which `if n_obj:` read as "not an object
+        # row", quietly rerouting it into the footage branch and dropping
+        # any EA override on it. CLAUDE.md section 5, "0.0 is not None".
+        if n_obj is not None:
             o = ov_qty.get(label)
             qty = float(o.qty) if o else n_obj
             if o:
@@ -1414,6 +1419,16 @@ def report_pdf(job_id: str):
     # sees the caveat attached to a quantity in it.
     for _nt in all_notes[:8]:
         for _seg in (textwrap.wrap(str(_nt), 118) or [""]):
+            tp.insert_text((50, y), _seg, fontsize=8)
+            y += 11
+    # Define the star BEFORE the rows that carry it. A row whose typed and
+    # measured totals happen to match prints the star with no per-row
+    # explanation, so the page needs its own.
+    if any(g["ov"] for g in grand.values()):
+        for _seg in textwrap.wrap(
+                "* one or more quantities under this label were SET BY THE "
+                "REVIEWER rather than measured. Where the totals differ, the "
+                "measured figure is printed under the row.", 118):
             tp.insert_text((50, y), _seg, fontsize=8)
             y += 11
     y += 10
