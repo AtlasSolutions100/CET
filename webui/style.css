@@ -196,6 +196,27 @@ canvas#view.panning { cursor: grabbing; }
   padding: 6px 4px 0; }
 .ew-map-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-left: auto; white-space: nowrap; cursor: pointer; }
 .ew-map-toggle input { margin: 0; }
+/* the permanent limitation statement: always on, never dismissible, and
+   deliberately not styled as an alert - it is what the feature IS, not a
+   warning that a later run might clear */
+.ew-limit { font-size: 10.5px; color: var(--dim); line-height: 1.5;
+  margin: 6px 12px 2px; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--line); background: rgba(255, 190, 20, .05); }
+.ew-limit b { color: var(--text); font-weight: 600; }
+/* what the number rests on, beside the number */
+.ew-basis { font-size: 10.5px; color: var(--dim); line-height: 1.5;
+  padding: 0 12px 8px; }
+.ew-basis b { color: var(--text); font-variant-numeric: tabular-nums; }
+.ew-basis .unbounded { display: block; margin-top: 3px; color: #e0b45a; }
+/* consent row: nothing priced until this is pressed */
+.ew-take { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  padding: 0 12px 10px; }
+/* .off, not the hidden attribute: the section collapse handler writes
+   el.hidden on every id it owns and would un-hide these on expand */
+.ew-basis.off, .ew-take.off { display: none; }
+#ewAdd { font-weight: 600; }
+#ewAdd.on { background: #4d2f1f; border-color: #c07a3c; color: #f0c99b; }
+.ew-take-note { font-size: 10.5px; color: var(--dim); line-height: 1.45; flex: 1; min-width: 160px; }
 
 .side-head h2, .takeoff-head h2 { cursor: pointer; user-select: none; }
 .side-head h2::before, .takeoff-head h2::before { content: "▾ "; color: var(--dim); }
@@ -502,6 +523,29 @@ canvas.ml-swatch { width: 40px; height: 9px; }
                  border-radius: 10px; background: var(--chip); cursor: pointer; }
 .sh-scale-pick.on { background: color-mix(in srgb, var(--accent) 22%, transparent);
                     border-color: var(--accent); font-weight: 700; }
+.sh-scale-pick[disabled] { opacity: .4; cursor: not-allowed; }
+
+/* the operator types the scale. A sheet whose scale the engine could not
+   read - 62% of cold pages that produce real linework - had no way to be
+   priced at all, and a sheet with ONE wrong reading had no second button to
+   click. This box is the only thing behind the word "calibrate". */
+.sh-typed { padding-top: 2px; }
+.sh-typed-on { font-size: 11px; color: #e5a05a; }
+.sh-typed-on b { font-family: var(--mono); color: var(--text); }
+.sh-typed-edit { flex: 1 1 100%; }
+.sh-typed-bar { display: flex; gap: 6px; align-items: center; }
+.sh-typed-in { flex: 1 1 auto; min-width: 90px; font-family: var(--mono);
+               font-size: 11.5px; padding: 3px 7px; }
+.sh-typed-echo { margin-top: 5px; font-size: 11px; line-height: 1.5;
+                 color: var(--dim); }
+.sh-typed-echo code { font-family: var(--mono); font-size: 10.5px;
+                      padding: 0 3px; border-radius: 3px; background: var(--chip); }
+/* amber, never green: a number a person typed is their word, not a second
+   independent reading of the sheet. Same contract as the banner's colours. */
+.sh-typed-echo.ok { color: #e5a05a; }
+.sh-typed-echo.ok b { color: #ffc98a; }
+.sh-typed-echo.bad { color: #ffb4a8; }
+.sh-typed-echo.bad b { color: #ffd9d3; }
 
 /* ---------- confidence banner ------------------------------------------
    What to doubt on this sheet, stated in words, above everything it
@@ -555,3 +599,30 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .conf-txt .conf-q { font-family: var(--mono); font-size: 11px;
                     color: var(--text); background: var(--chip);
                     padding: 0 4px; border-radius: 4px; }
+
+/* --- Analyze banner (2026-08-23): a graded suggestion list --------------
+   Every row is a proposal with its own Accept/Undo. .ai-grade is the
+   hover chip carrying that suggestion type's measured hit rate; .ai-warn
+   is reserved for the one action that REMOVES footage from the takeoff,
+   which is the only thing in here that can produce a wrong number. */
+.ai-head { margin-bottom: 6px; }
+.ai-facts { display: flex; flex-direction: column; gap: 3px;
+  margin: 6px 0 8px; }
+.ai-fact { line-height: 1.45; }
+.ai-purpose { margin-top: 2px; }
+.ai-grade { font-family: var(--mono); font-size: 9px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--dim); border: 1px solid var(--line);
+  border-radius: 3px; padding: 0 4px; margin-left: 6px; cursor: help;
+  white-space: nowrap; }
+.ai-props-lead { margin: 8px 0 4px; }
+.ai-props { display: flex; flex-direction: column; gap: 2px;
+  max-height: 240px; overflow-y: auto; }
+.ai-prop { display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+  border-left: 3px solid var(--line); background: var(--bg); }
+.ai-prop-txt { flex: 1; min-width: 0; line-height: 1.4; }
+.ai-p-on { border-left-color: #3d8b4a; }
+.ai-p-off { border-left-color: #a8452f; }
+.ai-p-label, .ai-p-obj { border-left-color: var(--line); }
+.ai-prop.ai-done { opacity: .6; }
+.ai-warn { color: #a8452f; }
+.ai-foot { margin-top: 8px; line-height: 1.4; }

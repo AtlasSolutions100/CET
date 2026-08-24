@@ -301,6 +301,11 @@ async function loadResult(gen = state.gen) {
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
   $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch
+  // ...and neither must the basis line or the consent button that belonged
+  // to them: state.ew is null above, so "Remove from takeoff" on the new
+  // sheet would be a button with nothing behind it
+  $("ewBasis").innerHTML = ""; $("ewBasis").classList.add("off");
+  $("ewTake").classList.add("off"); $("ewAdd").classList.remove("on");
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("rollPanel").hidden = true; $("rollBtn").hidden = false;
@@ -337,6 +342,10 @@ async function loadResult(gen = state.gen) {
   scaleMemApply();
   renderSheetHead();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
+  // and the durable one: a scale this page's reviewer approved on an earlier
+  // visit lives in the server sidecar, not in this browser. Async on purpose
+  // - the first paint above is already true, and this only corrects it.
+  scaleRestore(gen);
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
   const sc = state.result.scale;
@@ -675,7 +684,15 @@ function renderSheetHead() {
   const sc = state.result && state.result.scale;
   if (state.result) {
     if (!sc) {
-      meta.append(chip("no scale — calibrate", "warn"));
+      // "calibrate" used to be the only place that word appeared in this UI
+      // and nothing implemented it. The box below does, so the chip points
+      // at it instead of naming a thing that did not exist.
+      meta.append(chip("no scale — type one below", "warn"));
+    } else if (sc.typed_by_reviewer) {
+      // A number a person typed has nothing behind it but their word. It can
+      // never wear the corroborated colour, and it says whose it is
+      // everywhere it is read - chip, banner, export, report PDF.
+      meta.append(chip(sc.text + " — SET BY HAND", "warn"));
     } else if (sc.agrees === false) {
       meta.append(chip(sc.text, "bad"));
       meta.append(chip(`drawn bar says ${sc.bar_ft_per_paper_inch} ft/in` +
@@ -696,6 +713,7 @@ function renderSheetHead() {
     : st === "detect failed" ? "warn" : ""));
   el.append(name, meta);
   renderScalePick(el);
+  renderScaleTyped(el);
   renderConfidence();
 }
 
@@ -765,8 +783,13 @@ function renderScalePick(host) {
         count: c.count, near_scale_keyword: c.near_scale_keyword,
         agrees: null, bar_ft_per_paper_inch: sc.bar_ft_per_paper_inch,
         delta_pct: null, picked_by_reviewer: true,
+        // this is a reading PRINTED on the sheet, so it clears any hand-typed
+        // one. Object.assign copies forward, and a stale typed_by_reviewer
+        // would keep saying SET BY HAND over a caption the sheet prints.
+        typed_by_reviewer: false,
       });
       try { store.setItem(scaleKey(), String(c.ft_per_paper_inch)); } catch (e) { /* private mode */ }
+      try { store.removeItem(scaleTypedKey()); } catch (e) { /* private mode */ }
       setStatus(`scale set to ${(+c.ft_per_paper_inch).toFixed(2)} ft per inch — every quantity on this sheet recalculated`);
       renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
       renderMiniLegend(); draw();
@@ -777,7 +800,18 @@ function renderScalePick(host) {
 }
 // reapply a remembered pick after a detect
 function scaleMemApply() {
-  const sc = state.result && state.result.scale;
+  if (!state.result) return;
+  const sc = state.result.scale;
+  // A TYPED scale is checked first and can exist where the engine read
+  // nothing at all - which the candidate path below cannot represent,
+  // because it needs a candidate to match against.
+  let typed = null;
+  try { typed = JSON.parse(store.getItem(scaleTypedKey()) || "null"); }
+  catch (e) { typed = null; }
+  if (typed && scaleSane(typed.ft) !== null) {
+    state.result.scale = scaleTypedObj(sc, typed.ft, typed.text);
+    return;
+  }
   if (!sc || !sc.candidates) return;
   let want;
   try { want = store.getItem(scaleKey()); } catch (e) { return; }
@@ -788,7 +822,394 @@ function scaleMemApply() {
   state.result.scale = Object.assign({}, sc, {
     text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
     count: hit.count, agrees: null, delta_pct: null, picked_by_reviewer: true,
+    typed_by_reviewer: false,
   });
+}
+
+// ---------- the operator types the scale ---------------------------------
+// The picker above can only offer readings the ENGINE found, and it does not
+// draw at all under two candidates. So a sheet with no reading was stuck, and
+// a sheet with ONE WRONG reading was stuck in exactly the same way - there
+// was no second button to click. Two server routes told the estimator to
+// "calibrate first" and the word `calibrate` appeared once in this whole UI,
+// as a chip label, with nothing behind it.
+//
+// Measured before this box existed: of the cold-corpus pages that produce
+// real traced linework, 62% carry no scale and therefore no price; on the
+// client's 208-page set, 72 pages return no value at all.
+//
+// This is a TYPED NUMBER ONLY. Two-point canvas calibration is a different,
+// larger job (hit-testing, snapping, a drawn ruler) and is deliberately not
+// here. And a typed scale travels the way a picked candidate travels - the
+// same `state.result.scale`, the same approve payload, the same
+// `p<N>_scale.json` sidecar, the same `set by the reviewer` provenance on the
+// export and the report PDF. There is no second path.
+
+// The band, mirrored from server.py SCALE_FT_MIN / SCALE_FT_MAX. The SERVER
+// is the guard - it refuses an out-of-band approve whatever the browser did,
+// and it is the only thing standing between a script and the export. This
+// copy exists ONLY so the refusal can be shown while the number is still
+// being typed. Change both or neither; server.py carries the evidence
+// (6,714 corpus pages, every reading between 0.3333 and 250.0 ft per inch).
+// 0.0833 is 1/12 rounded DOWN to four places - full size, 1 paper inch = 1
+// real inch - so the floor this app PRINTS in a refusal is itself accepted
+// when the reader types it back.
+const SCALE_FT_MIN = 0.0833;
+const SCALE_FT_MAX = 1000;        // 4x the corpus maximum (1" = 250')
+
+function scaleSane(v) {
+  const f = +v;
+  if (!isFinite(f)) return null;
+  return (f >= SCALE_FT_MIN && f <= SCALE_FT_MAX) ? f : null;
+}
+function scaleTypedKey() {
+  return "scaletyped::" + (state.docName || "?") + "::p" + state.page;
+}
+// The scale object a typed number produces. Built from the engine's, so the
+// candidate list and the drawn bar's reading survive for the banner - but
+// every CORROBORATION field is cleared, because none of it was measured
+// against this number.
+function scaleTypedObj(sc, ft, text) {
+  return Object.assign({}, sc || {}, {
+    ft_per_paper_inch: ft,
+    text: text,
+    agrees: null, delta_pct: null,
+    picked_by_reviewer: true,
+    typed_by_reviewer: true,
+  });
+}
+
+// What an estimator actually writes, and nothing else. Every form below is
+// echoed back in words before it is applied; anything not on the list is
+// REFUSED with the reason, never guessed at.
+//
+//   1" = 20'        1"=20'      1 inch = 20 feet     1 IN = 20 FT
+//   1/4" = 1'-0"    3/16"=1'    1-1/2" = 1'-0"
+//   20              20.5        20'                  20 ft
+//   1:200           1:100
+//
+// CONVENTIONS, and where they come from:
+//   * `1/4" = 1'-0"` is the architect's form: a quarter inch of paper is one
+//     foot of building, so 4 ft per paper inch. Read straight off every
+//     Beaumont and Thielen title block in this corpus.
+//   * A bare number is FEET PER PAPER INCH, the unit this whole app is
+//     built on (server.py ApproveScale.ft_per_paper_inch,
+//     scale_detect.ScaleCandidate.ft_per_paper_inch).
+//   * `1:200` is the unit-free drawing ratio: one unit of paper is 200 of
+//     the same units on the ground, so 200 inches = 16.67 ft per paper inch.
+//     GENERAL DRAFTING PRACTICE (the ISO/metric convention) - NOT evidenced
+//     from this corpus, which prints imperial captions and no ratios in any
+//     of the 279 pages that yield a scale. That is precisely why the echo
+//     spells the arithmetic out before it is applied: if the writer meant
+//     "1 inch = 200 feet" they will see 16.67 and stop.
+const SC_FRAC = String.raw`\d+(?:\.\d+)?|\d+\s*\/\s*\d+|1[\s-]1\/2`;
+const SC_INCH = String.raw`(?:"|”|″|in\.?|inch(?:es)?)`;
+const SC_FEET = String.raw`(?:'|’|′|ft\.?|feet|foot)`;
+
+function scaleNum(s) {
+  s = s.trim();
+  let m = /^(\d+)[\s-](\d+)\s*\/\s*(\d+)$/.exec(s);
+  if (m) return +m[1] + (+m[2]) / (+m[3]);
+  m = /^(\d+)\s*\/\s*(\d+)$/.exec(s);
+  if (m) return (+m[2]) === 0 ? NaN : (+m[1]) / (+m[2]);
+  return parseFloat(s);
+}
+
+// -> {ft, text, said} on success, {err} on refusal. Never both, never a
+// guess. `said` is the plain-words echo shown BEFORE the number is applied.
+function parseScale(raw) {
+  const s = String(raw || "").trim().replace(/\s+/g, " ");
+  if (!s) return { err: "" };
+  const bad = (why) => ({ err: why });
+  const ok = (ft, text, said) => {
+    if (scaleSane(ft) === null)
+      return bad(`that works out to ${ft > 1e6 ? ft.toExponential(2)
+        : (+ft).toFixed(4)} feet per paper inch, which this app refuses. `
+        + `It accepts ${SCALE_FT_MIN.toFixed(4)} (full size, 1 inch of paper `
+        + `= 1 real inch) up to ${SCALE_FT_MAX} ft per inch. Every scale this `
+        + `app has read anywhere in the plan corpus is between 0.33 and 250.`);
+    return { ft: ft, text: text, said: said };
+  };
+  const fmt = (v) => (+v).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+
+  // 1/4" = 1'-0"  |  1" = 20'  |  1 inch = 20 ft  |  3/16"=1'
+  let m = new RegExp(String.raw`^(${SC_FRAC})\s*${SC_INCH}\s*[=:]\s*`
+    + String.raw`(\d+(?:\.\d+)?)\s*${SC_FEET}?\s*`
+    + String.raw`(?:-\s*(\d+(?:\.\d+)?)\s*${SC_INCH}?)?$`, "i").exec(s);
+  if (m) {
+    const paper = scaleNum(m[1]);
+    const feet = parseFloat(m[2]) + (m[3] ? parseFloat(m[3]) / 12 : 0);
+    if (!isFinite(paper) || paper <= 0)
+      return bad("the paper side of that scale is not a number.");
+    if (paper > 12)
+      return bad(`${m[1]} inches of paper is wider than any scale's paper `
+        + `side - an architect's rule stops at 3 inches to the foot.`);
+    if (!isFinite(feet) || feet <= 0)
+      return bad("the ground side of that scale is zero, so nothing on the "
+        + "sheet would have a size.");
+    const txt = `${m[1]}" = ${m[3] ? `${m[2]}'-${m[3]}"` : `${m[2]}'`}`;
+    return ok(feet / paper, txt,
+      `${fmt(paper)} inch${paper === 1 ? "" : "es"} on paper = `
+      + `${fmt(feet)} ft on the ground, i.e. <b>1 inch = ${fmt(feet / paper)} `
+      + `ft</b>.`);
+  }
+
+  // 1:200 - the unit-free ratio. See the convention note above.
+  m = /^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/.exec(s);
+  if (m) {
+    const a = parseFloat(m[1]), b = parseFloat(m[2]);
+    if (!(a > 0) || !(b > 0))
+      return bad("a ratio needs two numbers above zero, like 1:200.");
+    const ft = (b / a) / 12;
+    return ok(ft, `1:${fmt(b / a)}`,
+      `a ratio: 1 unit of paper = ${fmt(b / a)} of the same units on the `
+      + `ground. In inches that is ${fmt(b / a)} inches, i.e. <b>1 inch = `
+      + `${fmt(ft)} ft</b>. If you meant 1 inch = ${fmt(b / a)} feet, type `
+      + `<code>${fmt(b / a)}</code> instead.`);
+  }
+
+  // a bare number, with or without a foot mark: feet per paper inch
+  m = new RegExp(String.raw`^(\d+(?:\.\d+)?)\s*(?:${SC_FEET})?$`, "i").exec(s);
+  if (m) {
+    const ft = parseFloat(m[1]);
+    if (!(ft > 0)) return bad("zero is not a scale.");
+    return ok(ft, `1" = ${fmt(ft)}'`,
+      `<b>1 inch on paper = ${fmt(ft)} ft on the ground.</b>`);
+  }
+
+  // A bare fraction is the one form this refuses on purpose. `1/4` is read
+  // in the trade as quarter-inch scale, but it is also just a number, and
+  // this app's bare numbers are FEET per inch - so the same three keystrokes
+  // could mean 4 ft per inch or 0.25. Refusing costs four keystrokes;
+  // guessing costs a 16x error on every area.
+  if (/^\d+\s*\/\s*\d+$/.test(s) || /^\d+[\s-]\d+\s*\/\s*\d+$/.test(s))
+    return bad(`<b>${esc(s)}</b> on its own could mean ${esc(s)}" = 1'-0" or `
+      + `${esc(s)} feet per inch. Write it out: <code>${esc(s)}" = 1'-0"</code>.`);
+  if (/\b(m|cm|mm|metre|meter)\b/i.test(s))
+    return bad("this app measures in feet per paper inch; a metric caption "
+      + "is not read. Convert it, or type the ratio (1:200).");
+  return bad(`not a scale this app reads. It takes <code>1" = 20'</code>, `
+    + `<code>1/4" = 1'-0"</code>, a bare <code>20</code> meaning 20 feet per `
+    + `paper inch, or a ratio <code>1:200</code>.`);
+}
+
+// undo target for "put it back": the scale in force before this page's box
+// was used. Keyed, so it cannot leak onto another sheet.
+const scaleUndo = { key: null, scale: undefined };
+// is the box open, and what is half-typed in it - so a repaint from anywhere
+// else (a /confidence answer, a restore) does not eat the keystrokes.
+// `scaleTypedFor` is the page it was opened on: without it, opening the box,
+// switching sheets and coming back would show the box still open with the
+// previous sheet's half-typed number in it.
+let scaleTypedOpen = false;
+let scaleTypedDraft = "";
+let scaleTypedFor = null;
+
+function renderScaleTyped(host) {
+  if (!state.result) return;
+  if (scaleTypedFor !== scaleTypedKey()) {
+    scaleTypedOpen = false; scaleTypedDraft = ""; scaleTypedFor = null;
+  }
+  const sc = state.result.scale;
+  const row = document.createElement("div");
+  row.className = "sh-scales sh-typed";
+  const openBox = () => {
+    scaleTypedOpen = true; scaleTypedFor = scaleTypedKey(); renderSheetHead();
+  };
+
+  if (sc && sc.typed_by_reviewer) {
+    const lab = document.createElement("span");
+    lab.className = "sh-typed-on";
+    lab.innerHTML = `scale set by hand: <b>${esc(sc.text)}</b> = `
+      + `${(+sc.ft_per_paper_inch).toFixed(2)} ft/in`;
+    row.appendChild(lab);
+    const ch = document.createElement("button");
+    ch.className = "sh-scale-pick"; ch.textContent = "change";
+    ch.onclick = openBox;
+    row.appendChild(ch);
+    // Undo is offered ONLY back to a reading the engine actually made.
+    //
+    // Undoing to NOTHING would put the screen and the deliverable at odds,
+    // which is the one thing _page_scale exists to prevent: approving a
+    // screen with no scale sends `scale: null`, and the server then honours
+    // the pick already recorded for the page (its "an older UI, or a
+    // re-approve from a script" branch). The export would quote the typed
+    // number under a screen that says the sheet has none. There is no way
+    // to retire a record from here without inventing a second write path,
+    // so the button is simply not offered - to change the number, press
+    // `change` and type another. See VERIFY.md.
+    if (scaleUndo.key === scaleTypedKey() && scaleUndo.scale
+        && +scaleUndo.scale.ft_per_paper_inch > 0) {
+      // What it goes back to is whatever the screen was showing before this
+      // page's box was used - usually the engine's reading, but on a second
+      // edit it is the reviewer's previous number, so the wording must not
+      // claim the engine said it.
+      const prev = scaleUndo.scale;
+      const prevFt = (+prev.ft_per_paper_inch).toFixed(2);
+      const whose = prev.typed_by_reviewer ? "set by hand earlier"
+        : prev.picked_by_reviewer ? "the reading you had picked"
+        : "the reading the engine made";
+      const un = document.createElement("button");
+      un.className = "sh-scale-pick"; un.textContent = "put it back";
+      un.title = `back to ${prevFt} ft/in - ${whose}`;
+      un.onclick = () => {
+        state.result.scale = prev;
+        try {
+          if (prev.typed_by_reviewer)
+            store.setItem(scaleTypedKey(), JSON.stringify(
+              { ft: +prev.ft_per_paper_inch, text: prev.text }));
+          else store.removeItem(scaleTypedKey());
+        } catch (e) { /* private mode */ }
+        scaleUndo.key = null; scaleUndo.scale = undefined;
+        scaleTypedOpen = false;
+        setStatus(`back to ${prevFt} ft per inch — ${whose}. Approve to make `
+          + `that this page's record.`);
+        scaleRepaint();
+      };
+      row.appendChild(un);
+    }
+  } else if (!scaleTypedOpen) {
+    const lab = document.createElement("span");
+    lab.className = "dim";
+    lab.textContent = sc
+      ? "the reading above is wrong?"
+      : "nothing on this sheet says what it was drawn to.";
+    const b = document.createElement("button");
+    b.className = "sh-scale-pick sh-scale-set";
+    b.textContent = sc ? "set the scale by hand" : "type the scale";
+    b.onclick = openBox;
+    row.append(lab, b);
+  }
+
+  if (scaleTypedOpen) {
+    const ed = document.createElement("div");
+    ed.className = "sh-typed-edit";
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "sh-typed-in";
+    inp.placeholder = `1" = 20'`;
+    inp.setAttribute("value", scaleTypedDraft);
+    inp.value = scaleTypedDraft;
+    const use = document.createElement("button");
+    use.className = "sh-scale-pick"; use.textContent = "use this";
+    const cancel = document.createElement("button");
+    cancel.className = "sh-scale-pick"; cancel.textContent = "cancel";
+    const echo = document.createElement("div");
+    echo.className = "sh-typed-echo";
+    const bar = document.createElement("div");
+    bar.className = "sh-typed-bar";
+    bar.append(inp, use, cancel);
+    ed.append(bar, echo);
+    row.appendChild(ed);
+
+    // The echo is the whole safety story of this box: the operator sees the
+    // interpretation in words BEFORE the number touches a quantity.
+    const reread = () => {
+      scaleTypedDraft = inp.value;
+      const p = parseScale(inp.value);
+      if (p.err === "") { echo.className = "sh-typed-echo"; echo.innerHTML =
+        `accepted: <code>1" = 20'</code> · <code>1/4" = 1'-0"</code> · `
+        + `<code>20</code> (feet per paper inch) · <code>1:200</code>`;
+      } else if (p.err) {
+        echo.className = "sh-typed-echo bad";
+        echo.innerHTML = "won't use that — " + p.err;
+      } else {
+        echo.className = "sh-typed-echo ok";
+        echo.innerHTML = "reads as " + p.said
+          + ` Nothing on this sheet corroborates it.`;
+      }
+      use.disabled = !!(p.err || p.err === "");
+      return p;
+    };
+    inp.oninput = reread;
+    // The app's single-key review shortcuts are already held off by
+    // typing() while an <input> has focus; this only adds the two keys a
+    // one-line form is expected to answer to.
+    inp.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); use.onclick(); }
+      if (e.key === "Escape") { e.preventDefault(); cancel.onclick(); }
+    };
+    cancel.onclick = () => {
+      scaleTypedOpen = false; scaleTypedDraft = "";
+      renderSheetHead();
+    };
+    use.onclick = () => {
+      const p = reread();
+      if (p.err || p.err === "") { inp.focus(); return; }
+      if (scaleUndo.key !== scaleTypedKey()) {
+        scaleUndo.key = scaleTypedKey();
+        scaleUndo.scale = state.result.scale || null;
+      }
+      state.result.scale = scaleTypedObj(state.result.scale, p.ft, p.text);
+      try {
+        store.setItem(scaleTypedKey(), JSON.stringify({ ft: p.ft, text: p.text }));
+        store.removeItem(scaleKey());
+      } catch (e) { /* private mode: this session still honours it */ }
+      scaleTypedOpen = false; scaleTypedDraft = "";
+      setStatus(`scale set BY HAND to ${p.ft.toFixed(2)} ft per inch — every `
+        + `quantity on this sheet recalculated from a number you typed, not `
+        + `one the sheet states`);
+      scaleRepaint();
+    };
+    reread();
+    setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
+  }
+  host.appendChild(row);
+}
+
+// Everything downstream of the scale, repainted. Same list the candidate
+// picker uses, so the two paths can never disagree about what is stale.
+function scaleRepaint() {
+  renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+  renderMiniLegend(); draw();
+}
+
+// Restore a scale a reviewer set on an EARLIER visit to this page. The
+// browser's own memory is a session Map (see `store`), so a reload forgets
+// it; the durable record is the server sidecar `p<N>_scale.json` that
+// approve writes, and GET .../scale was built to hand it back. A pick made
+// in THIS session is newer and wins, so the restore stands down when the
+// session already holds one.
+async function scaleRestore(gen) {
+  const job = state.job, page = state.page;
+  let live = false;
+  try {
+    live = !!(store.getItem(scaleTypedKey()) || store.getItem(scaleKey()));
+  } catch (e) { live = false; }
+  if (live) return;
+  let j;
+  try {
+    const r = await fetch(`/api/job/${job}/page/${page}/scale`);
+    if (!r.ok) return;
+    j = await r.json();
+  } catch (e) { return; }
+  if (gen !== state.gen || !state.result) return;   // page changed under us
+  const rv = j && j.reviewer;
+  const ft = rv && scaleSane(rv.ft_per_paper_inch);
+  if (!ft) return;
+  const sc = state.result.scale;
+  if (sc && Math.abs(+sc.ft_per_paper_inch - ft) < 1e-9) return;
+  // Was it typed, or picked off a printed caption? The sidecar does not say,
+  // and it must not be invented: if the value matches a reading the engine
+  // found, restore it as a PICK; otherwise no caption on this sheet says it,
+  // which is what "typed" means.
+  const hit = (sc && sc.candidates || []).find(
+    c => c && Math.abs(+c.ft_per_paper_inch - ft) < 1e-6);
+  if (hit) {
+    state.result.scale = Object.assign({}, sc, {
+      text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
+      count: hit.count, agrees: null, delta_pct: null,
+      picked_by_reviewer: true, typed_by_reviewer: false,
+    });
+    try { store.setItem(scaleKey(), String(hit.ft_per_paper_inch)); } catch (e) {}
+  } else {
+    const text = (rv.text || "").trim() || `1" = ${(+ft).toFixed(2)}'`;
+    state.result.scale = scaleTypedObj(sc, ft, text);
+    try { store.setItem(scaleTypedKey(), JSON.stringify({ ft: ft, text: text })); }
+    catch (e) {}
+  }
+  setStatus(`scale restored from this page's approved record: `
+    + `${(+ft).toFixed(2)} ft per inch, set by the reviewer`);
+  scaleRepaint();
 }
 
 // ---------- the confidence banner ----------------------------------------
@@ -994,6 +1415,26 @@ function confLines() {
       say("stop", `The sheet also prints <b>NOT TO SCALE</b>. If that note `
         + `covers the drawing rather than one detail on it, measuring it is `
         + `unsafe even by hand — take the numbers written on the drawing.`);
+  } else if (sc.typed_by_reviewer) {
+    // AMBER, and FIRST of the branches that can be reached with a scale in
+    // force - before the two that can print green. Green's contract is a
+    // SECOND, INDEPENDENT source; a number typed by hand is not a source at
+    // all, it is the reviewer's word. scaleTypedObj already clears `agrees`
+    // and `delta_pct`, so green is unreachable that way too, but the
+    // ordering makes the guarantee structural rather than incidental.
+    const was = (scaleUndo.key === scaleTypedKey() && scaleUndo.scale
+                 && +scaleUndo.scale.ft_per_paper_inch)
+      ? ` It replaces the <span class="conf-num">`
+        + `${confScale(scaleUndo.scale.ft_per_paper_inch)}</span> this screen `
+        + `was showing before you typed.`
+      : ``;
+    say("warn", `<b>Scale set by hand: <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span></b> (you typed `
+      + `${confQuote(sc.text)}). <b>Nothing on the sheet corroborates it</b> — `
+      + `no printed caption, no drawn scale bar and no printed area figure `
+      + `has been matched against this number. Every length, area and volume `
+      + `below is computed from it, and the exported takeoff and the report `
+      + `PDF both say on their face that the reviewer set it.` + was);
   } else if (sc.agrees === false) {
     say("stop", `<b>Two readings of this sheet's scale disagree — settle `
       + `this before pricing.</b> The printed caption reads `
@@ -1050,9 +1491,16 @@ function confLines() {
       + `details, usually. `;
     const swap = ` The buttons just above switch it, and everything `
       + `recalculates.`;
-    const why = sc.picked_by_reviewer ? { kind: "reviewer" } : scalePickWhy();
+    const why = sc.typed_by_reviewer ? { kind: "typed" }
+      : sc.picked_by_reviewer ? { kind: "reviewer" } : scalePickWhy();
     const kind = (why && why.kind) || "unknown";
-    if (kind === "reviewer") {
+    if (kind === "typed") {
+      // none of them: the number in force is not one of the readings this
+      // sheet prints, so "you picked" would be false
+      say("warn", head + `You are using ${used}, which is <b>none of them</b> `
+        + `— you typed it. The buttons just above switch to a printed `
+        + `reading instead, and everything recalculates.`);
+    } else if (kind === "reviewer") {
       say("warn", head + `You picked ${used}.` + swap);
     } else if (kind === "governs") {
       const other = `<span class="conf-num">${confScale(why.runnerUp)}</span>`;
@@ -1476,7 +1924,12 @@ function renderStyles() {
     const ai = state.aiWhy.get(s.style_id);
     if (ai) {
       row.classList.add(ai.keep ? "ai-keep" : "ai-drop");
-      row.title = (ai.keep ? "AI: measure this — " : "AI: not takeoff — ") + (ai.why || "");
+      // wording matters: this is a note, not a state. Nothing about the row
+      // has been changed by the model - the banner's Accept buttons are the
+      // only thing that writes.
+      row.title = (ai.keep ? "AI suggests measuring this (not applied) — "
+                           : "AI suggests this is not takeoff (not applied) — ")
+        + (ai.why || "");
     }
 
     // Its OWN line, spanning the row from the label column out, rather than
@@ -1613,6 +2066,33 @@ function renderAreas() {
       + (sc.text ? ` (read as “${esc(sc.text)}”)` : "")
     : `<b>no scale on this sheet</b> — areas shown in pt², no SF`);
   let cls = "ar-scale";
+  // The SF and LF below were computed SERVER-SIDE at detect time, from the
+  // engine's own reading (takeoff_engine/areas.page_areas). A scale the
+  // reviewer set afterwards does not reach them, so this panel could print
+  // one scale while the sheet header printed another - a screen contradicting
+  // itself. Say so instead. DEFERRED, not fixed here: the group payload
+  // already carries `area_pt2` and `perim_pt`, so recomputing SF/LF from the
+  // scale in force is a small client-side change - but it moves priced
+  // quantities, which this run is not scoped to move. Nobody is on it.
+  const inForce = state.result && state.result.scale;
+  const stale = inForce && (!sc.ft_per_paper_inch
+    || Math.abs(+inForce.ft_per_paper_inch - +sc.ft_per_paper_inch) > 1e-6);
+  if (stale) {
+    cls += " bad";
+    parts.push(`<b>These SF and LF figures are NOT the scale in force.</b> `
+      + `The sheet is set to <b>1 inch = `
+      + `${(+inForce.ft_per_paper_inch).toFixed(2)} ft</b>`
+      + (inForce.typed_by_reviewer ? " (set by hand)"
+         : inForce.picked_by_reviewer ? " (you picked it)" : "")
+      + `, but the areas below were measured when the page was detected, at `
+      + (sc.ft_per_paper_inch
+         ? `1 inch = ${(+sc.ft_per_paper_inch).toFixed(2)} ft — every SF here `
+           + `is out by about `
+           + `${Math.pow(+inForce.ft_per_paper_inch / +sc.ft_per_paper_inch, 2)
+                .toFixed(1)}×.`
+         : `no scale at all, so there are no SF figures to show.`)
+      + ` Do not price these until they are recomputed.`);
+  }
   if (tc.implied_ft_per_paper_inch && sc.ft_per_paper_inch) {
     const d = Math.abs(tc.implied_ft_per_paper_inch - sc.ft_per_paper_inch)
       / sc.ft_per_paper_inch;
@@ -1624,7 +2104,11 @@ function renderAreas() {
         + `Every SF below is off by about `
         + `${(Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2)).toFixed(1)}×. `
         + `Treat these numbers as provisional until the scale is fixed.`);
-    } else if (tc.n_ok) {
+    } else if (tc.n_ok && !stale) {
+      // `!stale`: that check compared the sheet's printed tags against the
+      // ENGINE's scale. It says nothing about the one now in force, and a
+      // green tick over figures the header has already contradicted is the
+      // exact shape of a confident wrong number.
       cls += " ok";
       parts.push(`checked against ${tc.n_ok} area${tc.n_ok === 1 ? "" : "s"} `
         + `printed on the sheet — they agree.`);
@@ -2201,7 +2685,8 @@ const SECTIONS = [
   ["arHead", ["arList", "arScale", "arUnmatched"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
-  ["ewHead", ["ewRows", "ewHint", "ewLayers", "ewActions", "ewBalance"]],
+  ["ewHead", ["ewRows", "ewHint", "ewLimit", "ewLayers", "ewActions",
+              "ewBasis", "ewTake", "ewBalance"]],
   ["trHead", ["trBody", "trHint", "trActions"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
@@ -2258,12 +2743,19 @@ $("ewBtn").onclick = async () => {
       spotDatum: null,
       areaSf: null,
       map: null,   // {img, bbox} once "Show cut/fill map" is on
+      // Consent, not a cache. Calculating is LOOKING at the number;
+      // putting it in the priced takeoff is a decision the estimator makes
+      // by pressing "Add to takeoff". Until then nothing earthwork reaches
+      // state.extraItems, so an approve produces no earthwork line at all.
+      // Session-only and per detection result, like the rest of this panel.
+      added: false,
     };
   }
   renderEw();
   renderEwLayers();
   renderEwSpots();
   renderEwArea();
+  renderEwTake();
 };
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
@@ -2694,8 +3186,8 @@ $("ewCalc").onclick = async () => {
   // the engine reports -0.0 when nothing is cut (negated empty sum); show 0
   const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
   $("ewResult").innerHTML =
-    `<b>cut ${cutQ.toLocaleString()} CY</b> · <b>fill ${fillQ.toLocaleString()} CY</b>` +
-    ` · net ${j.net_yd3.toLocaleString()} CY over ${Number(j.area_sf).toLocaleString()} SF` +
+    `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
+    ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
     (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
   // per-layer slabs: area x thickness, shown under the stacks
   const out = $("ewLayerOut");
@@ -2703,31 +3195,145 @@ $("ewCalc").onclick = async () => {
   for (const lay of (j.layers || [])) {
     const d = document.createElement("div");
     d.innerHTML = `<span>${ewItemLabel(lay)} <span class="sub">· ${lay.thickness_in}" over ` +
-      `${Number(j.layer_area_sf || j.area_sf).toLocaleString()} SF</span></span><b>${lay.volume_yd3.toLocaleString()} CY</b>`;
+      `${Number(j.layer_area_sf || j.area_sf).toLocaleString()} SF</span></span><b>${ewCY(lay.volume_yd3)} CY</b>`;
     out.appendChild(d);
   }
-  // land the volumes in the itemised takeoff like any other priced row,
-  // named as on Beaumont's bid sheet; every earthwork row is replaced
-  // on each Calculate so edits never double-count
+  renderEwBasis(j, body);
+  // Calculating is LOOKING. The rows only reach the itemised takeoff once
+  // the estimator presses "Add to takeoff" - see ewAdd below. If they
+  // already did, refresh in place: consent was given for THIS calculation,
+  // and leaving a superseded number priced would be its own silent lie.
+  if (state.ew.added) ewApplyItems(j);
+  renderEwTake();
+  renderEwBalance(j);
+  renderItemized();
+  if ($("ewMap").checked) await ewFetchMap();
+};
+
+// Whole cubic yards, everywhere a volume is shown or priced. The surface is
+// interpolated between contours 1-5 ft apart; 0.1 CY on it is a lie of
+// precision, and it was being printed straight onto a bid.
+function ewCY(v) {
+  return Math.round(Number(v) || 0).toLocaleString();
+}
+const ewR = v => Math.round(Number(v) || 0);
+// The server writes the balance's "why" sentence already formatted to 0.1
+// ("fill 40,349.6 CY - reused 13,677.4 CY"). Round the CY figures inside it
+// so the sentence cannot contradict the whole-CY number sitting beside it.
+// Anchored on the CY unit: percentages and x-factors in the same string
+// keep their decimals.
+function ewRoundCYText(s) {
+  return String(s == null ? "" : s).replace(
+    /(\d[\d,]*)\.(\d+)(?=\s*CY\b)/g,
+    (m) => ewCY(parseFloat(m.replace(/,/g, ""))));
+}
+
+// Every earthwork row is replaced on each apply so edits never double-count.
+function ewClearItems() {
   state.extraItems = state.extraItems.filter(it => !EW_ITEM_RE.test(it.label));
-  if (j.cut_yd3 > 0) state.extraItems.push({ label: "Site Cut", qty: j.cut_yd3, unit: "CY" });
-  if (j.fill_yd3 > 0) state.extraItems.push({ label: "Site Fill", qty: j.fill_yd3, unit: "CY" });
+}
+
+// The push. Named as on Beaumont's bid sheet, rounded to whole CY.
+function ewApplyItems(j) {
+  ewClearItems();
+  if (!j) return;
+  if (j.cut_yd3 > 0) state.extraItems.push({ label: "Site Cut", qty: ewR(j.cut_yd3), unit: "CY" });
+  if (j.fill_yd3 > 0) state.extraItems.push({ label: "Site Fill", qty: ewR(j.fill_yd3), unit: "CY" });
   for (const lay of (j.layers || []))
-    if (lay.volume_yd3 > 0) state.extraItems.push({ label: ewItemLabel(lay), qty: lay.volume_yd3, unit: "CY" });
+    if (lay.volume_yd3 > 0)
+      state.extraItems.push({ label: ewItemLabel(lay), qty: ewR(lay.volume_yd3), unit: "CY" });
   // where the dirt goes. These price like any other row, but tradeFor()
   // would file "Import Structural" under General (it matches no keyword)
   // and "Export Asphalt" under Paving, so seed the trade the way
   // stApplyItems does - session default only, the reviewer's pick wins.
   for (const r of ((j.balance && j.balance.rows) || [])) {
     if (!(r.qty > 0)) continue;
-    state.extraItems.push({ label: r.label, qty: r.qty, unit: r.unit });
+    state.extraItems.push({ label: r.label,
+                            qty: r.unit === "CY" ? ewR(r.qty) : r.qty,
+                            unit: r.unit });
     if (!store.getItem(tradeKey(r.label)))
       store.setItem(tradeKey(r.label), "Earthwork & Grading");
   }
-  renderEwBalance(j);
+}
+
+$("ewAdd").onclick = () => {
+  if (!state.ew || !state.ew.result) return;
+  state.ew.added = !state.ew.added;
+  if (state.ew.added) ewApplyItems(state.ew.result);
+  else ewClearItems();
+  renderEwTake();
   renderItemized();
-  if ($("ewMap").checked) await ewFetchMap();
+  setStatus(state.ew.added
+    ? "earthwork added to the takeoff — it will price and print with the caveat"
+    : "earthwork removed from the takeoff");
 };
+
+function renderEwTake() {
+  const box = $("ewTake"), btn = $("ewAdd"), note = $("ewTakeNote");
+  if (!box || !btn || !note) return;
+  const j = state.ew && state.ew.result;
+  box.classList.toggle("off", !j);
+  if (!j) return;
+  btn.textContent = state.ew.added ? "Remove from takeoff" : "Add to takeoff";
+  btn.classList.toggle("on", !!state.ew.added);
+  note.textContent = state.ew.added
+    ? "In the itemized takeoff. It will price, export and print on the report, "
+      + "with the basis above repeated on the report's own face."
+    : "Not in the takeoff. Approving now exports no earthwork line at all — "
+      + "press this only if you mean to bid these quantities.";
+}
+
+// What the number rests on, printed beside the number. Every field here is
+// one the response or the request already carried: nothing is inferred.
+function renderEwBasis(j, body) {
+  const box = $("ewBasis");
+  if (!box) return;
+  box.classList.toggle("off", !j);
+  if (!j) return;
+  const ex = j.existing_contours, pr = j.proposed_contours;
+  const nPts = ((body && body.existing_points) || []).length
+             + ((body && body.proposed_points) || []).length;
+  const side = (body && body.existing_points) ? "existing" : "proposed";
+  box.innerHTML = "";
+  const line = (html) => {
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    box.appendChild(d);
+    return d;
+  };
+  line(`Interpolated from <b>${ex}</b> existing and <b>${pr}</b> proposed `
+     + `contour${pr === 1 ? "" : "s"}`
+     + (nPts ? `, plus <b>${nPts}</b> spot grade${nPts === 1 ? "" : "s"} on the ${side} surface` : "")
+     + `, sampled on a <b>${j.cell_ft}</b> ft grid over <b>${Number(j.area_sf).toLocaleString()}</b> SF.`);
+  const u = line("That region is <b>not the graded area</b>: it is where the "
+    + "two convex hulls overlap — a straight-sided envelope round each set of "
+    + "contours — so it cuts across every notch in the real limit of "
+    + "disturbance. No input on this panel can bound it.");
+  u.className = "unbounded";
+}
+
+// The lines the approve payload carries onto the printed report, so a reader
+// of the PDF who never saw this panel learns the same three things. Empty
+// unless the estimator actually added earthwork - no earthwork row, no note.
+function ewApproveNotes() {
+  const j = state.ew && state.ew.added && state.ew.result;
+  if (!j) return [];
+  return [
+    "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
+    + "rows) is a contour interpolation, not a measured volume.",
+    `Interpolated from ${j.existing_contours} existing and `
+    + `${j.proposed_contours} proposed contours over `
+    + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `
+    + "area: it is where the two convex hulls of the assigned contours "
+    + "overlap, and no input on the panel can bound it.",
+    // keep each line under the 400-char cap `approve` applies, or the tail
+    // of the disclosure is what gets cut
+    "No typical cross-section, no subgrade depth, no shrink/swell factor. "
+    + "Checked once against a client estimate (Beaumont Barn Civil C3.0 vs "
+    + "Estimate #853) it read 2.3-2.5x high, over 1.42x that estimator's own "
+    + "clear-and-grub area.",
+  ];
+}
 
 // The balance panel. Every row states WHICH AREA produced it on the row
 // itself, not in a tooltip: removal layers are stripped over the disturbed
@@ -2739,7 +3345,10 @@ function renderEwBalance(j) {
   box.innerHTML = "";
   const b = j && j.balance;
   if (!b) { if (note) note.textContent = ""; return; }
+  // whole CY here too: every figure in this block is a cubic-yard volume
+  // derived from the same interpolated surface (see ewCY)
   const n = v => Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const nCY = v => ewCY(v);
   for (const r of (b.rows || [])) {
     const d = document.createElement("div");
     d.className = "bal-row k-" + r.kind;
@@ -2748,12 +3357,12 @@ function renderEwBalance(j) {
     lab.textContent = r.label;
     const why = document.createElement("span");
     why.className = "why";
-    why.textContent = r.basis
+    why.textContent = ewRoundCYText(r.basis)
       + (r.area_sf ? ` \u00b7 over ${n(r.area_sf)} SF (${r.area_source})` : "")
       + (r.destination ? ` \u00b7 ${r.destination}` : "");
     lab.appendChild(why);
     const q = document.createElement("b");
-    q.textContent = `${n(r.qty)} ${r.unit}`;
+    q.textContent = `${r.unit === "CY" ? nCY(r.qty) : n(r.qty)} ${r.unit}`;
     d.append(lab, q);
     box.appendChild(d);
   }
@@ -2763,7 +3372,7 @@ function renderEwBalance(j) {
     const el = document.createElement("div");
     for (const p of parts) {
       if (typeof p === "string") el.append(document.createTextNode(p));
-      else { const bb = document.createElement("b"); bb.textContent = n(p); el.append(bb); }
+      else { const bb = document.createElement("b"); bb.textContent = nCY(p); el.append(bb); }
     }
     sum.appendChild(el);
   };
@@ -3235,76 +3844,88 @@ function renderCo() {
   }
 }
 
-// ---------- AI page analyst + auto-focus ----------
+// ---------- AI page analyst: suggestions, one at a time ------------------
+// Scored 2026-08-23 over the 33 ground-truth pages, three runs each. What
+// survived, and why, is in server.py:_AI_GRADES and travels in the payload
+// as j._grades - every row below prints the grade of the thing it proposes.
+//
+// Three rules this section exists to keep:
+//   1. NOTHING here writes the takeoff on its own. Each proposal is a row
+//      with its own Accept, and each accepted row has its own Undo.
+//   2. The model is never evidence for the confidence banner. renderConf()
+//      reads state.conf and must never read state.ai - grep them together
+//      before changing either.
+//   3. A failure says what failed. The server sends a sentence in .detail;
+//      show it, do not translate it into a status code.
+//
+// The bulk "Focus on these N line types" button was REMOVED, not disabled.
+// Measured: one click kept a median 18% of the sheet's drawn length and
+// dropped the rest, and 17% of the ignore rows it acts on sit on a
+// WALL / FTNG / SLAB / CURB / PIPE layer. That is a silent wrong quantity
+// one click away, which is the one trade this product does not make.
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g,
     ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 }
 
-async function runAnalyze(auto) {
+function aiNorm(s) {
+  return String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function aiFt(pt) {
+  const sc = state.result && state.result.scale;
+  if (!sc || !+sc.ft_per_paper_inch) return null;
+  return pt / 72 * +sc.ft_per_paper_inch;
+}
+
+function aiQty(pt) {
+  const ft = aiFt(pt);
+  return ft == null ? `${Math.round(pt).toLocaleString()} pt`
+    : `${Math.round(ft).toLocaleString()} ft`;
+}
+
+async function runAnalyze(quiet) {
   const banner = $("aiBanner");
-  if (!auto) {
+  if (!quiet) {
     banner.hidden = false;
+    banner.classList.remove("slim");
     banner.textContent = "Reading the sheet with AI…";
   } else {
-    setStatus("AI refining the takeoff…", "busy");
+    setStatus("Reading the sheet with AI…", "busy");
   }
   const gen0 = state.job + ":" + state.page;   // page may change mid-flight
-  let r;
+  let r, j = null;
   try {
     r = await fetch(`/api/job/${state.job}/page/${state.page}/analyze`, { method: "POST" });
   } catch (e) { r = null; }
   if (gen0 !== state.job + ":" + state.page) return;  // stale reply, drop it
+  if (r) { try { j = await r.json(); } catch (e) { j = null; } }
+  if (gen0 !== state.job + ":" + state.page) return;
   if (!r || !r.ok) {
-    if (auto) { setStatus(""); return; }   // demo never blocks on the model
-    banner.textContent = r && r.status === 503
-      ? "AI analysis needs an LLM key (XAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY) on the detection service."
-      : "AI analysis failed (" + (r ? r.status : "network") + ")";
+    // The server names the actual failure - no key, key rejected, rate
+    // limited, no such model, timeout, unreadable reply. Print its sentence.
+    const why = (j && (j.detail || j.message))
+      || (r ? `the service answered HTTP ${r.status} with no explanation`
+            : "the browser could not reach the detection service");
+    setStatus("");
+    banner.hidden = false;
+    banner.classList.remove("slim");
+    banner.innerHTML = `<b>AI analysis did not run.</b> <span class="ai-dim">`
+      + esc(why) + `</span><br><span class="ai-dim">Your takeoff is `
+      + `unchanged. Everything else on this page works without it.</span>`;
+    banner.appendChild(aiDismissBtn());
     return;
   }
-  const j = await r.json();
-  if (gen0 !== state.job + ":" + state.page) return;  // stale reply, drop it
+  setStatus("");
   state.ai = j;
-  // per-style reasoning, surfaced on the style rows themselves
+  // per-style reasoning, surfaced on the style rows themselves. This is a
+  // note on the row, not a decision: renderStyles only tints and titles it.
   state.aiWhy = new Map();
-  for (const f of j.focus || []) {
+  for (const f of j.focus || [])
     state.aiWhy.set(f.style_id, { keep: true, why: f.why, label: f.label });
-    // measure verdicts apply with the rest of the verdict: in auto mode
-    // only when the guardrail accepts (below); manually, right here
-    if (!auto && f.measure === "object")
-      state.measureMode.set(f.style_id, "object");
-  }
-  for (const i of j.ignore || []) state.aiWhy.set(i.style_id, { keep: false, why: i.why });
-  if (auto && (j.focus || []).length) {
-    // GUARDRAILS before the model's read becomes the takeoff:
-    // - annotation-smelling labels (note/legend/title/dim) never focus
-    // - the surviving set must cover a sane share of detected linework,
-    //   or the verdict downgrades to a suggestion banner (engine result
-    //   stays untouched). A wrong auto-takeoff is worse than a manual one.
-    const ANNOT = /\b(note|legend|title|border|callout|dimension|typ(ical)?)\b/i;
-    const focus = (j.focus || []).filter(f => !ANNOT.test(f.label || ""));
-    const byId = new Map(state.result.styles.map(st => [st.style_id, st]));
-    const inkOf = (arr) => arr.reduce(
-      (t, f) => t + ((byId.get(f.style_id) || {}).length_pt || 0), 0);
-    const totalInk = state.result.styles.reduce((t, st) => t + st.length_pt, 0);
-    const share = totalInk ? inkOf(focus) / totalInk : 0;
-    if (focus.length && share >= 0.12) {
-      applyAiFocus(focus);
-      for (const f of focus) {
-        const cur = (state.labels.get(f.style_id) || "").trim();
-        const seed = (state.seedLabels.get(f.style_id) || "").trim();
-        if (f.label && (!cur || (cur === seed && !seed.includes("(legend)"))))
-          state.labels.set(f.style_id, f.label);
-        if (f.measure === "object")
-          state.measureMode.set(f.style_id, "object");
-      }
-      state.aiAuto = true;
-    } else {
-      // suggestion-only: full banner with the Focus button, nothing applied
-      state.aiAuto = false;
-    }
-    setStatus("");
-  }
+  for (const i of j.ignore || [])
+    state.aiWhy.set(i.style_id, { keep: false, why: i.why });
+  state.aiAuto = false;   // there is no auto mode any more; see the header
   renderAiBanner();
   renderStyles(); renderItemized(); renderMiniLegend(); draw();
 }
@@ -3332,146 +3953,313 @@ function aiDismissBtn() {
   return x;
 }
 
+// Every difference between what the model says and what is on screen right
+// now, as one reversible row each. Ordered by what it costs to be wrong:
+// turning a style ON adds linework the reviewer can see, renaming changes a
+// word, and turning one OFF removes footage from the takeoff - so that one
+// is last and carries its own quantity.
+function aiProposals(j) {
+  const styles = (state.result && state.result.styles) || [];
+  const byId = new Map(styles.map(s => [s.style_id, s]));
+  const on = [], rename = [], obj = [], off = [];
+  for (const f of j.focus || []) {
+    const st = byId.get(f.style_id);
+    if (!st) continue;
+    if (state.include.get(f.style_id) !== true)
+      on.push({ id: "on:" + f.style_id, kind: "on", sid: f.style_id, st,
+                why: f.why });
+    const cur = (state.labels.get(f.style_id) || "").trim();
+    if (f.label && aiNorm(f.label) !== aiNorm(cur))
+      rename.push({ id: "label:" + f.style_id, kind: "label", sid: f.style_id,
+                    st, to: f.label, from: cur, echo: !!f.echo, why: f.why });
+    if (f.measure === "object" && state.measureMode.get(f.style_id) !== "object")
+      obj.push({ id: "obj:" + f.style_id, kind: "obj", sid: f.style_id, st,
+                 why: f.why });
+  }
+  for (const g of j.ignore || []) {
+    const st = byId.get(g.style_id);
+    if (!st) continue;
+    if (state.include.get(g.style_id) === true)
+      off.push({ id: "off:" + g.style_id, kind: "off", sid: g.style_id, st,
+                 why: g.why });
+  }
+  off.sort((a, b) => b.st.length_pt - a.st.length_pt);
+  return on.concat(rename, obj, off);
+}
+
+function aiApplyOne(p) {
+  if (!state.aiUndo) state.aiUndo = new Map();
+  if (state.aiUndo.has(p.id)) return;
+  if (p.kind === "on" || p.kind === "off") {
+    state.aiUndo.set(p.id, { kind: p.kind, sid: p.sid,
+                             prev: state.include.get(p.sid) });
+    setInclude(p.sid, p.kind === "on");
+  } else if (p.kind === "label") {
+    state.aiUndo.set(p.id, { kind: p.kind, sid: p.sid,
+                             prev: state.labels.get(p.sid) });
+    state.labels.set(p.sid, p.to);
+  } else if (p.kind === "obj") {
+    state.aiUndo.set(p.id, { kind: p.kind, sid: p.sid,
+                             prev: state.measureMode.get(p.sid) });
+    state.measureMode.set(p.sid, "object");
+  }
+  setStatus(`applied 1 AI suggestion — ${state.aiUndo.size} in total, each `
+            + `undoable`);
+  renderAiBanner(); renderStyles(); renderChips(); renderItemized();
+  renderMiniLegend(); draw();
+}
+
+function aiUndoOne(id) {
+  if (!state.aiUndo || !state.aiUndo.has(id)) return;
+  const u = state.aiUndo.get(id);
+  if (u.kind === "on" || u.kind === "off") setInclude(u.sid, u.prev === true);
+  else if (u.kind === "label") {
+    if (u.prev == null) state.labels.delete(u.sid);
+    else state.labels.set(u.sid, u.prev);
+  } else if (u.kind === "obj") {
+    if (u.prev == null) state.measureMode.delete(u.sid);
+    else state.measureMode.set(u.sid, u.prev);
+  }
+  state.aiUndo.delete(id);
+  if (!state.aiUndo.size) state.aiUndo = null;
+  setStatus("AI suggestion undone");
+  renderAiBanner(); renderStyles(); renderChips(); renderItemized();
+  renderMiniLegend(); draw();
+}
+
+function undoAiFocus() {
+  if (!state.aiUndo) return;
+  for (const id of [...state.aiUndo.keys()]) aiUndoOne(id);
+  state.aiUndo = null;
+  setStatus("every AI suggestion undone");
+  renderAiBanner(); renderStyles(); renderChips(); renderItemized();
+  renderMiniLegend(); draw();
+}
+
+function aiGradeChip(g) {
+  const s = document.createElement("span");
+  s.className = "ai-grade";
+  s.textContent = "measured";
+  s.title = g ? `${g.hit}\n\nrun-to-run: ${g.stable}` : "not scored";
+  return s;
+}
+
 function renderAiBanner() {
   const banner = $("aiBanner"), j = state.ai;
   if (!j || state.aiHidden) { banner.hidden = true; return; }
   $("aiBtn").textContent = "Analyze";
   banner.hidden = false;
-  if (state.aiAuto) {
-    // pipeline mode: no ceremony - one quiet line, an undo, and the
-    // sheet's calculator chips
-    banner.innerHTML = "";
-    banner.classList.add("slim");
-    const line = document.createElement("span");
-    const nf = (j.focus || []).length;
-    line.innerHTML = `<b>${esc(j.purpose || "")}</b> <span class="ai-dim">· ` +
-      `AI-assisted — ${nf} line type${nf === 1 ? "" : "s"} in focus` +
-      (j.confidence ? ` · confidence ${esc(j.confidence)}` : "") + `</span>`;
-    banner.appendChild(line);
-    if (state.aiUndo) {
-      const undo = document.createElement("button");
-      undo.className = "mini";
-      undo.textContent = "Undo AI";
-      undo.onclick = () => { state.aiAuto = false; undoAiFocus(); };
-      banner.appendChild(undo);
-    }
-    const rr = document.createElement("button");
-    rr.className = "mini";
-    rr.textContent = "Re-read sheet";
-    rr.title = "Ask the AI to read this sheet again (verdict is otherwise pinned)";
-    rr.onclick = async () => {
-      const r2 = await fetch(
-        `/api/job/${state.job}/page/${state.page}/analyze?fresh=1`,
-        { method: "POST" });
-      if (r2.ok) { state.aiUndo && undoAiFocus(); runAnalyze(true); }
-    };
-    banner.appendChild(rr);
-    banner.appendChild(aiDismissBtn());
-    const CALC = {
-      earthwork: { btn: "ewBtn", label: "EARTHWORK" },
-      trench:    { btn: "trBtn", label: "TRENCH" },
-      count:     { btn: "symBtn", label: "COUNT" },
-    };
-    for (const m of (j.page_modes || []).filter(m => CALC[m])) {
-      const b = document.createElement("button");
-      b.className = "ai-mode";
-      b.textContent = CALC[m].label;
-      b.title = "This sheet calls for this calculator";
-      b.onclick = () => { const t = $(CALC[m].btn); if (t) t.click(); };
-      banner.appendChild(b);
-    }
-    return;
-  }
   banner.classList.remove("slim");
-  const legend = (j.inline_legend || [])
-    .map(l => `${esc(l.symbol)} = ${esc(l.meaning)}`).join("; ");
-  const focus = j.focus || [];
-  const names = focus.map(f => esc(f.label || ("style " + f.style_id))).join(", ");
-  let html = `<b>${esc(j.purpose)}</b>`;
-  if (j.discipline) html += ` <span class="ai-dim">(${esc(j.discipline)})</span>`;
-  if (focus.length) html += `<br><b>Measure here:</b> ${names}`;
-  if (legend) html += `<br><b>Sheet legend:</b> ${legend}`;
-  if (j.confidence || j._invalid_style_ids) {
-    html += `<br><span class="ai-dim">`;
-    if (j.confidence) html += `confidence ${esc(j.confidence)}`;
-    if (j._invalid_style_ids) html += `${j.confidence ? " · " : ""}${j._invalid_style_ids} suggestion(s) ignored as unknown styles`;
-    html += `</span>`;
-  }
-  banner.innerHTML = html;
+  banner.innerHTML = "";
+  const G = j._grades || {};
+
+  // --- who said this, and the standing disclaimer -------------------------
+  const head = document.createElement("div");
+  head.className = "ai-head";
+  head.innerHTML =
+    `<b>Read by ${esc((j._provider || "an LLM").split(":").pop())}</b>`
+    + ` <span class="ai-dim">— suggestions only. Nothing below has changed `
+    + `your takeoff; accept them one at a time.</span>`;
+  banner.appendChild(head);
   banner.appendChild(aiDismissBtn());
 
-  if (focus.length) {
-    const ids = new Set(focus.map(f => f.style_id));
-    const offCount = [...state.include.keys()].filter(k => !ids.has(k)).length;
-    const bar = document.createElement("div");
-    bar.className = "ai-actions";
-    const apply = document.createElement("button");
-    apply.id = "aiApplyBtn";
-    apply.textContent = `Focus on these ${focus.length} line type${focus.length > 1 ? "s" : ""}`;
-    apply.title = `Turns ON ${focus.length} style(s) and turns OFF ${offCount}. Nothing is deleted — you can undo.`;
-    apply.onclick = () => applyAiFocus(focus);
-    bar.appendChild(apply);
-    const note = document.createElement("span");
-    note.className = "ai-dim";
-    note.textContent = `suggestion only — turns off ${offCount} other style${offCount === 1 ? "" : "s"}, undoable`;
-    bar.appendChild(note);
-    if (state.aiUndo) {
-      const undo = document.createElement("button");
-      undo.textContent = "Undo";
-      undo.onclick = undoAiFocus;
-      bar.appendChild(undo);
-    }
-    banner.appendChild(bar);
+  // --- what the sheet says about itself -----------------------------------
+  // These three come off the title block, which is printed evidence, and
+  // they scored best. They are shown, never applied: nothing in the takeoff
+  // is keyed on them.
+  const facts = document.createElement("div");
+  facts.className = "ai-facts";
+  const addFact = (name, val, grade, extra) => {
+    if (!val) return;
+    const d = document.createElement("div");
+    d.className = "ai-fact";
+    d.innerHTML = `<span class="ai-dim">${esc(name)}</span> <b>${esc(val)}</b>`
+      + (extra ? ` <span class="ai-dim">${esc(extra)}</span>` : "");
+    d.appendChild(aiGradeChip(grade));
+    facts.appendChild(d);
+  };
+  addFact("sheet", j.sheet_id, G.sheet_id);
+  addFact("title", j.sheet_title, G.sheet_title);
+  if (j.purpose) {
+    const d = document.createElement("div");
+    d.className = "ai-fact ai-purpose";
+    d.innerHTML = `<b>${esc(j.purpose)}</b>`
+      + (j.discipline ? ` <span class="ai-dim">(${esc(j.discipline)})</span>`
+                      : "");
+    facts.appendChild(d);
+  }
+  // the scale the MODEL read, next to the one the engine read. Never
+  // written into state.result.scale: 4 of the 31 scales it offered were
+  // wrong, all on scanned sheets, and a wrong scale multiplies every
+  // quantity on the page. The scale picker stays the only way to change it.
+  if (j.scale_text) {
+    const eng = state.result && state.result.scale;
+    const engTxt = eng && eng.text ? eng.text : null;
+    const d = document.createElement("div");
+    d.className = "ai-fact";
+    d.innerHTML = `<span class="ai-dim">scale printed on the sheet, as the `
+      + `model reads it</span> <b>${esc(j.scale_text)}</b> `
+      + `<span class="ai-dim">— not applied. `
+      + (engTxt ? `The engine reads <b>${esc(engTxt)}</b>.`
+                : `The engine could not find one here.`)
+      + ` Check it against the sheet before you rely on it.</span>`;
+    d.appendChild(aiGradeChip(G.scale_text));
+    facts.appendChild(d);
+  }
+  if (facts.childElementCount) banner.appendChild(facts);
+
+  const legend = (j.inline_legend || [])
+    .map(l => `${esc(l.symbol)} = ${esc(l.meaning)}`).join("; ");
+  if (legend) {
+    const d = document.createElement("div");
+    d.className = "ai-fact";
+    d.innerHTML = `<span class="ai-dim">legend the model read on the sheet `
+      + `(unverified):</span> ${legend}`;
+    banner.appendChild(d);
   }
 
-  // page_modes -> one-click calculator suggestions: the model says what
-  // KIND of measuring this sheet needs; each chip opens the matching tool
+  // --- the proposals ------------------------------------------------------
+  const props = aiProposals(j);
+  const applied = state.aiUndo || new Map();
+  const box = document.createElement("div");
+  box.className = "ai-props";
+  const KIND = {
+    on:    { verb: "turn ON",  grade: G.focus,  cls: "ai-p-on" },
+    off:   { verb: "turn OFF", grade: G.ignore, cls: "ai-p-off" },
+    label: { verb: "rename",   grade: G.label,  cls: "ai-p-label" },
+    obj:   { verb: "count as objects (EA), not feet", grade: G.focus,
+             cls: "ai-p-obj" },
+  };
+  for (const p of props) {
+    const k = KIND[p.kind];
+    const row = document.createElement("div");
+    row.className = "ai-prop " + k.cls;
+    const name = (state.labels.get(p.sid) || p.st.suggested_label
+                  || ("style " + p.sid));
+    let what = `<b>${esc(k.verb)}</b> ${esc(name)}`;
+    if (p.kind === "label") {
+      what = `<b>rename</b> ${esc(p.from || "(unlabelled)")} → `
+           + `<b>${esc(p.to)}</b>`;
+      if (p.echo) what += ` <span class="ai-dim">(same as the CAD layer — `
+                        + `no new information)</span>`;
+    }
+    if (p.kind === "off")
+      what += ` <span class="ai-warn">removes ${esc(aiQty(p.st.length_pt))}`
+            + ` from the takeoff</span>`;
+    const txt = document.createElement("span");
+    txt.className = "ai-prop-txt";
+    txt.innerHTML = what + (p.why ? ` <span class="ai-dim">— `
+                                    + `${esc(p.why)}</span>` : "");
+    row.appendChild(txt);
+    row.appendChild(aiGradeChip(k.grade));
+    const b = document.createElement("button");
+    b.className = "mini";
+    if (applied.has(p.id)) {
+      row.classList.add("ai-done");
+      b.textContent = "Undo";
+      b.onclick = () => aiUndoOne(p.id);
+    } else {
+      b.textContent = "Accept";
+      b.title = "Applies just this one change. It can be undone on its own.";
+      b.onclick = () => aiApplyOne(p);
+    }
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+  // rows already accepted whose proposal no longer differs from the screen
+  for (const [id, u] of applied) {
+    if (props.some(p => p.id === id)) continue;
+    const row = document.createElement("div");
+    row.className = "ai-prop ai-done";
+    const st = ((state.result && state.result.styles) || [])
+      .find(s => s.style_id === u.sid);
+    const DONE = { on: "turned ON", off: "turned OFF", label: "renamed",
+                   obj: "counting as objects (EA)" };
+    row.innerHTML = `<span class="ai-prop-txt ai-dim">accepted — `
+      + `${esc(DONE[u.kind] || u.kind)} `
+      + `${esc((st && (state.labels.get(u.sid)
+          || st.suggested_label)) || ("style " + u.sid))}</span>`;
+    const b = document.createElement("button");
+    b.className = "mini";
+    b.textContent = "Undo";
+    b.onclick = () => aiUndoOne(id);
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+  if (box.childElementCount) {
+    const lead = document.createElement("div");
+    lead.className = "ai-dim ai-props-lead";
+    lead.textContent = `${box.childElementCount} suggested change`
+      + (box.childElementCount === 1 ? "" : "s")
+      + " — hover “measured” on any row to see how often that kind of "
+      + "suggestion was right over 33 ground-truth pages.";
+    banner.appendChild(lead);
+    banner.appendChild(box);
+  } else if ((j.focus || []).length || (j.ignore || []).length) {
+    const d = document.createElement("div");
+    d.className = "ai-dim";
+    d.textContent = "The model agrees with the page as it stands — nothing "
+      + "to change.";
+    banner.appendChild(d);
+  }
+
+  // --- footer: re-read, undo everything, calculators ----------------------
+  const bar = document.createElement("div");
+  bar.className = "ai-actions";
+  if (state.aiUndo && state.aiUndo.size) {
+    const undo = document.createElement("button");
+    undo.textContent = `Undo all ${state.aiUndo.size} AI change`
+      + (state.aiUndo.size === 1 ? "" : "s");
+    undo.onclick = undoAiFocus;
+    bar.appendChild(undo);
+  }
+  const rr = document.createElement("button");
+  rr.className = "mini";
+  rr.textContent = "Re-read sheet";
+  rr.title = "Ask the model to read this sheet again. It is not a second "
+    + "opinion: the same model answered differently between runs on 24 of "
+    + "32 pages, so a changed answer is noise, not news.";
+  rr.onclick = async () => {
+    let r2 = null;
+    try {
+      r2 = await fetch(
+        `/api/job/${state.job}/page/${state.page}/analyze?fresh=1`,
+        { method: "POST" });
+    } catch (e) { r2 = null; }
+    if (r2 && r2.ok) runAnalyze(true);
+    else setStatus("re-read failed — the previous reading is still on screen");
+  };
+  bar.appendChild(rr);
+  // Calculator chips only for the two modes that never flickered between
+  // runs. count and objects moved on 6 and 5 of 32 pages, so a chip for
+  // them is a coin toss dressed as advice.
   const CALC = {
     earthwork: { btn: "ewBtn", label: "EARTHWORK — cut & fill from these contours" },
     trench:    { btn: "trBtn", label: "TRENCH — excavation + bedding for a pipe run" },
-    count:     { btn: "symBtn", label: "COUNT — tally repeated symbols" },
   };
-  const modes = (j.page_modes || []).filter(m => CALC[m]);
-  if (modes.length) {
-    const bar2 = document.createElement("div");
-    bar2.className = "ai-actions";
-    const lead = document.createElement("span");
-    lead.className = "ai-dim";
-    lead.textContent = "This sheet also calls for:";
-    bar2.appendChild(lead);
-    for (const m of modes) {
-      const b = document.createElement("button");
-      b.className = "ai-mode";
-      b.textContent = CALC[m].label;
-      b.onclick = () => { const t = $(CALC[m].btn); if (t) t.click(); };
-      bar2.appendChild(b);
-    }
-    banner.appendChild(bar2);
+  for (const m of (j.page_modes || []).filter(m => CALC[m])) {
+    const b = document.createElement("button");
+    b.className = "ai-mode";
+    b.textContent = CALC[m].label;
+    b.title = "The model says this sheet calls for this calculator. Opens "
+      + "the tool; measures nothing on its own.";
+    b.onclick = () => { const t = $(CALC[m].btn); if (t) t.click(); };
+    bar.appendChild(b);
   }
-}
+  banner.appendChild(bar);
 
-function applyAiFocus(focus) {
-  // snapshot first: this only flips checkboxes, so it must be reversible
-  state.aiUndo = {
-    include: new Map(state.include),
-    labels: new Map(state.labels),
-  };
-  const ids = new Set(focus.map(f => f.style_id));
-  for (const k of [...state.include.keys()]) setInclude(k, ids.has(k));
-  for (const f of focus) {
-    if (f.label) state.labels.set(f.style_id, f.label);
-  }
-  setStatus(`AI focus applied — ${ids.size} line type(s) kept`);
-  renderAiBanner(); renderStyles(); renderChips(); renderItemized(); draw();
-}
-
-function undoAiFocus() {
-  if (!state.aiUndo) return;
-  state.include = new Map(state.aiUndo.include);
-  state.labels = new Map(state.aiUndo.labels);
-  state.aiUndo = null;
-  setStatus("AI focus undone");
-  renderAiBanner(); renderStyles(); renderChips(); renderItemized(); draw();
+  const foot = document.createElement("div");
+  foot.className = "ai-dim ai-foot";
+  foot.textContent = "This reading is not evidence for the sheet's "
+    + "confidence banner and never counts as a second source — the model and "
+    + "the engine can read the same printed caption and be wrong together.";
+  if (j._invalid_style_ids)
+    foot.textContent += ` ${j._invalid_style_ids} suggestion(s) were `
+      + `discarded for naming a line style this sheet does not have.`;
+  if (j._truncated)
+    foot.textContent += " The model's reply was cut off by the token limit; "
+      + "what is shown is the part that arrived.";
+  banner.appendChild(foot);
 }
 
 $("approveBtn").onclick = async () => {
@@ -3520,12 +4308,28 @@ $("approveBtn").onclick = async () => {
         ...it,
         unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
       })),
+      // free-text lines printed on the face of the report, under the scale
+      // statement. Earthwork is the only writer today: a CY figure that is
+      // an interpolation has to say so where it is READ, not only in the
+      // panel where it was computed. Empty when no earthwork was added.
+      notes: ewApproveNotes(),
       prices: Object.fromEntries(
         [...Object.values(labels), ...state.chainLabels.values()]
           .map(l => [l, parseFloat(store.getItem(priceKey(l)) || "") || 0])
           .filter(([, v]) => v > 0 ? true : false)
       ) }),
   });
+  if (!r.ok) {
+    // The server refuses a scale outside its sanity band (server.py
+    // _sane_ft). Nothing was written; show the reason instead of "exported
+    // undefined elements", which is what a blind .json() produced.
+    let why = `approve failed (${r.status})`;
+    try {
+      const e = await r.json();
+      if (e && e.detail) why = String(e.detail);
+    } catch (err) { /* not JSON */ }
+    return setStatus(why, "err");
+  }
   const j = await r.json();
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : "") +

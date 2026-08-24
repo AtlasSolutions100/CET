@@ -12,6 +12,7 @@ out/jobs/, so re-opening a document reuses finished work.
 """
 
 import json
+import math
 import multiprocessing
 import os
 import threading
@@ -547,6 +548,84 @@ def page_confidence(job_id: str, page: int):
 
 _BY_REVIEWER = "reviewer"
 
+# The band a reviewer's scale has to land in to be usable at all.
+#
+# A number a person types is reachable from the review UI (webui/app.js
+# renderScaleTyped) and from anything that POSTs `scale.ft_per_paper_inch`,
+# and until this band existed neither had a floor or a ceiling: Gate 1
+# posted 1e9 and the export came back quoting 1,967,692,500,000.1 ft with
+# a straight face.
+#
+# It REFUSES, it does not clamp. A clamp turns a typo into a confident
+# wrong number - the most expensive thing this engine can produce,
+# because it reaches a bid - while a refusal costs one retype and says
+# what it wanted. Measured, not assumed:
+#
+#   * 6,714 corpus pages read text-only through takeoff_engine.scale_detect
+#     (out/verify/2026-08-23/scalebox/work/band_corpus.py; the per-page rows
+#     are in band_corpus.json). 279 return a scale, and every one lands
+#     between 0.3333 and 250.0 ft per paper inch, over 26 distinct values.
+#   * FLOOR 0.0833 ft/in is 1/12 - FULL SIZE, one paper inch to one real
+#     inch. Three separate things put it there and none of them is a
+#     round number picked for looks:
+#       - the smallest reading anywhere in that scan is 0.3333, and the
+#         smallest from an UNAMBIGUOUS imperial caption is 0.4 (`5" = 2'`,
+#         GAOA Star Meadow 007^S-01 New Foundation.pdf page 0). The 0.3333
+#         is the engine reading `Scale 3:1` as if it were 3" = 1'-0"; read
+#         as a ratio that caption means a 3x ENLARGEMENT (0.0278 ft/in),
+#         so it is quoted here as the observed extreme, not as a scale we
+#         vouch for.
+#       - CONVENTION: the largest scale an architect's rule carries is
+#         3" = 1'-0" = 0.3333 ft/in (see scale_detect._scan, which measured
+#         it against drawn geometry on Barn Landscaping L804).
+#       - full size is one step finer again, so the floor sits 4x below the
+#         smallest thing this corpus reads and still admits a full-size
+#         detail. Under it the drawing is ENLARGED past life size (2:1,
+#         3:1, 4:1 shop detailing), which is not geometry anyone takes
+#         quantities off.
+#     It is 1/12 rounded DOWN to four places, so the number this module
+#     PRINTS in its refusal is itself inside the band when typed back.
+#   * CEILING 1000 ft/in is 4x the corpus maximum (1" = 250' on
+#     client_meet/beaumont/SWR_Guide_Residence_-_Civil_5.8.26.pdf, engine
+#     page index 8) and 2.5x scale_detect._scan's own text-caption accept
+#     ceiling of 400. At 1000 ft/in a 36-inch-wide sheet spans 6.8 miles.
+#   * scale_detect's own FLOOR of 0.33 is deliberately not reused: it is
+#     there to stop a dimension string (`6" - 2'` = 0.3333) reading as a
+#     scale, an ambiguity a number typed on purpose does not have.
+#
+# The band cannot catch a plausible-but-wrong number (20 typed as 200 is
+# inside it). Nothing here can. That is what the amber banner and the
+# `set by the reviewer` provenance on the export and the PDF are for.
+SCALE_FT_MIN = 0.0833
+SCALE_FT_MAX = 1000.0
+
+
+def _sane_ft(v) -> float | None:
+    """A usable feet-per-paper-inch, or None - which means REFUSE.
+
+    Never substitutes a default. Every caller says out loud that it
+    refused; silently falling back to another number is how a scale a
+    person set stops being the scale the deliverable used.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return f if SCALE_FT_MIN <= f <= SCALE_FT_MAX else None
+
+
+def _refuse_scale(v) -> HTTPException:
+    """Why this number was refused, in the words the reviewer needs."""
+    return HTTPException(400, (
+        f"scale {v!r} is not a usable number of feet per paper inch. "
+        f"This app accepts {SCALE_FT_MIN:.4f} to {SCALE_FT_MAX:g} - "
+        f"from full size (1 inch of paper = 1 real inch) to 1 inch = "
+        f"{SCALE_FT_MAX:g} ft, which already covers every scale this app "
+        f"has read anywhere in the plan corpus (0.33 to 250). Nothing was "
+        f"changed; retype the scale."))
+
 
 def _scale_pick_path(job_id: str, page: int) -> Path:
     return _job_dir(job_id) / f"p{page}_scale.json"
@@ -560,11 +639,11 @@ def _stored_scale_pick(job_id: str, page: int) -> dict | None:
         d = json.loads(f.read_text())
     except (OSError, ValueError):
         return None
-    try:
-        v = float(d.get("ft_per_paper_inch") or 0)
-    except (TypeError, ValueError):
-        return None
-    return d if v > 0 else None
+    # An out-of-band sidecar can now only come from a hand edit or an
+    # older build - the approve route refuses to write one. Ignoring it
+    # drops the page back to the engine's reading, which the chip, the
+    # banner and the export all state as `auto`: visible, not silent.
+    return d if _sane_ft(d.get("ft_per_paper_inch")) is not None else None
 
 
 def _page_scale(job_id: str, page: int, res: dict,
@@ -590,10 +669,15 @@ def _page_scale(job_id: str, page: int, res: dict,
         except (TypeError, ValueError):
             eng_ft = None
     pick = None
-    try:
-        want = float(sent.ft_per_paper_inch) if sent is not None else 0.0
-    except (TypeError, ValueError):
-        want = 0.0
+    want = 0.0
+    if sent is not None:
+        # Refuse rather than ignore. Quietly dropping a number the screen
+        # was showing would export the ENGINE's scale under the human's
+        # approval - the exact disagreement this function exists to end.
+        checked = _sane_ft(sent.ft_per_paper_inch)
+        if checked is None:
+            raise _refuse_scale(sent.ft_per_paper_inch)
+        want = checked
     if want > 0:
         # A screen that DIFFERS from the engine had a person change it,
         # whatever flag came with it. The converse is not true, and the
@@ -732,6 +816,12 @@ class ApproveBody(BaseModel):
     # [{label, qty, unit, unit_price?}] - they price and report like any
     # other takeoff row, they just are not linear footage
     extra_items: list[dict] = []
+    # Free-text lines printed on the FACE of the report PDF, under the scale
+    # statement. A quantity whose basis the reader cannot see is exactly what
+    # this product must not ship: the review UI sends the earthwork caveat
+    # here (contour interpolation, how many contours, region not bounded), so
+    # a person holding only the PDF learns it too. Bounded in `approve`.
+    notes: list[str] = []
     # the scale the reviewer had on screen. Omitted = keep whatever this page
     # already decided (a stored pick, else the engine's). See _page_scale.
     scale: ApproveScale | None = None
@@ -844,6 +934,10 @@ def approve(job_id: str, page: int, body: ApproveBody):
         "Paving & Concrete", "Structures", "Fencing & Sitework", "General"))}
     items.sort(key=lambda it: (trade_rank.get(it.get("trade"), 99),))
     export["items"] = items
+    # verbatim onto the report (report_pdf prints them under the scale
+    # lines); capped so no caller can paper over the table with prose
+    export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
+                       if str(x).strip()]
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
     return JSONResponse({"exported": len(elements), "file": str(out),
@@ -956,6 +1050,7 @@ def report_pdf(job_id: str):
     per page an overlay of the approved lines on the sheet, then an
     itemized table (label / count / footage / pricing)."""
     import io
+    import textwrap
 
     from PIL import Image, ImageDraw
 
@@ -971,6 +1066,7 @@ def report_pdf(job_id: str):
     doc = pymupdf.open(job["path"])
     out = pymupdf.open()
     grand: dict = {}
+    all_notes: list[str] = []
     for pno in pages:
         exp = json.loads((jd / f"p{pno}_elements.json").read_text())
         pg = doc[pno]
@@ -1004,6 +1100,15 @@ def report_pdf(job_id: str):
         for _ln in _scale_report_lines(exp.get("scale"), exp.get("imageDpi")):
             tp.insert_text((50, y), _ln[:118], fontsize=8)
             y += 11
+        # Caveats the reviewer's calculators attached to their own rows. They
+        # sit ABOVE the table on purpose: a reader who stops at the first
+        # number has already passed them.
+        for _nt in (exp.get("notes") or []):
+            if _nt not in all_notes:
+                all_notes.append(_nt)
+            for _seg in (textwrap.wrap(str(_nt), 118) or [""]):
+                tp.insert_text((50, y), _seg, fontsize=8)
+                y += 11
         y += 8
         tp.insert_text((50, y), "Label", fontsize=9)
         tp.insert_text((300, y), "Count", fontsize=9)
@@ -1020,6 +1125,12 @@ def report_pdf(job_id: str):
             tp.insert_text((300, y), str(it["count"]), fontsize=9)
             _q = it["length_ft"] if it["length_ft"] is not None else it.get("qty")
             _u = "" if it["length_ft"] is not None else (" " + it.get("unit", "")).rstrip()
+            # a calculator row that rounded to whole units is a whole
+            # number: round(x, 1) leaves 13677.0, which prints
+            # "13,677.0 CY" and re-asserts the tenth the rounding removed.
+            # Guarded on _u so the footage column is untouched.
+            if _q is not None and _u and float(_q).is_integer():
+                _q = int(_q)
             tp.insert_text((360, y), f"{_q:,}{_u}" if _q is not None else "-", fontsize=9)
             tp.insert_text((440, y), f'{it["unit_price"]:.2f}' if it.get("unit_price") else "-", fontsize=9)
             tp.insert_text((500, y), f'{it["extended"]:,.2f}' if it.get("extended") else "-", fontsize=9)
@@ -1049,7 +1160,15 @@ def report_pdf(job_id: str):
     tp.insert_text((50, y), f"{len(pages)} approved sheet(s), added together. "
                             "Nothing is de-duplicated across sheets.",
                    fontsize=8)
-    y += 21
+    y += 11
+    # This page repeats the rows, so it repeats what they rest on. A reader
+    # who turns straight to the summary must not be the one person who never
+    # sees the caveat attached to a quantity in it.
+    for _nt in all_notes[:8]:
+        for _seg in (textwrap.wrap(str(_nt), 118) or [""]):
+            tp.insert_text((50, y), _seg, fontsize=8)
+            y += 11
+    y += 10
     tp.insert_text((50, y), "Label", fontsize=9)
     tp.insert_text((300, y), "Count", fontsize=9)
     tp.insert_text((360, y), "Length (ft)", fontsize=9)
@@ -1093,82 +1212,110 @@ class AnalyzeResponse(BaseModel):
     pass
 
 
-@app.post("/api/job/{job_id}/page/{page}/analyze")
-def analyze_page(job_id: str, page: int, fresh: bool = False):
-    """LLM page analyst: what is this sheet FOR, and which line styles
-    matter for takeoff? Provider by available key, cheapest-first:
-    XAI_API_KEY (Grok) > GROQ_API_KEY > ANTHROPIC_API_KEY.
+# ---------------------------------------------------------------------------
+# Analyze: an assistant whose hit rate is known.
+#
+# This endpoint reads a sheet with a vision model. It was OFF until
+# 2026-08-23 for a reason that has not gone away: its output re-ticks and
+# re-labels a takeoff, and until we had ground truth there was nothing to
+# score it against. There now is (ground-truth/*.json, 33 pages), so every
+# field below carries the hit rate it actually earned, measured over three
+# runs on those pages. The numbers live in _AI_GRADES and travel with the
+# payload so the UI can label each suggestion with its own score instead of
+# presenting all of them as equally trustworthy.
+#
+# Two rules that are not negotiable regardless of any future score:
+#   * nothing here writes the takeoff. Every proposal is shown, attributed
+#     to the model, accepted one at a time and individually reversible.
+#   * nothing here is evidence for the confidence banner. A model that
+#     agrees with the engine is not a second independent source - they can
+#     read the same printed caption and be wrong together.
+#
+# _AI_GRADES fields: n = scored opportunities, hit = hit rate over the three
+# runs, stable = share of items identical across all three runs, verdict =
+# what the UI is allowed to do with it. Provenance for every number is in
+# out/verify/2026-08-23/aiscored/SCORES.md.
+_AI_GRADES: dict = {
+    "_measured": "33 ground-truth pages x 3 runs (99 calls, 98 answered), "
+                 "xai:grok-4-fast-reasoning, 2026-08-23. Full working in "
+                 "out/verify/2026-08-23/aiscored/SCORES.md.",
+    "sheet_id": {
+        "hit": "18/18 replies right on the 6 pages that carry a "
+               "human-confirmed sheet number",
+        "stable": "identical in all 3 runs on 32/32 pages",
+        "use": "show"},
+    "sheet_title": {
+        "hit": "24/33 replies right on the 11 pages that carry a "
+               "human-confirmed title; 8/11 pages right in every run and "
+               "the other 3 wrong in every run",
+        "stable": "identical in all 3 runs on 24/32 pages",
+        "use": "show"},
+    "scale_text": {
+        "hit": "27 of the 31 times it answered on a page whose printed "
+               "caption we read by eye; 4 wrong, all four on the scanned "
+               "aqua-vista set. Where the engine already has a scale it "
+               "contradicted it 0 times in 44 replies and abstained 16",
+        "stable": "identical in all 3 runs on 30/32 pages",
+        "use": "show, never apply"},
+    "focus": {
+        "hit": "15% of its focus rows on a layered sheet (29/190) name a "
+               "HATCH layer, whose stroke length is not a quantity. One "
+               "click on all of them keeps a median 18% of the page's "
+               "drawn length and drops the rest",
+        "stable": "same set in all 3 runs on 8/32 pages; pairwise Jaccard "
+                  "0.68 mean, 0.00 worst",
+        "use": "one row at a time"},
+    "ignore": {
+        "hit": "17% of its ignore rows on a layered sheet (248/1471) drop "
+               "a WALL / FTNG / SLAB / CURB / PIPE layer - real work",
+        "stable": "same set in all 3 runs on 9/32 pages",
+        "use": "one row at a time"},
+    "label": {
+        "hit": "not scorable: on layered sheets the CAD layer name is "
+               "already in the prompt (it repeats it 47% of the time), and "
+               "the 57 focus rows with no layer have no truth file",
+        "stable": "50% - the label matched on 28 of the 56 style_ids that "
+                  "all three runs focused",
+        "use": "one row at a time"},
+    "page_modes": {
+        "hit": "earthwork and trench never flickered between runs (1 and 2 "
+               "pages); count flickered on 6/32 pages and objects on 5/32",
+        "stable": "identical in all 3 runs on 21/32 pages",
+        "use": "earthwork and trench chips only"},
+    "confidence": {
+        "hit": "NOT calibrated - 'high' was right on 10/13 title-block "
+               "fields and 'medium' on 32/38, i.e. the wrong way round",
+        "stable": "identical in all 3 runs on 18/32 pages",
+        "use": "hidden"},
+}
 
-    The verdict caches for THIS SERVER SESSION only (re-opening the banner
-    should not re-bill the model), and never on disk: a pinned verdict that
-    survives restarts is blueprint memory a fresh seat would not have, and
-    memory was removed 2026-08-20 for report consistency. fresh=1 re-reads
-    the sheet."""
-    import base64
-    import os
 
-    _ck = (job_id, page)
-    if not fresh and _ck in _AI_SESSION_CACHE:
-        return JSONResponse(_AI_SESSION_CACHE[_ck])
+def _ai_norm_name(s) -> str:
+    """Loose comparison key for two names of the same thing: case, spaces,
+    punctuation and CAD's abbreviation dashes all dropped."""
+    return "".join(ch for ch in str(s or "").lower() if ch.isalnum())
 
-    import requests as _rq
 
-    provider = None
-    if os.environ.get("XAI_API_KEY"):
-        provider = ("xai", "https://api.x.ai/v1", os.environ["XAI_API_KEY"],
-                    os.environ.get("TAKEOFF_LLM_MODEL", "grok-4-fast-non-reasoning"))
-    elif os.environ.get("GROQ_API_KEY"):
-        provider = ("groq", "https://api.groq.com/openai/v1",
-                    os.environ["GROQ_API_KEY"],
-                    os.environ.get("TAKEOFF_LLM_MODEL",
-                                   "meta-llama/llama-4-scout-17b-16e-instruct"))
-    elif os.environ.get("ANTHROPIC_API_KEY"):
-        provider = ("anthropic", None, os.environ["ANTHROPIC_API_KEY"],
-                    os.environ.get("TAKEOFF_LLM_MODEL", "claude-haiku-4-5-20251001"))
-    if provider is None:
-        raise HTTPException(
-            503, "No LLM key set. Export XAI_API_KEY (Grok), GROQ_API_KEY, "
-                 "or ANTHROPIC_API_KEY on the detection service.")
+def _ai_same_name(a, b) -> bool:
+    """True when the model's label is the CAD layer name back again. Not a
+    quality judgement - an echo can be the right answer - but the UI must
+    not sell it as the model having read the drawing."""
+    na, nb = _ai_norm_name(a), _ai_norm_name(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
 
-    job = JOBS.get(job_id) or _404()
-    doc = pymupdf.open(job["path"])
-    pg = doc[page]
-    scale = 1400 / max(pg.rect.width, pg.rect.height)
-    pix = pg.get_pixmap(matrix=pymupdf.Matrix(scale * 2, scale * 2))
-    img_b64 = base64.standard_b64encode(pix.tobytes("jpeg")).decode()
-    text = pg.get_text()[:3000]
 
-    styles_ctx = "(run Detect first - no styles known yet)"
-    legend_ctx = ""
-    known_ids: set = set()
-    rf = _job_dir(job_id) / f"p{page}_result.json"
-    if rf.exists():
-        res = json.loads(rf.read_text())
-        det = res.get("scale") or {}
-        ft_per_in = det.get("ft_per_paper_inch")
-        rows = []
-        for st in res["styles"][:28]:
-            known_ids.add(int(st["style_id"]))
-            col = st.get("color")
-            hexcol = ("#%02x%02x%02x" % tuple(int(c * 255) for c in col)) \
-                if col else "n/a"
-            qty = (f'{st["length_pt"] / 72.0 * ft_per_in:,.0f} ft'
-                   if ft_per_in else f'{st["length_pt"]:,.0f} pt')
-            rows.append(
-                f'- style_id {st["style_id"]}: class={st["class"]}, '
-                f'{st["n"]} lines, {qty}, colour {hexcol}, '
-                f'width {st.get("width")}, pattern "{st.get("signature")}", '
-                f'current label "{st["suggested_label"]}"')
-        if rows:
-            styles_ctx = "\n".join(rows)
-        if res.get("legend"):
-            legend_ctx = ("\n\nLegend rows the detector already read off this "
-                          "sheet:\n" + "\n".join(
-                              f'- "{e.get("label")}" -> style_id '
-                              f'{e.get("sample_style")}'
-                              for e in res["legend"]))
+def _ai_prompt(text: str, styles_ctx: str, legend_ctx: str,
+               variant: str = "graded") -> str:
+    """The question we put to the model.
 
-    prompt = (
+    variant="shipped" reproduces the prompt as it stood at c344420, kept so
+    the added asks (sheet id / title / scale) can be shown not to have moved
+    the focus and ignore hit rates. Set TAKEOFF_AI_PROMPT_VARIANT=shipped on
+    a scratch instance to measure that arm; the service never sets it.
+    """
+    head = (
         "You are helping a construction estimator do a quantity takeoff from "
         "this plan sheet. Decide WHAT THIS SHEET IS FOR, then which of the "
         "detected line styles an estimator should actually measure on it.\n\n"
@@ -1196,37 +1343,207 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
         'legend defined on the sheet itself\n'
         '  page_modes: array from ["lines","objects","earthwork","trench",'
         '"count"] - the measurement modes this sheet needs\n'
-        '  confidence: "high" | "medium" | "low"\n'
-        'Keep every "why" under 12 words so the reply is not truncated.'
-    )
+        '  confidence: "high" | "medium" | "low"\n')
+    if variant == "shipped":
+        return head + ('Keep every "why" under 12 words so the reply is not '
+                       'truncated.')
+    # The title block and the scale caption are things the sheet ASSERTS
+    # about itself, so they are cheap to ask for and cheap to check. Both
+    # are scored; see _AI_GRADES for what the UI does with them.
+    return head + (
+        '  sheet_id: the sheet number printed in the title block, e.g. '
+        '"A-2.00" or "C4.3", or null if you cannot read one\n'
+        '  sheet_title: the sheet title printed in the title block, copied '
+        'exactly, or null\n'
+        '  scale_text: the drawing scale exactly as printed on the sheet, '
+        'e.g. "1/4\\" = 1\'-0\\"" or "1\\"=20\'", or null if no scale is '
+        'printed. If several are printed, give the one for the main plan '
+        'view. Never compute or guess one: null is the right answer when '
+        'the sheet does not say.\n'
+        'Copy sheet_id, sheet_title and scale_text off the drawing '
+        'character for character - do not tidy, expand or normalise them.\n'
+        'Keep every "why" under 12 words so the reply is not truncated.')
+
+
+@app.post("/api/job/{job_id}/page/{page}/analyze")
+def analyze_page(job_id: str, page: int, fresh: bool = False):
+    """LLM page analyst: what is this sheet FOR, and which line styles
+    matter for takeoff? Provider by available key, cheapest-first:
+    XAI_API_KEY (Grok) > GROQ_API_KEY > ANTHROPIC_API_KEY.
+
+    The verdict caches for THIS SERVER SESSION only (re-opening the banner
+    should not re-bill the model), and never on disk: a pinned verdict that
+    survives restarts is blueprint memory a fresh seat would not have, and
+    memory was removed 2026-08-20 for report consistency. fresh=1 re-reads
+    the sheet."""
+    import base64
+    import os
+
+    t_start = time.time()
+    _ck = (job_id, page)
+    if not fresh and _ck in _AI_SESSION_CACHE:
+        return JSONResponse(_AI_SESSION_CACHE[_ck])
+
+    # A missing dependency used to surface as a bare 500 with the traceback
+    # only in the server log, which is how this endpoint spent two weeks
+    # "broken" for an install reason. Name the package.
+    try:
+        import requests as _rq
+    except ImportError:
+        raise HTTPException(
+            503, "Analyze needs the 'requests' package on the detection "
+                 "service (pip install -r requirements.txt).")
+
+    provider = None
+    if os.environ.get("XAI_API_KEY"):
+        provider = ("xai", "https://api.x.ai/v1", os.environ["XAI_API_KEY"],
+                    os.environ.get("TAKEOFF_LLM_MODEL", "grok-4-fast-non-reasoning"))
+    elif os.environ.get("GROQ_API_KEY"):
+        provider = ("groq", "https://api.groq.com/openai/v1",
+                    os.environ["GROQ_API_KEY"],
+                    os.environ.get("TAKEOFF_LLM_MODEL",
+                                   "meta-llama/llama-4-scout-17b-16e-instruct"))
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        provider = ("anthropic", None, os.environ["ANTHROPIC_API_KEY"],
+                    os.environ.get("TAKEOFF_LLM_MODEL", "claude-haiku-4-5-20251001"))
+    if provider is None:
+        raise HTTPException(
+            503, "Analyze has no LLM key. Set XAI_API_KEY (Grok), "
+                 "GROQ_API_KEY or ANTHROPIC_API_KEY in the detection "
+                 "service's .env and restart it; nothing else on this page "
+                 "needs a key.")
+
+    job = JOBS.get(job_id) or _404()
+    doc = pymupdf.open(job["path"])
+    pg = doc[page]
+    scale = 1400 / max(pg.rect.width, pg.rect.height)
+    pix = pg.get_pixmap(matrix=pymupdf.Matrix(scale * 2, scale * 2))
+    img_b64 = base64.standard_b64encode(pix.tobytes("jpeg")).decode()
+    img_px = [pix.width, pix.height]
+    text = pg.get_text()[:3000]
+
+    styles_ctx = "(run Detect first - no styles known yet)"
+    legend_ctx = ""
+    known_ids: set = set()
+    layer_of: dict = {}
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if rf.exists():
+        res = json.loads(rf.read_text())
+        det = res.get("scale") or {}
+        ft_per_in = det.get("ft_per_paper_inch")
+        rows = []
+        for st in res["styles"][:28]:
+            known_ids.add(int(st["style_id"]))
+            layer_of[int(st["style_id"])] = st.get("layer") or ""
+            col = st.get("color")
+            hexcol = ("#%02x%02x%02x" % tuple(int(c * 255) for c in col)) \
+                if col else "n/a"
+            qty = (f'{st["length_pt"] / 72.0 * ft_per_in:,.0f} ft'
+                   if ft_per_in else f'{st["length_pt"]:,.0f} pt')
+            rows.append(
+                f'- style_id {st["style_id"]}: class={st["class"]}, '
+                f'{st["n"]} lines, {qty}, colour {hexcol}, '
+                f'width {st.get("width")}, pattern "{st.get("signature")}", '
+                f'current label "{st["suggested_label"]}"')
+        if rows:
+            styles_ctx = "\n".join(rows)
+        if res.get("legend"):
+            legend_ctx = ("\n\nLegend rows the detector already read off this "
+                          "sheet:\n" + "\n".join(
+                              f'- "{e.get("label")}" -> style_id '
+                              f'{e.get("sample_style")}'
+                              for e in res["legend"]))
+
+    prompt = _ai_prompt(text, styles_ctx, legend_ctx,
+                        os.environ.get("TAKEOFF_AI_PROMPT_VARIANT", "graded"))
 
     name, base, key, model = provider
+    usage = {}
+    t_model = time.time()
+    # Every failure mode below reaches the operator as its own sentence.
+    # "AI analysis failed (500)" tells nobody whether to retry, top up a
+    # balance, or fix an install, and this endpoint has now been each of
+    # those three.
     if name == "anthropic":
         import anthropic
 
-        client = anthropic.Anthropic()
-        msg = client.messages.create(
-            model=model, max_tokens=2000, temperature=0,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64",
-                 "media_type": "image/jpeg", "data": img_b64}},
-                {"type": "text", "text": prompt}]}])
+        try:
+            client = anthropic.Anthropic()
+            msg = client.messages.create(
+                model=model, max_tokens=2000, temperature=0,
+                messages=[{"role": "user", "content": [
+                    {"type": "image", "source": {"type": "base64",
+                     "media_type": "image/jpeg", "data": img_b64}},
+                    {"type": "text", "text": prompt}]}])
+        except Exception as e:  # anthropic raises its own typed errors
+            raise HTTPException(
+                502, f"{name} ({model}) refused the request: "
+                     f"{type(e).__name__}: {str(e)[:200]}")
         raw = msg.content[0].text
+        u = getattr(msg, "usage", None)
+        if u is not None:
+            usage = {"prompt_tokens": getattr(u, "input_tokens", None),
+                     "completion_tokens": getattr(u, "output_tokens", None)}
     else:
-        r = _rq.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}",
-                     "Content-Type": "application/json"},
-            json={"model": model, "max_tokens": 2000, "temperature": 0,
-                  "messages": [{"role": "user", "content": [
-                      {"type": "image_url", "image_url": {
-                          "url": f"data:image/jpeg;base64,{img_b64}"}},
-                      {"type": "text", "text": prompt}]}]},
-            timeout=90)
+        try:
+            r = _rq.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json"},
+                json={"model": model, "max_tokens": 2000, "temperature": 0,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": f"data:image/jpeg;base64,{img_b64}"}},
+                          {"type": "text", "text": prompt}]}]},
+                timeout=90)
+        except _rq.exceptions.Timeout:
+            raise HTTPException(
+                504, f"{name} ({model}) did not answer within 90s. The "
+                     f"sheet is unchanged - press Analyze again to retry.")
+        except _rq.exceptions.RequestException as e:
+            raise HTTPException(
+                502, f"Cannot reach {name} at {base}: "
+                     f"{type(e).__name__}. Check the network, then retry.")
         if not r.ok:
-            raise HTTPException(502, f"{name} API error {r.status_code}: "
-                                     f"{r.text[:200]}")
-        raw = r.json()["choices"][0]["message"]["content"]
+            body = (r.text or "")[:200]
+            # xAI answers a wrong key with 400 invalid-argument, not 401, so
+            # the status alone does not identify this case. Measured against
+            # a deliberately wrong key on 2026-08-23.
+            bad_key = ("api key" in body.lower()
+                       or "invalid-argument" in body.lower())
+            if r.status_code in (401, 403) or (
+                    r.status_code == 400 and bad_key):
+                msg_ = (f"{name} rejected the API key (HTTP {r.status_code}). "
+                        f"The key in the service's .env is wrong, revoked or "
+                        f"has no access to {model}.")
+            elif r.status_code == 429:
+                ra = r.headers.get("retry-after")
+                msg_ = (f"{name} rate-limited this request (HTTP 429)"
+                        + (f"; retry after {ra}s. " if ra else ". ")
+                        + "Nothing was changed on the sheet.")
+            elif r.status_code == 404:
+                msg_ = (f"{name} has no model called '{model}' (HTTP 404). "
+                        f"Fix TAKEOFF_LLM_MODEL in the service's .env.")
+            elif r.status_code in (402,):
+                msg_ = (f"{name} declined for billing (HTTP 402): {body}")
+            elif 500 <= r.status_code < 600:
+                msg_ = (f"{name} is failing on its side (HTTP "
+                        f"{r.status_code}): {body}. Retry shortly.")
+            else:
+                msg_ = f"{name} API error {r.status_code}: {body}"
+            raise HTTPException(502, msg_)
+        try:
+            jr = r.json()
+            raw = jr["choices"][0]["message"]["content"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise HTTPException(
+                502, f"{name} returned a reply this service could not read: "
+                     f"{(r.text or '')[:200]}")
+        u = jr.get("usage") or {}
+        usage = {"prompt_tokens": u.get("prompt_tokens"),
+                 "completion_tokens": u.get("completion_tokens"),
+                 "total_tokens": u.get("total_tokens")}
+    model_ms = int((time.time() - t_model) * 1000)
 
     parsed = None
     try:
@@ -1243,8 +1560,11 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
             except Exception:
                 continue
     if not isinstance(parsed, dict):
-        parsed = {"purpose": "The model did not return usable JSON.",
-                  "_unparsed": raw[:300]}
+        # Not a 500 and not a silent shrug: say what came back instead.
+        raise HTTPException(
+            502, f"{name} ({model}) replied with something that is not JSON, "
+                 f"so there is nothing to show. First 200 characters: "
+                 f"{str(raw)[:200]}")
 
     # The UI turns focus/ignore into checkbox state, so a hallucinated
     # style_id would hide real linework from the takeoff. Keep only ids the
@@ -1274,6 +1594,14 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
                     row[k] = str(it[k])[:120]
             if str(it.get("measure", "")).lower() == "object":
                 row["measure"] = "object"
+            # A label that just repeats the CAD layer we already handed the
+            # model in the prompt is an echo, not a reading. The UI says so,
+            # because "the AI named this" is a much stronger claim than the
+            # model earned on those rows.
+            lay = (layer_of.get(sid) or "").split("|")[-1]
+            if lay:
+                row["layer"] = lay
+                row["echo"] = _ai_same_name(row.get("label"), lay)
             out.append(row)
         return out, dropped
 
@@ -1287,9 +1615,18 @@ def analyze_page(job_id: str, page: int, fresh: bool = False):
     ignore = [i for i in ignore if i["style_id"] not in seen]  # focus wins
     parsed["focus"] = focus
     parsed["ignore"] = ignore
+    for k in ("sheet_id", "sheet_title", "scale_text"):
+        v = parsed.get(k)
+        parsed[k] = str(v)[:120] if isinstance(v, str) and v.strip() else None
     parsed["_invalid_style_ids"] = drop_f + drop_i
     parsed["_known_style_ids"] = len(known_ids)
+    parsed["_layered_style_ids"] = sum(1 for v in layer_of.values() if v)
     parsed["_provider"] = f"{name}:{model}"
+    parsed["_usage"] = usage
+    parsed["_ms"] = {"model": model_ms,
+                     "total": int((time.time() - t_start) * 1000)}
+    parsed["_img_px"] = img_px
+    parsed["_grades"] = _AI_GRADES
     _AI_SESSION_CACHE[_ck] = parsed
     return JSONResponse(parsed)
 
@@ -1492,10 +1829,21 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     if not rf.exists():
         raise HTTPException(404, "run detect first")
     res = json.loads(rf.read_text())
-    det = res.get("scale")
+    # _page_scale, NOT res["scale"]. The reviewer can type a scale or pick a
+    # different printed caption, and until 2026-08-23 these two volume routes
+    # read the ENGINE's number straight out of the cached result and ignored
+    # them both. Measured on Barn Civil engine page 2 = printed sheet 3 (C3.0):
+    # type 1" = 60', watch every length on screen double, press Calculate, and
+    # the CY came back computed at the engine's 30 ft/in - then priced,
+    # exported and printed. Screen and deliverable disagreeing with nothing
+    # saying so is the harm this whole sidecar exists to prevent. It also made
+    # these two the only places left that answer "calibrate first" on a page
+    # the operator HAS calibrated by hand.
+    det = _page_scale(job_id, page, res)
     if not det:
-        raise HTTPException(400, "no scale on this page - calibrate first, "
-                                 "volumes need real-world units")
+        raise HTTPException(400, "no scale on this page - type one into the "
+                                 "scale box in the sheet header first; volumes "
+                                 "need real-world units")
     ft_per_pt = det["ft_per_paper_inch"] / 72.0
     pts_by_id = {c["chain_id"]: _np.asarray(c["points"], float)
                  for c in res["chains"]}
@@ -2123,10 +2471,21 @@ def structure_calc(job_id: str, page: int, body: StructureBody):
     if not rf.exists():
         raise HTTPException(404, "run detect first")
     res = json.loads(rf.read_text())
-    det = res.get("scale")
+    # _page_scale, NOT res["scale"]. The reviewer can type a scale or pick a
+    # different printed caption, and until 2026-08-23 these two volume routes
+    # read the ENGINE's number straight out of the cached result and ignored
+    # them both. Measured on Barn Civil engine page 2 = printed sheet 3 (C3.0):
+    # type 1" = 60', watch every length on screen double, press Calculate, and
+    # the CY came back computed at the engine's 30 ft/in - then priced,
+    # exported and printed. Screen and deliverable disagreeing with nothing
+    # saying so is the harm this whole sidecar exists to prevent. It also made
+    # these two the only places left that answer "calibrate first" on a page
+    # the operator HAS calibrated by hand.
+    det = _page_scale(job_id, page, res)
     if not det:
-        raise HTTPException(400, "no scale on this page - calibrate first, "
-                                 "volumes need real-world units")
+        raise HTTPException(400, "no scale on this page - type one into the "
+                                 "scale box in the sheet header first; volumes "
+                                 "need real-world units")
     ft_per_pt = det["ft_per_paper_inch"] / 72.0
     if not body.structures:
         raise HTTPException(400, "no structures given")
