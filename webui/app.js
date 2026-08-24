@@ -1426,8 +1426,7 @@ function renderStyles() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
-    cb.onclick = (e) => { e.stopPropagation(); state.include.set(s.style_id, cb.checked);
-      store.setItem(docKey() + "::inc::" + styleFp(s), cb.checked ? "1" : "0");
+    cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -1849,7 +1848,7 @@ function renderLegend() {
     chip.onmouseleave = () => { state.hot = null; draw(); };
     chip.onclick = () => {
       state.labels.set(sid, e.label + " (legend)");
-      state.include.set(sid, true);
+      setInclude(sid, true);
       renderStyles(); renderLegend(); renderItemized(); draw();
     };
     box.appendChild(chip);
@@ -1862,8 +1861,8 @@ $("styleSearch").oninput = () => renderStyles();
 // in a field advertising "water, dash, solid". Set here rather than in
 // index.html so the promise and the filter that keeps it live in one file.
 $("styleSearch").placeholder = "Filter line types… (water, dash, solid, A-WALL)";
-$("allBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, true); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
-$("noneBtn").onclick = () => { for (const k of state.include.keys()) state.include.set(k, false); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
+$("allBtn").onclick = () => { for (const k of [...state.include.keys()]) setInclude(k, true); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
+$("noneBtn").onclick = () => { for (const k of [...state.include.keys()]) setInclude(k, false); renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
 // ---------- color bulk-toggle chips ----------
 function renderChips() {
@@ -1883,7 +1882,7 @@ function renderChips() {
     chip.style.background = g.css;
     chip.title = `${g.sids.length} style(s) — click to ${anyOn ? "hide" : "show"} all of this color`;
     chip.onclick = () => {
-      for (const sid of g.sids) state.include.set(sid, !anyOn);
+      for (const sid of g.sids) setInclude(sid, !anyOn);
       renderStyles(); renderChips(); renderItemized(); draw();
     };
     box.appendChild(chip);
@@ -1920,6 +1919,21 @@ function docKey() {
 function styleFp(st) {
   return [st.class, Math.round((st.width || 0) * 2) / 2,
           cssColor(st.color), st.signature].join("|");
+}
+// Every write to state.include goes through here. The individual row
+// checkbox persisted its choice and NOTHING ELSE DID, so `none` + a hand
+// pick, then navigating away and back, silently restored every style the
+// operator had turned off - memApply() reads the store and the store still
+// said ON. Measured live on Barn Civil C4.3: an approved 4,927.3 ft became
+// 44,352.9 ft on re-approve, 9.00x, same button, no warning. Shape B from
+// CLAUDE.md section 5, in the UI: one fact, five writers, one of them
+// keeping the record. Route new writers through here too.
+function setInclude(sid, on) {
+  state.include.set(sid, !!on);
+  const st = state.result && state.result.styles.find(x => x.style_id === sid);
+  if (!st) return;                       // nothing to key the record on
+  try { store.setItem(docKey() + "::inc::" + styleFp(st), on ? "1" : "0"); }
+  catch (e) { /* private mode: the session still honours the click */ }
 }
 function memSave(st) {
   const label = (state.labels.get(st.style_id) || "").trim();
@@ -3443,7 +3457,7 @@ function applyAiFocus(focus) {
     labels: new Map(state.labels),
   };
   const ids = new Set(focus.map(f => f.style_id));
-  for (const k of state.include.keys()) state.include.set(k, ids.has(k));
+  for (const k of [...state.include.keys()]) setInclude(k, ids.has(k));
   for (const f of focus) {
     if (f.label) state.labels.set(f.style_id, f.label);
   }
