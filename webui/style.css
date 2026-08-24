@@ -66,7 +66,16 @@ aside { width: 330px; background: var(--panel); border-right: 1px solid var(--li
 .badge.dash3 { background: #453518; color: #f0c078; }
 .badge.dash-text { background: #3b2347; color: #d9a1ef; }
 .badge.solid { background: #1e3b2b; color: #7fd6a4; }
-.approve-bar { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: center; position: sticky; bottom: 0; background: var(--panel); z-index: 3; }
+/* The sidebar is a fixed 330px, so this bar has about 306px of usable width.
+   The tally is a nowrap monospace sentence that on a real sheet reads
+   "171.0k ft billed - 178.0k ft measured - union 177.5k ft - $180000", and
+   neither button can shrink - so the row overflowed and pushed
+   "Approve & export", the most important control in the app, off the right
+   edge where it could not be clicked. It wraps now, and the tally gets its
+   own line rather than competing with the buttons for one. */
+.approve-bar { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; position: sticky; bottom: 0; background: var(--panel); z-index: 3; }
+.approve-bar .tally { flex: 1 0 100%; }
+.approve-bar button { flex: 0 0 auto; }
 #approveBtn { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 700; flex: 1; }
 #dlLink { color: var(--accent); font-size: 12px; }
 
@@ -124,7 +133,7 @@ canvas#view.panning { cursor: grabbing; }
 .item-row input { width: 100%; padding: 2px 4px; font-size: 11px; }
 .item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .item-row.total { border-top: 1px solid var(--line); font-weight: 700; }
-.links-bar { display: flex; gap: 14px; padding: 0 12px 10px; }
+.links-bar { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 12px 10px; }
 .links-bar a { color: var(--accent); font-size: 12px; }
 /* one accent: calculator/AI entry buttons are quiet chrome, not a rainbow */
 .ai-banner { background: var(--panel); border-bottom: 1px solid var(--line);
@@ -362,7 +371,8 @@ canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
   background: var(--chip); border: 1px solid var(--line);
   color: var(--dim); font-size: 10.5px; line-height: 1.4; }
 .tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
-  color: var(--accent); white-space: nowrap; }
+  color: var(--accent); white-space: normal; line-height: 1.5;
+  overflow-wrap: anywhere; }
 
 /* ---------- on-sheet mini legend ---------- */
 .mini-legend { position: absolute; left: 64px; bottom: 12px; z-index: 4;
