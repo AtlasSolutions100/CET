@@ -911,8 +911,14 @@ class ApproveBody(BaseModel):
     # grouped in the review UI; carried through to export/report rows
     trades: dict[str, str] = {}
     # label -> number of discrete objects, for styles the reviewer measures
-    # as countable pieces (shear-wall segments, pads) instead of footage
-    object_counts: dict[str, int] = {}
+    # as countable pieces (shear-wall segments, pads) instead of footage.
+    # float, not int: the quantity box is an <input type="number"> and
+    # nothing stops a reviewer typing 3.5 into it. Declared int, pydantic
+    # answered a 422 whose detail is a LIST OF DICTS, which the review UI
+    # rendered as the string "[object Object]" - so a whole approve failed
+    # and the operator was told nothing at all. Half a pad is a strange
+    # quantity, but refusing to record it is not this field's job.
+    object_counts: dict[str, float] = {}
     # chains created by review-UI edits (split / extend): full geometry,
     # replacing originals the client puts in excluded_chain_ids
     added_chains: list[dict] = []

@@ -5888,7 +5888,14 @@ $("approveBtn").onclick = async () => {
     let why = `approve failed (${r.status})`;
     try {
       const e = await r.json();
-      if (e && e.detail) why = String(e.detail);
+      // FastAPI's validation errors arrive as a LIST OF OBJECTS, and
+      // String([{...}]) is "[object Object]" - which is what an operator was
+      // shown when an approve was rejected. Say which field and why.
+      if (e && Array.isArray(e.detail))
+        why = "approve rejected: " + e.detail.map(d =>
+          (Array.isArray(d.loc) ? d.loc.filter(x => x !== "body").join(".") + ": " : "")
+          + (d.msg || JSON.stringify(d))).join("; ");
+      else if (e && e.detail) why = String(e.detail);
     } catch (err) { /* not JSON */ }
     return setStatus(why, "err");
   }
