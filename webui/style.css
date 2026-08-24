@@ -713,7 +713,8 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .mem-btn:hover { color: var(--text); border-color: var(--accent); }
 .mem-btn.warn { color: #e2b04a; border-color: #7a5a1c; }
 
-.mem-menu { position: fixed; z-index: 60; width: 340px;
+.mem-menu { position: fixed; z-index: 60; width: min(340px, calc(100vw - 16px));
+            max-height: calc(100vh - 16px); overflow-y: auto;
             background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; padding: 6px;
             box-shadow: 0 12px 34px rgba(0,0,0,.45); }

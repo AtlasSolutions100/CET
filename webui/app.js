@@ -3113,10 +3113,29 @@ $("memBtn").onclick = (e) => {
       location.reload();
     }, true));
 
-  const r = $("memBtn").getBoundingClientRect();
-  m.style.top = Math.round(r.bottom + 6) + "px";
-  m.style.right = Math.round(window.innerWidth - r.right) + "px";
+  // Anchor under the button, then CLAMP into the viewport. Right-anchoring
+  // alone put the menu at x = -202 on a 283 px window: the header wraps, which
+  // drops the button to the left edge, and a 340 px panel hung off the screen
+  // where it could not be clicked at all. Caught by driving the live app -
+  // every static check passed, because nothing static knows how wide the
+  // window is. Measure first (the panel is in the DOM but not yet painted),
+  // then place.
+  m.style.visibility = "hidden";
+  m.style.left = "0px";
   document.body.appendChild(m);
+  const r = $("memBtn").getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight, pad = 8;
+  let left = r.right - mw;                                  // prefer right-aligned
+  left = Math.min(left, window.innerWidth - mw - pad);
+  left = Math.max(pad, left);
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - pad)                  // no room below
+    top = Math.max(pad, r.top - 6 - mh);                    // flip above
+  if (top + mh > window.innerHeight - pad)                  // still no room
+    top = Math.max(pad, window.innerHeight - mh - pad);
+  m.style.left = Math.round(left) + "px";
+  m.style.top = Math.round(top) + "px";
+  m.style.visibility = "";
 };
 document.addEventListener("click", () => {
   const m = document.querySelector(".mem-menu");
