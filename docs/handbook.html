@@ -1,0 +1,806 @@
+<title>CORE Operator Handbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  --bg:      #f2f3ef;
+  --panel:   #ffffff;
+  --sunk:    #eef0ea;
+  --line:    #dfe2db;
+  --line-2:  #c8ccc2;
+  --ink:     #24272a;
+  --dim:     #626b64;
+  --accent:  #1f5c3e;
+  --accent-w:#eaf1ec;
+  --crit:    #a8291d;
+  --crit-w:  #fbecea;
+  --warn:    #7d5305;
+  --warn-w:  #fbf3e2;
+  --ok:      #1f5c3e;
+  --ok-w:    #e8f1ea;
+
+  --sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --measure: 68ch;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:      #131511;
+    --panel:   #1b1e1a;
+    --sunk:    #22261f;
+    --line:    #2e332c;
+    --line-2:  #444b40;
+    --ink:     #e8ebe6;
+    --dim:     #9aa49b;
+    --accent:  #4fb681;
+    --accent-w:#182c22;
+    --crit:    #ef8778;
+    --crit-w:  #2f1a17;
+    --warn:    #e8bc63;
+    --warn-w:  #2c2415;
+    --ok:      #4fb681;
+    --ok-w:    #182c22;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:      #131511;
+  --panel:   #1b1e1a;
+  --sunk:    #22261f;
+  --line:    #2e332c;
+  --line-2:  #444b40;
+  --ink:     #e8ebe6;
+  --dim:     #9aa49b;
+  --accent:  #4fb681;
+  --accent-w:#182c22;
+  --crit:    #ef8778;
+  --crit-w:  #2f1a17;
+  --warn:    #e8bc63;
+  --warn-w:  #2c2415;
+  --ok:      #4fb681;
+  --ok-w:    #182c22;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.shell { display: grid; grid-template-columns: 1fr; }
+@media (min-width: 1080px) {
+  .shell { grid-template-columns: 250px minmax(0, 1fr); gap: 0; }
+}
+
+/* ---------- table of contents ---------- */
+nav.toc { display: none; }
+@media (min-width: 1080px) {
+  nav.toc {
+    display: block;
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+    padding: 40px 20px 40px 32px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+  }
+}
+.toc-brand {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase;
+  color: var(--accent); margin-bottom: 22px;
+}
+.toc a {
+  display: block; padding: 4px 0;
+  font-size: 13.5px; line-height: 1.4;
+  color: var(--dim); text-decoration: none;
+  border-left: 2px solid transparent; padding-left: 10px; margin-left: -12px;
+}
+.toc a:hover { color: var(--ink); border-left-color: var(--line-2); }
+.toc .toc-sec {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--line-2);
+  margin: 20px 0 6px; padding-left: 10px;
+}
+
+main { padding: 40px 24px 120px; }
+@media (min-width: 1080px) { main { padding: 56px 56px 140px; } }
+.wrap { max-width: var(--measure); margin: 0 auto; }
+@media (min-width: 1080px) { .wrap { margin: 0; } }
+
+/* ---------- masthead ---------- */
+header.mast { margin-bottom: 46px; }
+.eyebrow {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
+  margin-bottom: 14px;
+}
+h1 {
+  font-size: clamp(30px, 5vw, 42px); line-height: 1.1; font-weight: 600;
+  letter-spacing: -0.022em; margin: 0 0 16px; text-wrap: balance;
+}
+.standfirst { font-size: 18.5px; line-height: 1.55; color: var(--dim); margin: 0; }
+.stamp {
+  margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: 11.5px; color: var(--dim);
+  display: flex; flex-wrap: wrap; gap: 6px 22px;
+}
+
+h2 {
+  font-size: 25px; font-weight: 600; letter-spacing: -0.015em;
+  margin: 58px 0 6px; padding-top: 22px; border-top: 1px solid var(--line);
+  text-wrap: balance; scroll-margin-top: 20px;
+}
+h2 .h2num {
+  font-family: var(--mono); font-size: 13px; font-weight: 500;
+  color: var(--accent); display: block; margin-bottom: 6px; letter-spacing: .1em;
+}
+h3 {
+  font-size: 17.5px; font-weight: 600; margin: 34px 0 8px;
+  letter-spacing: -0.008em; scroll-margin-top: 20px;
+}
+h4 {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+  margin: 26px 0 8px;
+}
+p { margin: 0 0 14px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+
+/* on-screen UI text is set in mono: it means "this is literally what you see" */
+.ui {
+  font-family: var(--mono); font-size: .875em; font-weight: 500;
+  background: var(--sunk); color: var(--ink);
+  padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.num { font-variant-numeric: tabular-nums; }
+
+ul, ol { margin: 0 0 16px; padding-left: 22px; }
+li { margin-bottom: 7px; }
+li::marker { color: var(--dim); }
+
+/* ---------- run steps ---------- */
+ol.run { list-style: none; padding: 0; counter-reset: run; margin: 22px 0 0; }
+ol.run > li {
+  counter-increment: run; position: relative;
+  padding: 0 0 26px 52px; margin: 0;
+  border-left: 1px solid var(--line);
+}
+ol.run > li:last-child { border-left-color: transparent; padding-bottom: 4px; }
+ol.run > li::before {
+  content: counter(run);
+  position: absolute; left: -15px; top: -2px;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--panel); border: 1px solid var(--line-2);
+  color: var(--accent);
+  font-family: var(--mono); font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+ol.run h3 { margin: 0 0 6px; font-size: 16.5px; }
+ol.run p { margin-bottom: 8px; }
+ol.run p:last-child { margin-bottom: 0; }
+
+/* ---------- callouts ---------- */
+.note {
+  border: 1px solid var(--line); border-left-width: 3px;
+  border-radius: var(--radius); background: var(--panel);
+  padding: 16px 18px; margin: 20px 0;
+}
+.note > :last-child { margin-bottom: 0; }
+.note .tag {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  letter-spacing: .13em; text-transform: uppercase;
+  display: block; margin-bottom: 7px;
+}
+.note.crit { border-left-color: var(--crit); background: var(--crit-w); }
+.note.crit .tag { color: var(--crit); }
+.note.warn { border-left-color: var(--warn); background: var(--warn-w); }
+.note.warn .tag { color: var(--warn); }
+.note.ok   { border-left-color: var(--ok);   background: var(--ok-w); }
+.note.ok   .tag { color: var(--ok); }
+.note.plain { border-left-color: var(--line-2); background: var(--sunk); }
+.note.plain .tag { color: var(--dim); }
+
+/* ---------- the "before you bid" entries ---------- */
+.risk {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: 18px 20px; margin: 0 0 14px;
+}
+.risk-h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.sev {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap; flex: none;
+}
+.sev.s1 { background: var(--crit); color: var(--panel); }
+.sev.s2 { background: var(--warn-w); color: var(--warn); border: 1px solid currentColor; }
+.risk-t { font-weight: 600; font-size: 16px; line-height: 1.4; }
+.risk p { margin: 0 0 10px; font-size: 15px; }
+.risk p:last-child { margin-bottom: 0; }
+.risk .check {
+  border-top: 1px dashed var(--line-2); padding-top: 10px; margin-top: 12px;
+  font-size: 14.5px;
+}
+.risk .check b {
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 3px;
+}
+
+/* ---------- tables ---------- */
+.tw { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--panel); }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--dim);
+  background: var(--sunk); white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: none; }
+td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .ui { white-space: nowrap; }
+
+/* ---------- misc ---------- */
+.lede { font-size: 17px; color: var(--dim); margin-bottom: 18px; }
+hr.soft { border: none; border-top: 1px solid var(--line); margin: 34px 0; }
+.kbd {
+  font-family: var(--mono); font-size: 12px; padding: 2px 7px;
+  border: 1px solid var(--line-2); border-bottom-width: 2px;
+  border-radius: 5px; background: var(--panel);
+}
+footer.end {
+  margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
+  font-size: 13.5px; color: var(--dim);
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="shell">
+
+<nav class="toc">
+  <div class="toc-brand">CORE Handbook</div>
+  <div class="toc-sec">Start</div>
+  <a href="#what">What this tool does</a>
+  <a href="#subtractive">The one thing to understand</a>
+  <a href="#start">Getting it running</a>
+  <div class="toc-sec">The run</div>
+  <a href="#run">A sheet, start to finish</a>
+  <a href="#scale">Scale</a>
+  <a href="#styles">Line styles</a>
+  <a href="#scope">Declaring your trades</a>
+  <a href="#itemized">The itemized takeoff</a>
+  <a href="#export">Approve &amp; export</a>
+  <div class="toc-sec">The extra tools</div>
+  <a href="#volumes">Earthwork, Trench, Structure</a>
+  <a href="#counting">Count, Callouts, Whole job</a>
+  <a href="#analyze">Analyze (AI)</a>
+  <a href="#memory">Saved work &amp; fresh demos</a>
+  <div class="toc-sec">Before you bid</div>
+  <a href="#risks">Known ways to get a wrong number</a>
+  <a href="#accuracy">What the accuracy numbers mean</a>
+  <a href="#trouble">Troubleshooting</a>
+</nav>
+
+<main>
+<div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">Operator Guide</div>
+  <h1>CORE Operator Handbook</h1>
+  <p class="standfirst">How to take a construction PDF from a cold open to a priced, exported takeoff — and exactly where to stop and check before the number reaches a bid.</p>
+  <div class="stamp">
+    <span>Written 24 Aug 2026</span>
+    <span>Build <span class="num">d4ee99b</span></span>
+    <span>Service on <span class="num">127.0.0.1:8100</span></span>
+  </div>
+</header>
+
+<!-- ============================================ -->
+<h2 id="what"><span class="h2num">01</span>What this tool does</h2>
+
+<p class="lede">It reads a construction drawing, traces the linework, works out the scale, and turns what it found into a priced list of line items you can export.</p>
+
+<p>It does not replace you. It replaces the part of the job where you trace every line by hand with a mouse. What you get instead is a sheet that arrives already measured, which you then <em>correct</em> — untick what isn't yours, fix the names, set the prices, and check the handful of things listed in <a href="#risks">Before you bid</a>.</p>
+
+<p>Everything the software decided is visible and reversible. Nothing is hidden behind a black box: every line type it found is a row you can see, tick, rename, or throw away.</p>
+
+<!-- ============================================ -->
+<h2 id="subtractive">The one thing to understand</h2>
+
+<div class="note crit">
+  <span class="tag">Read this first</span>
+  <p><strong>The sheet does not start empty. It starts full.</strong></p>
+  <p>The moment a page finishes detecting, most line types are <em>already ticked into your takeoff</em> and <em>already named</em>. Your job is subtractive: read what is already on, and turn off what isn't yours.</p>
+</div>
+
+<p>The exact rule the software uses to decide what starts ticked:</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Kind of line</th><th>Starts</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Any dashed or patterned line</td><td><strong>ON</strong></td><td>Dashed linework is almost always something being measured — pipe, contour, fence, easement.</td></tr>
+    <tr><td>Solid lines longer than <span class="num">500</span> points total</td><td><strong>ON</strong></td><td>Long solid runs are usually real work. Short ones are usually drawing furniture.</td></tr>
+    <tr><td>Solid lines shorter than that</td><td>off</td><td>Tick marks, arrowheads, leader stubs.</td></tr>
+    <tr><td>Near-white linework</td><td>off</td><td>Real ink, but almost always faint existing-conditions background. One click brings it in.</td></tr>
+    <tr><td>Hatch and texture fills</td><td>off</td><td>Hatch stroke length is not a quantity.</td></tr>
+    <tr><td>Text, labels and leaders</td><td>off</td><td>Leader lines used to get welded into wall tallies. They start off now.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Names work the same way. Every row arrives carrying a name the software proposed — read off the sheet's own legend where there is one, otherwise off the CAD layer name. That proposed name is what gets grouped, what gets a trade guessed for it, what a price attaches to, and <strong>what gets exported.</strong></p>
+
+<div class="note warn">
+  <span class="tag">Consequence</span>
+  <p>An operator who types nothing still approves a bid with software-proposed line-item names on it, filed under trades that were guessed from those names by keyword. <strong>Read the names before you approve.</strong> They are usually right — but "usually" is doing real work in that sentence.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="start"><span class="h2num">02</span>Getting it running</h2>
+
+<p>Two things have to be up. From the project folder:</p>
+
+<pre style="overflow-x:auto;background:var(--sunk);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;font-family:var(--mono);font-size:13.5px;margin:0 0 16px;">bash detection-engine/run-service.sh</pre>
+
+<p>Then open <span class="ui">http://127.0.0.1:8100</span> in a browser.</p>
+
+<div class="note plain">
+  <span class="tag">Use the numbers, not the name</span>
+  <p>Type <span class="ui">127.0.0.1</span>, not <span class="ui">localhost</span>. On this machine <span class="ui">localhost</span> resolves the slow way first and adds roughly two seconds to every single request, against a server that normally answers in about five milliseconds. If the app feels sluggish on every click, check the address bar before you check anything else.</p>
+</div>
+
+<h3>Opening a drawing</h3>
+<p>Either pick from the <span class="ui">Open sample plan…</span> dropdown, or paste a full path into the <span class="ui">…or paste a PDF path</span> box and press <span class="ui">Open</span>. The page dropdown then fills in, and <span class="ui">Detect lines</span> appears.</p>
+
+<p>Each page is labelled with what kind of drawing it is: <span class="ui">vector</span> means the PDF still carries real CAD geometry (the strongest case — layer names and exact coordinates survive), <span class="ui">hybrid</span> means a mix, and a scanned page means there is nothing but pixels and everything has to be read out of the image.</p>
+
+<!-- ============================================ -->
+<h2 id="run"><span class="h2num">03</span>A sheet, start to finish</h2>
+
+<p class="lede">This is the whole loop. Everything after this section is detail on one step of it.</p>
+
+<ol class="run">
+
+<li>
+<h3>Detect the page</h3>
+<p>Pick the page, press <span class="ui">Detect lines</span>. A first run on a big civil sheet takes roughly a minute and a half; after that the result is cached and comes back instantly.</p>
+<p>When it finishes, the status line tells you what it found — something like <span class="ui">1840 lines in 280 styles · scale 1 inch = 30 ft.</span></p>
+</li>
+
+<li>
+<h3>Check the scale before anything else</h3>
+<p>Every length on the sheet is multiplied by this one number, so a wrong scale is wrong everywhere at once and looks completely normal. See <a href="#scale">Scale</a>.</p>
+<p>If the chip says the printed caption <span class="ui">matches drawn bar</span>, two independent sources agree and you can move on. If it doesn't, stop and resolve it now.</p>
+</li>
+
+<li>
+<h3>Cull the line styles</h3>
+<p>Work down the <span class="ui">LINE STYLES</span> panel. Untick everything that isn't your scope. Use the filter box to find things fast, and click a colour chip to isolate a whole colour at once.</p>
+<p>If you only do certain trades, <a href="#scope">declare them</a> and let the app do the first pass of this for you.</p>
+</li>
+
+<li>
+<h3>Fix the names</h3>
+<p>The names came from the sheet's legend or its CAD layers. Correct any that are wrong or meaningless — the name is what groups rows together, what attracts a price, and what appears on the export.</p>
+<p>A name you type is remembered for that line type and comes back automatically on every other sheet in the document.</p>
+</li>
+
+<li>
+<h3>Switch anything you price by the piece to EA</h3>
+<p>The <span class="ui">LF</span> / <span class="ui">EA</span> button on each row decides whether that line type bills by footage or by count.</p>
+</li>
+
+<li>
+<h3>Run any calculators the sheet needs</h3>
+<p><span class="ui">Earthwork</span> for cut and fill, <span class="ui">Trench</span> for pipe excavation, <span class="ui">Structure</span> for building footprints, <span class="ui">Count</span> for repeated symbols. Each writes extra rows into the takeoff. Read <a href="#volumes">the volumes section</a> first — these are the numbers most likely to be badly wrong.</p>
+</li>
+
+<li>
+<h3>Check the itemized table and set prices</h3>
+<p>Check the trade each row landed under, check the quantities, then type your unit rates. The extended totals fill in as you go.</p>
+</li>
+
+<li>
+<h3>Approve &amp; export</h3>
+<p><span class="ui">CSV</span> pulls the sheet into a spreadsheet. <span class="ui">Approve &amp; export</span> sends it to the service and unlocks <span class="ui">Report PDF (all approved pages)</span>.</p>
+<div class="note crit" style="margin-top:12px">
+  <span class="tag">Do not skip</span>
+  <p>If you typed over any <em>footage</em> quantity by hand, <strong>the CSV is your deliverable, not the report PDF.</strong> See <a href="#r1">the first item in Before you bid</a>.</p>
+</div>
+</li>
+
+</ol>
+
+<!-- ============================================ -->
+<h2 id="scale"><span class="h2num">04</span>Scale</h2>
+
+<p class="lede">One number turns points on paper into feet on the ground. Get it wrong and every length, area and volume on the sheet is wrong by the same factor, silently.</p>
+
+<h3>How the software finds it</h3>
+<p>It reads the printed caption (<span class="ui">1" = 30'</span>, <span class="ui">SCALE: 1:20</span>, and so on), and separately measures any drawn scale bar by its tick marks. When both agree you get a chip reading <span class="ui">✓ matches drawn bar</span>.</p>
+
+<div class="note ok">
+  <span class="tag">The only real confirmation</span>
+  <p><span class="ui">✓ matches drawn bar</span> means two independent sources agreed. <strong>A green chip on its own does not mean verified</strong> — it can mean one printed caption was found and nothing contradicted it.</p>
+</div>
+
+<h3>When a sheet prints several scales</h3>
+<p>A details sheet may carry a dozen. The app lists every scale it found and lets you switch with one click. It ranks them by which one governs the most drawing area, but on a mixed sheet — a plan plus a strip of details — <strong>no single number is right for the whole page.</strong> Take the plan off at the plan's scale and the details separately.</p>
+
+<h3>Typing a scale by hand</h3>
+<p>You can type one in. Two things to know:</p>
+<ul>
+  <li>A bare number means <strong>feet per paper inch</strong>. Typing <span class="ui">20</span> gives you 1&nbsp;inch&nbsp;=&nbsp;20&nbsp;feet. Typing <span class="ui">0.25</span> gives you a quarter of a foot per inch, which is not quarter-inch scale.</li>
+  <li>The app refuses absurd values, but the band is wide — anything from about a tenth of a foot to a thousand feet per inch is accepted. <strong>A plausible typo is not caught.</strong> Typing <span class="ui">200</span> when you meant <span class="ui">20</span> sails straight through and makes the sheet ten times too big.</li>
+</ul>
+
+<div class="note warn">
+  <span class="tag">Not to scale</span>
+  <p>When a sheet prints <span class="ui">NOT TO SCALE</span>, the app reports it but does not enforce it. If that sheet also carries a scale caption somewhere, the app will read it, apply it, and price the sheet. On a genuinely NTS drawing, no length on it means anything.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="styles"><span class="h2num">05</span>Line styles</h2>
+
+<p class="lede">A "style" is one family of identical linework — same colour, same weight, same dash pattern, same CAD layer. Every line on the sheet that matches gets grouped into one row.</p>
+
+<p>Each row shows you the total footage, how many separate lines are in the family, its colour swatch, its CAD layer name where there is one, and the tick box that decides whether it counts.</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Control</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><span class="ui">Filter line types…</span></td><td>Narrows the list as you type — by name, by class, by colour word.</td></tr>
+    <tr><td>tick box</td><td>The gate on everything. Untick a style and its footage vanishes from the takeoff, the tally, the CSV and the export.</td></tr>
+    <tr><td>name box</td><td>Pre-filled from the legend or CAD layer. Whatever is here is the line item's identity everywhere downstream.</td></tr>
+    <tr><td><span class="ui">LF</span> / <span class="ui">EA</span></td><td>Bill this family by footage, or by counting pieces.</td></tr>
+    <tr><td><span class="ui">all</span> / <span class="ui">none</span></td><td>Tick or untick everything at once.</td></tr>
+    <tr><td>colour chips</td><td>Click a colour to toggle every style drawn in it — the fastest way to cull a whole discipline.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <span class="tag">Careful with "all"</span>
+  <p><span class="ui">all</span> switches on rows the detector deliberately left off — hatch, texture, text strokes — and rows the trade filter is hiding. It is a blunt instrument. If you use it, go back and re-cull.</p>
+</div>
+
+<h3>Names are remembered</h3>
+<p>Name a line type once and that name comes back on every sheet of the document, and on the same document next week. Prices and trade assignments go further: they are remembered <strong>across every document in this browser</strong>, keyed on the exact name text. See <a href="#memory">Saved work</a>.</p>
+
+<!-- ============================================ -->
+<h2 id="scope"><span class="h2num">06</span>Declaring your trades</h2>
+
+<p class="lede">If you only do wet utilities, you should not have to untick fencing on every sheet. The scope bar asks <span class="ui">Whose scope is this?</span> and lets you say.</p>
+
+<p>Pick your trades from the chips and the app unticks the line types that clearly belong to trades you didn't pick. Every row it set aside can be put back with one click, and <span class="ui">show everything</span> restores the whole sheet exactly.</p>
+
+<div class="note ok">
+  <span class="tag">Verified</span>
+  <p>A trade declaration is a <em>view</em>, not a decision about the sheet. Leaving the page and coming back, or pressing <span class="ui">show everything</span>, returns every last foot. This was measured on a real sheet: <span class="num">178.0k ft</span> across <span class="num">165</span> rows → declare two trades → <span class="num">64.9k</span> across <span class="num">126</span> → page away and back → <span class="num">64.9k</span> / <span class="num">126</span> → <span class="ui">show everything</span> → <span class="num">178.0k ft</span> / <span class="num">165</span> rows.</p>
+</div>
+
+<div class="note warn">
+  <span class="tag">Where it over-reaches</span>
+  <p>Trade matching is a plain text search inside the layer name, so a layer called <span class="ui">AGGREGATE</span> contains the letters <span class="ui">GATE</span> and can be pulled toward fencing. Scan what got set aside before you trust the reduced sheet — the bar tells you how many rows it touched.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="itemized"><span class="h2num">07</span>The itemized takeoff</h2>
+
+<p class="lede">The priced bill for one sheet. Every ticked line type is rolled up by name into one row, grouped under seven fixed trades, with a subtotal each and a total at the bottom.</p>
+
+<p>Five columns: the name, a count, the quantity, your unit rate, and the extended amount. Only <strong>two of those are detected</strong> — the count and the quantity. The name, the trade, the price and any quantity you retype are yours.</p>
+
+<h3>Overriding a quantity</h3>
+<p>Click a quantity box, type your number, press Tab. The box goes bold with a coloured border, and hovering it tells you what detected figure you replaced. Clear the box to go back.</p>
+
+<div class="note crit">
+  <span class="tag">The most important caveat in this handbook</span>
+  <p>A <strong>footage</strong> override you type changes the panel, the trade subtotals, the TOTAL and the CSV — and <strong>never reaches the exported JSON or the Report PDF</strong>, which are recomputed from the raw geometry. Same for cubic-yard rows from the calculators, and for symbol counts from the <span class="ui">Count</span> panel.</p>
+  <p>So the report can carry a different number from the one you corrected on screen, under the same line-item name, with no warning anywhere. <strong>On any sheet where you overrode a quantity, use the CSV as your deliverable.</strong></p>
+</div>
+
+<h3>When a row is drawn twice</h3>
+<p>Plans sometimes draw the same run twice — two chains over identical geometry. Where that happens the row grows a note reading <span class="ui">sum … union … drawn by more than one of these N lines</span>, showing both figures and picking neither. <span class="ui">use union</span> writes the de-duplicated figure into the quantity box.</p>
+
+<p>Treat "no note" as "no overlap <em>detected</em>". The test is an exact geometry match — a duplicate drawn a fraction of a point to the side does not register.</p>
+
+<h3>Money on screen has no commas</h3>
+<p>The panel renders totals with no thousands separator, so eighty-four thousand three hundred and twenty dollars appears as <span class="ui">$84320</span>. Commas do appear in the report PDF. Read carefully at a glance.</p>
+
+<!-- ============================================ -->
+<h2 id="export"><span class="h2num">08</span>Approve &amp; export</h2>
+
+<p>Three ways out of the app:</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Output</th><th>Contains</th><th>Honours your typed overrides?</th></tr></thead>
+  <tbody>
+    <tr><td><span class="ui">CSV</span></td><td>Eight columns per row, plus a sheet total. One sheet.</td><td><strong>Yes</strong></td></tr>
+    <tr><td><span class="ui">elements.json</span></td><td>The raw exported geometry and line items for one sheet.</td><td>Only EA counts on line styles</td></tr>
+    <tr><td><span class="ui">Report PDF (all approved pages)</span></td><td>Every approved sheet, plus a summary page.</td><td>Only EA counts on line styles</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <span class="tag">The summary page is not a project total</span>
+  <p>The report's <span class="ui">SUM OF APPROVED SHEETS</span> adds each approved sheet together with no de-duplication. A run drawn on four sheets is in that number four times. The PDF prints this caveat itself, under the total.</p>
+</div>
+
+<p>Re-detecting a page does <em>not</em> invalidate an export you already approved. The report is built from whatever was last approved, however old. If you change a sheet materially, approve it again.</p>
+
+<!-- ============================================ -->
+<h2 id="volumes"><span class="h2num">09</span>Earthwork, Trench and Structure</h2>
+
+<p class="lede">These turn linework into cubic yards. They are the most useful tools in the app and the easiest to get a badly wrong number out of, because a volume has no obvious sanity check by eye.</p>
+
+<h3>Earthwork</h3>
+<p>Reads the sheet's labelled contours, sorts them into an existing surface and a proposed surface, builds a model of each, and reports cut, fill and net.</p>
+<p>Earthwork has a consent step: nothing reaches your takeoff until you press <span class="ui">Add to takeoff</span>. Press it again to take the rows back out.</p>
+
+<div class="note crit">
+  <span class="tag">Check every contour row</span>
+  <p>The EXIST / PROP choice on each contour is a <em>guess made from line weight</em> — thinner than average defaults to existing, heavier to proposed. On any sheet that doesn't follow that convention, the guess is a coin toss, and swapping two surfaces inverts cut and fill completely.</p>
+  <p>A row whose note says its label was <span class="ui">999pt away</span> did not have its elevation read from a label at all — that number was inherited from another line. Check those against the drawing individually.</p>
+</div>
+
+<h3>Trench</h3>
+<p>Excavation and bedding volumes for a pipe run.</p>
+
+<div class="note warn">
+  <span class="tag">No consent step</span>
+  <p>Unlike Earthwork and Structure, pressing <span class="ui">Calculate trench</span> writes four priced rows <strong>straight into your takeoff</strong> — there is no "add" button to press and no obvious way to take them back out. Calculating a second time for a different pipe replaces the first run's rows rather than adding to them.</p>
+</div>
+
+<h3>Structure</h3>
+<p>Building footprint: mass excavation, perimeter layback dig and backfill, slab prep. Has a consent step.</p>
+
+<div class="note warn">
+  <span class="tag">Two things it does not do</span>
+  <p>Backfill is set exactly equal to excavation — the volume the foundation wall and footing occupy is <strong>not deducted</strong>. And running Structure on a sheet where you also ran Earthwork <strong>double-counts the building excavation</strong>, because the contour surfaces already cover that footprint.</p>
+</div>
+
+<div class="note plain">
+  <span class="tag">Disclosure reaches the report unevenly</span>
+  <p>Earthwork's caveat is printed on the Report PDF. Trench and Structure cubic yards print with no disclosure at all. If those rows are in a bid, say so yourself.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="counting"><span class="h2num">10</span>Count, Callouts and Whole job</h2>
+
+<p><strong><span class="ui">Count</span></strong> finds repeated symbols — window marks, fixtures, grid bubbles — and counts them. It reports the largest groups on the sheet, needs a symbol to appear at least three times before it will report it at all, and counts <em>every</em> printed tag, not only the ones in your trade. On the set it was measured against, a little over half of what it counted was in scope.</p>
+
+<p><strong><span class="ui">Callouts</span></strong> pairs each leader line with its text and the linework it points at — useful for checking that a labelled run is the run you think it is.</p>
+
+<p><strong><span class="ui">Whole job</span></strong> rolls every mark code up across the whole document, per sheet and in total. <strong><span class="ui">Across sheets</span></strong> shows labels appearing on more than one <em>approved</em> sheet with the footage each contributes — this is how you catch a run you have counted twice. It reads the approved snapshot, not the sheet as it is now.</p>
+
+<div class="note warn">
+  <span class="tag">Stale panels</span>
+  <p>Switching to a page that has not been detected leaves these panels open showing the <em>previous</em> sheet's rows. Detect the page before reading them.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="analyze"><span class="h2num">11</span>Analyze</h2>
+
+<p class="lede">Sends a picture of the sheet and some of its text to an AI model and asks what the sheet is for and which line types an estimator would actually measure. It comes back as a list of proposals.</p>
+
+<p><strong>Nothing it suggests touches your takeoff until you press <span class="ui">Accept</span> on that individual row</strong>, and every accepted row keeps its own <span class="ui">Undo</span>. There is deliberately no "apply all" — one click was measured to keep only about a fifth of a sheet's drawn length and discard the rest.</p>
+
+<p>Hover the small <span class="ui">measured</span> chip on any row to see how often that kind of suggestion was right, measured over 33 pages read three times each.</p>
+
+<div class="note crit">
+  <span class="tag">The dangerous row</span>
+  <p><span class="ui">turn OFF</span> removes footage from your takeoff, and about <strong>one time in six</strong> it removes real work — measured at 248 of 1,471 such suggestions dropping a wall, footing, slab, curb or pipe layer.</p>
+  <p>These rows are also the <em>only</em> ones that never carry a reason, because of how the model is asked for them. Silence there is an absence of evidence, not confidence. Each one shows the exact footage it would delete, in red. Read that number, look at the linework, and when in doubt leave it ticked — an over-count you can see beats an under-count you cannot.</p>
+</div>
+
+<div class="note warn">
+  <span class="tag">Do not take the model's scale</span>
+  <p>The scale it reads is wrong roughly one time in eight on scanned sheets. The banner deliberately refuses to apply it and prints the engine's reading beside it for comparison. If they disagree, resolve it from the drawing, not from the model.</p>
+  <p>Likewise, pressing <span class="ui">Re-read sheet</span> and getting the same answer is <strong>not</strong> confirmation. On the pages with a confirmed title, three were wrong in all three runs.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="memory"><span class="h2num">12</span>Saved work and fresh demos</h2>
+
+<p>Your labels, ticks, prices, trades, scales and quantity overrides are remembered in the browser and come back when you reopen a document — including after you close the tab entirely. A <span class="ui">Saved work · N</span> button appears in the header showing how much is being held. On a seat that has never been used, it does not appear at all.</p>
+
+<p>Clicking it offers two options, and the difference matters:</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Action</th><th>Clears</th><th>Leaves</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><span class="ui">Reset this document</span></td>
+      <td>This PDF's labels, ticks, scales and overrides — <strong>and the service's cached detection for it</strong>, so the next run is genuinely cold.</td>
+      <td>Your shared price list and trade assignments, and every other document.</td>
+    </tr>
+    <tr>
+      <td><span class="ui">Forget everything</span></td>
+      <td>All of the above for every document, <strong>plus</strong> the shared prices and trades.</td>
+      <td>Cached detections.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note warn">
+  <span class="tag">For a client demo, use "Forget everything"</span>
+  <p><span class="ui">Reset this document</span> deliberately keeps your price list. Retype a name that matches a previously priced one and the old rate reappears and extends into the total — which in front of a client is exactly the pre-baked number you were trying to avoid.</p>
+</div>
+
+<div class="note plain">
+  <span class="tag">Reset tells you what it will destroy</span>
+  <p>Before deleting, the dialog lists real counts — cached detections, page renders, and, in capitals, any <strong>approved sheet exports</strong> and <strong>report PDF</strong>. Those two are your work, not a cache. Download the report first if you still need it.</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="risks"><span class="h2num">13</span>Before you bid</h2>
+
+<p class="lede">Everything here produces a number that <em>looks completely normal on screen</em>. These are the checks that catch them. Ordered by what it costs to miss.</p>
+
+<div class="risk" id="r1">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">A typed footage override never reaches the report</span></div>
+  <p>You correct a quantity, the panel and the CSV show your figure, and the exported JSON and Report PDF show the uncorrected detected one — same line item, different number, no warning.</p>
+  <div class="check"><b>Check</b>On any sheet where you overrode a quantity, deliver the CSV. If the report must be the deliverable, fix the quantity by unticking or erasing linework instead of typing over it.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">An override applies to every sheet, not just this one</span></div>
+  <p>Overrides are stored per document, not per page. Override a name to 24 on sheet 3 and every row with that name on sheet 5 also reads 24, whatever is actually drawn there.</p>
+  <div class="check"><b>Check</b>After paging to a new sheet, look for any bold, coloured-border quantity box you did not type on this sheet. Hover it — the tooltip names the detected figure it is hiding.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">Prices carry across every job in the browser</span></div>
+  <p>Rates are keyed on the exact line-item name with no document scope. A rate entered on last month's job reappears on today's the moment a row carries the same name, already extended into the total.</p>
+  <div class="check"><b>Check</b>On a new job, scan the price column before trusting the total. Anything already filled in was not entered on this job. Only <span class="ui">Forget everything</span> clears them.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">A plan-and-profile sheet bills the graph as construction</span></div>
+  <p>A profile is a graph — stationing across, elevation up, usually at an exaggerated vertical scale. The app treats the whole sheet as one drawing, so the graph's grid lines and its plotted surfaces become billable linework at the plan's scale.</p>
+  <div class="check"><b>Check</b>On any sheet with a profile box, untick everything inside it, or take the plan off separately from the profile.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">Earthwork and Structure on the same sheet double-count</span></div>
+  <p>The contour surfaces already cover the building footprint, so adding Structure's mass excavation on top counts the same dirt twice. Structure's backfill also omits the volume the foundation itself occupies.</p>
+  <div class="check"><b>Check</b>Use one or the other on a given footprint, not both.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">A plausible scale typo is not caught</span></div>
+  <p>The sanity band only refuses the absurd. Typing 200 where you meant 20 is accepted and makes every length on the sheet ten times too big.</p>
+  <div class="check"><b>Check</b>After typing a scale, look at one known dimension on the drawing — a road width, a building face — and confirm the app agrees with the printed dimension string.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">A green confidence chip certifies the scale, nothing else</span></div>
+  <p>Green says a scale number was read and corroborated. It says nothing about whether the linework is right, whether the names are right, whether the quantities are right, or whether the earthwork volumes are right.</p>
+  <div class="check"><b>Check</b>Read green as "the ruler is probably right", never as "the sheet is right".</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">The trade heading adds cubic yards to linear feet and calls it feet</span></div>
+  <p>On any trade containing a calculator row, the footage figure in the group heading is a meaningless mixture. The individual rows and all the money are fine.</p>
+  <div class="check"><b>Check</b>Ignore the heading's footage whenever that trade contains a CY or SF row. Read the rows, or the CSV.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">The running tally can describe a sheet you are no longer on</span></div>
+  <p>Move to a page that has not been detected and the itemized table empties while the tally bar keeps displaying the previous sheet's footage and dollar total.</p>
+  <div class="check"><b>Check</b>A blank table with a populated tally means detect the page first.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">On a sheet with no scale, "feet" are really points</span></div>
+  <p>The column heading changes to <span class="ui">pt</span> and prices stop extending on measured rows, but the numbers still look like quantities.</p>
+  <div class="check"><b>Check</b>If the column reads PT rather than FEET, stop and fix the scale before entering anything.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">Typing 0 does not zero a row</span></div>
+  <p>Zero and negative overrides are ignored, so the detected figure quietly comes back and the row looks deliberately set.</p>
+  <div class="check"><b>Check</b>To remove a row, untick its line type. Do not try to zero the quantity.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">Hand edits to linework do not survive a page change</span></div>
+  <p>Labels, ticks and prices survive. Geometry edits — erasing a line, splitting one out — are thrown away when you change pages or re-detect, without warning.</p>
+  <div class="check"><b>Check</b>Finish and approve a sheet before leaving it.</div>
+</div>
+
+<!-- ============================================ -->
+<h2 id="accuracy"><span class="h2num">14</span>What the accuracy numbers mean</h2>
+
+<p class="lede">Every figure here has a denominator. A percentage without one is not a measurement.</p>
+
+<h4>Line tracing — 10-sheet quality gate, re-run 24 Aug 2026</h4>
+<div class="tw">
+<table>
+  <thead><tr><th>Measure</th><th class="n">Result</th><th>Measured against</th></tr></thead>
+  <tbody>
+    <tr><td>Line-type classification</td><td class="n">98.0%</td><td>Mean across 10 sheets, hand-confirmed classes</td></tr>
+    <tr><td>Per-class precision</td><td class="n">100%</td><td>Every class on every sheet: dash1, dash2, dash3, dash-text, solid</td></tr>
+    <tr><td>Ink traced by something</td><td class="n">99.2%</td><td>281 CAD layer instances across 7 of 10 sheets, weighted by ink</td></tr>
+    <tr><td>Traced <em>and</em> filed under the right layer</td><td class="n">92.1%</td><td>Same 281 instances</td></tr>
+    <tr><td>Raw ink recall</td><td class="n">92.9%</td><td>Same 281 instances</td></tr>
+    <tr><td>Invented linework ("phantom")</td><td class="n">19</td><td>Across all 10 sheets — all 19 on one sheet, zero on the other nine</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The gap between 99.2% and 92.1% is <strong>attribution, not detection</strong>: the ink was traced, but the resulting line got filed under a neighbouring layer name. For a takeoff that means the footage is present and the label may be wrong — which is why reading the names matters more than reading the totals.</p>
+
+<h4>Symbols and text</h4>
+<div class="tw">
+<table>
+  <thead><tr><th>Measure</th><th class="n">Result</th><th>Measured against</th></tr></thead>
+  <tbody>
+    <tr><td>Opening detection recall</td><td class="n">99.3%</td><td>285 openings hand-counted on a scanned stair-plan set</td></tr>
+    <tr><td>Symbol counting precision</td><td class="n">55.3%</td><td>Same set — it counts every printed tag, not only your trade</td></tr>
+    <tr><td>Symbol coverage</td><td class="n">71.0%</td><td>Layer-derived truth, 7 sheets</td></tr>
+    <tr><td>Annotation coverage</td><td class="n">57.0%</td><td>Deliberately low — this is the junk filter working, not a miss</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h4>Analyze (AI)</h4>
+<div class="tw">
+<table>
+  <thead><tr><th>Suggestion</th><th class="n">Measured</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><span class="ui">turn OFF</span> drops real work</td><td class="n">248 / 1471</td><td>About one in six removes a wall, footing, slab, curb or pipe layer</td></tr>
+    <tr><td><span class="ui">turn ON</span> names a hatch layer</td><td class="n">29 / 190</td><td>About one in seven adds fill strokes as if they were a quantity</td></tr>
+    <tr><td>Printed scale read correctly</td><td class="n">27 / 31</td><td>All four misses on the same scanned set</td></tr>
+    <tr><td>Same answer between runs</td><td class="n">8 / 32 pages</td><td>The model disagreed with itself on 24 of 32 — a changed answer is noise</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note plain">
+  <span class="tag">What none of this covers</span>
+  <p>These are measured against CAD layer names and hand-confirmed counts on drawings we have. They are <strong>not</strong> measured against a real estimator's finished takeoff on a job we had never seen, because we do not yet have enough matched pairs of drawings-plus-estimate to say that honestly. Until we do, treat these numbers as "the software finds what is drawn", not "the software agrees with your estimator".</p>
+</div>
+
+<!-- ============================================ -->
+<h2 id="trouble"><span class="h2num">15</span>Troubleshooting</h2>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Symptom</th><th>Cause and fix</th></tr></thead>
+  <tbody>
+    <tr><td>Every click takes seconds</td><td>You are on <span class="ui">localhost</span>. Use <span class="ui">127.0.0.1</span>.</td></tr>
+    <tr><td>Numbers on screen look like a different sheet</td><td>The page has not been detected. The status line and the tally bar keep the previous sheet's text. Press <span class="ui">Detect lines</span>.</td></tr>
+    <tr><td>Quantities are huge or tiny by a round factor</td><td>Wrong scale. Check the scale chip against the printed caption and the drawn bar.</td></tr>
+    <tr><td>Column heading reads PT, prices do nothing</td><td>No scale on the sheet. Set one before entering anything.</td></tr>
+    <tr><td>A price is filled in that you never typed</td><td>Shared price memory from another job. <span class="ui">Forget everything</span> clears it.</td></tr>
+    <tr><td>The takeoff jumped after pressing <span class="ui">all</span></td><td><span class="ui">all</span> switches on hatch, text and everything the filter was hiding. Re-cull.</td></tr>
+    <tr><td>Re-opening the same PDF from the dropdown does nothing</td><td>The dropdown only fires when the selection changes. Pick something else and back, or reload.</td></tr>
+    <tr><td><span class="ui">Analyze</span> reports it did not run</td><td>The banner prints the reason. Your takeoff is untouched and everything else works without it.</td></tr>
+    <tr><td>A demo shows last session's labels</td><td>Use <span class="ui">Forget everything</span>, not <span class="ui">Reset this document</span> — the latter keeps prices and trades on purpose.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer class="end">
+  <p>This handbook describes build <span class="num">d4ee99b</span>, 24 August 2026. Behaviour marked as measured was measured on the drawings named; behaviour marked as a caveat is a known open issue with a fix queued. Where the handbook and the app disagree, the app is the truth and the handbook is a bug.</p>
+</footer>
+
+</div>
+</main>
+</div>
