@@ -454,6 +454,55 @@ def result(job_id: str, page: int):
     return Response(f.read_text(), media_type="application/json")
 
 
+@app.post("/api/job/{job_id}/reset")
+def reset_job(job_id: str):
+    """Throw away everything DERIVED from this PDF, so the next detect is cold.
+
+    This exists for demos. The review UI already forgets a document's saved
+    decisions on request, but that only clears the browser: the service keeps
+    every page's detection in p<N>_result.json and serves it straight back, so
+    a "fresh" run in front of a client would replay a result computed hours
+    earlier. That is a pre-warmed cache presented as a live run, which is the
+    one thing a demo is not allowed to be.
+
+    What goes: every derived artifact in this job's own directory - detection
+    results, page renders, elements, earthwork maps, callouts, symbols,
+    schedules, and any report PDF already built.
+
+    What stays: the source PDF. It is never inside the job directory - a
+    sample is opened by path from wherever it lives, and an upload is written
+    to JOBS_DIR/upload_<hex>_<name>.pdf, a SIBLING of this directory. The
+    guard below re-derives the directory from JOBS_DIR and refuses anything
+    that does not resolve to a direct child of it, so a crafted job_id cannot
+    walk out of the jobs tree. The registry entry also stays, so the document
+    stays open in the UI and simply needs detecting again.
+    """
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve() or not d.is_dir():
+        raise HTTPException(404, "unknown job")
+
+    removed, freed = 0, 0
+    for f in sorted(d.iterdir()):
+        if not f.is_file():
+            continue
+        try:
+            freed += f.stat().st_size
+            f.unlink()
+            removed += 1
+        except OSError:
+            pass  # a file the operator has open elsewhere; report the rest
+
+    # The in-memory status map is what makes the UI think a page is done.
+    # Leaving it behind would show "detected" over a directory with nothing
+    # in it - the screen disagreeing with the record, again.
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is not None:
+            j["status"] = {}
+
+    return {"ok": True, "removed": removed, "freed_mb": round(freed / 1048576, 2)}
+
+
 @app.get("/api/job/{job_id}/page/{page}/confidence")
 def page_confidence(job_id: str, page: int):
     """Page-level trust signals for the review banner. Read-only.

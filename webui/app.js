@@ -2912,27 +2912,225 @@ function renderChips() {
   }
 }
 
-// ---------- live itemized takeoff ----------
-// NO cross-session blueprint memory: every label, include, EA-mode, qty/ft
-// override, price, and trade edit lives in THIS session only, so a reload
-// here produces exactly what a client's fresh seat produces. UI prefs
-// (theme, panel collapse) stay in localStorage; takeoff decisions never do.
-// Nothing on disk holds a takeoff decision, so a change to the KEY SHAPE
-// below needs no migration and cannot catch a reviewer mid-session: this
-// Map is created by the same evaluation of app.js that defines the key
-// functions, so store and key are always the same vintage. A browser
-// holding a cached older app.js gets old keys over an old, empty Map -
-// self-consistent, just without the fix, which is what index.html's
-// `app.js?v=` exists to shorten.
-const sessionMem = new Map();
+// ---------- live itemized takeoff: the reviewer's memory ----------
+// This was a Map that died with the tab, and the comment that stood here
+// argued the death was a feature: with nothing kept, a reloaded seat and a
+// brand-new seat produce identical output, so nothing in a demo can be
+// pre-baked. That property is real and it is preserved below. What it was
+// costing is not acceptable though - every label, price, trade, override and
+// scale the operator entered was gone the moment the tab closed, and on a
+// 15-sheet set that is an evening of work thrown away with no warning.
+//
+// The two requirements only LOOK like the same requirement:
+//   demo integrity - a document NOBODY HAS TOUCHED must read empty
+//   usability      - MY edits to MY document must still be here tomorrow
+// Both hold at once if memory is written ONLY by an operator action, scoped
+// to the document, never seeded, and visibly clearable. An untouched document
+// has no entries, so it still reads exactly as a fresh seat does; #memBtn
+// says how much is remembered and clears all of it in one click, which is
+// what makes a demo on a document we HAVE touched honest instead of lucky.
+//
+// MEM_V is the schema version and it is load-bearing. The old comment was
+// right that a key-shape change cannot catch a reviewer mid-session while the
+// store is a Map of the same vintage as the key functions that fill it. Once
+// memory outlives the page that guarantee is gone, so any change to a key
+// shape MUST bump MEM_V: entries under a superseded version are never read
+// and are purged on load, which is the migration.
+const MEM_V = "tk1::";
+const memWritable = (() => {
+  try {
+    localStorage.setItem(MEM_V + "?probe", "1");
+    localStorage.removeItem(MEM_V + "?probe");
+    return true;
+  } catch (e) { return false; }  // private window / quota 0 - session-only
+})();
+let memFull = false;             // quota refused a write: say so, never lie
+const sessionMem = new Map();    // mirror, and the entire store when !memWritable
+if (memWritable) {
+  for (const k of Object.keys(localStorage)) {
+    // keys from builds that wrote takeoff decisions into localStorage bare,
+    // before any of this was versioned
+    if (/^(doc::|measure::|trade::|price:)/.test(k)) localStorage.removeItem(k);
+    // a superseded schema: never read, and not left to rot
+    else if (/^tk\d+::/.test(k) && !k.startsWith(MEM_V)) localStorage.removeItem(k);
+    else if (k.startsWith(MEM_V)) sessionMem.set(k.slice(MEM_V.length), localStorage.getItem(k));
+  }
+}
 const store = {
   getItem: (k) => sessionMem.has(k) ? sessionMem.get(k) : null,
-  setItem: (k, v) => sessionMem.set(k, String(v)),
-  removeItem: (k) => sessionMem.delete(k),
+  setItem: (k, v) => {
+    const val = String(v);
+    // Renderers re-save the value they just read, every render. Only a real
+    // CHANGE is allowed to reach the disk, or one price keystroke on a 73-row
+    // sheet turns into 73 writes of a string that did not move.
+    if (sessionMem.get(k) === val) return;
+    const isNew = !sessionMem.has(k);
+    sessionMem.set(k, val);
+    if (memWritable) {
+      try { localStorage.setItem(MEM_V + k, val); }
+      catch (e) { memFull = true; }        // full: keep working, warn on the button
+    }
+    if (isNew || memFull) memBtnDirty();
+  },
+  // A default the APP chose, not a decision the OPERATOR made. Sibling of
+  // setItem in the same way setIncludeTransient is a sibling of setInclude,
+  // and for the same reason: writing an app-chosen default into the operator's
+  // saved record makes it indistinguishable from a real choice, so it survives
+  // a "clear", it inflates the count on the button, and it would quietly
+  // outrank a better default later. ewApplyItems and the structure bid sheet
+  // both file their rows under Earthwork & Grading this way; the reviewer's
+  // own pick still goes through setItem and is still remembered.
+  setSession: (k, v) => { sessionMem.set(k, String(v)); },
+  removeItem: (k) => {
+    if (!sessionMem.delete(k)) return;
+    if (memWritable) { try { localStorage.removeItem(MEM_V + k); } catch (e) {} }
+    memBtnDirty();
+  },
 };
-// purge memory left behind by earlier builds so it can never resurface
-for (const k of Object.keys(localStorage))
-  if (/^(doc::|measure::|trade::|price:)/.test(k)) localStorage.removeItem(k);
+
+// The button is only as honest as it is current, but setItem is called from
+// inside render loops - so coalesce to one repaint per task rather than one
+// per key.
+let memBtnQueued = false;
+function memBtnDirty() {
+  if (memBtnQueued) return;
+  memBtnQueued = true;
+  queueMicrotask(() => { memBtnQueued = false; renderMemBtn(); });
+}
+function renderMemBtn() {
+  const b = $("memBtn");
+  if (!b) return;
+  const n = sessionMem.size;
+  b.hidden = n === 0;
+  b.textContent = "Saved work \u00b7 " + n;
+  b.classList.toggle("warn", memFull || !memWritable);
+  b.title = !memWritable
+    ? n + " decisions are being held for THIS SESSION ONLY. This browser will "
+      + "not let the page store anything (a private window does this), so "
+      + "closing the tab loses all of it."
+    : memFull
+    ? n + " remembered decisions, and THIS BROWSER'S STORAGE IS FULL. The most "
+      + "recent edits are held for this session only and will be lost when the "
+      + "tab closes. Clear saved work to make room."
+    : n + " decisions remembered in this browser - labels, prices, trades, "
+      + "quantity overrides, scales, and which rows are ticked. They come back "
+      + "when you reopen a document. Click to forget all of them.";
+}
+// Which saved keys belong to the document currently open. Everything
+// doc-scoped is built from docKey(), except the two scale keys, which predate
+// it and key on the document name directly.
+function memDocPrefixes() {
+  const n = state.docName || "unknown";
+  return ["doc::" + n + "::", "scale::" + n + "::", "scaletyped::" + n + "::"];
+}
+function memDocKeys() {
+  const pre = memDocPrefixes();
+  return [...sessionMem.keys()].filter(k => pre.some(x => k.startsWith(x)));
+}
+
+// Two different jobs, and conflating them is how you either destroy an
+// evening of pricing or walk into a client demo with last week's labels
+// already on screen. So the button asks which one you meant.
+$("memBtn").onclick = (e) => {
+  e.stopPropagation();
+  if (!sessionMem.size) return;
+  const open = document.querySelector(".mem-menu");
+  if (open) { open.remove(); return; }
+
+  const nDoc = memDocKeys().length;
+  const nAll = sessionMem.size;
+  const m = document.createElement("div");
+  m.className = "mem-menu";
+  m.onclick = (ev) => ev.stopPropagation();
+
+  const head = document.createElement("div");
+  head.className = "mem-menu-head";
+  head.textContent = "Saved work";
+  m.appendChild(head);
+
+  const mk = (label, note, fn, danger) => {
+    const b = document.createElement("button");
+    b.className = "mem-menu-item" + (danger ? " danger" : "");
+    const t = document.createElement("div");
+    t.className = "mem-menu-label"; t.textContent = label;
+    const d = document.createElement("div");
+    d.className = "mem-menu-note"; d.textContent = note;
+    b.append(t, d);
+    b.onclick = fn;
+    return b;
+  };
+
+  m.appendChild(mk(
+    "Reset this document \u00b7 " + nDoc,
+    state.job
+      ? "Clears this PDF's labels, ticks, scales and overrides, AND the "
+        + "service's cached detection for it, so the next run is genuinely "
+        + "cold. Your shared price list and trade assignments stay."
+      : "Open a document first.",
+    async () => {
+      if (!state.job) return;
+      if (!confirm("Reset \"" + (state.docName || "this document") + "\" for a fresh run?\n\n"
+        + nDoc + " saved decision(s) for this PDF will be forgotten, and the "
+        + "service will delete every detection it has cached for it, so the "
+        + "next detect runs from scratch in front of whoever is watching.\n\n"
+        + "The PDF itself is not touched. Prices and trade assignments, which "
+        + "are shared across documents, are NOT cleared - use \"Forget "
+        + "everything\" for those.\n\nThis cannot be undone.")) return;
+      for (const k of memDocKeys()) store.removeItem(k);
+      let srv = "";
+      try {
+        const r = await fetch("/api/job/" + state.job + "/reset", { method: "POST" });
+        // Say what actually happened. A reset that silently half-failed and
+        // then replayed a cached sheet during a demo is the whole reason this
+        // button exists.
+        if (!r.ok) srv = "the service refused to clear its cache (" + r.status + ")";
+      } catch (err) { srv = "the service could not be reached"; }
+      if (srv && !confirm("This browser's saved work for the document was cleared, but "
+        + srv + ".\n\nThe next detect may still serve a cached result. Reload anyway?")) return;
+      location.reload();
+    }));
+
+  m.appendChild(mk(
+    "Forget everything \u00b7 " + nAll,
+    "Every document's labels, ticks, scales and overrides, plus the shared "
+      + "price list and trade assignments. Cached detections are left alone.",
+    () => {
+      if (!confirm("Forget all " + nAll + " remembered decisions?\n\n"
+        + "This clears every label, price, trade, quantity override, scale and "
+        + "row choice this browser has saved, for every document.\n\n"
+        + "The drawings and the detections are untouched - a sheet reopened "
+        + "after this detects exactly as it would on a brand-new seat.\n\n"
+        + "This cannot be undone.")) return;
+      sessionMem.clear();
+      if (memWritable)
+        for (const k of Object.keys(localStorage))
+          if (k.startsWith(MEM_V)) localStorage.removeItem(k);
+      memFull = false;
+      // Reload rather than re-render: state.include and the rest of the live
+      // page were built FROM this memory, and leaving them applied over an
+      // emptied store is the exact "screen disagrees with the record" shape
+      // that cost 78% of a sheet in F131. A reload IS the fresh seat.
+      location.reload();
+    }, true));
+
+  const r = $("memBtn").getBoundingClientRect();
+  m.style.top = Math.round(r.bottom + 6) + "px";
+  m.style.right = Math.round(window.innerWidth - r.right) + "px";
+  document.body.appendChild(m);
+};
+document.addEventListener("click", () => {
+  const m = document.querySelector(".mem-menu");
+  if (m) m.remove();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const m = document.querySelector(".mem-menu");
+  if (m) m.remove();
+});
+// Memory loaded from a previous session is memory nobody has written to yet
+// this page, so nothing has called memBtnDirty. Paint the count once at start
+// or a returning operator sees no sign that anything was kept.
+renderMemBtn();
 function priceKey(label) { return "price:" + label; }
 // quantity/footage override: the estimator's number beats the detector's.
 // Doc-scoped (this sheet has 24 shear walls; another sheet doesn't).
@@ -4102,7 +4300,7 @@ function ewApplyItems(j) {
                             qty: r.unit === "CY" ? ewR(r.qty) : r.qty,
                             unit: r.unit });
     if (!store.getItem(tradeKey(r.label)))
-      store.setItem(tradeKey(r.label), "Earthwork & Grading");
+      store.setSession(tradeKey(r.label), "Earthwork & Grading");
   }
 }
 
@@ -6567,7 +6765,7 @@ function stApplyItems() {
     // bid-sheet rows are earthwork items; "Slab Prep" would otherwise file
     // under Structures on the SLAB keyword. Session default only - the
     // reviewer's own trade pick wins.
-    if (!store.getItem(tradeKey(label))) store.setItem(tradeKey(label), "Earthwork & Grading");
+    if (!store.getItem(tradeKey(label))) store.setSession(tradeKey(label), "Earthwork & Grading");
   }
   renderItemized();
 }

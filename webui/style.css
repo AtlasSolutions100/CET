@@ -702,3 +702,34 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .xs-adj { padding: 3px 0 0 27px; font-size: 10.5px; color: var(--accent);
           font-family: var(--mono); }
 .sym-total .dim { color: var(--dim); }
+
+/* --- saved work: the memory button and its menu (2026-08-24) ------------
+   The count is deliberately on the face of the button rather than hidden in
+   a tooltip. Memory that outlives the tab is memory an operator has to be
+   able to SEE before a client demo, and "Saved work · 0" simply does not
+   render - an untouched seat shows nothing at all, which is the property
+   the old session-only Map was protecting. */
+.mem-btn { color: var(--dim); border-color: var(--line); }
+.mem-btn:hover { color: var(--text); border-color: var(--accent); }
+.mem-btn.warn { color: #e2b04a; border-color: #7a5a1c; }
+
+.mem-menu { position: fixed; z-index: 60; width: 340px;
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; padding: 6px;
+            box-shadow: 0 12px 34px rgba(0,0,0,.45); }
+.mem-menu-head { font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+                 text-transform: uppercase; color: var(--dim);
+                 padding: 6px 8px 8px; }
+.mem-menu-item { display: block; width: 100%; text-align: left;
+                 background: transparent; border: 1px solid transparent;
+                 border-radius: 8px; padding: 8px 9px; cursor: pointer; }
+.mem-menu-item + .mem-menu-item { margin-top: 2px; }
+.mem-menu-item:hover { background: var(--hover); border-color: var(--line); }
+.mem-menu-label { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.mem-menu-note { font-size: 11.5px; line-height: 1.4; color: var(--dim);
+                 margin-top: 3px; white-space: normal; }
+.mem-menu-item.danger:hover { border-color: #7a2c24; }
+.mem-menu-item.danger .mem-menu-label { color: #e2705f; }
+:root[data-theme="light"] .mem-menu { box-shadow: 0 12px 34px rgba(0,0,0,.16); }
+:root[data-theme="light"] .mem-btn.warn { color: #8a5a06; border-color: #d9bd7e; }
+:root[data-theme="light"] .mem-menu-item.danger .mem-menu-label { color: #b0281d; }
