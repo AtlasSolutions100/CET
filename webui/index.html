@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=24">
+<link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
 <header>
@@ -21,6 +21,7 @@
   <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
   <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
   <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
+  <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes">Across sheets</button>
   <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
   <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
   <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
@@ -61,6 +62,10 @@
       </div>
     </div>
     <div id="colorChips" class="color-chips"></div>
+    <!-- Whose scope is this? The operator's own declaration of trade, per
+         document. It filters what is SHOWN and what is TICKED and never
+         touches a measured quantity; built by renderScopeBar() in app.js. -->
+    <div id="scopeBar" class="scope-bar" hidden></div>
     <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
     <div id="styleList" class="style-list"></div>
     <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
@@ -179,6 +184,26 @@
       <div id="rollTotal" class="sym-total" hidden></div>
       <div class="sym-foot"><button id="rollCsv" class="mini">Export CSV</button></div>
     </div>
+    <!-- Counted twice ACROSS sheets. A run drawn on the plan and again on a
+         detail sheet is billed once per approved sheet, and the report PDF
+         says so on its face but the operator cannot act on it. This panel is
+         information, not inference: it shows which labels land on more than
+         one approved sheet and what each contributes. It does NOT match
+         geometry across sheets - the detail sheets are rotated relative to
+         the plan (one measured pair sits at 75.3 degrees) and getting that
+         wrong deletes real footage. -->
+    <div id="xsPanel" class="ew-panel" hidden>
+      <div class="side-head" id="xsHead"><h2>Across sheets &mdash; the same label twice</h2>
+        <button id="xsClose" class="mini">close</button></div>
+      <div class="ew-hint" id="xsHint">Every label that carries footage on more than one
+        <b>approved</b> sheet, with what each sheet contributes. The engine cannot tell one run
+        drawn twice from two real runs &mdash; you can. Untick a sheet to say
+        &ldquo;already counted&rdquo;; that changes only the adjusted total below, never the
+        sheet, the chains, or the Report PDF.</div>
+      <div id="xsPending" class="sym-sched" hidden></div>
+      <div id="xsBody"></div>
+      <div id="xsTotal" class="sym-total" hidden></div>
+    </div>
     <div id="symPanel" class="ew-panel" hidden>
       <div class="side-head" id="symHead"><h2>Count symbols</h2>
         <button id="symClose" class="mini">close</button></div>
@@ -186,6 +211,7 @@
         every instance marked; name it and Add to put "&times; N EA" in the takeoff. The count comes
         from geometry, so it is checkable - the name is yours.</div>
       <div id="symSched" class="sym-sched" hidden></div>
+      <div id="symScope" class="sym-scope" hidden></div>
       <div id="symRows" class="ew-rows"></div>
       <div id="symTotal" class="sym-total" hidden></div>
       <div class="sym-foot"><button id="symAddAll" class="mini">Add every named mark</button></div>
@@ -261,6 +287,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=55"></script>
+<script src="app.js?v=56"></script>
 </body>
 </html>

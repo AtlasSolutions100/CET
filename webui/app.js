@@ -129,7 +129,9 @@ async function selectPage(p) {
   updateSelBar(null);
   // scaleMemApply BEFORE renderSheetHead, always - see loadResult().
   scaleMemApply();
+  scopeApply();
   renderSheetHead();
+  renderScopeBar();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
@@ -309,6 +311,7 @@ async function loadResult(gen = state.gen) {
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("rollPanel").hidden = true; $("rollBtn").hidden = false;
+  $("xsPanel").hidden = true; $("xsBtn").hidden = false; state.xs = null;
   $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
   $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
@@ -340,7 +343,9 @@ async function loadResult(gen = state.gen) {
   // priced at 1.33 (6x on length, 36x on area). Making the first paint true
   // is not a repaint's job.
   scaleMemApply();
+  scopeApply();   // verdicts before the first paint; see scopeApply()
   renderSheetHead();
+  renderScopeBar();
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); draw();
   // and the durable one: a scale this page's reviewer approved on an earlier
   // visit lives in the server sidecar, not in this browser. Async on purpose
@@ -1811,6 +1816,498 @@ function layerTail(lay) {
   return parts.length > 1 ? "…" + parts[parts.length - 1] : parts[0];
 }
 
+// ======================= operator-declared trade scope =====================
+// The engine measures everything drawn. On Beaumont's Barn Civil that is
+// 697,036 ft of default-on linework across 12 scaled sheets against a bid
+// (Beaumont Excavating Estimate #853) whose entire linear scope is 7,248 LF -
+// 96x more line than the job bills. Nothing in the document says which of it
+// is the operator's, because a drawing does not know who is reading it. So
+// the operator says, and this filters on what they said.
+//
+// WHAT A TRADE IS, IN DATA
+// ------------------------
+// A trade is a named set of tokens, and every token is bound to the KIND of
+// document evidence it may be tested against. Three kinds, because the corpus
+// writes three kinds:
+//
+//   layer     the CAD layer tail the drafter filed the geometry under
+//             (`SE-P-UT-STORM`, `A-DOOR`, `C-TOPO`). Measured over the 115
+//             detect results cached on this machine: 9,343 of 12,772 style
+//             rows carry one (73.2%) - but only 52.2% of the FOOTAGE does,
+//             and 42 of 115 sheets carry none at all. Layer-first, never
+//             layer-only.
+//   label     a legend row's own text, or the name the reviewer typed.
+//   material  a schedule row's MATERIAL cell. NOTHING PRODUCES THIS TODAY -
+//             `/symbols/suggest` returns codes, not schedule rows. The branch
+//             exists because these tokens are only meaningful against that
+//             cell and must never be tried against a layer name: Beaumont has
+//             77 style rows on `BG-L-Steel Retaining`, a landscape edging
+//             layer, which a loose STEEL token would read as a hollow-metal
+//             door.
+//
+// The first six trades and their tokens are `TRADES` / `tradeFor()` above,
+// copied verbatim - the grouping the itemized panel and the CSV already use.
+// They are deliberately NOT edited here: editing them would move the itemized
+// panel's grouping, which is a quantity-facing surface.
+//
+// The last two are new, and their provenance is stated because the owner is
+// not an estimator and cannot catch a fabricated convention:
+//   * the layer tokens are strings THIS corpus prints - A-DOOR, A-DOOR-GLAZ,
+//     A-DOOR-FRAM, A-GLAZ, P1-BLDG-DOORS, C-BLDG-DOOR, over 38 style rows in
+//     the 115 cached results.
+//   * the material tokens are cells printed in Mission Bell's own
+//     "Window - Storefront - Door schedules.pdf" (dumped verbatim at
+//     out/verify/2026-08-22/billscope/SCHEDULES.txt), and the split between
+//     them - VINYL / ALUM / GLASS is a glazed leaf, STEEL / HM / SC,WOOD is
+//     not - is this project's own measured finding (that folder's
+//     HYPOTHESES.txt: right on 46 of the 50 codes the project prints). It is
+//     a measurement made here, not an industry prior being asserted.
+const SCOPE_GLAZED = "Openings - glazed (windows / storefront)";
+const SCOPE_OPAQUE = "Openings - doors, hollow metal / wood";
+const SCOPE_TOKENS = {
+  "Earthwork & Grading": {
+    layer: ["CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO",
+      "SLOPE", "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL", "TOPSOIL"],
+    label: ["CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO",
+      "SLOPE", "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL", "TOPSOIL"],
+    material: [] },
+  "Wet Utilities": {
+    layer: ["WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
+      "HYDRANT", "MANHOLE", "CULVERT", "IRRIG", "FORCE", "CLEANOUT", "TRENCH",
+      "VALVE", "WELL", "FIREWATER"],
+    label: ["WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
+      "HYDRANT", "MANHOLE", "CULVERT", "IRRIG", "FORCE", "CLEANOUT", "TRENCH",
+      "VALVE", "WELL", "FIREWATER"],
+    material: [] },
+  "Dry Utilities": {
+    layer: ["ELECTRIC", "TELEPHONE", "GAS", "FIBER", "CABLE", "COMM", "POWER",
+      "CONDUIT", "LIGHT", "OHP"],
+    label: ["ELECTRIC", "TELEPHONE", "GAS", "FIBER", "CABLE", "COMM", "POWER",
+      "CONDUIT", "LIGHT", "OHP"],
+    material: [] },
+  "Paving & Concrete": {
+    layer: ["PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
+      "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF"],
+    label: ["PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
+      "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF"],
+    material: [] },
+  "Structures": {
+    layer: ["FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
+      "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST", "TRUSS",
+      "MOMENT FRAME"],
+    label: ["FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
+      "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST", "TRUSS",
+      "MOMENT FRAME"],
+    material: [] },
+  "Fencing & Sitework": {
+    layer: ["FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
+      "SILT", "PROPERTY", "EASEMENT", "SETBACK"],
+    label: ["FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
+      "SILT", "PROPERTY", "EASEMENT", "SETBACK"],
+    material: [] },
+  [SCOPE_GLAZED]: {
+    layer: ["A-GLAZ", "A-DOOR", "GLAZ", "WINDOW", "STOREFRONT", "CURTAIN",
+      "MULLION", "BLDG-DOOR"],
+    label: ["WINDOW", "STOREFRONT", "GLAZING", "GLAZED", "GLASS",
+      "CURTAIN WALL", "MULLION", "SASH", "SLIDER", "PATIO DOOR"],
+    material: ["VINYL", "ALUM", "GLASS", "GLAZ"] },
+  [SCOPE_OPAQUE]: {
+    layer: [],
+    label: ["HOLLOW METAL", "HM DOOR", "WOOD DOOR", "FIRE DOOR"],
+    material: ["STEEL", "HM", "SC,WOOD", "SC WOOD", "SC.WOOD", "HOLLOW METAL"] },
+};
+const SCOPE_NAMES = Object.keys(SCOPE_TOKENS);
+
+// Every trade whose `kind` tokens appear in `text`. A SET, not a winner: a
+// string that names two trades is a contradiction to show, not a tie to break
+// (CLAUDE.md section 5, shape B - first-writer-wins discards the right answer).
+function scopeTradesNamed(kind, text) {
+  const out = new Set();
+  if (!text) return out;
+  const T = String(text).toUpperCase();
+  for (const tr of SCOPE_NAMES)
+    if ((SCOPE_TOKENS[tr][kind] || []).some(w => T.includes(w))) out.add(tr);
+  return out;
+}
+
+// The verdict for one row. Three values, never two.
+//
+//   in       SOME witness names a declared trade. Any witness will do:
+//            keeping a row needs only one reason.
+//   out      no witness names a declared trade, AND the best witness that is
+//            ALLOWED TO HIDE names a different one.
+//   unknown  everything else - no witness, or only witnesses that may not
+//            hide, or a hiding-capable witness that names nothing.
+//
+// Two asymmetries, both deliberate, both measured.
+//
+// 1. `in` beats `out`. One witness for you keeps the row even when another
+//    witness says somebody else. A contradiction never hides.
+//
+// 2. Not every witness may hide. `mayHide` is false for anything read by OCR
+//    off a scan. The alternative was measured on Bill's Mission Bell answer
+//    key: reading each bubble independently at 8x, one of his 283 detected
+//    openings reads as a scheduled non-glazed door, so letting an OCR'd code
+//    set a row aside costs one real opening in 285 with no symptom
+//    (out/verify/2026-08-22/billscope/HYPOTHESES.txt). That is harm class 1 in
+//    AGENT-BRIEF section 0, so the raster mark path abstains BY CONSTRUCTION
+//    rather than by luck.
+//
+// Among witnesses that may hide, only the best-ranked one is consulted, so a
+// legend label can never set aside a row whose CAD layer is silent. The legend
+// label is attached by proximity and this codebase has shipped it wrong twice
+// over: 1,449.6 ft of footer drain labelled `> > >` (CLAUDE.md section 5), and
+// C4.3 style 106, whose legend label says PROPOSED PVC SURFACE STORM DRAIN
+// PIPE while the isolated style draws the foundation wall
+// (out/verify/2026-08-23/state, PLATE-1).
+function scopeVerdict(evidence, trades) {
+  if (!trades || !trades.length) return { v: "unknown", why: "no trade declared", src: "" };
+  const mine = new Set(trades);
+  for (const e of evidence) {
+    const named = scopeTradesNamed(e.kind, e.text);
+    if ([...named].some(t => mine.has(t)))
+      return { v: "in", why: `${e.src} says ${e.text}`, src: e.src };
+  }
+  const hiders = evidence.filter(e => e.mayHide);
+  if (hiders.length) {
+    const best = Math.min(...hiders.map(e => e.rank));
+    for (const e of hiders) {
+      if (e.rank !== best) continue;
+      const others = [...scopeTradesNamed(e.kind, e.text)].filter(t => !mine.has(t)).sort();
+      if (others.length)
+        return { v: "out", why: `${e.src} says ${e.text} — ${others[0]}`, src: e.src };
+    }
+  }
+  return { v: "unknown",
+    why: (evidence.length && !hiders.length)
+      ? "read by OCR off a scan — not allowed to set a row aside"
+      : "nothing on this row names a trade", src: "" };
+}
+
+// The witnesses a LINE STYLE has. Layer first (rank 0), label second (rank 1).
+function scopeEvidenceForStyle(s) {
+  const ev = [];
+  const tail = String(s.layer || "").split("|").pop().trim();
+  if (tail) ev.push({ rank: 0, kind: "layer", src: "CAD layer", text: tail, mayHide: true });
+  const lab = (state.labels.get(s.style_id) || s.suggested_label || "").trim();
+  // A label that only repeats the layer tail is not a second witness, and a
+  // pattern description ("solid solid", "dash1 3.0/2.0") is not a name.
+  const echoesLayer = !!tail && lab.toUpperCase().includes(tail.toUpperCase());
+  if (lab && !echoesLayer
+      && !/^(solid|dash\d|dash-text|annotation)\b/i.test(lab))
+    ev.push({ rank: 1, kind: "label",
+      src: /\(legend\)/.test(lab) ? "legend" : "label", text: lab, mayHide: true });
+  return ev;
+}
+
+// The witnesses a MARK GROUP has. On a scanned sheet the code came out of an
+// OCR of a 300-dpi raster, so it may name a trade but may never hide one -
+// see asymmetry 2 above. `source === "raster"` is already in the payload.
+// `schedule_cells` is the field the endpoint described in the report would
+// add; no server produces it today, so this branch is inert on every document
+// in the corpus and is here as the contract, clearly marked.
+function scopeEvidenceForMark(g) {
+  const ev = [];
+  if (g.schedule_cells)
+    ev.push({ rank: 0, kind: "material", src: `schedule row ${g.name || ""}`.trim(),
+      text: g.schedule_cells, mayHide: true });
+  const code = (g.name || g.off_schedule || "").trim();
+  if (code)
+    ev.push({ rank: 2, kind: "label",
+      src: g.source === "raster" ? "read off the scan" : "mark code",
+      text: code, mayHide: g.source !== "raster" });
+  return ev;
+}
+
+// ---- the declaration itself -------------------------------------------
+// PER DOCUMENT, because that is the unit the evidence lives in: the CAD layer
+// vocabulary, the legend and the schedules all belong to one drawing set, and
+// an operator who does windows on one job does site utilities on the next.
+// Per session would be wrong (a session opens several documents); per page
+// would be wrong (a scope that changes sheet to sheet is a scope nobody can
+// audit, and the whole-job rollup adds sheets together).
+//
+// TAKING A DEFAULT FROM AN ACCOUNT LATER. The owner's plan is to ask at login.
+// When that exists, the login answer becomes the DEFAULT VALUE of this record
+// and nothing else changes: `scopeRec()` would fall back to the account trades
+// when the document has no record of its own, `scopeSetTrades` would keep
+// writing per document, and the bar would say "from your account" instead of
+// "not declared" so an operator can always see which one is talking. The
+// per-document record must stay the winner - the account says what you usually
+// do, the document says what you are doing here.
+function scopeKey() { return docKey() + "::scope"; }
+function scopeRec() {
+  try {
+    const r = JSON.parse(store.getItem(scopeKey()) || "{}");
+    return { trades: Array.isArray(r.trades) ? r.trades.filter(t => SCOPE_TOKENS[t]) : [],
+      showAside: !!r.showAside };
+  } catch (e) { return { trades: [], showAside: false }; }
+}
+function scopeSave(r) {
+  try { store.setItem(scopeKey(), JSON.stringify(r)); } catch (e) {}
+}
+
+// Recompute every style's verdict and reconcile the tick boxes.
+//
+// NOTHING HERE CHANGES A QUANTITY. Every row keeps the footage the detector
+// measured, in every state; what moves is whether the row is shown and whether
+// it is ticked into the takeoff. `offBy` records exactly which rows THIS
+// filter unticked, keyed on the same style fingerprint the include memory
+// uses, so clearing the declaration puts back exactly those and touches
+// nothing the operator turned off by hand.
+function scopeApply() {
+  state.scopeV = new Map();
+  state.scopeOwnerOn = new Set();
+  if (!state.result) { state.scopeKeep = new Set(); state.scopeOffBy = new Set(); return; }
+  const rec = scopeRec();
+  // `keep` and `offBy` are both page state keyed on style_id, not on
+  // styleFp: the fingerprint is NOT unique (Barn Civil C3.0's 280 style rows
+  // collapse to 194 fingerprints), and keyed on it a put-back of one 25.0k ft
+  // row returned two rows and 25.5k ft. Only `trades` and `showAside` - the
+  // declaration itself - are document-scoped.
+  const keep = state.scopeKeep || new Set();
+  const wasOff = state.scopeOffBy || new Set();
+  const nowOff = new Set();
+  // STEP 1 - undo whatever this filter did last time, before deciding
+  // anything. What is left is the operator's own tick state: the detector's
+  // defaults plus every box they moved by hand. Restoring first is what makes
+  // "show everything" exact rather than approximately right, and it is what
+  // lets the bar quote a footage that is genuinely IN the takeoff.
+  //
+  // Keyed on style_id, NOT on styleFp. The fingerprint is not unique: on
+  // Barn Civil C3.0 the sheet's 280 style rows collapse to 194 distinct
+  // fingerprints, so restoring by fingerprint ticked 39 rows back on that
+  // this filter had never touched (measured live: ownerOn 204 where the
+  // detector had ticked 165). style_id is unique within a page, and the set
+  // lives in page state rather than the document record because ids are
+  // page-local - a page switch rebuilds state.include from scratch anyway.
+  for (const s of state.result.styles)
+    if (wasOff.has(s.style_id) && !state.include.get(s.style_id))
+      setIncludeTransient(s.style_id, true);
+  for (const s of state.result.styles)
+    if (state.include.get(s.style_id)) state.scopeOwnerOn.add(s.style_id);
+  // STEP 2 - the verdicts, and the unticking that follows from them
+  for (const s of state.result.styles) {
+    let d = scopeVerdict(scopeEvidenceForStyle(s), rec.trades);
+    if (d.v === "out" && keep.has(s.style_id))
+      d = { v: "kept", why: "you put this back by hand", src: "you" };
+    state.scopeV.set(s.style_id, d);
+    // Only rows this filter ACTUALLY unticked are recorded - never ones the
+    // detector had already turned off. Recording those too made step 1 hand
+    // the operator rows the detector deliberately suppressed, and inflated
+    // the footage the bar claimed to remove (191.1k against a sheet holding
+    // 178.0k).
+    if (d.v === "out" && state.include.get(s.style_id)) {
+      nowOff.add(s.style_id);
+      setIncludeTransient(s.style_id, false);
+    }
+  }
+  state.scopeOffBy = nowOff;
+}
+
+function scopeSetTrades(list) {
+  const rec = scopeRec();
+  rec.trades = list.filter(t => SCOPE_TOKENS[t]);
+  scopeSave(rec);
+  scopeApply();
+  renderScopeBar(); renderStyles(); renderChips(); renderItemized();
+  renderMiniLegend(); if (state.sym) renderSym(); draw();
+}
+function scopeToggleTrade(tr) {
+  const t = scopeRec().trades;
+  scopeSetTrades(t.includes(tr) ? t.filter(x => x !== tr) : t.concat([tr]));
+}
+// One click puts a set-aside row back, and it stays back for as long as the
+// sheet is open. This is the "out-of-scope rows stay countable" guarantee -
+// adding one back is ONE action on a row that was never removed, not a
+// re-detect. Kept in page state alongside the tick boxes it mirrors; the app
+// deliberately holds no cross-session takeoff memory (see `store`).
+function scopeKeepRow(s, on) {
+  if (!state.scopeKeep) state.scopeKeep = new Set();
+  if (on) state.scopeKeep.add(s.style_id); else state.scopeKeep.delete(s.style_id);
+  // Handing a kept row BACK to the filter has to tick it on first, or the
+  // filter never records that IT is the reason the row is off and "show
+  // everything" leaves it behind. Measured live on Barn Civil C3.0 before
+  // this line existed: put style 209 back (25.0k ft), hand it back to the
+  // filter, then clear the declaration - the sheet returned 153.0k ft where
+  // it started at 178.0k, one row and 25.0k ft short, with nothing on screen
+  // saying so. That is the exact failure this whole feature is not allowed
+  // to have.
+  if (!on) setIncludeTransient(s.style_id, true);
+  scopeApply();
+  renderScopeBar(); renderStyles(); renderChips(); renderItemized();
+  renderMiniLegend(); draw();
+}
+function scopeShowAside(on) {
+  const rec = scopeRec(); rec.showAside = !!on; scopeSave(rec);
+  renderScopeBar(); renderStyles();
+}
+function scopeSeesRow(s) {
+  const d = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
+  return d.v !== "out" || scopeRec().showAside;
+}
+
+// Row COUNTS are over every line type the list can show. FOOTAGE is only
+// over the rows that are in the takeoff - ticked, or ticked until this filter
+// unticked them - because a row the detector already turned off (white
+// wash, texture, annotation) was never in the number and counting it here
+// would inflate what the filter appears to remove.
+function scopeTally() {
+  const t = { in: 0, unknown: 0, out: 0, kept: 0, on: 0,
+    ftIn: 0, ftUnknown: 0, ftOut: 0, ftKept: 0, layered: 0 };
+  if (!state.result) return t;
+  const sc = state.result.scale;
+  const ftPerIn = sc ? sc.ft_per_paper_inch : null;
+  for (const s of state.result.styles) {
+    const d = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
+    t[d.v] = (t[d.v] || 0) + 1;
+    if (String(s.layer || "").trim()) t.layered += 1;
+    // the operator's own tick state, before this filter touched anything
+    if (!(state.scopeOwnerOn && state.scopeOwnerOn.has(s.style_id))) continue;
+    t.on += 1;
+    const ft = ftPerIn ? s.length_pt / 72 * ftPerIn : s.length_pt;
+    t["ft" + d.v.charAt(0).toUpperCase() + d.v.slice(1)] += ft;
+  }
+  t.ftUnit = ftPerIn ? "ft" : "pt";
+  return t;
+}
+
+function renderScopeBar() {
+  const box = $("scopeBar");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.result) { box.hidden = true; return; }
+  box.hidden = false;
+  const rec = scopeRec(), t = scopeTally();
+  const declared = rec.trades.length > 0;
+
+  const head = document.createElement("div");
+  head.className = "scope-head";
+  const h = document.createElement("span");
+  h.className = "scope-title";
+  h.textContent = declared ? "Counting for" : "Whose scope is this?";
+  head.appendChild(h);
+  if (declared) {
+    const clr = document.createElement("button");
+    clr.className = "mini"; clr.id = "scopeClear"; clr.textContent = "show everything";
+    clr.title = "Clear the declaration. Every row this filter unticked goes "
+      + "back on, and nothing you turned off by hand is touched.";
+    clr.onclick = () => scopeSetTrades([]);
+    head.appendChild(clr);
+  }
+  box.appendChild(head);
+
+  const chips = document.createElement("div");
+  chips.className = "scope-chips";
+  for (const tr of SCOPE_NAMES) {
+    const b = document.createElement("button");
+    b.className = "scope-chip" + (rec.trades.includes(tr) ? " on" : "");
+    b.textContent = tr;
+    b.name = "scope-" + tr;
+    b.title = "Tokens tested against the CAD layer: "
+      + ((SCOPE_TOKENS[tr].layer || []).join(", ") || "(none)")
+      + (SCOPE_TOKENS[tr].material.length
+        ? "\nTested against a schedule MATERIAL cell: "
+          + SCOPE_TOKENS[tr].material.join(", ") : "");
+    b.onclick = () => scopeToggleTrade(tr);
+    chips.appendChild(b);
+  }
+  box.appendChild(chips);
+
+  const note = document.createElement("div");
+  note.className = "scope-note";
+  const fmt = n => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : n.toFixed(0));
+  if (!declared) {
+    note.innerHTML = "<b>Nothing declared, so nothing is filtered.</b> All "
+      + `${state.result.styles.length} line types on this sheet are listed, and `
+      + `the <b>${t.on}</b> rows the detector ticked (${fmt(t.ftUnknown)} `
+      + `${t.ftUnit}) are ticked still. `
+      + "Pick one or more trades above and this list narrows "
+      + "to what the sheet itself says is yours — it never deletes a row and "
+      + "never changes a length, and one click brings everything back.";
+  } else if (!t.out && !t.in) {
+    // ABSTAIN. Nothing on this sheet supports a scope decision, so say that
+    // rather than narrow on a guess.
+    note.innerHTML = "<b>Not narrowed — this sheet says nothing that "
+      + "separates your work from anybody else&rsquo;s.</b> All "
+      + `${state.result.styles.length} line types are still listed and the `
+      + `<b>${t.on}</b> the detector ticked are still ticked. `
+      + (t.layered ? "" : "No row on this sheet carries a CAD layer name, ")
+      + "and no legend label names a trade, so there is nothing to filter on. "
+      + "Nothing has been hidden.";
+  } else {
+    note.innerHTML =
+      `<b>${t.in}</b> line type${t.in === 1 ? "" : "s"} the sheet says are yours `
+      + `(${fmt(t.ftIn)} ${t.ftUnit}) · <b>${t.unknown}</b> it does not say, `
+      + `kept and ticked (${fmt(t.ftUnknown)} ${t.ftUnit}) · <b>${t.out}</b> set `
+      + `aside (${fmt(t.ftOut)} ${t.ftUnit} out of the takeoff, still listed)`
+      + (t.kept ? ` · <b>${t.kept}</b> you put back by hand `
+        + `(${fmt(t.ftKept)} ${t.ftUnit})` : "");
+  }
+  box.appendChild(note);
+
+  if (declared && (t.out || t.kept)) {
+    const act = document.createElement("div");
+    act.className = "scope-act";
+    const sh = document.createElement("button");
+    sh.className = "mini"; sh.id = "scopeAside";
+    sh.textContent = rec.showAside
+      ? `hide the ${t.out} set aside again`
+      : `show the ${t.out} set aside`;
+    sh.title = "Set aside is not deleted. Every row keeps its measured "
+      + "length; showing them lists them in place with a one-click put-back.";
+    sh.onclick = () => scopeShowAside(!rec.showAside);
+    act.appendChild(sh);
+    const w = document.createElement("span");
+    w.className = "scope-warn";
+    w.textContent = "a set-aside row is not a corrected row — its footage is unchanged";
+    act.appendChild(w);
+    box.appendChild(act);
+  }
+}
+
+// The same declaration, said again over the Count panel, because a symbol
+// count is a separate number on a separate surface and an operator who
+// declared a trade for the linework must not have to guess whether it applied
+// to the bubbles too.
+function renderSymScope() {
+  const box = $("symScope");
+  if (!box) return;
+  const rec = scopeRec();
+  if (!state.sym || !state.sym.length) { box.hidden = true; return; }
+  let nIn = 0, nOut = 0, nUnk = 0, nRaster = 0;
+  for (const g of state.sym) {
+    const d = scopeVerdict(scopeEvidenceForMark(g), rec.trades);
+    g._scope = d;
+    if (g.source === "raster") nRaster += g.n;
+    if (d.v === "in") nIn += g.n; else if (d.v === "out") nOut += g.n; else nUnk += g.n;
+  }
+  box.hidden = false;
+  if (!rec.trades.length) {
+    box.innerHTML = "<b>No trade declared</b> — every symbol found is listed, "
+      + "including any that belong to somebody else. Declare a trade in "
+      + "<i>Whose scope is this?</i> above the line-type list.";
+    return;
+  }
+  if (!nOut && !nIn) {
+    box.innerHTML = `<b>Not narrowed to ${rec.trades.join(" + ")}.</b> `
+      + `All <b>${nUnk}</b> symbols are still listed and countable. `
+      + (nRaster
+        ? "These bubbles were read by OCR off a scan, and an OCR read is never "
+          + "allowed to set a row aside — measured on the answer key for a "
+          + "285-opening project, letting one do so hides one real opening with "
+          + "no symptom. What would narrow this is the project&rsquo;s window / "
+          + "door schedule rows and the material each row names; they live in a "
+          + "different PDF and nothing reads them yet."
+        : "Nothing in the mark codes names a trade.");
+    return;
+  }
+  box.innerHTML = `Counting for <b>${rec.trades.join(" + ")}</b>: `
+    + `<b>${nIn}</b> yours · <b>${nUnk}</b> unattributed (kept) · `
+    + `<b>${nOut}</b> set aside, still listed below and still countable.`;
+}
+// ===================== end operator-declared trade scope ===================
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -1861,6 +2358,12 @@ function renderStyles() {
     if (q && !((label + " " + s.signature + " " + s.class
                 + " " + (s.layer || "")).toUpperCase().includes(q)))
       continue;
+    // The declared-trade filter, applied AFTER the text filter and only when
+    // the text box is empty. A search that cannot return a row the operator
+    // knows is on the sheet is a search that lies, so typing anything at all
+    // is itself the "show me everything" gesture - the row comes back with
+    // its set-aside badge on, never silently missing.
+    if (!q && !scopeSeesRow(s)) continue;
     if (s.class !== lastClass) {
       lastClass = s.class;
       const h = document.createElement("div");
@@ -1869,12 +2372,21 @@ function renderStyles() {
       box.appendChild(h);
     }
     const row = document.createElement("div");
-    row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off");
+    const sv = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
+    row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off")
+      + (sv.v === "out" ? " scope-out" : sv.v === "in" ? " scope-in"
+        : sv.v === "kept" ? " scope-kept" : "");
     row.dataset.sid = s.style_id;
+    row.dataset.scope = sv.v;
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
     cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
+      // Ticking a row the scope filter set aside IS the put-back: record it,
+      // or scopeApply() would untick it again on the next repaint and the
+      // operator would watch their own click undo itself.
+      if (sv.v === "out" && cb.checked) { scopeKeepRow(s, true); return; }
+      if (sv.v === "kept" && !cb.checked) { scopeKeepRow(s, false); return; }
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -1971,8 +2483,35 @@ function renderStyles() {
       }
     }
 
+    // The scope verdict, on the row, in the words of whatever asserted it.
+    // Only where a trade is declared AND the filter reached a verdict: a line
+    // reading "nothing here names a trade" on 967 of 1,459 rows would be the
+    // layer-none noise the list already refuses to print.
+    let scopeEl = null;
+    if (sv.v === "out" || sv.v === "in" || sv.v === "kept") {
+      scopeEl = document.createElement("div");
+      scopeEl.className = "style-scope " + sv.v;
+      const tag = document.createElement("span");
+      tag.className = "sl-tag";
+      tag.textContent = sv.v === "out" ? "set aside"
+        : sv.v === "kept" ? "put back" : "your trade";
+      const nm = document.createElement("span");
+      nm.className = "sc-why"; nm.textContent = sv.why;
+      scopeEl.append(tag, nm);
+      scopeEl.title = sv.v === "out"
+        ? "Set aside, not deleted. " + sv.why
+          + ". Its measured length is unchanged and it is still counted in "
+          + "the bar above. Tick the box to put it back — one click, and the "
+          + "exception is remembered for this document."
+        : sv.v === "kept"
+          ? "You put this back by hand. The filter will not set it aside "
+            + "again on this document. Untick it to let the filter decide."
+          : sv.why;
+    }
+
     row.append(cb, sw, main, mm, badge);
     if (layerEl) row.appendChild(layerEl);
+    if (scopeEl) row.appendChild(scopeEl);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
     row.onmouseleave = () => { state.hot = null; draw(); };
     row.onclick = () => { state.isolate = state.isolate === s.style_id ? null : s.style_id; draw(); };
@@ -2539,6 +3078,23 @@ function setInclude(sid, on) {
   try { store.setItem(includeKey(st), on ? "1" : "0"); }
   catch (e) { /* private mode: the session still honours the click */ }
 }
+
+// The scope filter's twin of setInclude, and the difference is the whole
+// point: it moves the tick WITHOUT recording it. A declared trade is a
+// VIEW over the sheet, not a decision about it - "show everything" must
+// put every row back exactly, and a page change must leave no trace.
+// Writing these through setInclude laundered them into the include record,
+// where scopeApply's own undo set (page state) could no longer reach them:
+// measured live on Barn Civil printed sheet 3, 178.0k ft / 165 ticked ->
+// declare -> 64.9k / 126 -> page away and back -> 39.2k / 104 -> "show
+// everything" -> still 39.2k / 104, with the bar reporting the reduced set
+// as the detector's own baseline. 138.8k ft, 78.0%, gone with no symptom.
+// Found by Gate 1 driving the app; the patch passed every static check.
+// An operator ticking a row by hand still goes through setInclude and is
+// still remembered - that IS a decision.
+function setIncludeTransient(sid, on) {
+  state.include.set(sid, !!on);
+}
 function memSave(st, touchedMeasure) {
   const label = (state.labels.get(st.style_id) || "").trim();
   const measure = state.measureMode.get(st.style_id) === "object" ? "object" : "";
@@ -2622,6 +3178,66 @@ function tradeFor(label) {
   return "General";
 }
 
+// ---------- counted twice, WITHIN one sheet -----------------------------
+// A stroke can end up in two emitted chains, so summing chain lengths counts
+// it twice. Corpus-wide that is 925,968 pt of 56,999,763 = 1.62% on 301 of
+// 354 sheets (out/verify/2026-08-22/containment/CONTAINMENT.md sec 1.2), and
+// 1.60% of the UI-included tally the operator actually reads. The engine-side
+// repair is deliberately deferred - the comment at `_pickup_end_marks` in
+// chain.py says why - so the summing layer shows BOTH numbers instead.
+//
+// A "leg" is one polyline segment, keyed as its unordered endpoint pair
+// rounded to 0.01 pt. That is an IDENTITY test, not a proximity test: no
+// tolerance, nothing to tune, and it can never merge two lines that merely
+// run close together. It is therefore a LOWER BOUND - a duplicate drawn
+// 0.3 pt to the side does not match (CONTAINMENT sec 1.5 measures the
+// geometric version at 2.3x larger, and refuses it in sec 7.2 because the
+// overlap histogram has no gap at any threshold and a naive collapse erases
+// 168 style rows, 95 of them UI-included, including A-WALL and VU-SSWR-SERV).
+function legKey(ax, ay, bx, by) {
+  const a = Math.round(ax * 100), b = Math.round(ay * 100);
+  const c = Math.round(bx * 100), d = Math.round(by * 100);
+  return (a < c || (a === c && b <= d))
+    ? a + "," + b + "|" + c + "," + d
+    : c + "," + d + "|" + a + "," + b;
+}
+
+// O(legs) with one dict - NOT a chain-vs-chain pass. CONTAINMENT sec 1.4
+// counts 171,652,550 naive C(n,2) pairs corpus-wide and 21,278,026 on one
+// sheet, which is the CO3 marker-collapse shape; this never compares two
+// chains to each other at all.
+//
+// excess = sum over legs of (k-1) x len, where k is the number of DISTINCT
+// chains in `chains` carrying that leg - the same convention CONTAINMENT
+// used, so these numbers reproduce its tables. Union = sum - excess.
+function unionStats(chains) {
+  const legs = new Map();   // key -> [k, len, lastChainIdx]
+  let sumPt = 0;
+  for (let ci = 0; ci < chains.length; ci++) {
+    const ch = chains[ci];
+    sumPt += ch.length_pt;
+    const p = ch.points;
+    if (!p || p.length < 2) continue;
+    for (let i = 1; i < p.length; i++) {
+      const d = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      if (d < 0.05) continue;   // same skip as tools/containment.py leg_index
+      const key = legKey(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]);
+      const e = legs.get(key);
+      if (e === undefined) legs.set(key, [1, d, ci]);
+      else if (e[2] !== ci) { e[0] += 1; e[2] = ci; }
+    }
+  }
+  let excessPt = 0, sharedLegs = 0;
+  for (const e of legs.values())
+    if (e[0] > 1) { excessPt += (e[0] - 1) * e[1]; sharedLegs += 1; }
+  // A pickup adds its approach GAP to chain.length without adding a leg, so
+  // sum can exceed the polyline total; clamp rather than print a union above
+  // the sum it is meant to be a subset of.
+  if (excessPt > sumPt) excessPt = sumPt;
+  return { sumPt, excessPt, unionPt: sumPt - excessPt, sharedLegs,
+           nChains: chains.length };
+}
+
 // One computation for the itemized panel AND the CSV export: totals per
 // label, object counts, overrides, prices, trade grouping. Items come back
 // grouped in TRADES order, each group sorted by quantity descending.
@@ -2630,13 +3246,16 @@ function computeTakeoffRows() {
   const sc = state.result.scale;
   const ftPerIn = sc ? sc.ft_per_paper_inch : null;
   const totals = new Map();
+  const sheetChains = [];
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
     const label = state.chainLabels.get(ch.chain_id) ||
       state.labels.get(ch.style_id) || "unlabeled";
-    const t = totals.get(label) || { count: 0, pt: 0, objects: 0, objSids: new Set() };
-    t.count += 1; t.pt += ch.length_pt;
+    const t = totals.get(label) ||
+      { count: 0, pt: 0, objects: 0, objSids: new Set(), chains: [] };
+    t.count += 1; t.pt += ch.length_pt; t.chains.push(ch);
+    sheetChains.push(ch);
     if (state.measureMode.get(ch.style_id) === "object")
       t.objSids.add(ch.style_id);
     totals.set(label, t);
@@ -2644,14 +3263,25 @@ function computeTakeoffRows() {
   for (const t of totals.values()) {
     if (t.objSids.size)
       t.objects = styleObjects([...t.objSids]).length;
+    t.dup = unionStats(t.chains);
   }
+  // The sheet figure is computed over EVERY included chain, so it also sees a
+  // leg shared by two chains carrying DIFFERENT labels - which no per-row
+  // figure can. It is therefore <= the sum of the per-row unions, and the two
+  // are not meant to add up. Both are disclosed; neither replaces the sum.
+  const sheet = unionStats(sheetChains);
+  const pt2q = (pt) => ftPerIn ? pt / 72 * ftPerIn : pt;
   // one flat list: measured line families + calculator items, then group
   const items = [...totals.entries()].map(([label, t]) => t.objects
     ? { label, cnt: "EA", qty: t.objects,
         qtyText: String(t.objects), priced: true, isObj: true,
         ft: ftPerIn ? t.pt / 72 * ftPerIn : null }
     : { label, cnt: String(t.count),
-        qty: ftPerIn ? t.pt / 72 * ftPerIn : t.pt,
+        qty: pt2q(t.pt),
+        sumQty: pt2q(t.pt),
+        unionQty: pt2q(t.dup.unionPt),
+        dupQty: pt2q(t.dup.excessPt),
+        dupLegs: t.dup.sharedLegs,
         qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
     items.push({ label: it.label, cnt: it.unit, qty: it.qty,
@@ -2687,14 +3317,54 @@ function computeTakeoffRows() {
     grand += sub;
     groups.push({ trade: tr, items: group, sub, subQty, subEa });
   }
-  return { groups, grand, ftPerIn };
+  return { groups, grand, ftPerIn, sheet };
+}
+
+// The disclosure line under an itemized row whose chains overlap each other.
+// Reads "sum X - union Y - Z drawn by both", never picks, and offers the
+// union through the SAME override the quantity box already uses, so taking it
+// is one click and giving it back is one click.
+// Full precision here on purpose: the rest of the panel abbreviates to "2.4k"
+// because the exact figure is one click away in the box, but this line IS the
+// figure - "2.4k vs 1.5k" hides the 898.4 ft it exists to disclose.
+const q1 = (v) => v.toLocaleString(undefined,
+  { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+function dupNote(it, u) {
+  const n = document.createElement("div");
+  n.className = "dup-note";
+  const onUnion = it.ov && Math.abs(it.qty - it.unionQty) < 0.05;
+  const pct = it.sumQty > 0 ? (it.dupQty / it.sumQty * 100) : 0;
+  const txt = document.createElement("span");
+  txt.innerHTML =
+    `sum <b>${q1(it.sumQty)}</b> &middot; union <b>${q1(it.unionQty)}</b> ${u}` +
+    ` &mdash; ${q1(it.dupQty)} ${u} (${pct.toFixed(1)}%) drawn by more than one` +
+    ` of these ${it.cnt} lines`;
+  txt.title = `${it.dupLegs} polyline segment(s) of this label are carried by ` +
+    `two or more chains, so the sum counts them more than once. ` +
+    `Union counts each segment exactly once. Nothing is deleted either way; ` +
+    `identical-geometry test only, so this is a lower bound.`;
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = onUnion ? "restore sum" : "use union";
+  b.title = onUnion
+    ? "put the summed quantity back in the box"
+    : "write the union into this row's quantity override (reversible)";
+  b.onclick = () => {
+    const k = ovKey(it.label, "ft");
+    if (onUnion) store.removeItem(k);
+    else store.setItem(k, it.unionQty.toFixed(1));
+    renderItemized(); renderChips();
+  };
+  n.append(txt, b);
+  return n;
 }
 
 function renderItemized() {
   const box = $("itemized");
   box.innerHTML = "";
   if (!state.result) return;
-  const { groups, grand, ftPerIn } = computeTakeoffRows();
+  const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
+  const u = ftPerIn ? "ft" : "pt";
   const head = document.createElement("div");
   head.className = "item-row head";
   head.innerHTML = "<div>label</div><div>count</div><div>" +
@@ -2759,6 +3429,10 @@ function renderItemized() {
       e.textContent = it.ext ? it.ext.toFixed(0) : "—";
       row.append(lab, cnt, q, pin, e);
       box.appendChild(row);
+      // Both numbers, side by side, only where they differ. The row's own
+      // quantity box keeps showing the SUM - nothing here changes a total or
+      // hides a chain; it discloses how much of the sum is drawn twice.
+      if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
     }
   }
   // always-visible tally: sum of INCLUDED footage + priced total
@@ -2769,11 +3443,31 @@ function renderItemized() {
     inkPt += ch.length_pt;
   }
   const tf = ftPerIn ? inkPt / 72 * ftPerIn : null;
-  $("tallyBar").textContent =
+  // The union is over EVERY included chain on the sheet, so unlike the
+  // per-row figures it also catches a segment shared by two chains with
+  // different labels. Shown beside the sum, never instead of it.
+  const uf = ftPerIn ? sheet.unionPt / 72 * ftPerIn : null;
+  const tb = $("tallyBar");
+  tb.textContent =
     (tf !== null
       ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
       : fmtLen(inkPt) + " measured")
+    + (sheet.excessPt > 0.05
+        ? " · union " + (uf !== null
+            ? (uf >= 1000 ? (uf/1000).toFixed(1) + "k" : uf.toFixed(0)) + " ft"
+            : fmtLen(sheet.unionPt))
+        : "")
     + (grand ? ` · $${grand.toFixed(0)}` : "");
+  tb.title = sheet.excessPt > 0.05
+    ? `Sum adds every included chain's length. Union counts each polyline ` +
+      `segment once: ${sheet.sharedLegs} segment(s) across ` +
+      `${sheet.nChains} included chains are carried by two or more chains, ` +
+      `worth ${fmtLen(sheet.excessPt)} ` +
+      `(${(sheet.excessPt / sheet.sumPt * 100).toFixed(2)}% of the sum). ` +
+      `Nothing is removed - both numbers are the same chains, counted two ` +
+      `ways. Identical-geometry test, so it is a lower bound.`
+    : `No included chain on this sheet shares a polyline segment with ` +
+      `another, so the sum already counts each segment once.`;
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";
@@ -2786,13 +3480,19 @@ function renderItemized() {
 function takeoffCsv() {
   const data = computeTakeoffRows();
   if (!data) return null;
-  const { groups, grand, ftPerIn } = data;
+  const { groups, grand, ftPerIn, sheet } = data;
   const csc = (v) => {
     v = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
+  const uq = (pt) => ftPerIn ? pt / 72 * ftPerIn : pt;
+  // Two columns appended, never substituted: the existing quantity column is
+  // byte-for-byte what it was. "union" counts each polyline segment once;
+  // "drawn twice" is what the sum counts more than once (sum - union).
   const rows = [["label", "trade", "count/EA",
-                 ftPerIn ? "feet" : "pt", "$/ft", "ext $"]];
+                 ftPerIn ? "feet" : "pt", "$/ft", "ext $",
+                 ftPerIn ? "union feet" : "union pt",
+                 ftPerIn ? "drawn twice feet" : "drawn twice pt"]];
   for (const g of groups) {
     for (const it of g.items) {
       const isLf = !isNaN(parseFloat(it.cnt));   // plain line-count rows
@@ -2804,10 +3504,15 @@ function takeoffCsv() {
              : (it.ft !== undefined && it.ft !== null ? it.ft.toFixed(1) : ""),
         it.price !== null && it.price !== undefined ? it.price : "",
         it.ext ? it.ext.toFixed(2) : "",
+        it.unionQty !== undefined ? it.unionQty.toFixed(1) : "",
+        it.dupQty !== undefined ? it.dupQty.toFixed(1) : "",
       ]);
     }
   }
-  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2)]);
+  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2), "", ""]);
+  rows.push(["SHEET TOTAL (every included line)", "", "",
+             uq(sheet.sumPt).toFixed(1), "", "",
+             uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1)]);
   return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
 }
 $("csvBtn").onclick = () => {
@@ -3783,6 +4488,170 @@ function renderRoll() {
   t.innerHTML = txt; t.hidden = false;
 }
 
+// ---------- counted twice, ACROSS sheets --------------------------------
+// report_pdf sums length_ft per label over every approved page, and its own
+// caption says so: "a run drawn on several sheets is counted once per sheet."
+// True, and useless to the operator, who cannot see WHICH labels that hits.
+//
+// This surfaces the overlap and stops. It does NOT match geometry across
+// sheets: that is rotation-invariant matching with three tolerances, the
+// first attempt failed on a bucket edge, and getting it wrong deletes real
+// footage. Nothing here reads a coordinate.
+//
+// Session-only by construction. The marks below are a judgement about ONE
+// document in front of one person; persisting them would silently move a
+// later job total with no symptom, which is the worst failure this tool has.
+function xsKey(page, label) {
+  return (state.docName || "?") + " p" + page + " :: " + label;
+}
+
+async function xsLoadApproved() {
+  const n = (state.kinds || []).length;
+  const pages = [];
+  // p<N>_elements.json exists only for an approved page; 404 means "not
+  // approved", which is a fact, not an error. Fetched 8 at a time so a
+  // 200-sheet job does not open 200 sockets.
+  for (let base = 0; base < n; base += 8) {
+    const batch = [];
+    for (let p = base; p < Math.min(base + 8, n); p++) batch.push(p);
+    const got = await Promise.all(batch.map(async (p) => {
+      try {
+        const r = await fetch(`/api/job/${state.job}/page/${p}/elements`);
+        if (!r.ok) return null;
+        return { page: p, exp: await r.json() };
+      } catch (e) { return null; }
+    }));
+    for (const g of got) if (g) pages.push(g);
+  }
+  return pages;
+}
+
+$("xsClose").onclick = () => { $("xsPanel").hidden = true; };
+
+$("xsBtn").onclick = async () => {
+  const panel = $("xsPanel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  $("xsBody").innerHTML = '<div class="ew-hint">reading the approved sheets…</div>';
+  $("xsTotal").hidden = true; $("xsPending").hidden = true;
+  state.xs = await xsLoadApproved();
+  renderXs();
+};
+
+function renderXs() {
+  const approved = state.xs || [];
+  const box = $("xsBody"), tot = $("xsTotal"), pend = $("xsPending");
+  box.innerHTML = "";
+  if (!state.xsIgnore) state.xsIgnore = new Set();
+  const nPages = (state.kinds || []).length;
+
+  if (!approved.length) {
+    box.innerHTML = '<div class="ew-hint">no approved sheets yet. Press ' +
+      '<b>Approve &amp; export</b> on two sheets and this table fills in.</div>';
+    tot.hidden = true; pend.hidden = true;
+    return;
+  }
+  pend.innerHTML = `<b>${approved.length}</b> of ${nPages} sheet` +
+    (nPages === 1 ? "" : "s") + ` approved (sheet ` +
+    approved.map(a => a.page + 1).join(", ") + `)` +
+    (approved.length < nPages
+      ? ` &middot; <span class="dim">the rest are not in the Report PDF either</span>` : "");
+  pend.hidden = false;
+
+  // label -> per-sheet footage. Footage only: report_pdf's grand summary is
+  // footage-only too ("summary totals stay footage-only"), so this table
+  // reconciles to the number that PDF prints. EA / calculator rows are NOT
+  // covered here - stated, not silently dropped.
+  const byLabel = new Map();
+  let allFt = 0, eaRows = 0;
+  for (const a of approved) {
+    for (const it of (a.exp.items || [])) {
+      if (it.length_ft === null || it.length_ft === undefined) { eaRows += 1; continue; }
+      const e = byLabel.get(it.label) || { per: [], ft: 0 };
+      e.per.push({ page: a.page, ft: it.length_ft, count: it.count });
+      e.ft += it.length_ft;
+      byLabel.set(it.label, e);
+      allFt += it.length_ft;
+    }
+  }
+  const multi = [...byLabel.entries()]
+    .filter(([, e]) => e.per.length > 1)
+    .sort((a, b) => b[1].ft - a[1].ft);
+
+  let overlapFt = 0, ignoredFt = 0;
+  for (const [label, e] of multi) {
+    overlapFt += e.ft;
+    const wrap = document.createElement("div");
+    wrap.className = "xs-lab";
+    const h = document.createElement("div");
+    h.className = "xs-lab-head";
+    h.innerHTML = `<span class="xs-name" title="${label.replace(/"/g, "&quot;")}">${label}</span>` +
+      `<span class="xs-ft">${e.ft.toLocaleString(undefined, {maximumFractionDigits: 1})} ft` +
+      ` over ${e.per.length} sheets</span>`;
+    wrap.appendChild(h);
+    let kept = 0;
+    for (const c of e.per) {
+      const k = xsKey(c.page, label);
+      const off = state.xsIgnore.has(k);
+      if (off) ignoredFt += c.ft; else kept += c.ft;
+      const r = document.createElement("div");
+      r.className = "xs-row" + (off ? " off" : "");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = !off;
+      cb.name = `xs-${c.page}-${label}`;
+      cb.title = off
+        ? "counted again below"
+        : "tick off to say this sheet's contribution is already counted elsewhere";
+      cb.onchange = () => {
+        if (cb.checked) state.xsIgnore.delete(k); else state.xsIgnore.add(k);
+        renderXs();
+      };
+      const nm = document.createElement("button");
+      nm.className = "mini xs-go";
+      nm.textContent = "sheet " + (c.page + 1);
+      nm.title = "open this sheet";
+      nm.onclick = () => { $("pageSel").value = c.page; selectPage(c.page); };
+      const ft = document.createElement("span");
+      ft.className = "xs-ft";
+      ft.textContent = c.ft.toLocaleString(undefined, {maximumFractionDigits: 1}) +
+        " ft · " + c.count + " line" + (c.count === 1 ? "" : "s");
+      r.append(cb, nm, ft);
+      wrap.appendChild(r);
+    }
+    if (kept !== e.ft) {
+      const adj = document.createElement("div");
+      adj.className = "xs-adj";
+      adj.textContent = "counted here: " +
+        kept.toLocaleString(undefined, {maximumFractionDigits: 1}) + " ft" +
+        " (was " + e.ft.toLocaleString(undefined, {maximumFractionDigits: 1}) + ")";
+      wrap.appendChild(adj);
+    }
+    box.appendChild(wrap);
+  }
+  if (!multi.length) {
+    box.innerHTML = '<div class="ew-hint">no label carries footage on two of the ' +
+      'approved sheets. Nothing is billed twice across sheets on this set.</div>';
+  }
+
+  let txt = `<b>${allFt.toLocaleString(undefined, {maximumFractionDigits: 1})}</b> ft` +
+    ` summed over ${approved.length} approved sheet` + (approved.length === 1 ? "" : "s") +
+    ` &mdash; the figure the Report PDF prints.<br>` +
+    `<b>${multi.length}</b> label${multi.length === 1 ? "" : "s"} on more than one sheet,` +
+    ` carrying <b>${overlapFt.toLocaleString(undefined, {maximumFractionDigits: 1})}</b> ft` +
+    ` of that. Whether any of it is one run drawn twice is your call, not the engine's.`;
+  if (ignoredFt > 0)
+    txt += `<br>after your marks: <b>` +
+      (allFt - ignoredFt).toLocaleString(undefined, {maximumFractionDigits: 1}) +
+      `</b> ft <span class="dim">(you set aside ` +
+      ignoredFt.toLocaleString(undefined, {maximumFractionDigits: 1}) +
+      ` ft as already counted; nothing was deleted and the Report PDF still prints ` +
+      allFt.toLocaleString(undefined, {maximumFractionDigits: 1}) + `)</span>`;
+  if (eaRows)
+    txt += `<br><span class="dim">${eaRows} EA / calculator row(s) on these sheets are ` +
+      `not in this table &mdash; it covers linear footage only.</span>`;
+  tot.innerHTML = txt; tot.hidden = false;
+}
+
 $("rollCsv").onclick = () => {
   const j = state.roll || {}, rows = j.rows || [];
   if (!rows.length) { setStatus("nothing to export yet", "err"); return; }
@@ -3843,6 +4712,7 @@ $("symAddAll").onclick = () => {
 function renderSym() {
   const box = $("symRows"), info = state.symInfo || {};
   box.innerHTML = "";
+  renderSymScope();   // sets g._scope on every group; must run before the rows
 
   // what the sheet's own schedule says, and where it was read from - the
   // estimator needs to know whether the cross-check column is trustworthy
@@ -3865,7 +4735,10 @@ function renderSym() {
   }
   state.sym.forEach((g, k) => {
     const row = document.createElement("div");
-    row.className = "sym-row" + (g.name ? "" : " sym-unnamed");
+    const gv = (g._scope || { v: "unknown" });
+    const aside = gv.v === "out" && !g._keep;
+    row.className = "sym-row" + (g.name ? "" : " sym-unnamed")
+      + (aside ? " scope-out" : gv.v === "in" ? " scope-in" : "");
     const n = document.createElement("div");
     n.className = "sym-n"; n.textContent = g.n;
     const mid = document.createElement("div");
@@ -3889,6 +4762,15 @@ function renderSym() {
       meta.appendChild(os);
       nm.placeholder = "not a schedule mark — name it only if you want it";
     }
+    if (aside || g._keep) {
+      // Set aside is a filter, never a deletion: the row stays in the list
+      // with its count, and one click puts it back in the total. Nothing
+      // about this changes g.n - the number the geometry produced.
+      const sp = document.createElement("span");
+      sp.className = "sym-aside";
+      sp.textContent = g._keep ? " · you put this back" : " · " + gv.why;
+      meta.appendChild(sp);
+    }
     if (g.schedule_qty !== undefined) {
       const chk = document.createElement("span");
       const ok = g.schedule_qty === g.n;
@@ -3899,8 +4781,10 @@ function renderSym() {
     }
     mid.append(nm, meta);
     const add = document.createElement("button");
-    add.className = "add"; add.textContent = "Add";
+    add.className = "add";
+    add.textContent = aside ? "Put back" : "Add";
     add.onclick = () => {
+      if (aside) { g._keep = true; renderSym(); return; }
       if (!symAdd(g)) return;
       setStatus(`${g.name.trim()} × ${g.n} added to takeoff`);
       renderItemized();
@@ -3917,8 +4801,12 @@ function renderSym() {
   const off = state.sym.filter(g => g.off_schedule).reduce((a, g) => a + g.n, 0);
   const un = state.sym.filter(g => !g.name && !g.off_schedule)
     .reduce((a, g) => a + g.n, 0);
+  const setAside = state.sym.filter(g => (g._scope || {}).v === "out" && !g._keep)
+    .reduce((a, g) => a + g.n, 0);
   let t = `<b>${sum}</b> counted across ${named.length} named mark` +
     (named.length === 1 ? "" : "s");
+  if (setAside) t += ` &middot; <b>${setAside}</b> set aside as another trade` +
+    ` <span class="dim">(listed below, still countable)</span>`;
   if (off) t += ` &middot; <b>${off}</b> read as a tag this schedule does not list`;
   if (un) t += ` &middot; <b>${un}</b> bubble${un === 1 ? "" : "s"} found but not read`;
   (info.notes || []).forEach(nt => { t += `<br><span class="dim">${nt}</span>`; });
