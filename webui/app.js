@@ -339,6 +339,10 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = [];
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  // a limit of work belongs to ONE sheet: the next page's grading line is
+  // a different polygon, and carrying this one over would clip the new
+  // sheet's volumes to an outline drawn somewhere else
+  state.ewBound = null;
   state.conf = null; state.confKey = null; state.confErr = false;
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
@@ -4293,6 +4297,8 @@ $("ewBtn").onclick = async () => {
   panel.hidden = false;
   // a page switch nulls state.tool without touching this button's class
   $("ewAddRow").classList.remove("active");
+  $("ewBoundPick").classList.remove("active");
+  renderEwBound();
   if (!state.ew) {
     $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
     const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
@@ -4341,6 +4347,139 @@ $("ewBtn").onclick = async () => {
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
 // The estimator clicks a contour line and types the elevation they read
 // off the overview sheet. Session-only, like every other row here.
+// ---------- limit of work ------------------------------------------------
+// state.ewBound = { pts: [[x,y],...], src: "chain 412" | "outline", closed }
+// Page points, the same space the chains live in, which is what the server
+// integrates over. Held OUTSIDE state.ew so re-running the calculator does
+// not silently drop it; cleared on a page change like every other page fact.
+function ewBoundSet(pts, src) {
+  const p = (pts || []).filter(q => Array.isArray(q) && q.length >= 2)
+                       .map(q => [+q[0], +q[1]]);
+  if (p.length < 3) {
+    setStatus("that line has fewer than 3 points " + '—' + " it cannot bound an area", "err");
+    return false;
+  }
+  // A limit-of-work line is usually drawn closed, but a traced one often is
+  // not. The polygon test treats the last point as joined to the first
+  // anyway, so an open line is USABLE - say so rather than refusing, and say
+  // how far apart the ends are so the operator can judge it.
+  const dx = p[0][0] - p[p.length - 1][0], dy = p[0][1] - p[p.length - 1][1];
+  const gap = Math.hypot(dx, dy);
+  state.ewBound = { pts: p, src: src || "picked", gap };
+  renderEwBound();
+  return true;
+}
+function ewBoundClear() {
+  state.ewBound = null;
+  renderEwBound();
+}
+function renderEwBound() {
+  const box = $("ewBound"), st = $("ewBoundState"), clr = $("ewBoundClear");
+  if (!box) return;
+  const b = state.ewBound;
+  box.classList.toggle("on", !!b);
+  if (clr) clr.hidden = !b;
+  const ftPerPt = (state.result && state.result.scale
+    && state.result.scale.ft_per_paper_inch)
+    ? state.result.scale.ft_per_paper_inch / 72 : null;
+  if (st) {
+    if (!b) {
+      st.textContent = "not set " + '—' + " the whole overlap of both surfaces";
+      st.title = "Cut and fill are integrated wherever BOTH surfaces are "
+        + "defined, which is the intersection of their convex hulls. That "
+        + "reaches into ground nobody is grading.";
+    } else {
+      const a = Math.abs(polyAreaPt(b.pts));
+      const sf = ftPerPt ? a * ftPerPt * ftPerPt : null;
+      st.textContent = `${b.src} ${'—'} ${b.pts.length} points`
+        + (sf ? ` ${'—'} ${Math.round(sf).toLocaleString()} SF` : "");
+      st.title = (b.gap > 1
+        ? `The line does not close: its ends are ${b.gap.toFixed(1)} pt apart. `
+          + `They are joined for the area test, so check the shape is what you meant. `
+        : "") + "Volume outside this outline is not counted.";
+    }
+  }
+  // the standing caveat is no longer true once a boundary is in force
+  const w = $("ewWhere");
+  if (w) w.innerHTML = b
+    ? "<b>Where it applies.</b> Inside the limit of work you set "
+      + "(" + b.pts.length + " points" + (b.src ? ", " + b.src : "") + "). "
+      + "Ground outside it is not counted at all."
+    : "<b>Where it applies.</b> Each surface exists only inside a "
+      + "straight-sided envelope drawn around the contours you gave it (its "
+      + "convex hull), and the volume is integrated where the two envelopes "
+      + "overlap. That envelope cuts straight across every bay and notch in "
+      + "the real limit of disturbance and reaches out to the furthest "
+      + "contour, so <b>the region is not the graded area</b>. Set a limit of "
+      + "work below and it will be.";
+}
+// shoelace, page pt^2
+function polyAreaPt(pts) {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++)
+    a += (pts[j][0] + pts[i][0]) * (pts[j][1] - pts[i][1]);
+  return a / 2;
+}
+
+$("ewBoundClear").onclick = () => {
+  ewBoundClear();
+  setStatus("limit of work cleared " + '—' + " volumes cover the whole overlap again");
+};
+$("ewBoundPick").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "ew-bound") { ewDisarmBound("limit of work cancelled"); return; }
+  if (state.selected !== null) {
+    const ch = chainById(state.selected);
+    if (ch && ewBoundSet(ch.points, "chain " + ch.chain_id)) {
+      setStatus("limit of work set from the selected line");
+      return;
+    }
+  }
+  state.tool = "ew-bound";
+  $("ewBoundPick").classList.add("active");
+  setStatus("limit of work: click the grading-limit line on the sheet "
+    + '—' + " Esc cancels", "busy");
+};
+function ewDisarmBound(msg) {
+  if (state.tool !== "ew-bound") return;
+  state.tool = null;
+  $("ewBoundPick").classList.remove("active");
+  if (msg !== undefined) setStatus(msg);
+}
+function ewBoundAt(px, py) {
+  const { k } = state.view;
+  const f = IMG_DPI / 72;
+  const tolPt = 6 / k / f * 4 + 1.5;
+  let best = null, bestD = tolPt;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    for (let i = 1; i < ch.points.length; i++) {
+      const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
+      if (d < bestD) { bestD = d; best = ch; }
+    }
+  }
+  if (!best)
+    return setStatus("no line there " + '—' + " click closer to the grading-limit line, or Esc", "err");
+  ewDisarmBound(undefined);
+  if (ewBoundSet(best.points, "chain " + best.chain_id))
+    setStatus("limit of work set " + '—' + " recalculate to apply it");
+}
+const _ewBoundClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "ew-bound") {
+    const [px, py] = ptFromEvent(e);
+    return ewBoundAt(px, py);
+  }
+  return _ewBoundClickBefore(e);
+};
+addEventListener("keydown", (e) => {
+  if (typing() || state.tool !== "ew-bound") return;
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    ewDisarmBound("limit of work cancelled");
+  }
+}, true);
+
 function ewDisarmPick(msg) {
   if (state.tool !== "ew-pick") return;
   state.tool = null;
@@ -4552,6 +4691,9 @@ function ewBody() {
     proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
       .map(r => ({ chain_id: r.chain_id, z: r.z })),
     cell_ft: 2.0,
+    // The limit of work, if the operator set one. Omitted when they have not,
+    // so the server takes the original path and every existing number stands.
+    boundary: state.ewBound ? state.ewBound.pts : null,
     existing_layers: lay("existing"),
     proposed_layers: lay("proposed"),
     // #853 reuses site cut against site fill 1:1 (import 11,581 against
@@ -4766,6 +4908,7 @@ $("ewCalc").onclick = async () => {
   // the engine reports -0.0 when nothing is cut (negated empty sum); show 0
   const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
   renderEwStale();
+  renderEwBound();
   $("ewResult").innerHTML =
     `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
     ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +

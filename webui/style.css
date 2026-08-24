@@ -822,3 +822,18 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   border-color: #d9bd7e; background: #fbf3e2; color: #8a5a06;
 }
 :root[data-theme="light"] .ew-stale b { color: #6d4705; }
+
+/* --- earthwork limit of work -------------------------------------------
+   Without one, cut/fill is integrated over the intersection of the two
+   surfaces' convex hulls. On a 600-acre sheet that read fill 2.6M CY against
+   the estimator's own 1.6M - "it's filling all that stuff outside". */
+.ew-bound { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--sunk); }
+.ew-bound-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ew-bound-row + .ew-bound-row { margin-top: 6px; }
+.ew-bound-lab { font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--dim); }
+.ew-bound-state { font-size: 12px; color: var(--dim); }
+.ew-bound.on { border-color: var(--accent); background: var(--accent-deep); }
+.ew-bound.on .ew-bound-state { color: var(--accent); font-weight: 600; }
+:root[data-theme="light"] .ew-bound.on { background: #e6efe9; }

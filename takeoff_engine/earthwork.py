@@ -58,10 +58,39 @@ class Surface:
         return LinearNDInterpolator(P, Z), P
 
 
+def _points_in_poly(GX, GY, poly):
+    """Vectorised even-odd (ray casting) test over a whole grid.
+
+    Even-odd rather than winding: a limit-of-work line drawn as a single ring
+    is the normal case, and even-odd also does the right thing for a figure
+    that doubles back on itself, which a hand-traced boundary sometimes does.
+    Written against the grid in one pass - a per-cell Python loop over a
+    4-million-cell grid would take minutes.
+    """
+    x = GX.ravel()
+    y = GY.ravel()
+    inside = np.zeros(x.shape, dtype=bool)
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        # does the horizontal ray from (x, y) cross edge j->i ?
+        straddles = (yi > y) != (yj > y)
+        if straddles.any():
+            # x of the edge at this y; guard the horizontal edge
+            dy = (yj - yi) or 1e-12
+            xcross = (xj - xi) * (y - yi) / dy + xi
+            inside ^= straddles & (x < xcross)
+        j = i
+    return inside.reshape(GX.shape)
+
+
 def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
              cell_ft: float = 2.0, existing_offset_ft: float = 0.0,
              proposed_offset_ft: float = 0.0,
-             return_grid: bool = False) -> dict:
+             return_grid: bool = False,
+             boundary: "list | None" = None) -> dict:
     """Grid-integrate (proposed - existing) where both TINs are defined.
 
     Offsets LOWER a surface before differencing (z - offset). The client's
@@ -78,6 +107,20 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
     pt so a caller can paint a cut/fill map registered to the sheet. The
     default call path (offsets 0, no grid) returns exactly what it always
     did - same keys, same numbers.
+
+    boundary is the LIMIT OF WORK: a polygon in page pt, outside which no
+    volume is counted. Without it the region integrated over is wherever BOTH
+    TINs are defined - which is the intersection of the two surfaces' convex
+    hulls, and a hull bulges anywhere the graded area is concave or the
+    contours sprawl. Two clients reported the same consequence independently:
+    Jason Knudson asked "can we boundary these?" of a 172,094 CY read, and on
+    a 600-acre mass-grading sheet Josh Stice scored us against his own takeoff
+    at cut 2.1M vs his 2.2M (close) but fill 2.6M vs his 1.6M - "it's filling
+    all that stuff outside" - and pointed at the grading-limit line the sheet
+    already draws.
+
+    Passing None is not a special case that is merely handled; it is the
+    original code path untouched, so every existing number is unchanged.
     """
     fe, pe = existing.interpolator()
     fp, pp = proposed.interpolator()
@@ -103,6 +146,17 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
     ze = fe(GX, GY)
     zp = fp(GX, GY)
     ok = ~(np.isnan(ze) | np.isnan(zp))
+    if boundary is not None:
+        poly = np.asarray(boundary, dtype=float)
+        if poly.ndim != 2 or poly.shape[0] < 3 or poly.shape[1] != 2:
+            return {"error": "the boundary needs at least 3 points, each [x, y] "
+                             "in page points"}
+        inside = _points_in_poly(GX, GY, poly)
+        if not (ok & inside).any():
+            return {"error": "no part of the graded surface falls inside that "
+                             "boundary - check it is the limit-of-work line and "
+                             "not a detail or a legend box"}
+        ok = ok & inside
     if not ok.any():
         return {"error": "surfaces overlap in plan but their TINs do not"}
     # guarded so the zero-offset path is the exact expression it always was
@@ -116,6 +170,11 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
     fill_ft3 = float(dz[dz > 0].sum() * cell_area_ft2)
     cut_ft3 = float(-dz[dz < 0].sum() * cell_area_ft2)
     out = {
+        # Stated so a reader of the export can tell a site-wide figure from a
+        # figure clipped to a limit of work. Silence would make the two
+        # indistinguishable, which is the whole defect this argument fixes.
+        "boundary_applied": boundary is not None,
+        "boundary_points": (len(boundary) if boundary is not None else 0),
         "cut_yd3": round(cut_ft3 / 27.0, 1),
         "fill_yd3": round(fill_ft3 / 27.0, 1),
         "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),

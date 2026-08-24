@@ -2006,6 +2006,14 @@ class EarthworkBody(BaseModel):
     # exist only so a user whose job needs one can enter it.
     export_factor: float = 1.0
     import_factor: float = 1.0
+    # LIMIT OF WORK: [[x, y], ...] in page points. Outside it no volume is
+    # counted. Omitted, the region is wherever both TINs are defined - the
+    # intersection of two convex hulls, which bulges wherever the graded area
+    # is concave. Two clients hit that independently: "can we boundary these?"
+    # on a 172,094 CY read, and a 600-acre sheet scoring cut 2.1M against a
+    # true 2.2M but fill 2.6M against a true 1.6M, "filling all that stuff
+    # outside". Omitting it leaves every existing number untouched.
+    boundary: list[list[float]] | None = None
 
 
 @app.get("/api/job/{job_id}/page/{page}/earthwork/suggest")
@@ -2203,7 +2211,7 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       build("proposed", body.proposed, body.proposed_points),
                       ft_per_pt, cell_ft=body.cell_ft,
                       existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
-                      return_grid=return_grid)
+                      return_grid=return_grid, boundary=body.boundary)
     if "error" in result:
         raise HTTPException(400, result["error"])
     result["ft_per_pt"] = round(ft_per_pt, 5)
