@@ -1092,9 +1092,12 @@ def approve(job_id: str, page: int, body: ApproveBody):
             "extended": round(qty * price, 2) if price else None,
             **({"qty_set_by": _BY_REVIEWER, "engine_qty": eng_qty} if o else {}),
         })
+    # Mirrors TRADES in webui/app.js, in the same order, so the report and
+    # the panel group and sort identically. Keep the two in step.
     trade_rank = {t: i for i, t in enumerate((
         "Earthwork & Grading", "Wet Utilities", "Dry Utilities",
-        "Paving & Concrete", "Structures", "Fencing & Sitework", "General"))}
+        "Paving & Concrete", "Footing & Foundation", "Structures",
+        "Fencing & Sitework", "General"))}
     items.sort(key=lambda it: (trade_rank.get(it.get("trade"), 99),))
     # Anything the operator typed that matched no row here. Silence would let
     # a renamed or unticked row swallow a correction without trace.

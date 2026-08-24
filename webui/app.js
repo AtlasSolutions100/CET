@@ -1908,13 +1908,26 @@ const SCOPE_TOKENS = {
     label: ["PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
       "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF"],
     material: [] },
+  // Split out of "Structures" on 2026-08-24. Jeff Ellis (ECI Foundations) was
+  // asked in the demo which trade he needed and answered "Footing and
+  // foundation" - and the filter built to narrow a sheet to HIS work could not
+  // express his work. Structures held FOOTING, FTG, FOUNDATION, PIER and SLAB
+  // alongside JOIST, TRUSS, STUD and BEAM, so declaring it handed a foundations
+  // sub the whole superstructure. A framer and a foundations sub are not the
+  // same trade and must not share one token set.
+  "Footing & Foundation": {
+    layer: ["FOOTING", "FOOTINGS", "FOOTER", "FTG", "FOUNDATION", "FNDN",
+      "STEM WALL", "STEMWALL", "GRADE BEAM", "PIER", "CAISSON",
+      "PILE CAP", "PILASTER", "SLAB", "SOG", "SLAB ON GRADE"],
+    label: ["FOOTING", "FOOTINGS", "FOOTER", "FTG", "FOUNDATION", "FNDN",
+      "STEM WALL", "STEMWALL", "GRADE BEAM", "PIER", "CAISSON",
+      "PILE CAP", "PILASTER", "SLAB", "SOG", "SLAB ON GRADE"],
+    material: [] },
   "Structures": {
-    layer: ["FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
-      "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST", "TRUSS",
-      "MOMENT FRAME"],
-    label: ["FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
-      "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST", "TRUSS",
-      "MOMENT FRAME"],
+    layer: ["BUILDING", "STAIR", "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD",
+      "JOIST", "TRUSS", "MOMENT FRAME"],
+    label: ["BUILDING", "STAIR", "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD",
+      "JOIST", "TRUSS", "MOMENT FRAME"],
     material: [] },
   "Fencing & Sitework": {
     layer: ["FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
@@ -3618,7 +3631,8 @@ function memApply() {
 
 // ---------- trade grouping (boss roadmap: takeoff organized by trade) ----
 const TRADES = ["Earthwork & Grading", "Wet Utilities", "Dry Utilities",
-                "Paving & Concrete", "Structures", "Fencing & Sitework", "General"];
+                "Paving & Concrete", "Footing & Foundation", "Structures",
+                "Fencing & Sitework", "General"];
 function tradeKey(label) { return "trade::" + label.trim().toUpperCase(); }
 function tradeFor(label) {
   const saved = store.getItem(tradeKey(label));
@@ -3632,11 +3646,16 @@ function tradeFor(label) {
           "TRENCH", "VALVE", "WELL", "FIREWATER")) return "Wet Utilities";
   if (has("ELECTRIC", "TELEPHONE", "GAS", "FIBER", "CABLE", "COMM", "POWER",
           "CONDUIT", "LIGHT", "OHP")) return "Dry Utilities";
+  // Ahead of Paving & Concrete on purpose: "CONCRETE FOOTING" belongs to the
+  // foundations sub, while a bare "CONCRETE SIDEWALK" still falls through to
+  // flatwork.
+  if (has("FOOTING", "FOOTINGS", "FOOTER", "FTG", "FOUNDATION", "FNDN",
+          "STEM WALL", "STEMWALL", "GRADE BEAM", "PIER", "CAISSON", "PILE CAP",
+          "PILASTER", "SLAB", "SOG")) return "Footing & Foundation";
   if (has("PAVEMENT", "PAVING", "CURB", "SIDEWALK", "CONCRETE", "ASPHALT",
           "ROAD", "DRIVE", "GUTTER", "FLATWORK", "APRON", "EDGE OF")) return "Paving & Concrete";
-  if (has("FOOTING", "FTG", "FOUNDATION", "PIER", "SLAB", "BUILDING", "STAIR",
-          "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD", "JOIST",
-          "TRUSS", "MOMENT FRAME")) return "Structures";
+  if (has("BUILDING", "STAIR", "BEAM", "COLUMN", "MASONRY", "SHEAR", "STUD",
+          "JOIST", "TRUSS", "MOMENT FRAME")) return "Structures";
   if (has("FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
           "SILT", "PROPERTY", "EASEMENT", "SETBACK")) return "Fencing & Sitework";
   return "General";
