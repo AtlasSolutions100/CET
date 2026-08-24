@@ -223,6 +223,9 @@ ol.run p:last-child { margin-bottom: 0; }
 }
 .sev.s1 { background: var(--crit); color: var(--panel); }
 .sev.s2 { background: var(--warn-w); color: var(--warn); border: 1px solid currentColor; }
+.sev.s0 { background: var(--ok); color: var(--panel); }
+.risk.done { opacity: .82; }
+.risk.done .risk-t { font-weight: 500; }
 .risk-t { font-weight: 600; font-size: 16px; line-height: 1.4; }
 .risk p { margin: 0 0 10px; font-size: 15px; }
 .risk p:last-child { margin-bottom: 0; }
@@ -298,7 +301,7 @@ footer.end {
   <p class="standfirst">How to take a construction PDF from a cold open to a priced, exported takeoff — and exactly where to stop and check before the number reaches a bid.</p>
   <div class="stamp">
     <span>Written 24 Aug 2026</span>
-    <span>Build <span class="num">d4ee99b</span></span>
+    <span>Build <span class="num">e3981c0</span></span>
     <span>Service on <span class="num">127.0.0.1:8100</span></span>
   </div>
 </header>
@@ -502,7 +505,8 @@ footer.end {
 <p>Five columns: the name, a count, the quantity, your unit rate, and the extended amount. Only <strong>two of those are detected</strong> — the count and the quantity. The name, the trade, the price and any quantity you retype are yours.</p>
 
 <h3>Overriding a quantity</h3>
-<p>Click a quantity box, type your number, press Tab. The box goes bold with a coloured border, and hovering it tells you what detected figure you replaced. Clear the box to go back.</p>
+<p>Each box already holds the detected figure at full precision — <span class="ui">25027.8</span>, not <span class="ui">25.0k</span> — with a dashed border meaning "this is the engine's number". The up/down arrows nudge from it by a sensible step for its size (100 on a 25,000 ft row, 0.1 on a small one), so you can adjust a figure that is slightly off without retyping it.</p>
+<p>Type or step to a new value and the box turns solid and bold, and the row gains a sentence underneath: <span class="ui">overridden — this sheet uses 18,000.0 ft; the engine detected 25,027.8 ft</span>, with a <span class="ui">restore detected</span> button. Clearing the box, or typing the detected figure back, also restores it — neither counts as an override.</p>
 
 <div class="note crit">
   <span class="tag">The most important caveat in this handbook</span>
@@ -652,16 +656,18 @@ footer.end {
 
 <p class="lede">Everything here produces a number that <em>looks completely normal on screen</em>. These are the checks that catch them. Ordered by what it costs to miss.</p>
 
-<div class="risk" id="r1">
-  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">A typed footage override never reaches the report</span></div>
-  <p>You correct a quantity, the panel and the CSV show your figure, and the exported JSON and Report PDF show the uncorrected detected one — same line item, different number, no warning.</p>
-  <div class="check"><b>Check</b>On any sheet where you overrode a quantity, deliver the CSV. If the report must be the deliverable, fix the quantity by unticking or erasing linework instead of typing over it.</div>
+<div class="risk done" id="r1">
+  <div class="risk-h"><span class="sev s0">Fixed</span><span class="risk-t">A typed quantity now reaches the export and the report</span></div>
+  <p>Until 24 Aug a quantity you typed changed the panel and the CSV but <em>not</em> the exported JSON or the Report PDF, which kept the detected figure under the same line-item name. On one real row that was 18,000 ft on screen against 25,027.8 ft in the report — a $70,278 difference at $10/ft.</p>
+  <p>Corrections now travel with the approval, and the deliverable says which figures are yours: the row is starred and carries <span class="ui">* set by the reviewer: 18,000.0 ft. Measured on this sheet: 25,027.8 ft.</span> underneath, with a banner above the table. The line geometry still measures the original, deliberately, so the two can be reconciled.</p>
+  <div class="check"><b>Check</b>After Approve, the status line tells you how many typed quantities went into the export. If it says a quantity matched no row, it turns red — read it.</div>
 </div>
 
 <div class="risk">
-  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">An override applies to every sheet, not just this one</span></div>
-  <p>Overrides are stored per document, not per page. Override a name to 24 on sheet 3 and every row with that name on sheet 5 also reads 24, whatever is actually drawn there.</p>
-  <div class="check"><b>Check</b>After paging to a new sheet, look for any bold, coloured-border quantity box you did not type on this sheet. Hover it — the tooltip names the detected figure it is hiding.</div>
+  <div class="risk-h"><span class="sev s0">Fixed</span><span class="risk-t">An override no longer applies to every sheet</span></div>
+  <p>Overrides used to be stored per document, so typing 24 on sheet 3 made every row with that name on every other sheet read 24 as well. They are stored per sheet now — and per unit, so a quantity typed on a sheet with no scale can never be re-read as feet once a scale is set.</p>
+  <p>Overrides saved before this change could not be matched to the sheet they were typed on and were cleared. The app says so at startup, and the header button reads <span class="ui">Saved work · N · M cleared</span>.</p>
+  <div class="check"><b>Check</b>A quantity box is solid-bordered and bold only if it was overridden on the sheet you are looking at, and the row says <span class="ui">overridden</span> in words underneath.</div>
 </div>
 
 <div class="risk">
@@ -689,21 +695,33 @@ footer.end {
 </div>
 
 <div class="risk">
+  <div class="risk-h"><span class="sev s1">Wrong number</span><span class="risk-t">Changing the scale does not recompute areas or earthwork</span></div>
+  <p>Correct a wrong scale and every <em>length</em> updates. The Areas panel's square feet and linear feet do not — they were computed on the server at detection time — and neither do earthwork volumes already in the takeoff.</p>
+  <div class="check"><b>Check</b>The Areas panel turns red and says its figures are not the scale in force. Re-detect the sheet after changing the scale, and re-run any calculator you had already run.</div>
+</div>
+
+<div class="risk">
+  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">Calculator rows do not survive leaving the page</span></div>
+  <p>Labels, ticks, prices, trades, scales and quantity overrides all persist. Earthwork, Trench, Structure and symbol-count rows are page-local: page away and they are gone, with no warning.</p>
+  <div class="check"><b>Check</b>Finish and Approve a sheet before leaving it. If you come back and the CY rows are missing, they were never saved — re-run the calculator.</div>
+</div>
+
+<div class="risk">
   <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">A green confidence chip certifies the scale, nothing else</span></div>
   <p>Green says a scale number was read and corroborated. It says nothing about whether the linework is right, whether the names are right, whether the quantities are right, or whether the earthwork volumes are right.</p>
   <div class="check"><b>Check</b>Read green as "the ruler is probably right", never as "the sheet is right".</div>
 </div>
 
 <div class="risk">
-  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">The trade heading adds cubic yards to linear feet and calls it feet</span></div>
-  <p>On any trade containing a calculator row, the footage figure in the group heading is a meaningless mixture. The individual rows and all the money are fine.</p>
-  <div class="check"><b>Check</b>Ignore the heading's footage whenever that trade contains a CY or SF row. Read the rows, or the CSV.</div>
+  <div class="risk-h"><span class="sev s0">Fixed</span><span class="risk-t">Trade headings no longer add cubic yards to linear feet</span></div>
+  <p>A heading over contour footage plus cut and fill used to print one number with "ft" after it — 55.8k ft + 54.0k CY + 4.2k SF rendered as <span class="ui">114.0k ft</span>, a quantity that exists nowhere. Each unit now gets its own chip: <span class="ui">55.8k ft · 54.0k CY · 4.2k SF</span>.</p>
+  <div class="check"><b>Check</b>Nothing to do. A heading that shows one unit is a trade holding one kind of quantity.</div>
 </div>
 
 <div class="risk">
-  <div class="risk-h"><span class="sev s2">Misleading</span><span class="risk-t">The running tally can describe a sheet you are no longer on</span></div>
-  <p>Move to a page that has not been detected and the itemized table empties while the tally bar keeps displaying the previous sheet's footage and dollar total.</p>
-  <div class="check"><b>Check</b>A blank table with a populated tally means detect the page first.</div>
+  <div class="risk-h"><span class="sev s0">Fixed</span><span class="risk-t">The tally bar no longer goes stale, or contradicts itself</span></div>
+  <p>Two problems, both gone. It used to keep the previous sheet's numbers under an empty table on an undetected page; it now clears. And its footage was the raw detected sum while the dollar figure beside it honoured your corrections — one sentence reporting two incompatible numbers. Where they differ it now reads <span class="ui">171.0k ft billed · 178.0k ft measured</span>, both from the same rows.</p>
+  <div class="check"><b>Check</b>Nothing to do. "billed" is your figure; "measured" is the detector's.</div>
 </div>
 
 <div class="risk">

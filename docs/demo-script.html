@@ -1,0 +1,396 @@
+<title>CORE Demo Script</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root {
+  --bg:#f2f3ef; --panel:#ffffff; --sunk:#eef0ea; --line:#dfe2db; --line-2:#c8ccc2;
+  --ink:#24272a; --dim:#626b64; --accent:#1f5c3e; --accent-w:#eaf1ec;
+  --crit:#a8291d; --crit-w:#fbecea; --warn:#7d5305; --warn-w:#fbf3e2;
+  --ok:#1f5c3e; --ok-w:#e8f1ea; --say:#1b3a56; --say-w:#eaf0f6; --say-l:#b9cde0;
+  --sans:"IBM Plex Sans",-apple-system,"Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:#131511; --panel:#1b1e1a; --sunk:#22261f; --line:#2e332c; --line-2:#444b40;
+    --ink:#e8ebe6; --dim:#9aa49b; --accent:#4fb681; --accent-w:#182c22;
+    --crit:#ef8778; --crit-w:#2f1a17; --warn:#e8bc63; --warn-w:#2c2415;
+    --ok:#4fb681; --ok-w:#182c22; --say:#a9cdec; --say-w:#16222c; --say-l:#2c4459;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:#131511; --panel:#1b1e1a; --sunk:#22261f; --line:#2e332c; --line-2:#444b40;
+  --ink:#e8ebe6; --dim:#9aa49b; --accent:#4fb681; --accent-w:#182c22;
+  --crit:#ef8778; --crit-w:#2f1a17; --warn:#e8bc63; --warn-w:#2c2415;
+  --ok:#4fb681; --ok-w:#182c22; --say:#a9cdec; --say-w:#16222c; --say-l:#2c4459;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+     font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+main{padding:40px 22px 120px;max-width:78ch;margin:0 auto}
+@media(min-width:900px){main{padding:60px 40px 140px}}
+
+.eyebrow{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+h1{font-size:clamp(30px,5.2vw,44px);line-height:1.08;font-weight:600;
+   letter-spacing:-.022em;margin:0 0 16px;text-wrap:balance}
+.standfirst{font-size:18.5px;line-height:1.55;color:var(--dim);margin:0}
+.stamp{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);
+       font-family:var(--mono);font-size:11.5px;color:var(--dim);
+       display:flex;flex-wrap:wrap;gap:6px 22px}
+h2{font-size:26px;font-weight:600;letter-spacing:-.015em;margin:60px 0 8px;
+   padding-top:24px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font-family:var(--mono);font-size:13px;font-weight:500;color:var(--accent);
+      display:block;margin-bottom:6px;letter-spacing:.1em}
+h3{font-size:17.5px;font-weight:600;margin:32px 0 8px;letter-spacing:-.008em}
+p{margin:0 0 14px}
+strong{font-weight:600}
+a{color:var(--accent)}
+.lede{font-size:17px;color:var(--dim);margin-bottom:18px}
+ul,ol{margin:0 0 16px;padding-left:22px}
+li{margin-bottom:7px}
+li::marker{color:var(--dim)}
+.ui{font-family:var(--mono);font-size:.875em;font-weight:500;background:var(--sunk);
+    color:var(--ink);padding:1px 6px;border-radius:5px;border:1px solid var(--line);
+    white-space:nowrap}
+.num{font-variant-numeric:tabular-nums}
+
+/* the thing you actually say out loud */
+.say{border-left:3px solid var(--say-l);background:var(--say-w);
+     border-radius:0 var(--radius) var(--radius) 0;padding:14px 18px;margin:16px 0}
+.say::before{content:"SAY";font-family:var(--mono);font-size:10px;font-weight:700;
+             letter-spacing:.14em;color:var(--say);display:block;margin-bottom:7px}
+.say p{margin:0 0 10px;font-size:16.5px;line-height:1.55;color:var(--ink)}
+.say p:last-child{margin-bottom:0}
+.say em{color:var(--say);font-style:normal;font-weight:600}
+
+/* the beats */
+ol.beats{list-style:none;padding:0;counter-reset:b;margin:26px 0 0}
+ol.beats>li{counter-increment:b;position:relative;padding:0 0 30px 54px;margin:0;
+            border-left:1px solid var(--line)}
+ol.beats>li:last-child{border-left-color:transparent;padding-bottom:4px}
+ol.beats>li::before{content:counter(b);position:absolute;left:-16px;top:-3px;
+  width:32px;height:32px;border-radius:50%;background:var(--panel);
+  border:1px solid var(--line-2);color:var(--accent);font-family:var(--mono);
+  font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+ol.beats h3{margin:0 0 4px;font-size:17px}
+.beat-meta{font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+           text-transform:uppercase;color:var(--dim);margin-bottom:10px}
+
+.note{border:1px solid var(--line);border-left-width:3px;border-radius:var(--radius);
+      background:var(--panel);padding:16px 18px;margin:20px 0}
+.note>:last-child{margin-bottom:0}
+.note .tag{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.13em;
+           text-transform:uppercase;display:block;margin-bottom:7px}
+.note.crit{border-left-color:var(--crit);background:var(--crit-w)}
+.note.crit .tag{color:var(--crit)}
+.note.warn{border-left-color:var(--warn);background:var(--warn-w)}
+.note.warn .tag{color:var(--warn)}
+.note.ok{border-left-color:var(--ok);background:var(--ok-w)}
+.note.ok .tag{color:var(--ok)}
+.note.plain{border-left-color:var(--line-2);background:var(--sunk)}
+.note.plain .tag{color:var(--dim)}
+
+.tw{overflow-x:auto;margin:20px 0;border:1px solid var(--line);border-radius:var(--radius)}
+table{border-collapse:collapse;width:100%;font-size:14.5px;background:var(--panel)}
+th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+thead th{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;
+         text-transform:uppercase;color:var(--dim);background:var(--sunk);white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+code.path{font-family:var(--mono);font-size:12.5px;word-break:break-all;color:var(--ink)}
+
+.qa{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);
+    padding:16px 20px;margin:0 0 12px}
+.qa .q{font-weight:600;margin-bottom:8px}
+.qa p:last-child{margin-bottom:0}
+footer.end{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);
+           font-size:13.5px;color:var(--dim)}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<main>
+
+<div class="eyebrow">Live Demo · Internal</div>
+<h1>CORE Demo Script</h1>
+<p class="standfirst">A twelve-minute run for a client call: which drawings to open, what to say at each beat, and which cautions to raise before they find them.</p>
+<div class="stamp">
+  <span>24 Aug 2026</span>
+  <span>Build <span class="num">e3981c0</span></span>
+  <span><span class="num">127.0.0.1:8100</span></span>
+</div>
+
+<!-- ============================================ -->
+<h2><span class="n">01</span>The one idea you are selling</h2>
+
+<p class="lede">Not "it measures drawings." Every competitor says that. What you have that they don't is that <strong>it tells you when it doesn't know.</strong></p>
+
+<p>An estimator's real fear is not slow software. It's a number that looks right and isn't — because that one goes into a bid and nobody finds it until the job is losing money. Your whole demo should be built around the moment the app <em>refuses</em> to give an answer.</p>
+
+<div class="say">
+  <p>"Most takeoff tools will happily give you a number for anything you point them at. The problem is you can't tell which numbers are solid and which are guesses. So we built ours to <em>show its work</em> — and to stop and say 'I don't know' rather than hand you something that looks confident and is wrong."</p>
+</div>
+
+<p>Everything below is in service of that sentence. If you only get five minutes, do <strong>Beat 3</strong> and <strong>Beat 4</strong> and nothing else.</p>
+
+<!-- ============================================ -->
+<h2><span class="n">02</span>Before the call — five minutes</h2>
+
+<ol>
+  <li>Start the service: <span class="ui">bash detection-engine/run-service.sh</span></li>
+  <li>Open <span class="ui">http://127.0.0.1:8100</span> — the numbers, not <span class="ui">localhost</span>, which is seconds slower on every click.</li>
+  <li><strong>Clear the seat.</strong> If <span class="ui">Saved work · N</span> is showing in the header, click it and choose <span class="ui">Forget everything</span>. Otherwise your prices and labels from a previous session appear on their drawing and the demo looks staged.</li>
+  <li>Pre-detect the two sheets in Beats 3 and 4 <em>once</em>, so the demo isn't ninety seconds of waiting. Then, if you want to show a cold run, use <span class="ui">Reset this document</span> live — it clears the cache in front of them and proves nothing was pre-baked.</li>
+  <li>Have the client's own drawing open in another tab if they sent one. Ending on their sheet is worth more than everything before it.</li>
+</ol>
+
+<div class="note warn">
+  <span class="tag">Two things that will bite you</span>
+  <p><strong>Prices are shared across every job in the browser.</strong> <span class="ui">Reset this document</span> deliberately keeps them. For a clean demo use <span class="ui">Forget everything</span>.</p>
+  <p><strong>Calculator rows don't survive a page change.</strong> If you run Earthwork and then flick to another sheet, the cubic yards are gone when you come back. Finish a sheet before leaving it.</p>
+</div>
+
+<!-- ============================================ -->
+<h2><span class="n">03</span>Which drawing for which feature</h2>
+
+<p class="lede">These are picked from what the engine actually does on them, not from how they look. Paths are relative to the plans folder.</p>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Use this</th><th>For</th><th>Why this one</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Barn Civil, sheet 3</strong><br><code class="path">client_meet/beaumont/SWR_Barn_Residence_-_Civil_4.7.26.pdf</code></td>
+      <td>The main run. Detection, scale confidence, culling, pricing, export.</td>
+      <td>1,840 lines in 280 styles. Scale <span class="ui">1 inch = 30 ft.</span> confirmed <em>two independent ways</em>. 178,000 ft across 165 rows and seven trades. Real client, real estimate to compare against.</td>
+    </tr>
+    <tr>
+      <td><strong>Town Pump site map</strong><br><code class="path">Plans 2/Town Pump #3/Addenda Plans/ADD1/006^C2.01 ADD1 PROPOSED SITE MAP.pdf</code></td>
+      <td><strong>The refusal.</strong> The most important thirty seconds of the demo.</td>
+      <td>1,607 lines detected and <em>no scale anywhere on the sheet</em>. The app goes red and declines to quote feet. Nothing else in the corpus makes the point this cleanly.</td>
+    </tr>
+    <tr>
+      <td><strong>Barn Landscaping, sheet 30 (L804)</strong><br><code class="path">client_meet/beaumont/SWR_Barn_Residence_-_Landscaping_4.7.26.pdf</code></td>
+      <td>A details sheet with many scales.</td>
+      <td>Five different scale captions on one page. Shows the picker, and lets you make the honest point that no single number is right for a mixed sheet.</td>
+    </tr>
+    <tr>
+      <td><strong>Oncor Cloudcrest, sheet 4</strong><br><code class="path">TakeoffPro AI/Oncor Cloudcrest Substation Civils - 20251212.pdf</code></td>
+      <td>Reading a drawn scale bar.</td>
+      <td>No written scale caption — the engine measures the tick marks on the printed ruler and gets 1" = 30 ft from geometry alone.</td>
+    </tr>
+    <tr>
+      <td><strong>Belle Farms road grading, sheet 1</strong><br><code class="path">TakeoffPro AI/Plans/Belle Farms Upper Parcel ROAD GRADING 1 of 2.pdf</code></td>
+      <td>Earthwork — cut and fill.</td>
+      <td>Dense labelled topography at 1" = 60'. The contours are what the volume model needs.</td>
+    </tr>
+    <tr>
+      <td><strong>Bill's window plans</strong><br><code class="path">client_meet/Bill/Marked Up Window Plans - Aqua Vista…pdf</code></td>
+      <td>Scanned sheets and symbol counting.</td>
+      <td>A photocopied set with no CAD data at all — everything is read out of the image. Good for "what about our old scans?"</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note plain">
+  <span class="tag">Do not demo</span>
+  <p><strong>Plan-and-profile sheets</strong> (a plan with a graph box under it). The graph is drawn at a different vertical scale and the app currently bills its grid lines as construction. If a client opens one, that is the honest answer — see the Q&amp;A.</p>
+</div>
+
+<!-- ============================================ -->
+<h2><span class="n">04</span>The run, beat by beat</h2>
+
+<ol class="beats">
+
+<li>
+<h3>Open a drawing</h3>
+<div class="beat-meta">Barn Civil · 30 seconds</div>
+<p>Paste the path, press <span class="ui">Open</span>, pick sheet 3, press <span class="ui">Detect lines</span>.</p>
+<div class="say">
+  <p>"This is a real civil sheet from a real job — nothing prepared. One button. It's reading every line on the page, working out which ones are the same kind of line, and finding the scale."</p>
+</div>
+</li>
+
+<li>
+<h3>The result lands</h3>
+<div class="beat-meta">15 seconds · let them look</div>
+<p>Status line reads <span class="ui">1840 lines in 280 styles · scale 1 inch = 30 ft. (text, matches the drawn bar)</span>.</p>
+<div class="say">
+  <p>"Eighteen hundred lines, sorted into two hundred and eighty types. That's the part that takes an estimator an afternoon with a mouse."</p>
+</div>
+<p>Don't rush past this. Let the number sit for a beat.</p>
+</li>
+
+<li>
+<h3>The confidence banner — show your work</h3>
+<div class="beat-meta">90 seconds · the first of the two key moments</div>
+<p>Point at the green banner. It reads, in full:</p>
+<div class="note ok">
+  <span class="tag">On screen</span>
+  <p>"Scale confirmed two ways: 1 inch = 30 ft. The sheet prints it in words <em>(1 inch = 30 ft.)</em> and the ruler drawn on the sheet measures the same thing. Two independent readings agree."</p>
+  <p>"Checked against the sheet's own figures. 1 area printed on this page agrees with what we measured at this scale, within 2%."</p>
+</div>
+<div class="say">
+  <p>"Here's what I mean by showing its work. It didn't just read the scale off the title block — it also <em>measured the ruler drawn on the sheet</em>, and checked both against an area the drafter had already labelled. Three sources, and they agree."</p>
+  <p>"Scale is the one number that, if it's wrong, makes <em>everything</em> on the sheet wrong by the same factor. So it's the one we refuse to be casual about."</p>
+</div>
+</li>
+
+<li>
+<h3>The refusal — switch to the Town Pump sheet</h3>
+<div class="beat-meta">60 seconds · the moment that wins the room</div>
+<p>Open the Town Pump site map, detect it. It finds 1,607 lines and goes <strong>red</strong>.</p>
+<div class="note crit">
+  <span class="tag">On screen</span>
+  <p>"No scale could be read off this sheet. Until one is set, nothing here can be quoted in feet, square feet or cubic yards — the lengths below are paper measurements of the drawing, not real-world distances."</p>
+</div>
+<p>Then point at the itemized table: the column heading has changed from <span class="ui">feet</span> to <span class="ui">pt</span>, and the price boxes do nothing.</p>
+<div class="say">
+  <p>"Same software, different drawing. It found sixteen hundred lines here perfectly well — but this sheet doesn't say what it was drawn to, so it will not give me a footage. Look: the column doesn't even say 'feet' any more, and it won't let me price it."</p>
+  <p>"That's deliberate. A tool that guessed here would hand me a bid-ready number that's wrong by whatever factor it guessed, and I'd never know. I'd rather it stop and make me do ten seconds of work."</p>
+</div>
+<p>Now type the scale in and watch it come alive.</p>
+<div class="say">
+  <p>"I read the scale off the drawing, type it once — and now every one of those sixteen hundred lines is in feet, and it'll price. Once it knows the scale it's fully automatic. It just won't <em>pretend</em> to know."</p>
+</div>
+</li>
+
+<li>
+<h3>Cull to your scope</h3>
+<div class="beat-meta">Back on Barn Civil · 90 seconds</div>
+<p>Two things to show. First, the sheet arrives with most line types already switched on and already named from the drawing's own legend and CAD layers.</p>
+<div class="say">
+  <p>"It doesn't start blank — it starts with its best guess already made, using the sheet's own legend. Your job is to take things <em>out</em>, not put them in. That's a much faster job."</p>
+</div>
+<p>Click a line type in the list. The row is marked <span class="ui">ISOLATED</span> and the canvas shows only that one.</p>
+<div class="say">
+  <p>"Click any line type and it isolates on the drawing, so you can see exactly what you're about to bill for before you bill for it. Escape puts everything back."</p>
+</div>
+<p>Then the scope bar: declare a couple of trades and watch the sheet narrow.</p>
+<div class="say">
+  <p>"If you only do wet and dry utilities, tell it once and it sets aside everything that clearly isn't yours. And <em>show everything</em> brings back every last foot — it's a way of looking at the sheet, not a decision about it."</p>
+</div>
+</li>
+
+<li>
+<h3>Correct a number and price it</h3>
+<div class="beat-meta">90 seconds · the second key moment</div>
+<p>Click into a quantity box. Show that the detected figure is <em>in</em> the box at full precision, and the arrows nudge it.</p>
+<div class="say">
+  <p>"The measured number is right here, and if it's slightly off you can just nudge it — the arrows step by a sensible amount for the size of the run."</p>
+</div>
+<p>Type a different figure. The row grows a sentence: <span class="ui">overridden — this sheet uses 18,000.0 ft; the engine detected 25,027.8 ft</span>.</p>
+<div class="say">
+  <p>"And when you overrule it, it says so, in words, right there — and keeps its own number next to yours so anyone reviewing the sheet later can see exactly what was measured and what was judgement."</p>
+</div>
+<p>Type a unit rate and let the extended total fill in.</p>
+</li>
+
+<li>
+<h3>Export — and prove the number travels</h3>
+<div class="beat-meta">60 seconds · the closer</div>
+<p>Press <span class="ui">Approve &amp; export</span>. Read the status line aloud — it reports how many typed quantities went into the export. Then open the Report PDF.</p>
+<div class="say">
+  <p>"Here's the part I'd want to see if I were you. The number I corrected is <em>in the report</em> — starred, with the measured figure printed underneath it. So the document that goes to your client can't quietly disagree with the screen you approved."</p>
+</div>
+<div class="note plain">
+  <span class="tag">Why this beat matters</span>
+  <p>Until this week the report carried the detector's number instead of the corrected one. On one row of one sheet that was a $70,278 difference. Fixed and verified — but it's the reason this beat is in the script: it's the failure mode estimators are actually afraid of, and you can show it working.</p>
+</div>
+</li>
+
+<li>
+<h3>Finish on their drawing</h3>
+<div class="beat-meta">However long it takes</div>
+<p>Open something they sent. Do not pre-run it.</p>
+<div class="say">
+  <p>"Let's do one of yours, cold, so you can see what it does with a sheet nobody's tuned it for."</p>
+</div>
+<p>If it does something wrong, <strong>say so out loud before they do</strong>. See the next section.</p>
+</li>
+
+</ol>
+
+<!-- ============================================ -->
+<h2><span class="n">05</span>Cautions to raise yourself</h2>
+
+<p class="lede">Volunteering a limitation buys more trust than hiding it costs. An estimator who catches you overselling stops believing the good parts too.</p>
+
+<div class="say">
+  <p>"I'll tell you where it's weak, because you'd find it in a week anyway and I'd rather you hear it from me."</p>
+</div>
+
+<h3>Say these, in roughly this order</h3>
+
+<ul>
+  <li><strong>Scale is the thing to check first, every time.</strong> "It's the one number that makes everything else wrong if it's off. Green means two sources agreed. Anything else, check the sheet yourself before you price."</li>
+  <li><strong>Earthwork volumes are the least trustworthy thing in the app.</strong> "Cut and fill is built from the contours it can read, and it defaults each contour to existing or proposed by line weight — which is a guess. Check that assignment before you believe the cubic yards. On the one job where we had the client's own estimate to compare, it ran high."</li>
+  <li><strong>Counting sees everything, not just your trade.</strong> "It'll find every repeated symbol on the sheet, which means it over-counts if the sheet has other trades' tags on it. It's a starting point you edit down, not a final number."</li>
+  <li><strong>Scans are harder than CAD.</strong> "A native PDF still carries the drafter's own layer names — that's the strongest signal we get. A scan is just pixels. It still works, it's just less certain, and it'll tell you so."</li>
+  <li><strong>A sheet that mixes a plan with details has more than one scale.</strong> "No single number is right for the whole page. Take the plan off at its scale and the details separately."</li>
+</ul>
+
+<div class="note warn">
+  <span class="tag">If they ask about accuracy — the honest framing</span>
+  <p>Do not quote a single percentage. Say what was measured against what:</p>
+  <p>"On the sheets we have CAD layer names for, it traces about <strong>99%</strong> of the ink and files about <strong>92%</strong> of it under the right name. On a scanned set where we hand-counted 285 openings it found <strong>99.3%</strong> of them. What we <em>can't</em> yet tell you is how closely it matches a finished estimate on a job we've never seen — we don't have enough paired drawings-and-estimates to say that honestly. Which is exactly why we're asking for them."</p>
+</div>
+
+<!-- ============================================ -->
+<h2><span class="n">06</span>Questions you will get</h2>
+
+<div class="qa">
+  <div class="q">"Does it replace my estimator?"</div>
+  <p>"No — it replaces the two hours he spends tracing lines with a mouse. He still decides what's in scope, what it's called, and what it costs. Those are the parts that need him."</p>
+</div>
+
+<div class="qa">
+  <div class="q">"What if it gets a number wrong?"</div>
+  <p>"You change it, and the change follows through to the export and the printed report, marked as yours with the measured figure beside it. Nothing is locked, and nothing changes silently."</p>
+</div>
+
+<div class="qa">
+  <div class="q">"Will it work on our drawings?"</div>
+  <p>"Send me a set and I'll run it in front of you. That's a better answer than anything I can promise." <em>Then actually do it — cold, on the call if you can.</em></p>
+</div>
+
+<div class="qa">
+  <div class="q">"What about our old scanned plans?"</div>
+  <p>"They work — that's Bill's set, all photocopies. It reads them out of the image instead of the CAD data. Less certain, and it says when it's less certain."</p>
+</div>
+
+<div class="qa">
+  <div class="q">They open a plan-and-profile sheet and the numbers look mad.</div>
+  <p>"Good catch, and that's a known one. That box at the bottom is a graph, not a plan — different vertical scale — and right now it measures the graph's grid as if it were pipe. Until we fix it, take the plan off separately and leave the profile out. I'd rather tell you that than have you find it in a bid."</p>
+</div>
+
+<div class="qa">
+  <div class="q">"How is this different from what we already have?"</div>
+  <p>"Most of it isn't, honestly — everyone can draw a line and total it. The difference is what happens when the drawing is ambiguous. Ours stops. I'll show you." <em>Go to Beat 4.</em></p>
+</div>
+
+<!-- ============================================ -->
+<h2><span class="n">07</span>Words to avoid</h2>
+
+<div class="tw">
+<table>
+  <thead><tr><th>Don't say</th><th>Say instead</th></tr></thead>
+  <tbody>
+    <tr><td>"It's 98% accurate"</td><td>"On the sheets we can check against CAD layer names, it traces about 99% of the ink and names about 92% of it correctly"</td></tr>
+    <tr><td>"Fully automated takeoff"</td><td>"It does the measuring; you do the scoping and the pricing"</td></tr>
+    <tr><td>"AI-powered"</td><td>"It reads the drawing's own legend and layer names" — the geometry is not AI, and the AI part is optional and clearly labelled</td></tr>
+    <tr><td>"It'll handle anything"</td><td>"Send me a set and I'll run it cold in front of you"</td></tr>
+    <tr><td>"Trust the number"</td><td>"Check the scale, then trust the number"</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer class="end">
+  <p>Everything quoted from the screen in this script was read off build <span class="num">e3981c0</span> running on Barn Civil printed sheet 3 and the Town Pump ADD1 site map on 24 August 2026. If a line here doesn't match what the app says on the day, the app is right and this script is stale — tell me and I'll fix it.</p>
+</footer>
+
+</main>
