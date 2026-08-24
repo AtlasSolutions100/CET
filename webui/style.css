@@ -734,3 +734,24 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 :root[data-theme="light"] .mem-menu { box-shadow: 0 12px 34px rgba(0,0,0,.16); }
 :root[data-theme="light"] .mem-btn.warn { color: #8a5a06; border-color: #d9bd7e; }
 :root[data-theme="light"] .mem-menu-item.danger .mem-menu-label { color: #b0281d; }
+
+/* --- isolate: the row you clicked, marked where you clicked it -----------
+   Clicking a style row filters the canvas to that one line type. Until
+   2026-08-24 that had no indicator anywhere: the mini legend's green cue is
+   repainted only by its own handler and by the I key, and it only lists the
+   top eight styles, so most isolates were completely silent. A filtered
+   canvas read as the whole drawing. */
+.style-row.iso {
+  background: var(--accent-deep);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.style-row.iso::after {
+  content: "ISOLATED";
+  font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+  color: var(--accent); align-self: center; margin-left: auto;
+  padding-left: 6px; white-space: nowrap;
+}
+:root[data-theme="light"] .style-row.iso {
+  background: #e6efe9;
+  box-shadow: inset 3px 0 0 var(--accent);
+}

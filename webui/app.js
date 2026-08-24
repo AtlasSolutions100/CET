@@ -2514,7 +2514,28 @@ function renderStyles() {
     if (scopeEl) row.appendChild(scopeEl);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
     row.onmouseleave = () => { state.hot = null; draw(); };
-    row.onclick = () => { state.isolate = state.isolate === s.style_id ? null : s.style_id; draw(); };
+    // Isolating from the style list had NO on-screen indicator of any kind.
+    // The mini legend's green cue is only repainted by the mini legend's own
+    // click handler and by the I key, and it only lists the top eight styles
+    // by length - so a click here changed what the canvas drew and left every
+    // panel asserting the sheet was still whole. An operator who forgot an
+    // isolate was active would read a filtered canvas as the drawing. The row
+    // itself now carries the state, which is the one place the operator is
+    // certain to be looking, and the status line names what is isolated.
+    if (state.isolate === s.style_id) row.classList.add("iso");
+    row.onclick = () => {
+      const on = state.isolate !== s.style_id;
+      state.isolate = on ? s.style_id : null;
+      // Toggle the class in place rather than re-rendering: renderStyles()
+      // here would rebuild the list under the cursor and throw away the
+      // operator's scroll position on a 280-row sheet.
+      for (const r of box.querySelectorAll(".style-row.iso")) r.classList.remove("iso");
+      if (on) row.classList.add("iso");
+      setStatus(on
+        ? `isolated: ${(state.labels.get(s.style_id) || s.suggested_label || "unnamed line type")} \u2014 Esc shows everything again`
+        : "isolate off");
+      renderMiniLegend(); draw();
+    };
     box.appendChild(row);
   }
 }
@@ -6683,6 +6704,15 @@ addEventListener("keydown", (e) => {
     }
     if (state.selPt !== null) { state.selPt = null; updateSelBar(chainById(state.selected)); }
     else { state.selected = null; updateSelBar(null); }
+    // Last, so every tool above still gets Escape first. Nothing cleared an
+    // isolate except clicking the same row again or changing page, and with
+    // no indicator to notice (see renderStyles) an operator could leave one on
+    // indefinitely and read a filtered sheet as the whole sheet.
+    if (state.isolate !== null) {
+      state.isolate = null;
+      renderStyles(); renderMiniLegend();
+      setStatus("isolate off");
+    }
     draw();
   }
 });
