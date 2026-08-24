@@ -3932,23 +3932,46 @@ function renderItemized() {
     if (!state.include.get(ch.style_id)) continue;
     inkPt += ch.length_pt;
   }
+  // What the sheet is BILLING, which is not always what the detector measured.
+  // The tally used to print the raw chain sum beside a dollar figure that came
+  // from computeTakeoffRows and therefore DID honour the operator's
+  // corrections - so one sentence reported a corrected total next to an
+  // uncorrected footage, and the "sanity check" line disagreed with every row
+  // above it. Both halves now come from the same rows; where they differ the
+  // detector's figure is printed too, labelled, rather than silently winning.
+  let billedQ = 0, autoQ = 0, ovRowN = 0;
+  for (const g of groups)
+    for (const it of g.items) {
+      if (it.unit !== "ft" && it.unit !== "pt") continue;
+      billedQ += it.qty;
+      autoQ += (it.ov && Number.isFinite(it.auto)) ? it.auto : it.qty;
+      if (it.ov) ovRowN += 1;
+    }
   const tf = ftPerIn ? inkPt / 72 * ftPerIn : null;
   // The union is over EVERY included chain on the sheet, so unlike the
   // per-row figures it also catches a segment shared by two chains with
   // different labels. Shown beside the sum, never instead of it.
   const uf = ftPerIn ? sheet.unionPt / 72 * ftPerIn : null;
   const tb = $("tallyBar");
+  const abbrQ = (v) => (v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)) + " " + u;
   tb.textContent =
-    (tf !== null
-      ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
-      : fmtLen(inkPt) + " measured")
+    (ovRowN
+      ? abbrQ(billedQ) + " billed \u00b7 " + abbrQ(autoQ) + " measured"
+      : (tf !== null
+          ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
+          : fmtLen(inkPt) + " measured"))
     + (sheet.excessPt > 0.05
         ? " · union " + (uf !== null
             ? (uf >= 1000 ? (uf/1000).toFixed(1) + "k" : uf.toFixed(0)) + " ft"
             : fmtLen(sheet.unionPt))
         : "")
     + (grand ? ` · $${grand.toFixed(0)}` : "");
-  tb.title = sheet.excessPt > 0.05
+  const ovPrefix = ovRowN
+    ? `${ovRowN} row(s) on this sheet carry a quantity YOU typed, so "billed" `
+      + `is your figure and "measured" is the detector's. The dollar total `
+      + `follows the billed figure.\n\n`
+    : "";
+  tb.title = ovPrefix + (sheet.excessPt > 0.05
     ? `Sum adds every included chain's length. Union counts each polyline ` +
       `segment once: ${sheet.sharedLegs} segment(s) across ` +
       `${sheet.nChains} included chains are carried by two or more chains, ` +
@@ -3957,7 +3980,7 @@ function renderItemized() {
       `Nothing is removed - both numbers are the same chains, counted two ` +
       `ways. Identical-geometry test, so it is a lower bound.`
     : `No included chain on this sheet shares a polyline segment with ` +
-      `another, so the sum already counts each segment once.`;
+      `another, so the sum already counts each segment once.`);
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";
