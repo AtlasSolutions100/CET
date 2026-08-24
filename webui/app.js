@@ -411,7 +411,13 @@ function chainRuns(ch) {
   if (polyLen(run) >= 6) runs.push(run);
   return runs;
 }
-function styleObjects(sid) {
+// `onlyChains`, when given, is the set of chain_ids that belong to the ROW
+// being counted. Without it this function knows only about styles, and
+// state.chainLabels means a style's chains can be split across two rows: a
+// line SEPARATED into its own priced item was counted in full by both its own
+// row and its parent's, so the panel could report 48 objects where the export
+// reported 24. Callers that mean "this style" still pass one argument.
+function styleObjects(sid, onlyChains) {
   const sids = Array.isArray(sid) ? new Set(sid) : new Set([sid]);
   // straight runs are the DRAWING's pieces; an estimator's OBJECT is a
   // contiguous band: corners connect (a wall turning is one wall), real
@@ -448,6 +454,7 @@ function styleObjects(sid) {
   let runs = [];
   for (const ch of state.result.chains) {
     if (!sids.has(ch.style_id) || state.excluded.has(ch.chain_id)) continue;
+    if (onlyChains && !onlyChains.has(ch.chain_id)) continue;
     for (const r of chainRuns(ch))
       for (const part of splitAtOpenings(r))
         runs.push({ pts: part, len: polyLen(part) });
@@ -3599,7 +3606,8 @@ function computeTakeoffRows() {
   }
   for (const t of totals.values()) {
     if (t.objSids.size)
-      t.objects = styleObjects([...t.objSids]).length;
+      t.objects = styleObjects([...t.objSids],
+                               new Set(t.chains.map(c => c.chain_id))).length;
     t.dup = unionStats(t.chains);
   }
   // The sheet figure is computed over EVERY included chain, so it also sees a
@@ -5846,8 +5854,9 @@ $("approveBtn").onclick = async () => {
   // reached the screen and never the export. Deriving from it is what makes
   // this a structural fix instead of a fifth hand-maintained copy.
   const ovRows = [];
+  const ovSrc = computeTakeoffRows();
   {
-    const d = computeTakeoffRows();
+    const d = ovSrc;
     for (const g of (d ? d.groups : []))
       for (const it of g.items) {
         if (!it.ov) continue;
@@ -5869,21 +5878,18 @@ $("approveBtn").onclick = async () => {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ labels, image_dpi: 300, scale: scaleOnScreen,
-      object_counts: Object.fromEntries((() => {
-        const pools = new Map();
-        for (const st of state.result.styles) {
-          if (state.measureMode.get(st.style_id) !== "object") continue;
-          if (!state.include.get(st.style_id)) continue;
-          const label = state.labels.get(st.style_id) || "unlabeled";
-          if (!pools.has(label)) pools.set(label, []);
-          pools.get(label).push(st.style_id);
-        }
-        // The count the DETECTOR produced. A number the operator typed over
-        // it now travels in quantity_overrides, so there is exactly one field
-        // a reader consults to learn whether a figure is measured or typed.
-        return [...pools.entries()].map(([l, sids]) =>
-          [l, styleObjects(sids).length]);
-      })()),
+      // Taken from the ROWS THE PANEL IS SHOWING, like quantity_overrides
+      // above and for the same reason: the old builder re-derived the pools
+      // from state.result.styles, which knows nothing about chain labels, so
+      // a separated line inflated both its own count and its parent's - and
+      // only in the export, because the panel counted differently. The value
+      // is the DETECTED count; anything the operator typed over it travels in
+      // quantity_overrides, so exactly one field says "measured" and one says
+      // "typed".
+      object_counts: Object.fromEntries(
+        (ovSrc ? ovSrc.groups : []).flatMap(g => g.items)
+          .filter(it => it.isObj)
+          .map(it => [it.label, it.ov && Number.isFinite(it.auto) ? it.auto : it.qty])),
       trades: Object.fromEntries(
         [...new Set([...Object.values(labels), ...state.chainLabels.values(),
                      ...state.extraItems.map(i => i.label)])]
