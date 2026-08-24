@@ -60,6 +60,14 @@ vertices). One correction at import time: if the page's stored
 rasterized at a different effective DPI), scale vertices by
 `imageWidth / (pageWidthPt * imageDpi / 72)`.
 
+**Known gap (open, nobody is on it):** the import route reads `elements` and
+`scale` only and re-measures the polylines, so a quantity the reviewer typed
+over the detected one does NOT reach TakeoffDraft2. It is carried in the
+export's `items[].length_ft` with `engine_length_ft` beside it and
+`qty_set_by: "reviewer"`, and listed in the top-level `overrides` array. Until
+the route reads those, an imported page prices the measured figure, not the
+approved one. See FINDINGS-2026-08-22 F136.
+
 Pricing needs no work: it already keys off (label, elementType), so
 imported lines join the Pricing tab as soon as a unit price exists for
 their label.

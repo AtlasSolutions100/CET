@@ -5791,6 +5791,27 @@ $("approveBtn").onclick = async () => {
   // Sent on every approve, not only when he switched: pressing Approve on
   // the engine's reading is also a decision, and it has to be able to
   // retire an override this page recorded earlier.
+  // The rows the ITEMIZED PANEL is showing, not a second walk of raw state.
+  // Every hole this closes existed because the approve payload rebuilt the
+  // takeoff by hand while computeTakeoffRows() - the one function the panel
+  // and the CSV already share - was never consulted, so the operator's number
+  // reached the screen and never the export. Deriving from it is what makes
+  // this a structural fix instead of a fifth hand-maintained copy.
+  const ovRows = [];
+  {
+    const d = computeTakeoffRows();
+    for (const g of (d ? d.groups : []))
+      for (const it of g.items) {
+        if (!it.ov) continue;
+        ovRows.push({
+          label: it.label,
+          kind: it.unit === "EA" ? "qty" : "ft",   // the split ovKey() uses
+          qty: it.qty,
+          unit: it.unit,
+          engine_qty: it.auto,
+        });
+      }
+  }
   const scOn = state.result && state.result.scale;
   const scaleOnScreen = (scOn && +scOn.ft_per_paper_inch > 0)
     ? { ft_per_paper_inch: +scOn.ft_per_paper_inch,
@@ -5809,9 +5830,11 @@ $("approveBtn").onclick = async () => {
           if (!pools.has(label)) pools.set(label, []);
           pools.get(label).push(st.style_id);
         }
+        // The count the DETECTOR produced. A number the operator typed over
+        // it now travels in quantity_overrides, so there is exactly one field
+        // a reader consults to learn whether a figure is measured or typed.
         return [...pools.entries()].map(([l, sids]) =>
-          [l, parseFloat(store.getItem(ovKey(l, "EA")) || "") ||
-              styleObjects(sids).length]);
+          [l, styleObjects(sids).length]);
       })()),
       trades: Object.fromEntries(
         [...new Set([...Object.values(labels), ...state.extraItems.map(i => i.label)])]
@@ -5824,6 +5847,7 @@ $("approveBtn").onclick = async () => {
           points: c.points })),
       chain_labels: Object.fromEntries(
         [...state.chainLabels].filter(([id]) => !state.excluded.has(id))),
+      quantity_overrides: ovRows,
       extra_items: state.extraItems.map(it => ({
         ...it,
         unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
@@ -5851,11 +5875,20 @@ $("approveBtn").onclick = async () => {
     return setStatus(why, "err");
   }
   const j = await r.json();
+  // Report the round trip. A correction that silently failed to land is the
+  // whole defect this change exists to close, so an override that matched no
+  // row turns the line red rather than passing unmentioned.
+  const ovN = (j.overrides || []).length;
+  const ovW = j.override_warnings || [];
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : "") +
+    (ovN ? ` · ${ovN} quantity you typed ${ovN === 1 ? "is" : "are"} in the export`
+         + ` and marked * on the report` : "") +
     (j.scale && j.scale.setBy === "reviewer"
       ? " · footage computed from the scale YOU set, not the engine's"
-      : ""));
+      : "") +
+    (ovW.length ? " — " + ovW.join("  ") : ""),
+    ovW.length ? "err" : undefined);
   const a = $("dlLink");
   a.href = url(`/api/job/${state.job}/page/${state.page}/elements`);
   a.hidden = false;

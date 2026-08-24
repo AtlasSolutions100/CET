@@ -873,6 +873,30 @@ class ApproveScale(BaseModel):
     picked_by_reviewer: bool = False
 
 
+class QtyOverride(BaseModel):
+    """A number a person typed over a computed one.
+
+    Until 2026-08-24 there was no field for this and the server recomputed
+    every footage from geometry, so the review panel and the CSV showed the
+    operator's corrected figure while elements.json and the report PDF showed
+    the detector's - same line item, different number, no warning anywhere.
+    """
+    label: str
+    # the review UI's own two-way split (webui/app.js ovKey): "qty" for a row
+    # counted in EACHes, "ft" for everything measured by length or carrying a
+    # calculator's own unit. Keyed and split exactly as the UI keys it.
+    kind: str = "ft"
+    # float, not int: an EA box accepts 3.5 and a 422 on approve is not an
+    # answer to that.
+    qty: float
+    # what the count column showed: "ft"/"pt" for a measured row, else
+    # EA / CY / SF / LF. "pt" means this sheet had no scale.
+    unit: str = "ft"
+    # the computed figure being replaced. Never dropped: an export that
+    # cannot show what was measured cannot be audited.
+    engine_qty: float | None = None
+
+
 class ApproveBody(BaseModel):
     # style_id -> final label; only listed styles are exported
     labels: dict[int, str]
@@ -908,6 +932,13 @@ class ApproveBody(BaseModel):
     # the scale the reviewer had on screen. Omitted = keep whatever this page
     # already decided (a stored pick, else the engine's). See _page_scale.
     scale: ApproveScale | None = None
+    # label -> the quantity the operator typed over the computed one, for
+    # EVERY row kind the itemized panel shows: footage, EA object count,
+    # symbol count, calculator CY/SF/LF. Built from computeTakeoffRows(), the
+    # same single function the panel and the CSV are built from - so the
+    # export cannot drift from the screen the way the hand-assembled payload
+    # did. See QtyOverride.
+    quantity_overrides: list["QtyOverride"] = []
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -969,35 +1000,63 @@ def approve(job_id: str, page: int, body: ApproveBody):
         t = totals.setdefault(el["label"], {"count": 0, "length_pt": 0.0})
         t["count"] += 1
         t["length_pt"] += el["lengthPt"]
+    # `qty <= 0` is "no override" here because it is "no override" in the box:
+    # computeTakeoffRows applies one only `if (!isNaN(ov) && ov > 0)`.
+    ov_ft: dict = {}
+    ov_qty: dict = {}
+    ov_used: set = set()
+    ov_warn: list = []
+    for _o in body.quantity_overrides:
+        _lab = (_o.label or "").strip()
+        if not _lab or _o.qty is None or _o.qty <= 0:
+            continue
+        (ov_qty if _o.kind == "qty" else ov_ft)[_lab] = _o
+
     items = []
     for label, t in sorted(totals.items(), key=lambda kv: -kv[1]["length_pt"]):
         ft = t["length_pt"] / 72.0 * ft_per_in if ft_per_in else None
         price = body.prices.get(label)
         n_obj = body.object_counts.get(label)
         if n_obj:
+            o = ov_qty.get(label)
+            qty = float(o.qty) if o else n_obj
+            if o:
+                ov_used.add(("qty", label))
             # priced per EACH: footage stays as reference, money follows count
             items.append({
                 "label": label, "count": t["count"],
                 "trade": body.trades.get(label),
                 "length_ft": round(ft, 1) if ft is not None else None,
-                "qty": n_obj, "unit": "EA",
+                "qty": qty, "unit": "EA",
                 "unit_price": price,
-                "extended": round(n_obj * price, 2) if price else None,
+                "extended": round(qty * price, 2) if price else None,
+                **({"qty_set_by": _BY_REVIEWER, "engine_qty": n_obj} if o else {}),
             })
         else:
+            o = ov_ft.get(label)
+            billed = ft
+            if o and ft is not None:
+                billed = round(float(o.qty), 1)
+                ov_used.add(("ft", label))
             items.append({
                 "label": label, "count": t["count"],
                 "trade": body.trades.get(label),
-                "length_ft": round(ft, 1) if ft is not None else None,
+                "length_ft": round(billed, 1) if billed is not None else None,
                 "unit_price": price,
-                "extended": round(ft * price, 2) if (ft is not None and price) else None,
+                "extended": round(billed * price, 2) if (billed is not None and price) else None,
+                # The geometry still measures the original, and the per-chain
+                # elements in this same file still sum to it. Both figures are
+                # carried so a reader can reconcile them rather than guess.
+                **({"qty_set_by": _BY_REVIEWER,
+                    "engine_length_ft": round(ft, 1)} if (o and ft is not None) else {}),
             })
     for ex in body.extra_items:
         try:
             qty = round(float(ex.get("qty", 0)), 1)
         except (TypeError, ValueError):
             continue
-        label = str(ex.get("label", "")).strip()[:80]
+        raw_label = str(ex.get("label", "")).strip()
+        label = raw_label[:80]
         if not label or qty <= 0:
             continue
         price = ex.get("unit_price")
@@ -1005,18 +1064,52 @@ def approve(job_id: str, page: int, body: ApproveBody):
             price = float(price) if price is not None else None
         except (TypeError, ValueError):
             price = None
+        unit = str(ex.get("unit", ""))[:8] or "EA"
+        # `unit == "EA"` exactly, not .upper(): the UI splits on the same
+        # literal, and a case difference here would read the wrong bucket.
+        # Looked up on the UNTRUNCATED label, which is what the UI keyed on.
+        o = (ov_qty if unit == "EA" else ov_ft).get(raw_label)
+        eng_qty = qty
+        if o:
+            qty = round(float(o.qty), 1)
+            ov_used.add(("qty" if unit == "EA" else "ft", raw_label))
         items.append({
             "label": label, "count": 1, "length_ft": None,
             "trade": body.trades.get(label),
-            "qty": qty, "unit": str(ex.get("unit", ""))[:8] or "EA",
+            "qty": qty, "unit": unit,
             "unit_price": price,
             "extended": round(qty * price, 2) if price else None,
+            **({"qty_set_by": _BY_REVIEWER, "engine_qty": eng_qty} if o else {}),
         })
     trade_rank = {t: i for i, t in enumerate((
         "Earthwork & Grading", "Wet Utilities", "Dry Utilities",
         "Paving & Concrete", "Structures", "Fencing & Sitework", "General"))}
     items.sort(key=lambda it: (trade_rank.get(it.get("trade"), 99),))
+    # Anything the operator typed that matched no row here. Silence would let
+    # a renamed or unticked row swallow a correction without trace.
+    for _o in body.quantity_overrides:
+        _lab = (_o.label or "").strip()
+        if not _lab or _o.qty is None or _o.qty <= 0:
+            continue
+        if (_o.kind, _lab) not in ov_used:
+            ov_warn.append(f'"{_lab}": a typed quantity matched no row in this '
+                           f"export and was NOT applied.")
+
     export["items"] = items
+    # Written even when empty, on purpose: [] says "this export knows what an
+    # override is and has none", which a file predating the field cannot say.
+    # A reader has to be able to tell those two apart.
+    export["overrides"] = [
+        {"label": it["label"],
+         "kind": "qty" if it.get("unit") else "ft",
+         "unit": it.get("unit") or "ft",
+         "qty": it.get("qty") if it.get("qty") is not None else it["length_ft"],
+         "engine_qty": it.get("engine_qty") if it.get("engine_qty") is not None
+                       else it.get("engine_length_ft")}
+        for it in items if it.get("qty_set_by") == _BY_REVIEWER
+    ]
+    if ov_warn:
+        export["override_warnings"] = ov_warn[:12]
     # verbatim onto the report (report_pdf prints them under the scale
     # lines); capped so no caller can paper over the table with prose
     export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
@@ -1024,7 +1117,9 @@ def approve(job_id: str, page: int, body: ApproveBody):
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
     return JSONResponse({"exported": len(elements), "file": str(out),
-                         "items": items, "scale": export.get("scale")})
+                         "items": items, "scale": export.get("scale"),
+                         "overrides": export["overrides"],
+                         "override_warnings": ov_warn})
 
 
 class LegendSheetBody(BaseModel):
@@ -1186,6 +1281,18 @@ def report_pdf(job_id: str):
         # Caveats the reviewer's calculators attached to their own rows. They
         # sit ABOVE the table on purpose: a reader who stops at the first
         # number has already passed them.
+        # Above the table, like every other caveat here: a reader who stops
+        # at the first number has already passed it.
+        _ovs = exp.get("overrides") or []
+        if _ovs:
+            for _seg in textwrap.wrap(
+                    f"{len(_ovs)} quantity(ies) on this sheet were SET BY THE "
+                    "REVIEWER, replacing the measured figure. Each is marked * "
+                    "with the measured value printed under it. The line "
+                    "geometry in the data export still measures the original "
+                    "figure.", 118):
+                tp.insert_text((50, y), _seg, fontsize=8)
+                y += 11
         for _nt in (exp.get("notes") or []):
             if _nt not in all_notes:
                 all_notes.append(_nt)
@@ -1201,10 +1308,13 @@ def report_pdf(job_id: str):
         y += 14
         page_total = 0.0
         for it in items:
-            if y > 740:
+            # a starred row prints a second line, so break a little earlier
+            if y > (728 if it.get("qty_set_by") == _BY_REVIEWER else 740):
                 tp = out.new_page(width=612, height=792)
                 y = 60
-            tp.insert_text((50, y), str(it["label"])[:52], fontsize=9)
+            _ov = it.get("qty_set_by") == _BY_REVIEWER
+            tp.insert_text((50, y), (str(it["label"])[:50] + " *") if _ov
+                           else str(it["label"])[:52], fontsize=9)
             tp.insert_text((300, y), str(it["count"]), fontsize=9)
             _q = it["length_ft"] if it["length_ft"] is not None else it.get("qty")
             _u = "" if it["length_ft"] is not None else (" " + it.get("unit", "")).rstrip()
@@ -1219,9 +1329,27 @@ def report_pdf(job_id: str):
             tp.insert_text((500, y), f'{it["extended"]:,.2f}' if it.get("extended") else "-", fontsize=9)
             if it.get("extended"):
                 page_total += it["extended"]
-            g = grand.setdefault(it["label"], {"count": 0, "ft": 0.0, "ext": 0.0})
+            if _ov:
+                _e = it.get("engine_length_ft")
+                _eu = "ft"
+                if _e is None:
+                    _e = it.get("engine_qty")
+                    _eu = it.get("unit") or ""
+                _typed = it.get("qty") if it.get("qty") is not None else it["length_ft"]
+                y += 11
+                tp.insert_text((60, y),
+                               f"* set by the reviewer: {_typed:,} "
+                               f"{it.get('unit') or 'ft'}"
+                               + (f". Measured on this sheet: {_e:,} {_eu}."
+                                  if _e is not None else "."),
+                               fontsize=8)
+            g = grand.setdefault(it["label"], {"count": 0, "ft": 0.0, "ext": 0.0,
+                                               "eng_ft": 0.0, "ov": False})
             g["count"] += it["count"]
             g["ft"] += it["length_ft"] or 0.0  # summary totals stay footage-only
+            _ef = it.get("engine_length_ft")
+            g["eng_ft"] += (_ef if _ef is not None else it["length_ft"]) or 0.0
+            g["ov"] = g["ov"] or it.get("qty_set_by") == _BY_REVIEWER
             g["ext"] += it.get("extended") or 0.0
             y += 13
         if page_total:
@@ -1259,14 +1387,21 @@ def report_pdf(job_id: str):
     y += 14
     total = 0.0
     for label, g in sorted(grand.items(), key=lambda kv: -kv[1]["ft"]):
-        if y > 740:
+        if y > (728 if g["ov"] else 740):
             tp = out.new_page(width=612, height=792)
             y = 60
-        tp.insert_text((50, y), label[:52], fontsize=9)
+        tp.insert_text((50, y), (label[:50] + " *") if g["ov"] else label[:52],
+                       fontsize=9)
         tp.insert_text((300, y), str(g["count"]), fontsize=9)
         tp.insert_text((360, y), f'{g["ft"]:,.1f}', fontsize=9)
         tp.insert_text((500, y), f'{g["ext"]:,.2f}' if g["ext"] else "-", fontsize=9)
         total += g["ext"]
+        if g["ov"] and abs(g["eng_ft"] - g["ft"]) > 0.05:
+            y += 11
+            tp.insert_text((60, y),
+                           "* includes a quantity set by the reviewer; the "
+                           f'measured total was {g["eng_ft"]:,.1f} ft.',
+                           fontsize=8)
         y += 13
     if total:
         y += 10
