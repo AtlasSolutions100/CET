@@ -46,7 +46,15 @@ header button, .status, .side-head h2 { font-family: var(--mono);
 .status.err { color: #e5645a; }
 
 main { flex: 1; display: flex; min-height: 0; }
-aside { width: 330px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+/* flex: none. `width` alone is only a BASIS for a flex child, so on a narrow
+   window the browser shrank this panel below 330px - measured at 212px -
+   while every control inside is laid out for the design width. That single
+   squeeze produced 295 separate overflow symptoms: the itemized grid
+   (1fr 40 86 54 58 + gaps = 254px minimum) no longer fitted, so the $/ft
+   and ext $ columns hung outside the sidebar entirely. The panel keeps its
+   width now and the canvas gives up the space instead - it can scale, a
+   five-column money table cannot. */
+aside { width: 330px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 /* section rhythm: 8px grid, headers carry the hierarchy - not borders */
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 4px; }
 .side-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
@@ -128,10 +136,27 @@ canvas#view.panning { cursor: grabbing; }
    it to buy width for the quantity box would clip a price on the left by the
    very mechanism the comment above describes. The width comes from `count`
    (a small integer) instead. */
-.item-row { display: grid; grid-template-columns: 1fr 40px 86px 54px 58px; gap: 4px; padding: 3px 0; align-items: center; }
+/* Two rows, not one. Five columns of numbers plus a name never fitted the
+   306px sidebar: with 40+86+54+58 of fixed columns and their gaps, the 1fr
+   label cell was measured at FORTY-THREE pixels - holding both the line
+   item's name and a trade dropdown that needs 114px to read "Earthwork &
+   Grading". The name is the row's whole identity and the trade decides which
+   subtotal it lands in, so both were unreadable while four number columns sat
+   comfortably. The name now spans the full width on its own line and the
+   numbers sit beneath it. Height barely moves: the label cell already wrapped
+   to two lines internally at 43px. */
+.item-row { display: grid; grid-template-columns: 40px 86px 54px 58px;
+  grid-template-areas: "lab lab lab lab" "cnt qty rate ext";
+  gap: 1px 4px; padding: 4px 0; align-items: center; }
+.item-row > :nth-child(1) { grid-area: lab; }
+.item-row > :nth-child(2) { grid-area: cnt; }
+.item-row > :nth-child(3) { grid-area: qty; }
+.item-row > :nth-child(4) { grid-area: rate; }
+.item-row > :nth-child(5) { grid-area: ext; }
 .item-row.head { color: var(--dim); font-size: 10px; text-transform: uppercase; }
 .item-row input { width: 100%; padding: 2px 4px; font-size: 11px; }
-.item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; }
 .item-row.total { border-top: 1px solid var(--line); font-weight: 700; }
 .links-bar { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 12px 10px; }
 .links-bar a { color: var(--accent); font-size: 12px; }
@@ -272,7 +297,7 @@ canvas#view.panning { cursor: grabbing; }
   border-top: 1px solid var(--line); margin-top: 8px; padding: 8px 8px 3px; }
 .trade-head .t-sub { color: var(--dim); font-weight: 500; letter-spacing: .06em; }
 .item-row .lab { border-bottom: 1px dotted var(--line); }
-.item-row select.trade-pick { font-family: var(--mono); font-size: 9.5px;
+.item-row select.trade-pick { max-width: 100%; font-family: var(--mono); font-size: 9.5px;
   padding: 1px 2px; background: transparent; border: none; color: var(--dim);
   max-width: 100%; cursor: pointer; }
 .item-row select.trade-pick:hover { color: var(--accent); }
@@ -463,7 +488,7 @@ canvas.ml-swatch { width: 40px; height: 9px; }
                border-color: rgba(229,60,50,.55); font-weight: 700; }
 
 /* ---------- page thumbnail strip ---------- */
-.page-strip { width: 128px; background: var(--panel); border-right: 1px solid var(--line);
+.page-strip { width: 128px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
 .strip-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; flex-wrap: wrap; }
 #detectAllBtn { flex: 1 0 100%; }
