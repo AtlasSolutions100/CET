@@ -1917,7 +1917,7 @@ function renderStyles() {
         const lab = (state.labels.get(s.style_id) || "").trim().toUpperCase();
         if (lab) store.removeItem("measure::" + lab);
       } else state.measureMode.set(s.style_id, "object");
-      memSave(s);
+      memSave(s, true);   // the toggle WAS touched - record the decision
       renderStyles(); renderItemized(); renderMiniLegend(); draw();
     };
 
@@ -2378,6 +2378,13 @@ function renderChips() {
 // override, price, and trade edit lives in THIS session only, so a reload
 // here produces exactly what a client's fresh seat produces. UI prefs
 // (theme, panel collapse) stay in localStorage; takeoff decisions never do.
+// Nothing on disk holds a takeoff decision, so a change to the KEY SHAPE
+// below needs no migration and cannot catch a reviewer mid-session: this
+// Map is created by the same evaluation of app.js that defines the key
+// functions, so store and key are always the same vintage. A browser
+// holding a cached older app.js gets old keys over an old, empty Map -
+// self-consistent, just without the fix, which is what index.html's
+// `app.js?v=` exists to shorten.
 const sessionMem = new Map();
 const store = {
   getItem: (k) => sessionMem.has(k) ? sessionMem.get(k) : null,
@@ -2397,12 +2404,122 @@ function ovKey(label, kind) {
 // Deterministic consistency: once a style is labeled / set to EA, that
 // decision is stored against (document, style fingerprint) and reapplies
 // identically on every restart, redetect, and reopen. No model involved.
+//
+// TWO records, TWO keys, on purpose. A label is a statement about a LINE
+// TYPE ("this cadence on this layer is the sanitary sewer") and must follow
+// it from sheet to sheet - that transfer is the feature, it is why a
+// fingerprint exists at all. An include tick is a statement about THIS
+// SHEET ("measure these 22 rows of C4.3"); carrying it to another page is
+// not a feature, it is the lost prune. They shared a key and both were
+// wrong in different directions. See labelKey / includeKey below.
 function docKey() {
   return "doc::" + (state.docName || "unknown");
 }
+// The engine's identity for a result, when it publishes one: older cached
+// results predate the field (50 of 115 on this box), and a result with no
+// signature is self-consistent for as long as it is the loaded result, so
+// a constant stand-in is correct rather than merely convenient.
+function sigKey() {
+  return (state.result && state.result.engine_sig) || "nosig";
+}
+// chain._weight_class (chain.py:3310), ported verbatim: hairline / light /
+// medium / heavy / extra. Kept as a five-line duplicate rather than a new
+// server field because the fix is then one file and no engine_sig moves;
+// if it ever drifts from the Python, styles that the engine split start
+// sharing a key again - which is the defect below, not a new one.
+function weightClass(w) {
+  const lim = [0.35, 0.75, 1.5, 2.6];
+  for (let i = 0; i < lim.length; i++) if (w <= lim[i]) return i;
+  return 4;
+}
+// The colour AS THE ENGINE HOLDS IT. cssColor() is a rendering decision -
+// it rounds to 8 bits and collapses every near-white to one grey so faint
+// plotter linework is visible on screen - and a rendering decision has no
+// business deciding which two styles are the same thing. Measured: 7 groups
+// in the wide sample fuse two distinct engine colours, all of them through
+// that near-white collapse.
+function rawColor(c) {
+  if (!c || !c.length) return "-";
+  return c.map(v => Math.round(v * 1e6) / 1e6).join(",");
+}
+// The style fingerprint = the engine's OWN family key.
+//
+// chain._assign_styles (chain.py:3247) groups chains on
+//     (klass, color, _weight_class(width), layer)
+// and then splits each family by dash cadence, so two style rows differ in
+// at least one of those five terms BY CONSTRUCTION. This function used to
+// keep three of them, in coarsened form, and drop `layer` entirely:
+//
+//     [st.class, Math.round((st.width||0)*2)/2, cssColor(st.color),
+//      st.signature].join("|")
+//
+// so every collision it produced was a distinction the engine had already
+// decided to make. Measured over 14,945 style rows on 240 sheets (48 cached
+// detect results + a 192-page stratified recompute): 33.1% / 28.7% of styles
+// shared a fingerprint with a different style, worst group 41 on one page,
+// and 91.4% of the colliding groups the CAD layer can adjudicate were two or
+// more GENUINELY DIFFERENT layers. Splitting by whether the sheet has layers
+// at all: 37.4% collisions on layered pages, 0.8% on unlayered ones. The
+// dropped layer was almost the whole of it.
+// (out/verify/2026-08-23/stylefp/STYLEFP.md, tables in q1_*/q2_* .tsv)
+//
+// Restoring all five terms takes that to zero, and zero here is a theorem
+// rather than a corpus result: two rows that agree on class, weight class,
+// exact colour, layer and cadence are the same family, and _assign_styles
+// does not emit a family twice. Measured 0 of 5,577 and 0 of 9,368.
+//
+// What it costs is real and is the reason this is a judgement and not an
+// obvious win: the FULL layer string keeps the XREF host prefix, so
+// `BARN EAST|S-FNDN` and `PRIM BDRM|S-FNDN` no longer share a label. Net on
+// the cached corpus: 1,621 -> 1,557 true cross-page label transfers (-64);
+// on the wide corpus 906 -> 907 (+1). Enumerated (22_lostxfers.js): 86 lost
+// and 22 gained on cached, 16 and 17 on wide. 78 of the 86 are the XREF
+// host prefix; the other 8 are the same layer plotted either side of a
+// _weight_class edge on two sheets (0.3 vs 0.4 pt at 0.35, 2.4 vs 2.7 at
+// 2.6) - which the engine also treats as two families. The gains are
+// transfers that main scored as landing on the WRONG layer and now land
+// only on the right one.
+// A transfer that fails to happen is an empty label box the operator can
+// see and retype; a transfer that happens to the wrong linework is a priced
+// number with no symptom. AGENT-BRIEF section 0 ranks those, and that
+// ranking is what picks the full layer over its leaf.
+//
+// WHAT THIS STILL DOES NOT FIX. Every term added here comes from the
+// document, so two styles on DIFFERENT PAGES that carry no CAD layer at all
+// remain indistinguishable and a label still travels between them. 21.0%
+// (cached) / 27.8% (wide) of style rows have no layer, and 460 / 590
+// cross-page label transfers under this key have no layer on either side
+// (residual.txt). Reproduced live: page 11 style 61, 483.2 ft of contour,
+// takes the name typed on style 47 of page 12 under BOTH builds. Within one
+// page it cannot happen (0 collisions), and every transfer the CAD layer can
+// adjudicate as wrong is gone (304 -> 0 cached, 323 -> 0 wide). Refusing to
+// transfer a label at all when neither side has a layer would also throw
+// away the correct ones in that class; that trade is not measured and is
+// DEFERRED - nobody is on it.
 function styleFp(st) {
-  return [st.class, Math.round((st.width || 0) * 2) / 2,
-          cssColor(st.color), st.signature].join("|");
+  return [st.class, "w" + weightClass(st.width || 0), rawColor(st.color),
+          st.signature, "L=" + (st.layer || "")].join("|");
+}
+// The label / EA record: keyed on the line type, doc-wide, so it travels
+// across pages. That is the capability; do not scope this one to a page.
+function labelKey(st) {
+  return docKey() + "::" + styleFp(st);
+}
+// The include record: keyed on the exact style row of THIS page of THIS
+// result. style_id is an ordinal inside one page's style table - it means
+// nothing anywhere else - so the key names the only scope in which it is
+// valid, and _assign_styles is deterministic inside it (measured: two runs
+// of Barn Civil p12 agree 151/151, C4.0 p0 113/113). Two consequences:
+//   * within a page an include tick can no longer reach another row, which
+//     is the lost prune (5 styles / 16,558.7 ft came back as 22 styles /
+//     28,248.2 ft, x1.706, through one page round trip);
+//   * across pages it no longer transfers at all - 942 (cached) / 674
+//     (wide) leaks stop. Include defaults are seeded per page anyway.
+// engine_sig is in the key because style_id only survives while the result
+// does: across an engine change only 43 of 154 style_ids kept their meaning.
+function includeKey(st) {
+  return docKey() + "::p" + state.page + "::" + sigKey()
+       + "::inc::" + st.style_id;
 }
 // Every write to state.include goes through here. The individual row
 // checkbox persisted its choice and NOTHING ELSE DID, so `none` + a hand
@@ -2412,19 +2529,34 @@ function styleFp(st) {
 // 44,352.9 ft on re-approve, 9.00x, same button, no warning. Shape B from
 // CLAUDE.md section 5, in the UI: one fact, five writers, one of them
 // keeping the record. Route new writers through here too.
+// (That fix made every writer record; it left the record keyed on a
+// fingerprint shared with other styles and other pages, which is the
+// second half of the same bug - see includeKey.)
 function setInclude(sid, on) {
   state.include.set(sid, !!on);
   const st = state.result && state.result.styles.find(x => x.style_id === sid);
   if (!st) return;                       // nothing to key the record on
-  try { store.setItem(docKey() + "::inc::" + styleFp(st), on ? "1" : "0"); }
+  try { store.setItem(includeKey(st), on ? "1" : "0"); }
   catch (e) { /* private mode: the session still honours the click */ }
 }
-function memSave(st) {
+function memSave(st, touchedMeasure) {
   const label = (state.labels.get(st.style_id) || "").trim();
   const measure = state.measureMode.get(st.style_id) === "object" ? "object" : "";
-  const k = docKey() + "::" + styleFp(st);
-  if (label || measure)
-    store.setItem(k, JSON.stringify({ label, measure }));
+  const k = labelKey(st);
+  // The record carries `measure` ONLY when the LF/EA toggle was actually
+  // touched. memApply distinguishes three states by hasOwnProperty - EA,
+  // explicitly-LF, and never-decided - and writing measure:"" on every
+  // LABEL edit made the third unreachable for any named style, which
+  // silently cut the cross-document measure::<LABEL> memory off from
+  // exactly the typed names it exists to serve. Gate 1 demonstrated it
+  // live on Barn Civil engine page 12 = printed sheet 13, style 84.
+  const prev = (() => { try { return JSON.parse(store.getItem(k) || "null"); }
+                        catch (e) { return null; } })();
+  const keepMeasure = touchedMeasure ||
+        (prev && Object.prototype.hasOwnProperty.call(prev, "measure"));
+  const rec = keepMeasure ? { label, measure } : { label };
+  if (label || (keepMeasure && measure))
+    store.setItem(k, JSON.stringify(rec));
   else store.removeItem(k);
   // label-level measure memory travels ACROSS documents: "shear wall" set
   // to EA once means shear walls count as objects everywhere
@@ -2434,20 +2566,33 @@ function memSave(st) {
 function memApply() {
   if (!state.result) return;
   for (const st of state.result.styles) {
-    const inc = store.getItem(docKey() + "::inc::" + styleFp(st));
+    const inc = store.getItem(includeKey(st));
     if (inc !== null) state.include.set(st.style_id, inc === "1");
-    const raw = store.getItem(docKey() + "::" + styleFp(st));
+    // three states, not two: EA / explicitly-LF / never decided. The record
+    // stores measure:"" for "the operator put this back to LF", and reading
+    // that as "no opinion" let the label-level default below overrule it -
+    // first-writer-wins again, CLAUDE.md section 5. Rank them instead: this
+    // style's own record is the more specific fact and wins outright.
+    let own = null;
+    const raw = store.getItem(labelKey(st));
     if (raw) {
       try {
         const m = JSON.parse(raw);
         if (m.label) state.labels.set(st.style_id, m.label);
-        if (m.measure === "object")
-          state.measureMode.set(st.style_id, "object");
+        if (Object.prototype.hasOwnProperty.call(m, "measure"))
+          own = (m.measure === "object");
       } catch (e) {}
     }
-    const lab = (state.labels.get(st.style_id) || "").trim().toUpperCase();
-    if (lab && store.getItem("measure::" + lab) === "object")
-      state.measureMode.set(st.style_id, "object");
+    if (own !== null) {
+      if (own) state.measureMode.set(st.style_id, "object");
+      else state.measureMode.delete(st.style_id);
+    } else {
+      // no record of its own: the cross-document label memory is the
+      // default ("shear wall counts as objects everywhere").
+      const lab = (state.labels.get(st.style_id) || "").trim().toUpperCase();
+      if (lab && store.getItem("measure::" + lab) === "object")
+        state.measureMode.set(st.style_id, "object");
+    }
   }
 }
 
