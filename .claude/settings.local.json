@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/.claude/worktrees/wizardly-euler-2c33ea/takeoff_engine/\"; echo ---; ls \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/out/\" 2>/dev/null | head -30)",
+      "Read(//Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/**)",
+      "Bash(python3 -c ' *)",
+      "Read(//Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI/Ryno Construction/**)",
+      "Bash(mkdir -p out)",
+      "Bash(cp -R \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/out/cache\" out/cache)",
+      "Bash(touch -r \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/takeoff_engine/extract.py\" takeoff_engine/extract.py)",
+      "Bash(python3 -m py_compile takeoff_engine/chain.py)",
+      "Bash(ln -sfn \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI\" \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/.claude/worktrees/TakeoffPro AI\")",
+      "Bash(curl -s \"http://localhost:8101/api/job/d84ebdfcda2a/page/1/status\")",
+      "Bash(python3 \"/private/tmp/claude-501/-Users-kobystull-Desktop-P-Stully-Takeoff-Automation-detection-engine--claude-worktrees-wizardly-euler-2c33ea/4c43876c-774f-41f1-b43d-ed608f782a07/scratchpad/recv.py\" \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/detection-engine/.claude/worktrees/wizardly-euler-2c33ea/out/verify/2026-08-19/co3-marker-crowd-guard\")",
+      "Bash(python3 -m takeoff_engine.batch \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI/Ryno Construction/CO3 Rifle - Civil - General CDs.pdf\" \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI/Ryno Construction/CO3 Rifle - Civil -Road & Foundation.pdf\" --max-pages 2 --out out/batch-co3)",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"recv.py\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python3 -m takeoff_engine.batch \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI/Ryno Construction/CO3 Rifle - Civil - General CDs.pdf\" --max-pages 1 --out out/batch-raster-repro)",
+      "Bash(python3 -m takeoff_engine.batch \"/Users/kobystull/Desktop/P/Stully/Takeoff Automation/TakeoffPro AI/Ryno Construction/CO3 Rifle - Civil -Road & Foundation.pdf\" --max-pages 1 --out out/batch-raster-repro2)",
+      "Bash(python3 -c \"import cv2, os, datetime; p = os.path.dirname\\(cv2.__file__\\); print\\(p\\); print\\('installed:', datetime.datetime.fromtimestamp\\(os.path.getmtime\\(p\\)\\)\\)\")",
+      "Bash(pip3 list *)",
+      "Bash(PORT=8101 ./run-service.sh)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8101/)",
+      "Bash(curl -s http://localhost:8101/api/samples)",
+      "Bash(curl -s \"http://localhost:8101/api/job/3a13fbb1cd2f/page/0/status\")",
+      "Bash(pkill -f \"uvicorn server:app --port 8101\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" --max-time 3 http://localhost:8101/)"
+    ]
+  }
+}

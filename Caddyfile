@@ -3,18 +3,24 @@
 	encode zstd gzip
 
 	reverse_proxy app:8100 {
-		# A cold detect on a dense sheet runs well past a minute, and the
-		# whole-document routes (report.pdf across 50 approved sheets) run
-		# longer. Caddy's defaults would cut those off mid-flight and the
-		# operator would see a 502 with no reason.
+		# A CEILING WE CHOSE, not a default we are escaping. Measured:
+		# stock Caddy proxied a backend that took 90s to send its first
+		# byte and returned 200 - it has no response deadline at all. So
+		# this cannot rescue a slow route; it only bounds a socket that
+		# has gone silent, and 30m is set high enough to clear the slowest
+		# real one (report.pdf across 50 approved sheets).
 		transport http {
 			read_timeout 30m
 			write_timeout 30m
 		}
 	}
 
-	# Plan sets are 20-50 MB and a big set is more. The default limit would
-	# reject the upload, which on a hosted box is the only way in.
+	# Also a cap we chose: measured, stock Caddy accepted a 600 MB body and
+	# passed all of it through. The reason to have one is that /api/upload
+	# does `raw = await file.read()` - the WHOLE body lands in memory before
+	# anything is written - so with no limit one request can page out the
+	# box. 512 MB is ~10x the largest real plan set (stice is 17 MB).
+	# Raising this without changing that read is how the box falls over.
 	request_body {
 		max_size 512MB
 	}

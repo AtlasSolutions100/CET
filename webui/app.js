@@ -129,6 +129,14 @@ function uploadPdf(file) {
     uploadProgress(null, null);
     if (xhr.status < 200 || xhr.status >= 300) {
       let why = `upload failed (${xhr.status})`;
+      // These two come from the reverse proxy, not the app, so there is no
+      // JSON detail to read and the operator would see a bare number. The
+      // 413 is OUR OWN 512 MB cap in the Caddyfile - measured, not a default:
+      // Caddy ships with no body limit at all.
+      if (xhr.status === 413)
+        why = "that plan set is too large — the limit is 512 MB per upload";
+      else if (xhr.status === 401)
+        why = "signed out — reload the page and enter the password again";
       try {
         const e = JSON.parse(xhr.responseText);
         if (e && e.detail) why = "upload failed: " + String(e.detail);

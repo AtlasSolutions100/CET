@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CORE — Takeoff · Work Optional</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css?v=24">
+</head>
+<body>
+<header>
+  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span></div>
+  <select id="sampleSel"><option value="">Open sample plan…</option></select>
+  <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
+  <button id="openBtn">Open</button>
+  <div id="docName" class="doc-name"></div>
+  <select id="pageSel" hidden></select>
+  <button id="detectBtn" hidden>Detect lines</button>
+  <div id="status" class="status"></div>
+  <button id="aiBtn" hidden>Analyze</button>
+  <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
+  <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
+  <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
+  <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
+  <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
+  <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
+  <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
+  <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
+  <input id="legendPath" type="hidden">
+</header>
+<div id="aiBanner" class="ai-banner" hidden></div>
+<main>
+  <nav id="pageStrip" class="page-strip" hidden>
+    <div class="strip-head">
+      <button id="stripToggle" class="mini strip-toggle" title="Collapse the page strip">&#10094;</button>
+      <span class="strip-title">Pages</span>
+      <button id="detectAllBtn" class="mini" title="Detect lines on every page, one after another">Detect all</button>
+    </div>
+    <div id="thumbList" class="thumb-list"></div>
+  </nav>
+  <aside id="sidebar">
+    <div id="sheetHead" class="sheet-head" hidden></div>
+    <!-- What to doubt on this sheet, in the operator's language, before any
+         number below it is priced. Built by renderConfidence() in app.js. -->
+    <div id="confBanner" class="conf" hidden></div>
+    <div class="side-head" id="legendHead" hidden><h2>Sheet legend</h2></div>
+    <div id="legendBox" class="legend-box" hidden></div>
+    <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet</h2>
+      <div class="side-actions">
+        <button id="arAllBtn" class="mini">all</button>
+        <button id="arNoneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="arScale" class="ar-scale" hidden></div>
+    <div id="arList" class="ar-list" hidden></div>
+    <div id="arUnmatched" class="ar-unmatched" hidden></div>
+    <div class="side-head" id="stylesHead">
+      <h2>Line styles</h2>
+      <div class="side-actions">
+        <button id="allBtn" class="mini">all</button>
+        <button id="noneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="colorChips" class="color-chips"></div>
+    <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
+    <div id="styleList" class="style-list"></div>
+    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
+    <div id="itemized" class="itemized"></div>
+    <div id="ewPanel" class="ew-panel" hidden>
+      <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
+        <button id="ewClose" class="mini">close</button></div>
+      <div class="ew-hint" id="ewHint">Each row is a contour with the elevation read off the sheet.
+        Set which surface it belongs to; fix any elevation the sheet reader got wrong.
+        Volumes only compute where both surfaces overlap.</div>
+      <div class="ew-rows-head"><span>Contours</span>
+        <button id="ewAddRow" class="mini" title="Sheet prints no elevation on a contour? Click the line yourself and type the value (from the overview sheet)">+ Add contour</button></div>
+      <div id="ewRows" class="ew-rows"></div>
+      <div id="ewSpots" class="ew-spots" hidden></div>
+      <div id="ewLayers" class="ew-layers">
+        <div class="ew-layers-head"><span>Existing layers to remove</span>
+          <button id="ewStrip" class="mini" title="Topsoil comes off first; thickness is from the soils report, not the plans">Strip topsoil</button>
+          <button id="ewAddEx" class="mini">+ add layer</button></div>
+        <div id="ewExLayers" class="ew-layer-rows"></div>
+        <div class="ew-layers-head"><span>Proposed layers (fill stack)</span>
+          <button id="ewAddPr" class="mini" title="What gets built on the proposed side (base, paving): the dig stops this much below the finish grade drawn">+ add layer</button></div>
+        <div id="ewPrLayers" class="ew-layer-rows"></div>
+        <div id="ewLayerOut" class="ew-layer-out"></div>
+      </div>
+      <div class="ew-area" id="ewArea">
+        <label for="ewAreaIn">Area for layer volumes</label>
+        <input id="ewAreaIn" type="number" min="0" step="100" placeholder="auto">
+        <span class="ew-unit">SF</span>
+        <span class="ew-area-note" id="ewAreaNote"></span>
+      </div>
+      <div class="ew-actions" id="ewActions">
+        <button id="ewCalc">Calculate cut &amp; fill</button>
+        <span id="ewResult" class="ew-result"></span>
+        <label class="ew-map-toggle" title="Paint where the dirt moves: cut blue, fill yellow; deeper = stronger"><input type="checkbox" id="ewMap"> Show cut/fill map</label>
+      </div>
+      <div class="ew-balance" id="ewBalance">
+        <div class="ew-layers-head"><span>Material balance</span></div>
+        <label class="ew-bal-cut" title="Beaumont Estimate #853: Import Structural 11,581 CY = Site Fill 17,123 - Site Cut 5,551 (11,572), so their site cut is reused against site fill 1:1"><input type="checkbox" id="ewCutReuse" checked> Site cut is reusable as structural fill</label>
+        <div id="ewBalOut" class="ew-bal-out"></div>
+        <div class="ew-bal-factors">
+          <span>Multiply export volumes by</span><input id="ewFacExp" type="number" min="0" step="0.05" value="1">
+          <span>Multiply import volumes by</span><input id="ewFacImp" type="number" min="0" step="0.05" value="1">
+        </div>
+        <div class="ew-bal-note" id="ewBalNote"></div>
+      </div>
+    </div>
+    <div id="trPanel" class="ew-panel" hidden>
+      <div class="side-head" id="trHead"><h2>Pipe trench</h2>
+        <button id="trClose" class="mini">close</button></div>
+      <div class="ew-hint" id="trHint">Pick the pipe run, set its size and invert depths, and adjust the
+        bedding rules to the spec. Depth interpolates start&rarr;end along each line; trench width =
+        pipe OD + clearance each side, growing with depth per the rules.</div>
+      <div id="trBody" class="tr-body"></div>
+      <div class="ew-actions" id="trActions">
+        <button id="trCalc">Calculate trench</button>
+        <span id="trResult" class="ew-result"></span>
+      </div>
+    </div>
+    <div id="coPanel" class="ew-panel" hidden>
+      <div class="side-head" id="coHead"><h2>Sheet callouts</h2>
+        <button id="coClose" class="mini">close</button></div>
+      <div class="ew-hint" id="coHint">Every leader on the sheet, paired with the note at its tail
+        and the line it points at. Click a row to jump there. Callouts never count in the takeoff.</div>
+      <div id="coRows" class="ew-rows"></div>
+    </div>
+    <div id="rollPanel" class="ew-panel" hidden>
+      <div class="side-head" id="rollHead"><h2>Whole job &mdash; marks by sheet</h2>
+        <button id="rollClose" class="mini">close</button></div>
+      <div class="ew-hint" id="rollHint">Every mark code in the document, per sheet and in total &mdash;
+        the number you send a supplier. Counted from the sheets you have already run through Count;
+        sheets not yet counted are listed so a partial document is never shown as a total.
+        Where the schedule prints its own quantity, it sits beside ours so the two can be compared.</div>
+      <div id="rollPending" class="sym-sched" hidden></div>
+      <div id="rollBody"></div>
+      <div id="rollTotal" class="sym-total" hidden></div>
+      <div class="sym-foot"><button id="rollCsv" class="mini">Export CSV</button></div>
+    </div>
+    <div id="symPanel" class="ew-panel" hidden>
+      <div class="side-head" id="symHead"><h2>Count symbols</h2>
+        <button id="symClose" class="mini">close</button></div>
+      <div class="ew-hint" id="symHint">Every repeated shape found on the sheet. Hover a row to see
+        every instance marked; name it and Add to put "&times; N EA" in the takeoff. The count comes
+        from geometry, so it is checkable - the name is yours.</div>
+      <div id="symSched" class="sym-sched" hidden></div>
+      <div id="symRows" class="ew-rows"></div>
+      <div id="symTotal" class="sym-total" hidden></div>
+      <div class="sym-foot"><button id="symAddAll" class="mini">Add every named mark</button></div>
+    </div>
+    <div id="stPanel" class="ew-panel" hidden>
+      <div class="side-head" id="stHead"><h2>Structure &mdash; dig &amp; backfill</h2>
+        <button id="stClose" class="mini">close</button></div>
+      <div class="ew-hint" id="stHint">Outline the building, then type the dig depth. <b>Mass Excavation</b> is the
+        whole footprint dug to that depth (footprint &times; depth). <b>Structure Excavation</b> is the working
+        trench around the outside of the foundation wall (wall length &times; depth &times; layback width), and
+        <b>Structure Backfill</b> is that same trench filled back in after the wall is built (the same number).
+        <b>Slab Prep</b> is the footprint area. All volumes in cubic yards (&divide; 27).</div>
+      <div id="stBody" class="tr-body"></div>
+      <div id="stRows" class="ew-rows"></div>
+      <div class="ew-actions" id="stActions">
+        <button id="stAdd" disabled>Add to takeoff</button>
+        <span id="stResult" class="ew-result"></span>
+      </div>
+    </div>
+    <div class="approve-bar">
+      <span id="tallyBar" class="tally"></span>
+      <button id="csvBtn" class="mini" disabled title="Download the itemized takeoff as CSV (label, trade, count, feet, $/ft, ext $)">CSV</button>
+      <button id="approveBtn" disabled>Approve &amp; export</button>
+    </div>
+    <div class="links-bar">
+      <a id="dlLink" hidden download>elements.json</a>
+      <a id="reportLink" hidden>Report PDF (all approved pages)</a>
+    </div>
+  </aside>
+  <section id="stage">
+    <canvas id="view"></canvas>
+    <div id="miniLegend" class="mini-legend" hidden>
+      <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
+      <div id="mlRows" class="ml-rows"></div>
+    </div>
+    <div id="kbdHelp" class="kbd-help" hidden>
+      <div class="kh-title">Keyboard shortcuts</div>
+      <div class="kh-grid">
+        <kbd>M</kbd><span>Measure between points</span>
+        <kbd>S</kbd><span>Split selected line at last click</span>
+        <kbd>X</kbd><span>Cut a span out of selected line</span>
+        <kbd>E</kbd><span>Extend selected line</span>
+        <kbd>D</kbd><span>Draw new line in selected family</span>
+        <kbd>R</kbd><span>Reclassify line into another family</span>
+        <kbd>I</kbd><span>Isolate selected line's type (again to clear)</span>
+        <kbd>F</kbd><span>Faithful pattern rendering on/off</span>
+        <kbd>L</kbd><span>On-sheet legend on/off</span>
+        <kbd>&#9003;</kbd><span>Delete picked point, or whole line</span>
+        <kbd>Esc</kbd><span>Cancel tool / clear selection</span>
+        <kbd>?</kbd><span>This help</span>
+      </div>
+      <div class="kh-dim">Esc or ? closes</div>
+    </div>
+    <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
+    <div class="toolkit">
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (M; Esc to finish)">&#128207;</button>
+      <span class="tk-sep"></span>
+      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)">&#9986;</button>
+      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)">&#10230;</button>
+      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)">&#9988;</button>
+      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)">&#9998;</button>
+      <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)">&#8644;</button>
+      <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
+      <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
+      <span class="tk-sep"></span>
+      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (F toggles bold uniform strokes)">&#9781;</button>
+    </div>
+    <div class="canvas-status">
+      <span id="selInfo" class="tk-info"></span>
+      <span id="measureInfo" hidden></span>
+    </div>
+    <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
+  </section>
+</main>
+<datalist id="legendVocab"></datalist>
+<script src="app.js?v=54"></script>
+</body>
+</html>

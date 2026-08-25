@@ -1,0 +1,31 @@
+{
+  "sheet": "Marked Up Window Plans - Aqua Vista - Sonora Valley 6-1-26.pdf",
+  "page_index": 1,
+  "printed_page": 2,
+  "sheet_title": "1ST FLOOR PLAN",
+  "sheet_title_source": "tesseract OCR of the page, 2026-08-22 ('1ST FLOOR PLAN' etc.)",
+  "feature": "window tag callouts by type (objects, EA)",
+  "expected_counts": {
+    "W1L": 28,
+    "W1R": 3,
+    "W2L": 0,
+    "W2R": 0,
+    "W3L": 2,
+    "W4": 0
+  },
+  "expected_total": 33,
+  "source": "human-confirmed: Bill's own handwritten tally in the title-block corner of each sheet, transcribed 2026-08-22 from 4x crops at page rect 430,930-792,1224 (out/verify/2026-08-22/bill-method/tally_f*.png). Bill wrote these to demonstrate his estimating method; they are his counts, not ours.",
+  "convention": "Bill lists every window type on each floor and writes a count only beside the types that occur on that floor. A type listed with no number is zero on that floor. Highlighter colour keys the type in his notation (cyan W1L, pink W1R, yellow W2L, orange/green W3L/W4); colour does NOT count openings - distinct colour blobs per floor were 9/24/11/2/6 against these tallies, so blob-counting is not a valid proxy. Source of the convention: read off these five sheets.",
+  "notes": "Page is pure raster: one 3300x5100 JPEG at 300 dpi, zero text objects, so tags must be found by symbol detection + OCR, not text extraction. W2R appears in his list on every floor and is never given a count. W5 appears in the list on the 1st floor only, also with no count. Detected counts not yet scored against this - see out/verify/2026-08-22/bill-detect/. W5 appears in his floor-1 list but does not appear in the master table at all, so it is dropped from expected_counts rather than asserted as zero.",
+  "corroboration": "SECOND INDEPENDENT SOURCE, agrees exactly: Bill also wrote a master per-floor breakdown on the Window Schedule sheet (page 1 of 6, rect 540,880-726,1175 pt, capture ANNOTATED_bill_master_tally.png): W1L 28,33,29,29,29 | W1R 3,3,3,3,3 | W2L 0,0,4,4,4 | W2R 0,0,0,0,0 (struck through) | W3L 2,0,0,0,0 | W4 0,2,2,2,2. Total 185 openings. Every value matches the per-sheet tallies transcribed from the five floor plans, so this table is confirmed twice from unrelated parts of the document.",
+  "corpus_total_all_floors": {
+    "W1L": 148,
+    "W1R": 15,
+    "W2L": 12,
+    "W2R": 0,
+    "W3L": 2,
+    "W4": 8,
+    "TOTAL": 185
+  },
+  "schedule_printed_quantity": "THIRD SOURCE: the architect's own WINDOW SCHEDULE on page index 0 carries a PRINTED QUANTITY column reading W1L 148 / W1R 15 / W2L 12 / W3L 2 / W4 8 / W5 3 (rect 370,120-665,870 pt, capture ANNOTATED_schedule_already_counts.png). It agrees with Bill's hand tallies on all five types he counted. Bill drew a tick beside each of those five and did NOT tick W5, and his written total is 185 against the schedule's 188. So these per-floor counts are corroborated by three independent sources, and the whole-building totals by the architect too."
+}
