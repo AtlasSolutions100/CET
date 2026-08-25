@@ -7120,6 +7120,109 @@ function vertexAt(e) {
   return best;
 }
 
+// MERGE. The detector breaks one physical run into several chains wherever
+// the sheet interrupts it - a label sitting in the line, or another line
+// crossing it, where the drafter leaves a real gap so the crossing reads.
+// Measured on SWR Guide Civil p8: 29 such breaks, 27 of them a genuinely
+// empty gap on the line's own layer. Bridging those automatically is a
+// separate job; this is the operator's version, for the ones automation will
+// not catch.
+//
+// THE BRIDGED SPAN COUNTS. Two 100 ft pieces either side of a 5 ft label are
+// 205 ft of pipe, not 200 - the run continues under the label. Concatenating
+// without the gap would quietly under-measure every merge, so the span is
+// added and the status line says how much, every time.
+function mergeClick(px, py) {
+  const fR = IMG_DPI / 72;
+  const tolR = 6 / state.view.k / fR * 4 + 1.5;
+  let tgt = null, tgtD = tolR;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    for (let i = 1; i < ch.points.length; i++) {
+      const d = distToSeg(px, py, ch.points[i - 1], ch.points[i]);
+      if (d < tgtD) { tgtD = d; tgt = ch; }
+    }
+  }
+  const sel = chainById(state.selected);
+  if (!tgt || !sel) {
+    setStatus("merge: click the other half of the run", "err");
+    return;
+  }
+  // Refuse across families rather than silently picking a winner: a merge
+  // that moved footage from one priced item to another without saying so is
+  // the kind of quiet wrong number this project keeps having to hunt down.
+  if (tgt.style_id !== sel.style_id) {
+    const la = state.labels.get(sel.style_id) || "this family";
+    const lb = state.labels.get(tgt.style_id) || "that family";
+    setStatus(`those are different families (${la} / ${lb}) \u2014 `
+      + "use Reclassify (R) first, then merge", "err");
+    return;
+  }
+
+  // Join the two NEAREST ends, whichever they are, reversing as needed. The
+  // wrong pairing would double the line back on itself and invent footage.
+  const A = sel.points, B = tgt.points;
+  const a0 = A[0], a1 = A[A.length - 1];
+  const b0 = B[0], b1 = B[B.length - 1];
+  const hyp = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  const opts = [
+    { d: hyp(a1, b0), revA: false, revB: false },
+    { d: hyp(a1, b1), revA: false, revB: true },
+    { d: hyp(a0, b0), revA: true, revB: false },
+    { d: hyp(a0, b1), revA: true, revB: true },
+  ].sort((x, y) => x.d - y.d);
+  const best = opts[0];
+
+  // A far click is more likely a mis-click than an intended merge, so ask -
+  // but only when the bridge is a real fraction of what is being joined, or
+  // the prompt fires on every ordinary 5 pt label gap and stops being read.
+  const combined = (sel.length_pt || 0) + (tgt.length_pt || 0);
+  if (best.d > 20 && best.d > 0.2 * combined) {
+    if (!confirm(`Those two ends are ${fmtLen(best.d)} apart.\n\n`
+      + `Merging adds that span to the measured length, because a merged run `
+      + `is treated as continuous. If they are not two halves of the same `
+      + `line, cancel.\n\nMerge anyway?`)) {
+      setStatus("merge cancelled");
+      return;
+    }
+  }
+
+  const c = materialize(sel);
+  const pa = c.points.map(p => p.slice());
+  if (best.revA) pa.reverse();
+  const pb = B.map(p => p.slice());
+  if (best.revB) pb.reverse();
+  c.points = pa.concat(pb);
+  c.length_pt = combined + best.d;
+  // The absorbed chain leaves the drawing the same way a deleted one does.
+  state.excluded.add(tgt.chain_id);
+
+  cancelMerge();
+  state.selected = c.chain_id;
+  state.selPt = null;
+  updateSelBar(c);
+  afterEdit(`merged 2 lines into 1 \u2014 ${fmtLen(c.length_pt)} total, `
+    + `${fmtLen(best.d)} bridged`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+function cancelMerge() {
+  state.tool = null;
+  $("mergeBtn").classList.remove("active");
+}
+
+$("mergeBtn").onclick = () => {
+  if (state.selected === null) {
+    setStatus("select a line first, then merge it with another", "err");
+    return;
+  }
+  state.tool = "merge";
+  $("mergeBtn").classList.add("active");
+  setStatus("merge: click the other half of this run (Esc cancels)", "busy");
+};
+
 function handleCanvasClick(e) {
   const [px, py] = ptFromEvent(e);
   const { k } = state.view;
@@ -7136,6 +7239,10 @@ function handleCanvasClick(e) {
   }
   if (state.tool === "cutspan" && state.selected !== null) {
     cutSpanClick(px, py);
+    return;
+  }
+  if (state.tool === "merge" && state.selected !== null) {
+    mergeClick(px, py);
     return;
   }
   if (state.tool === "reclass" && state.selected !== null) {
@@ -7656,6 +7763,11 @@ addEventListener("keydown", (e) => {
     e.preventDefault();
     removeSelected();
   }
+  if ((e.key === "j" || e.key === "J") && !typing() && state.selected !== null) {
+    e.preventDefault();
+    $("mergeBtn").onclick();
+    return;
+  }
   if ((e.key === "r" || e.key === "R") && !typing() && state.selected !== null) {
     $("reclassBtn").onclick();
     return;
@@ -7671,6 +7783,11 @@ addEventListener("keydown", (e) => {
       cancelCut();
       setStatus("cut cancelled");
       draw();
+      return;
+    }
+    if (state.tool === "merge") {
+      cancelMerge();
+      setStatus("merge cancelled");
       return;
     }
     if (state.tool === "reclass") {
