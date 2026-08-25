@@ -77,62 +77,113 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment: production
     steps:
+      # Plain ssh rather than a third-party action, for one reason: it can
+      # RETRY. Measured 2026-08-25 - the v1.1.0 tag deployed fine from runner
+      # 64.236.143.216 at 15:35, then two dispatches fifteen minutes later
+      # both died on `dial tcp 31.220.50.13:22: i/o timeout`. The box's
+      # auth.log shows NO runner connection at all in that window while
+      # sshd was listening and ufw was allowing 22, so the packets never
+      # arrived: something upstream (most likely the host's DDoS mitigation,
+      # which had just seen a 188 MB seed run) was filtering them.
+      #
+      # Retrying is safe. A dial timeout happens before any remote command
+      # runs, and the remote script is idempotent anyway - pull, up -d.
       - name: Pull and restart on the box
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -e
-            cd ${{ secrets.DEPLOY_DIR }}
-            # The repo is private, so the GHCR package is private and the box
-            # has no registry credentials. Rather than park a long-lived PAT on
-            # the box, lend it THIS RUN'S token - it can read packages owned by
-            # this repo, it expires when the job ends, and it is masked in the
-            # log. Logged out again below so nothing persists in
-            # ~/.docker/config.json between deploys.
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            # Which tag this box runs. A tag pins the version so a later push
-            # cannot move it underneath a demo; a manual run takes latest.
-            if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-              echo "TAG=${{ needs.build.outputs.tag }}" > .tag.env
-            else
-              echo "TAG=latest" > .tag.env
-            fi
-            docker compose --env-file .env --env-file .tag.env pull app
-            docker compose --env-file .env --env-file .tag.env up -d
-            docker logout ghcr.io || true
-            docker image prune -f
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          BOX: ${{ secrets.DEPLOY_HOST }}
+          WHO: ${{ secrets.DEPLOY_USER }}
+          DIR: ${{ secrets.DEPLOY_DIR }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          TAGNAME: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
 
-            # Prove it came back. A deploy that silently left the box down is
-            # worse than one that failed loudly.
-            #
-            # ASK FOR THE SITE'S REAL NAME, not localhost. The Caddyfile
-            # declares one site block, {$SITE_HOST}, so a request to
-            # "localhost" never gets past the TLS handshake - there is no
-            # certificate for that SNI and curl returns 000, forever. Measured
-            # against the real Caddyfile: localhost 000, the site name 200.
-            # The earlier version of this check used localhost and would have
-            # failed every healthy production deploy.
-            #
-            # --resolve pins it to loopback so the probe never leaves the box
-            # and does not depend on the router hairpinning its own public IP.
-            SITE=$(grep '^SITE_HOST=' .env | head -1 | cut -d= -f2- | tr -d '"' | sed 's/[[:space:]]*$//')
-            if [ -z "$SITE" ]; then
-              echo "!! SITE_HOST is not set in .env on the box"; exit 1
+          # Values are baked into the script and fed over STDIN, never passed
+          # as ssh arguments - an argument is visible in the box's process
+          # list, and one of these is a registry token.
+          {
+            printf 'DIR=%q\n'        "$DIR"
+            printf 'ACTOR=%q\n'      "$ACTOR"
+            printf 'GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+            printf 'IS_TAG=%q\n'     "$IS_TAG"
+            printf 'TAGNAME=%q\n'    "$TAGNAME"
+            cat <<'REMOTE'
+          set -e
+          cd "$DIR"
+          # The repo is private, so the GHCR package is private and the box
+          # has no registry credentials. Rather than park a long-lived PAT on
+          # the box, lend it THIS RUN'S token - it can read packages owned by
+          # this repo, it expires when the job ends, and it is masked in the
+          # log. Logged out again below so nothing persists in
+          # ~/.docker/config.json between deploys.
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          # Which tag this box runs. A tag pins the version so a later push
+          # cannot move it underneath a demo; a manual run takes latest.
+          if [ "$IS_TAG" = "true" ]; then
+            echo "TAG=$TAGNAME" > .tag.env
+          else
+            echo "TAG=latest" > .tag.env
+          fi
+          docker compose --env-file .env --env-file .tag.env pull app
+          docker compose --env-file .env --env-file .tag.env up -d
+          docker logout ghcr.io || true
+          docker image prune -f
+
+          # Prove it came back. A deploy that silently left the box down is
+          # worse than one that failed loudly.
+          #
+          # ASK FOR THE SITE'S REAL NAME, not localhost. The Caddyfile
+          # declares one site block, {$SITE_HOST}, so a request to "localhost"
+          # never gets past the TLS handshake - there is no certificate for
+          # that SNI and curl returns 000, forever. Measured against the real
+          # Caddyfile: localhost 000, the site name 200.
+          #
+          # --resolve pins it to loopback so the probe never leaves the box and
+          # does not depend on the router hairpinning its own public IP.
+          SITE=$(grep '^SITE_HOST=' .env | head -1 | cut -d= -f2- | tr -d '"' | sed 's/[[:space:]]*$//')
+          if [ -z "$SITE" ]; then
+            echo "!! SITE_HOST is not set in .env on the box"; exit 1
+          fi
+          echo "probing https://$SITE/ (pinned to 127.0.0.1)"
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -k --resolve "$SITE:443:127.0.0.1" "https://$SITE/api/config" || true)
+            # 401 is a PASS: the site password is on, which is the point.
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+              echo "up (HTTP $code)"; exit 0
             fi
-            echo "probing https://$SITE/ (pinned to 127.0.0.1)"
-            for i in $(seq 1 30); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' -k --resolve "$SITE:443:127.0.0.1" "https://$SITE/api/config" || true)
-              # 401 is a PASS: the site password is on, which is the point.
-              if [ "$code" = "401" ] || [ "$code" = "200" ]; then
-                echo "up (HTTP $code)"; exit 0
-              fi
-              sleep 4
-            done
-            echo "!! did not come back healthy (last code: $code)"
-            docker compose logs --tail 60 app
-            docker compose logs --tail 30 caddy
-            exit 1
+            sleep 4
+          done
+          echo "!! did not come back healthy (last code: $code)"
+          docker compose logs --tail 60 app
+          docker compose logs --tail 30 caddy
+          exit 1
+          REMOTE
+          } > "$RUNNER_TEMP/remote.sh"
+
+          for attempt in 1 2 3 4; do
+            echo "::group::deploy attempt $attempt"
+            if ssh -i ~/.ssh/deploy_key \
+                   -o StrictHostKeyChecking=accept-new \
+                   -o ConnectTimeout=25 -o ServerAliveInterval=20 \
+                   -o ServerAliveCountMax=30 \
+                   "$WHO@$BOX" 'bash -s' < "$RUNNER_TEMP/remote.sh"; then
+              echo "::endgroup::"
+              echo "deployed on attempt $attempt"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -lt 4 ]; then
+              echo "attempt $attempt failed; waiting 90s before retrying"
+              sleep 90
+            fi
+          done
+          echo "!! could not reach $BOX after 4 attempts over ~5 minutes."
+          echo "   The box may be fine - check https://$BOX/ before assuming a"
+          echo "   bad deploy; a dial timeout never runs a remote command."
+          exit 1
