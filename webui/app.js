@@ -153,6 +153,52 @@ function uploadPdf(file) {
   xhr.send(fd);
 }
 
+// Plan sets already on this box. On a hosted box paths are refused and the
+// sample list is empty, so without this the only way back to a document is to
+// re-upload it - a 40 MB transfer, and on a large set a detection the server
+// has already done. Keyed by job id; no path ever reaches the client.
+async function loadRecent() {
+  const sel = $("recentSel");
+  if (!sel) return;
+  let rows = [];
+  try {
+    const r = await fetch("/api/recent");
+    if (r.ok) rows = await r.json();
+  } catch (e) { return; }
+  sel.innerHTML = "";
+  const head = document.createElement("option");
+  head.value = "";
+  head.textContent = rows.length ? "Recent plans…" : "No plans on this server yet";
+  sel.appendChild(head);
+  for (const d of rows) {
+    const o = document.createElement("option");
+    o.value = d.job_id;
+    // say how much is already detected: it is the difference between opening
+    // instantly and waiting out a cold run in front of a client
+    const state = d.detected >= d.pages && d.pages
+      ? "ready" : d.detected ? `${d.detected}/${d.pages} detected` : "not detected";
+    o.textContent = `${d.name} · ${d.pages}p · ${state}`;
+    sel.appendChild(o);
+  }
+  sel.hidden = false;
+}
+$("recentSel").onchange = async () => {
+  const id = $("recentSel").value;
+  if (!id) return;
+  setStatus("opening…", "busy");
+  try {
+    const r = await fetch(`/api/job/${id}/open`);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      return setStatus(e.detail || `could not reopen (${r.status})`, "err");
+    }
+    applyOpened(await r.json());
+  } catch (e) {
+    setStatus("could not reopen — the server did not answer", "err");
+  }
+};
+loadRecent();
+
 $("uploadBtn").onclick = () => $("fileInput").click();
 $("fileInput").onchange = (e) => {
   const f = e.target.files && e.target.files[0];
@@ -229,6 +275,8 @@ async function openPath(path) {
 // from the UI at all, which on a hosted server meant there was no way in.
 function applyOpened(j) {
   state.gen++;
+  // a newly uploaded set should appear in the picker without a reload
+  setTimeout(loadRecent, 300);
   state.job = j.job_id; state.result = null;
   // The server no longer blocks the open on classifying every page (it read
   // every drawing on every page: 16s for a 20-page set, 38s for a 15-page

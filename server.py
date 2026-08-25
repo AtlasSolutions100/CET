@@ -184,6 +184,72 @@ class OpenPathBody(BaseModel):
     path: str
 
 
+@app.get("/api/recent")
+def recent_documents():
+    """Plan sets already on this box, newest first.
+
+    On a hosted box filesystem paths are refused and /api/samples is empty, so
+    without this there is no way to reopen a document that is already here -
+    the operator would re-upload a 40 MB set, and on a large one wait out a
+    detection the server had already done. Nothing here exposes a path: the
+    only handle is the job id, which is all the reopen route takes.
+    """
+    out = []
+    with JOBS_LOCK:
+        items = list(JOBS.items())
+    for jid, j in items:
+        src = Path(j.get("path", ""))
+        try:
+            if not src.exists():
+                continue            # the file moved; a dead row helps nobody
+            mtime = src.stat().st_mtime
+        except OSError:
+            continue
+        d = JOBS_DIR / jid
+        done = 0
+        try:
+            done = len(list(d.glob("p*_result.json")))
+        except OSError:
+            pass
+        out.append({
+            "job_id": jid,
+            "name": _display_name(src),
+            "pages": int(j.get("pages") or 0),
+            # how much of it is already detected, so the operator can tell a
+            # set that will open instantly from one that will not
+            "detected": done,
+            "uploaded": bool(_UPLOAD_PREFIX.match(src.name)),
+            "when": mtime,
+        })
+    out.sort(key=lambda r: -r["when"])
+    return out[:60]
+
+
+@app.get("/api/job/{job_id}/open")
+def reopen_job(job_id: str):
+    """Reopen a document already on this box, by job id.
+
+    Same reply shape as /api/open-path and /api/upload so the UI has one code
+    path for all three. By id, never by path - a hosted box must not take a
+    filesystem location from the client.
+    """
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(404, "unknown job")
+        src = Path(j.get("path", ""))
+        pages = int(j.get("pages") or 0)
+        kinds = j.get("kinds")
+        sizes = j.get("sizes")
+    if not src.exists():
+        raise HTTPException(410, "that plan set is no longer on this server")
+    if not sizes:
+        # registry rows predate sizes, or classification never finished
+        return _register(src)
+    return {"job_id": job_id, "pages": pages, "kinds": kinds,
+            "sizes": sizes, "name": _display_name(src)}
+
+
 @app.get("/api/config")
 def ui_config():
     """What the UI needs to know about THIS box before it draws itself.
