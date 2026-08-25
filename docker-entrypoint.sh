@@ -8,16 +8,33 @@
 # refusal to boot, not a warning in a log nobody reads.
 set -e
 
-if [ -z "${TAKEOFF_UI_PASSWORD}" ]; then
-  echo "!! Refusing to start: TAKEOFF_UI_PASSWORD is not set." >&2
+# EITHER real accounts OR a site password. Once per-user logins exist,
+# TAKEOFF_UI_PASSWORD is dead weight and gets deleted from .env - refusing to
+# boot without it at that point would be refusing to boot a correctly
+# configured box. What must never happen is BOTH being absent, because the app
+# then has nobody to authenticate and this container is on the public internet.
+: "${TAKEOFF_JOBS_DIR:=/data/jobs}"
+_USERS_FILE="${TAKEOFF_JOBS_DIR}/users.json"
+_HAVE_ACCOUNTS=0
+if [ -s "${_USERS_FILE}" ] && grep -q '"algo"' "${_USERS_FILE}" 2>/dev/null; then
+  _HAVE_ACCOUNTS=1
+fi
+
+if [ -z "${TAKEOFF_UI_PASSWORD}" ] && [ "${_HAVE_ACCOUNTS}" -eq 0 ]; then
+  echo "!! Refusing to start: no way to sign in." >&2
   echo "   This container is reachable and holds client plan sets." >&2
-  echo "   Set it in the environment (compose reads it from .env)." >&2
+  echo "   Either set TAKEOFF_UI_PASSWORD, or create an account first:" >&2
+  echo "     docker compose run --rm app python -m takeoff_engine.users add you@example.com" >&2
   exit 1
 fi
 
-if [ "${#TAKEOFF_UI_PASSWORD}" -lt 8 ]; then
+if [ -n "${TAKEOFF_UI_PASSWORD}" ] && [ "${#TAKEOFF_UI_PASSWORD}" -lt 8 ]; then
   echo "!! Refusing to start: TAKEOFF_UI_PASSWORD is shorter than 8 characters." >&2
   exit 1
+fi
+
+if [ "${_HAVE_ACCOUNTS}" -eq 1 ]; then
+  echo "CORE takeoff: per-user logins active ($(grep -c '"algo"' "${_USERS_FILE}") account(s))"
 fi
 
 # The job store must be writable, or every detection fails one page at a time

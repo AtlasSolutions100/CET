@@ -135,12 +135,37 @@ the whole file including its BEGIN and END lines), `DEPLOY_DIR`
 **9. Seed the demo plans**, from your own machine, which is where the corpus
 lives: `./seed-demo.sh https://core.workoptional.studio`.
 
-## The password guard
+## Signing in
 
-The container **refuses to start** without `TAKEOFF_UI_PASSWORD`, or with one
-under 8 characters. That is deliberate: this box holds clients' live bid
-documents, and a missing password has to be a refusal, not a log line.
-Verified on the built image, both cases exit 1 and name the reason.
+There is a **login page** at `/login` and a signed session cookie. No HTTP
+Basic prompt: a browser caches Basic credentials and replays them forever, so
+the moment a password changes the user is locked out with no way to clear it
+and no sign-out button. That happened here on 2026-08-25.
+
+Two modes:
+
+| | |
+|---|---|
+| `users.json` on the volume | each person signs in with their own email and password; `TAKEOFF_UI_PASSWORD` is dead and can be deleted from `.env` |
+| no `users.json` | any username plus `TAKEOFF_UI_PASSWORD` |
+
+Manage accounts with:
+
+```bash
+docker compose exec app python -m takeoff_engine.users add someone@example.com
+```
+
+Add `--staff` for your own team: staff see every document on the box and can
+delete any of them, including a client's upload after a meeting.
+
+The container **refuses to start** when there is neither an account nor a
+password - it would have nobody to authenticate, on a public box holding client
+plan sets. Verified: no password and no accounts exits 1, a password under 8
+characters exits 1, and no password WITH accounts boots and logs
+`per-user logins active`.
+
+Sessions are signed with `session.key` beside the job store, so they survive a
+redeploy. Delete that file to sign everybody out at once.
 
 ## Updates
 

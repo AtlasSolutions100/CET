@@ -886,3 +886,22 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   border-bottom: 1px solid #c9a227;
   text-align: center;
 }
+
+
+/* Signed-in identity. Quiet, but present: on a box where several contractors
+   share one address, knowing WHICH account you are looking at is the
+   difference between "my plans are missing" and "I am logged in as someone
+   else". */
+.whoami {
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: .03em;
+  align-self: center;
+  white-space: nowrap;
+}
+button.ghost {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--line);
+}
+button.ghost:hover { color: var(--text); background: var(--hover); }

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in &middot; CORE Takeoff</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Self-contained on purpose. Every asset this page needs has to be
+     reachable BEFORE anyone is signed in, so each extra file would be another
+     path the auth middleware has to let through. One file, no dependencies. -->
+<style>
+  :root {
+    --bg: #131511; --panel: #1b1e1a; --line: #2b2f2a; --text: #e8ebe6;
+    --dim: #98a29a; --accent: #3fa873; --field: #262a32;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .beta {
+    padding: 5px 12px; font-size: 11px; font-weight: 600; letter-spacing: .02em;
+    color: #3b2600; background: #f5d67e; border-bottom: 1px solid #c9a227;
+    text-align: center;
+  }
+  main { flex: 1; display: grid; place-items: center; padding: 24px 16px; }
+  .card {
+    width: 100%; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 28px;
+  }
+  .brand {
+    font-family: var(--mono); font-size: 26px; font-weight: 700;
+    letter-spacing: .16em; margin-bottom: 2px;
+  }
+  .brand-o { color: var(--accent); }
+  .brand-sub {
+    display: block; font-size: 9.5px; letter-spacing: .22em; color: var(--dim);
+    font-weight: 500; margin-top: 4px;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 22px 0 18px; }
+  label {
+    display: block; font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 5px;
+  }
+  input {
+    width: 100%; padding: 9px 11px; margin-bottom: 15px; font-size: 14px;
+    color: var(--text); background: var(--field);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    width: 100%; padding: 10px; font-size: 14px; font-weight: 600;
+    color: #071009; background: var(--accent); border: 0; border-radius: 6px;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button[disabled] { opacity: .6; cursor: default; }
+  .err {
+    display: none; margin: 0 0 14px; padding: 9px 11px; font-size: 13px;
+    color: #ffd9d3; background: #3a1c17; border: 1px solid #6b2f26;
+    border-radius: 6px;
+  }
+  .err.show { display: block; }
+  .foot { margin-top: 18px; font-size: 11.5px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="beta">BETA - automated detection can be wrong. Check every quantity against the drawings before using it in a bid.</div>
+<main>
+  <div class="card">
+    <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span></div>
+    <h1>Sign in</h1>
+    <p class="err" id="err"></p>
+    <form id="f" autocomplete="on">
+      <label for="u">Email</label>
+      <!-- type=email would block a bare username on a box with no users.json,
+           where any name plus the site password is valid. -->
+      <input id="u" name="username" type="text" autocomplete="username"
+             autocapitalize="off" autocorrect="off" spellcheck="false" required>
+      <label for="p">Password</label>
+      <input id="p" name="password" type="password"
+             autocomplete="current-password" required>
+      <button id="go" type="submit">Sign in</button>
+    </form>
+    <p class="foot">Trouble signing in? Ask Koby or Christian to reset it.</p>
+  </div>
+</main>
+<script>
+  const f = document.getElementById("f");
+  const err = document.getElementById("err");
+  const go = document.getElementById("go");
+  const show = (m) => { err.textContent = m; err.classList.add("show"); };
+
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    err.classList.remove("show");
+    go.disabled = true;
+    go.textContent = "Signing in…";
+    try {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("u").value,
+          password: document.getElementById("p").value,
+        }),
+      });
+      if (r.ok) {
+        // Whatever page they were sent here from, else the app root.
+        const to = new URLSearchParams(location.search).get("next") || "/";
+        location.href = to.startsWith("/") ? to : "/";
+        return;
+      }
+      const j = await r.json().catch(() => ({}));
+      show(j.detail || `Could not sign in (${r.status})`);
+    } catch (e) {
+      show("Could not reach the server. Check your connection and try again.");
+    }
+    go.disabled = false;
+    go.textContent = "Sign in";
+  };
+  document.getElementById("u").focus();
+</script>
+</body>
+</html>

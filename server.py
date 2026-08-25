@@ -17,6 +17,7 @@ import math
 import multiprocessing
 import os
 import re
+import urllib.parse
 import threading
 import time
 import uuid
@@ -98,29 +99,117 @@ def _client_pdf(raw: str) -> Path:
 
 app = FastAPI(title="Takeoff Detection Service")
 
-# Site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic auth on every
-# request. TWO MODES, and which one is live depends on whether users.json
-# exists beside the job store (see takeoff_engine/users.py):
+# AUTHENTICATION. A real login page and a signed session cookie, NOT HTTP
+# Basic. Basic auth was removed on 2026-08-25 for a concrete reason: the
+# browser caches the credentials it was given and keeps replaying them, so
+# once someone has typed a password that later stops working - which is
+# exactly what happens the moment per-user logins are switched on and the old
+# shared password dies - they get 401 forever with no way to correct it. There
+# is no "sign out" for a Basic prompt. That cost the owner an evening.
 #
-#   no users.json  - one shared password, the username is ignored, and every
-#                    document on the box is visible to anyone who has it.
-#                    This is the original behaviour and stays the default.
-#   users.json     - each person has their own login, and the shared password
-#                    stops working. Documents are owned by whoever uploaded
-#                    them, and you only see your own plus the shared demo set.
-#
-# The hook was always there: Basic auth sends a username and this code used to
-# throw it away on the split. Honouring it is the whole feature - no cookies,
-# no session store, no login page.
+# Two modes, unchanged in substance:
+#   users.json present - each person signs in with their own email/password
+#   users.json absent  - any username plus TAKEOFF_UI_PASSWORD (dev, and the
+#                        state a fresh box boots in)
+# With TAKEOFF_UI_PASSWORD unset there is no auth at all, which is what a
+# laptop wants.
 _UI_PASSWORD = os.environ.get("TAKEOFF_UI_PASSWORD")
-if _UI_PASSWORD:
-    import base64 as _b64
+
+SESSION_COOKIE = "tk_session"
+SESSION_DAYS = 7
+
+
+def _session_secret() -> bytes:
+    """Signing key, persisted beside the job store.
+
+    On the volume, not in the image or the environment: it has to survive a
+    redeploy or every session dies on each release, and it must NOT be derived
+    from TAKEOFF_UI_PASSWORD, or changing that password would silently
+    invalidate every cookie.
+    """
+    import secrets as _s
+    f = JOBS_DIR / "session.key"
+    try:
+        if f.exists():
+            b = f.read_bytes().strip()
+            if len(b) >= 32:
+                return b
+    except OSError:
+        pass
+    b = _s.token_hex(32).encode()
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b)
+        os.chmod(f, 0o600)
+    except OSError:
+        pass                        # read-only volume: sessions last this boot
+    return b
+
+
+def _sign_session(username: str | None) -> str:
+    import base64 as _b
+    import hmac as _h
+    import time as _t
+    body = json.dumps({"u": username, "exp": int(_t.time()) + SESSION_DAYS * 86400},
+                      separators=(",", ":")).encode()
+    raw = _b.urlsafe_b64encode(body).rstrip(b"=")
+    sig = _h.new(_session_secret(), raw, hashlib.sha256).hexdigest()[:32]
+    return raw.decode() + "." + sig
+
+
+def _read_session(token: str):
+    """(ok, username). Fails closed on anything malformed or expired."""
+    import base64 as _b
+    import hmac as _h
+    import time as _t
+    if not token or "." not in token:
+        return False, None
+    raw, _, sig = token.rpartition(".")
+    want = _h.new(_session_secret(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    if not _h.compare_digest(sig, want):
+        return False, None
+    try:
+        pad = "=" * (-len(raw) % 4)
+        d = json.loads(_b.urlsafe_b64decode(raw + pad))
+        if int(d.get("exp", 0)) < _t.time():
+            return False, None
+        return True, d.get("u")
+    except (ValueError, TypeError):
+        return False, None
+
+
+# Added ALWAYS, not only when a password is set. If it were conditional,
+# deleting TAKEOFF_UI_PASSWORD from .env - which is exactly what you do once
+# real accounts exist - would silently remove authentication from a public box
+# rather than switch it over. This decides per request instead.
+if True:
     import secrets as _secrets
 
     from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse as _StarJSON
+    from starlette.responses import RedirectResponse as _StarRedirect
     from starlette.responses import Response as _StarResponse
 
     from takeoff_engine import users as _users
+
+    # Reachable before sign-in. Deliberately tiny - every entry here is a path
+    # nobody has authenticated to reach.
+    _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico"}
+
+    # Crude per-IP throttle. Twenty known accounts on one box does not warrant
+    # a real rate limiter, but it should not be a free password oracle either.
+    _FAILS: dict = {}
+
+    def _throttled(ip: str) -> bool:
+        import time as _t
+        now = _t.time()
+        hits = [t for t in _FAILS.get(ip, []) if now - t < 300]
+        _FAILS[ip] = hits
+        return len(hits) >= 12
+
+    def _note_fail(ip: str) -> None:
+        import time as _t
+        _FAILS.setdefault(ip, []).append(_t.time())
 
     # Ownership is enforced HERE rather than in each route. There are twenty-odd
     # /api/job/{id}/... routes and more will be added; a check that has to be
@@ -146,41 +235,94 @@ if _UI_PASSWORD:
         owner = j.get("owner")
         if owner is None or owner == user:
             return None                 # shared demo set, or theirs
-        return _StarResponse('{"detail":"unknown job"}', status_code=404,
-                             media_type="application/json")
+        return _StarJSON({"detail": "unknown job"}, status_code=404)
 
-    class _BasicAuth(BaseHTTPMiddleware):
+    class _SessionAuth(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
-            hdr = request.headers.get("authorization", "")
-            user = None
-            ok = False
-            if hdr.startswith("Basic "):
-                try:
-                    creds = _b64.b64decode(hdr[6:]).decode()
-                    name, _, pw = creds.partition(":")
-                    if _users.load():
-                        # Per-user mode. The shared password deliberately no
-                        # longer opens anything - leaving it working would mean
-                        # one forgotten credential still sees every client.
-                        user = _users.check(name, pw)
-                        ok = user is not None
-                    else:
-                        ok = _secrets.compare_digest(pw, _UI_PASSWORD)
-                except Exception:
-                    ok = False
+            path = request.url.path
+            if path in _PUBLIC:
+                return await call_next(request)
+
+            # FAIL CLOSED. No accounts and no site password on a reachable box
+            # is a misconfiguration, not permission to serve clients' bid
+            # documents to the internet. A laptop (HOSTED unset) is left alone.
+            if not _users.load() and not _UI_PASSWORD:
+                if HOSTED:
+                    return _StarJSON(
+                        {"detail": "this server has no accounts configured; "
+                                   "run takeoff_engine.users to add one"},
+                        status_code=503)
+                return await call_next(request)
+
+            ok, user = _read_session(request.cookies.get(SESSION_COOKIE, ""))
             if not ok:
-                return _StarResponse(
-                    "password required", status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="takeoff"'})
+                # An API caller wants a status code; a person wants the login
+                # page, and to land back where they were pointed.
+                if path.startswith("/api/"):
+                    return _StarJSON({"detail": "not signed in"}, status_code=401)
+                nxt = path + (("?" + request.url.query) if request.url.query else "")
+                return _StarRedirect(
+                    "/login?next=" + urllib.parse.quote(nxt, safe=""),
+                    status_code=303)
+
             request.scope["tk_user"] = user
             request.scope["tk_staff"] = bool(user) and _users.is_staff(user)
-            blocked = _forbidden_job(request.url.path, user,
-                                     request.scope["tk_staff"])
+            blocked = _forbidden_job(path, user, request.scope["tk_staff"])
             if blocked is not None:
                 return blocked
             return await call_next(request)
 
-    app.add_middleware(_BasicAuth)
+    app.add_middleware(_SessionAuth)
+
+    @app.get("/login")
+    def login_page():
+        return FileResponse(ROOT / "webui" / "login.html",
+                            media_type="text/html")
+
+    @app.post("/api/login")
+    async def login(request: Request):
+        body = await request.json()
+        name = str(body.get("username") or "").strip()
+        pw = str(body.get("password") or "")
+        ip = (request.client.host if request.client else "?")
+        if _throttled(ip):
+            raise HTTPException(
+                429, "Too many attempts. Wait five minutes and try again.")
+
+        who = None
+        if _users.load():
+            who = _users.check(name, pw)          # per-user mode
+            good = who is not None
+        else:
+            # No accounts defined: any username, the shared site password.
+            good = bool(name) and _secrets.compare_digest(pw, _UI_PASSWORD)
+        if not good:
+            _note_fail(ip)
+            # One message for both cases, so this cannot be used to find out
+            # which of these twenty addresses has an account.
+            raise HTTPException(401, "That email and password do not match.")
+
+        r = JSONResponse({"ok": True, "user": who})
+        # Secure only when the request actually arrived over TLS, or a laptop
+        # on plain http could never hold a session.
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        r.set_cookie(SESSION_COOKIE, _sign_session(who),
+                     max_age=SESSION_DAYS * 86400, httponly=True,
+                     samesite="lax", secure=(proto == "https"), path="/")
+        return r
+
+    @app.post("/api/logout")
+    def logout():
+        r = JSONResponse({"ok": True})
+        r.delete_cookie(SESSION_COOKIE, path="/")
+        return r
+
+    @app.get("/api/me")
+    def whoami(request: Request):
+        """Who the UI is signed in as, so it can show it and offer sign-out."""
+        u = request.scope.get("tk_user")
+        return {"user": u, "staff": bool(request.scope.get("tk_staff")),
+                "accounts": bool(_users.load())}
 
 
 def _who(request: Request):

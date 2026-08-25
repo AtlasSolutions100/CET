@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=37">
+<link rel="stylesheet" href="style.css?v=38">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - automated detection can be wrong. Check every quantity against the drawings before using it in a bid.</div>
@@ -21,6 +21,8 @@
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
   <div id="status" class="status"></div>
+  <span id="whoami" class="whoami" hidden></span>
+  <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
   <button id="aiBtn" hidden>Analyze</button>
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
   <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
@@ -325,6 +327,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=80"></script>
+<script src="app.js?v=81"></script>
 </body>
 </html>

@@ -4490,6 +4490,32 @@ async function loadBetaNotice() {
 }
 loadBetaNotice();
 
+// Who is signed in, and a way to stop being signed in. A session cookie with
+// no sign-out is the same trap HTTP Basic was: a browser stuck with
+// credentials the user cannot clear.
+async function loadWhoami() {
+  let me = null;
+  try {
+    const r = await fetch("/api/me");
+    if (r.ok) me = await r.json();
+  } catch (e) { return; }
+  if (!me || !me.user) return;          // no accounts configured; nothing to show
+  const w = $("whoami");
+  if (w) {
+    w.textContent = me.user + (me.staff ? " · staff" : "");
+    w.hidden = false;
+  }
+  const b = $("signOutBtn");
+  if (b) {
+    b.hidden = false;
+    b.onclick = async () => {
+      try { await fetch("/api/logout", { method: "POST" }); } catch (e) { /* go anyway */ }
+      location.href = "/login";
+    };
+  }
+}
+loadWhoami();
+
 // ---------- CSV export of the itemized takeoff (client-side blob) ----------
 function takeoffCsv() {
   const data = computeTakeoffRows();
