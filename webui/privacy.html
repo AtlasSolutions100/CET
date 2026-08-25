@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Privacy Policy &middot; CORE Takeoff</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="legal.css?v=1">
+</head>
+<body>
+<div class="beta">BETA - automated detection can be wrong. Check every quantity against the drawings before using it in a bid.</div>
+<main>
+  <a class="back" href="/">&larr; Back to CORE Takeoff</a>
+  <h1>Privacy Policy</h1>
+  <p class="meta">CORE Takeoff, operated by Radiant AI Software.
+     Last updated <span class="fill">[DATE]</span>.</p>
+
+  <div class="callout">
+    <strong>The two things most people want to know.</strong><br>
+    <strong>1.</strong> Your uploaded drawings are private to your account -
+    other customers cannot see them - but <strong>our own staff accounts can see
+    every document on the server</strong>, because that is how we support and
+    debug it.<br>
+    <strong>2.</strong> One optional feature, the <strong>Analyze</strong>
+    button, sends a picture of the sheet you are looking at to an outside AI
+    company. Nothing else you upload ever leaves our server. If you do not press
+    Analyze, that never happens.
+  </div>
+
+  <h2>1. What we collect</h2>
+  <table>
+    <tr><th>What</th><th>Why</th></tr>
+    <tr><td>Your email address</td><td>It is your username.</td></tr>
+    <tr><td>Your password, stored only as a salted PBKDF2 hash</td>
+        <td>To sign you in. We cannot read your password.</td></tr>
+    <tr><td>Drawings (PDFs) you upload</td>
+        <td>To measure them. They stay on our server.</td></tr>
+    <tr><td>What we derive from them - traced lines, quantities, page images,
+            labels, prices you enter, approved exports and reports</td>
+        <td>To show you results and to avoid re-processing the same sheet.</td></tr>
+    <tr><td>Feedback you send, and the optional screenshot attached to it</td>
+        <td>To fix what you reported. It includes the sheet name, page, line
+            style and app version so we can reproduce the problem.</td></tr>
+    <tr><td>Your browser's user-agent string, your IP address in server logs,
+            and timestamps</td>
+        <td>Ordinary web-server operation, security and debugging.</td></tr>
+  </table>
+  <p>We do <strong>not</strong> use analytics, advertising, tracking pixels, or
+     third-party fonts or scripts. The site loads nothing from anyone else. The
+     only cookie we set is a session cookie that keeps you signed in; it is
+     essential, and there is nothing to opt into.</p>
+
+  <h2>2. Who can see your documents</h2>
+  <p>Each account sees only its own uploads, plus a small shared set of sample
+     plans that belong to us. Other customers cannot see your drawings, and the
+     server returns &ldquo;not found&rdquo; if one tries.</p>
+  <p><strong>Our staff accounts can see and delete every document on the
+     server.</strong> We do this to support the product, investigate faults, and
+     clean up after demonstrations. If that is not acceptable for a particular
+     set of drawings, do not upload them.</p>
+
+  <h2>3. The one feature that sends data outside</h2>
+  <p>If you press <strong>Analyze</strong>, we render an image of the sheet you
+     are viewing and send it to an AI provider - currently
+     <a href="https://x.ai" rel="noopener noreferrer">xAI</a> or
+     <a href="https://groq.com" rel="noopener noreferrer">Groq</a> - which
+     returns a written description. That means an image of that drawing leaves
+     our server and is processed on their systems under their terms and
+     retention rules, which we do not control.</p>
+  <p>This happens only when you press that button, only for the sheet you are
+     looking at, and never automatically.</p>
+
+  <h2>4. Who else is involved</h2>
+  <ul>
+    <li><strong>Hostinger</strong> - the server the application runs on.</li>
+    <li><strong>Let's Encrypt</strong> - issues the certificate that encrypts
+        your connection.</li>
+    <li><strong>GitHub</strong> - stores our source code and deploys updates. It
+        does not receive your drawings.</li>
+  </ul>
+  <p>We do not sell your data, and we do not share it with anyone for marketing.</p>
+
+  <h2>5. How long we keep it</h2>
+  <p>Uploaded drawings and their results stay on the server until they are
+     deleted. You can remove a document yourself with
+     <em>Remove from server</em>, which deletes the PDF and everything derived
+     from it. Ask us and we will delete your account and everything under it.</p>
+  <p>Because this is beta software, we may also delete data as part of
+     maintenance. Keep your own copies of your drawings.</p>
+
+  <h2>6. Security, and its limits</h2>
+  <ul>
+    <li>Connections are encrypted with TLS.</li>
+    <li>Passwords are stored only as salted PBKDF2-SHA256 hashes.</li>
+    <li>Sessions use a signed, HttpOnly cookie.</li>
+    <li>Documents are separated per account and enforced on the server, not just
+        hidden in the interface.</li>
+  </ul>
+  <p>Being straight with you: this is a small beta product on a single server,
+     not a hardened enterprise platform. We think the measures above are
+     reasonable, and no service can promise perfect security.</p>
+
+  <h2>7. Your choices</h2>
+  <p>You can ask us what we hold about you, ask for it to be corrected, or ask
+     for it to be deleted. Email us and we will action it.</p>
+
+  <h2>8. Changes</h2>
+  <p>If we change how we handle your data in a way that matters, we will say so
+     in the application rather than quietly editing this page.</p>
+
+  <h2>9. Contact</h2>
+  <p><a href="mailto:christian@radiantaisoftware.com">christian@radiantaisoftware.com</a>
+     &middot;
+     <a href="mailto:koby@radiantaisoftware.com">koby@radiantaisoftware.com</a></p>
+
+  <p class="foot"><a href="/terms">Terms of Service</a> &middot;
+     <a href="/">Back to the application</a></p>
+</main>
+</body>
+</html>

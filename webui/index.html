@@ -4,9 +4,13 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=39">
+<link rel="stylesheet" href="style.css?v=40">
 </head>
 <body>
+<div id="loadWrap" hidden>
+  <img id="loadLogo" src="lockup-animated.svg" alt="">
+  <div id="loadMsg"></div>
+</div>
 <div id="betaBanner" class="beta-banner">BETA - automated detection can be wrong. Check every quantity against the drawings before using it in a bid.</div>
 <header>
   <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span></div>
@@ -24,6 +28,8 @@
   <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
   <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
   <span id="whoami" class="whoami" hidden></span>
+  <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
+  <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
   <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
   <button id="aiBtn" hidden>Analyze</button>
   <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
@@ -330,6 +336,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=84"></script>
+<script src="app.js?v=85"></script>
 </body>
 </html>

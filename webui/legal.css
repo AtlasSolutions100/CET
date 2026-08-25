@@ -1,0 +1,65 @@
+/* Terms and Privacy. Deliberately its own stylesheet rather than style.css:
+   both pages must render for somebody who is NOT signed in, so every asset
+   they need is on the public allowlist, and that list should stay short. */
+:root {
+  --bg: #131511; --panel: #1b1e1a; --line: #2b2f2a; --text: #e8ebe6;
+  --dim: #98a29a; --accent: #3fa873; --chip: #262a32;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.beta {
+  position: sticky; top: 0; z-index: 5;
+  padding: 5px 12px; font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  color: #3b2600; background: #f5d67e; border-bottom: 1px solid #c9a227;
+  text-align: center;
+}
+main {
+  /* ~70 characters of running text; a contract nobody can read is not a
+     contract that protects anybody */
+  max-width: 47rem; margin: 0 auto; padding: 28px 20px 64px;
+}
+.back {
+  display: inline-block; font-size: 12.5px; color: var(--dim);
+  text-decoration: none; margin-bottom: 20px;
+}
+.back:hover { color: var(--text); }
+h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -.01em; }
+h2 {
+  font-size: 15px; margin: 30px 0 8px; padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.meta { color: var(--dim); font-size: 12.5px; margin: 0 0 22px; }
+p { margin: 0 0 12px; }
+ul { margin: 0 0 12px; padding-left: 20px; }
+li { margin-bottom: 5px; }
+a { color: var(--accent); }
+strong { color: #fff; }
+.callout {
+  background: var(--chip); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px; padding: 14px 16px; margin: 20px 0 8px;
+  font-size: 14.5px;
+}
+/* The bits a human still has to fill in. Loud on purpose - shipping a policy
+   with [STATE] left in it is worse than having no policy. */
+.fill {
+  background: #5a3a00; color: #ffd98a; padding: 0 5px; border-radius: 3px;
+  font-family: var(--mono); font-size: .88em;
+}
+table { border-collapse: collapse; width: 100%; margin: 6px 0 14px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px; border: 1px solid var(--line); }
+th { background: var(--chip); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+.foot { margin-top: 34px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f3ef; --panel: #fff; --line: #e0e3dc; --text: #28292c;
+    --dim: #6f7873; --accent: #1f5c3e; --chip: #eef0ea;
+  }
+  strong { color: #000; }
+  .fill { background: #ffe9b0; color: #6b4a00; }
+}

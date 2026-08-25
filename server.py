@@ -199,7 +199,12 @@ if True:
 
     # Reachable before sign-in. Deliberately tiny - every entry here is a path
     # nobody has authenticated to reach.
-    _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico"}
+    # Terms and Privacy must be readable BEFORE anyone signs in - a policy you
+    # can only see once you have already accepted it is not a policy. They pull
+    # legal.css and the logo, so those are public too, and nothing else is.
+    _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico",
+               "/terms", "/terms.html", "/privacy", "/privacy.html",
+               "/legal.css", "/lockup-animated.svg"}
 
     # Reachable while signed in but still on the issued password. Everything
     # else is refused until it is changed - that gate is the entire reason a
@@ -295,6 +300,14 @@ if True:
             return await call_next(request)
 
     app.add_middleware(_SessionAuth)
+
+    @app.get("/terms")
+    def terms_page():
+        return FileResponse(ROOT / "webui" / "terms.html", media_type="text/html")
+
+    @app.get("/privacy")
+    def privacy_page():
+        return FileResponse(ROOT / "webui" / "privacy.html", media_type="text/html")
 
     @app.get("/login")
     def login_page():

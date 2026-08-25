@@ -63,7 +63,8 @@
     border-radius: 6px;
   }
   .err.show { display: block; }
-  .foot { margin-top: 18px; font-size: 11.5px; color: var(--dim); }
+  .foot { margin-top: 18px; font-size: 11.5px; color: var(--dim); line-height: 1.6; }
+  .foot a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -84,7 +85,9 @@
              autocomplete="current-password" required>
       <button id="go" type="submit">Sign in</button>
     </form>
-    <p class="foot">Trouble signing in? Ask Koby or Christian to reset it.</p>
+    <p class="foot">Trouble signing in? Ask Koby or Christian to reset it.<br>
+      By signing in you accept the <a href="/terms">Terms of Service</a>
+      and <a href="/privacy">Privacy Policy</a>.</p>
   </div>
 </main>
 <script>
