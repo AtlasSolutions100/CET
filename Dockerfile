@@ -26,6 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY takeoff_engine/ ./takeoff_engine/
 COPY webui/ ./webui/
 COPY server.py .
+# ops tool, not part of the service: creates the demo logins and sets
+# which plan sets are shared. In the image so it can be re-run later
+# with `docker compose exec app python provision_demo.py`.
+COPY provision_demo.py .
 
 # The job store. Mounted as a volume in compose - it holds the detection cache,
 # the page renders and the approved exports, and losing it means every demo is

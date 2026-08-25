@@ -4472,6 +4472,24 @@ function renderItemized() {
   calcSave();
 }
 
+// Appended to every CSV. Set from /api/beta-notice so it cannot drift from
+// the banner and the report stamp; the fallback matters because a CSV with no
+// caveat is the version that ends up pasted into a bid.
+let BETA_CSV_TAIL = "\n\nBETA SOFTWARE - NOT FOR COMMERCIAL USE. "
+  + "Check every quantity against the drawings.\n";
+
+async function loadBetaNotice() {
+  let n = null;
+  try {
+    const r = await fetch("/api/beta-notice");
+    if (r.ok) n = await r.json();
+  } catch (e) { /* keep the built-in wording */ }
+  if (n && n.long) BETA_CSV_TAIL = "\n\n" + n.long.replace(/"/g, '""') + "\n";
+  const el = $("betaBanner");
+  if (el && n && n.short) el.textContent = n.short;
+}
+loadBetaNotice();
+
 // ---------- CSV export of the itemized takeoff (client-side blob) ----------
 function takeoffCsv() {
   const data = computeTakeoffRows();
@@ -4516,7 +4534,7 @@ $("csvBtn").onclick = () => {
   if (csv === null) return;
   const stem = (state.docName || "takeoff").replace(/\.pdf$/i, "");
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.href = URL.createObjectURL(new Blob([csv + BETA_CSV_TAIL], { type: "text/csv" }));
   a.download = `${stem}_p${state.page + 1}_takeoff.csv`;
   a.click();
   URL.revokeObjectURL(a.href);

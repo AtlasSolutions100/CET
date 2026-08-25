@@ -127,15 +127,15 @@ if _UI_PASSWORD:
     # remembered per route is a check that eventually is not.
     _JOB_PATH = re.compile(r"^/api/job/([0-9a-fA-F]{6,32})(?:/|$)")
 
-    def _forbidden_job(path: str, user):
+    def _forbidden_job(path: str, user, staff: bool = False):
         """404 when `user` may not touch the job named in `path`, else None.
 
         404 and not 403: a 403 confirms the job exists and belongs to somebody
         else, which on a box holding several clients' bid documents leaks that
         the other client is here at all.
         """
-        if user is None:
-            return None                 # single-password mode, unchanged
+        if user is None or staff:
+            return None                 # single-password mode, or our own team
         m = _JOB_PATH.match(path)
         if not m:
             return None
@@ -173,7 +173,9 @@ if _UI_PASSWORD:
                     "password required", status_code=401,
                     headers={"WWW-Authenticate": 'Basic realm="takeoff"'})
             request.scope["tk_user"] = user
-            blocked = _forbidden_job(request.url.path, user)
+            request.scope["tk_staff"] = bool(user) and _users.is_staff(user)
+            blocked = _forbidden_job(request.url.path, user,
+                                     request.scope["tk_staff"])
             if blocked is not None:
                 return blocked
             return await call_next(request)
@@ -184,6 +186,25 @@ if _UI_PASSWORD:
 def _who(request: Request):
     """Username for this request, or None in single-password mode."""
     return request.scope.get("tk_user")
+
+
+def _is_staff(request: Request) -> bool:
+    """Our own team: sees every document, may delete any of them. True in
+    single-password mode too, where there is nothing to separate."""
+    return bool(request.scope.get("tk_staff")) or _who(request) is None
+
+# BETA NOTICE. The whole point of this product is a number an estimator puts
+# in a bid, so the caveat has to travel WITH the number, not sit on a login
+# page nobody re-reads. It is stamped on every page of the report PDF, tailed
+# onto the CSV, and shown as a banner the UI cannot dismiss.
+BETA_SHORT = ("BETA - automated detection can be wrong. Check every quantity "
+              "against the drawings before using it in a bid.")
+BETA_LONG = (
+    "BETA SOFTWARE - NOT FOR COMMERCIAL USE. CORE Takeoff is in active "
+    "development. The quantities here are produced by automated line "
+    "detection and scale reading, and can be incomplete or wrong. Do not rely "
+    "on them for a bid, a contract, or any other commercial decision without "
+    "checking every figure against the source drawings.")
 
 # job_id -> {"path": str, "pages": int, "status": {page: "running"|"done"|"error:..."}}
 JOBS: dict = {}
@@ -257,6 +278,7 @@ def recent_documents(request: Request):
     only handle is the job id, which is all the reopen route takes.
     """
     me = _who(request)
+    staff = _is_staff(request)
     out = []
     with JOBS_LOCK:
         items = list(JOBS.items())
@@ -266,7 +288,7 @@ def recent_documents(request: Request):
         # which is our demo corpus and anything registered before logins were
         # switched on). In single-password mode `me` is None and nothing is
         # filtered, which is exactly how this behaved before.
-        if me is not None and owner is not None and owner != me:
+        if not staff and owner is not None and owner != me:
             continue
         src = Path(j.get("path", ""))
         try:
@@ -296,7 +318,7 @@ def recent_documents(request: Request):
             "owner": owner,
             "mine": owner is not None and owner == me,
             "shared": owner is None,
-            "deletable": (me is None) or (owner == me),
+            "deletable": staff or (owner == me),
         })
     out.sort(key=lambda r: -r["when"])
     return out[:60]
@@ -325,6 +347,13 @@ def reopen_job(job_id: str):
         return _register(src)
     return {"job_id": job_id, "pages": pages, "kinds": kinds,
             "sizes": sizes, "name": _display_name(src)}
+
+
+@app.get("/api/beta-notice")
+def beta_notice():
+    """The UI renders this rather than hard-coding it, so the banner on screen
+    and the stamp on a printed report are always the same words."""
+    return {"short": BETA_SHORT, "long": BETA_LONG}
 
 
 @app.get("/api/config")
@@ -824,9 +853,11 @@ def delete_job(job_id: str, request: Request):
     # A user may delete their own. The shared demo corpus is deliberately not
     # deletable through the UI: it is the thing every demo depends on, and one
     # mis-click should not cost an hour of re-detection for everybody.
-    if me is not None and owner is None:
+    if owner is None and not _is_staff(request):
         raise HTTPException(
             403, "shared demo plans are managed on the server, not from here")
+    if owner is not None and owner != me and not _is_staff(request):
+        raise HTTPException(404, "unknown job")
 
     src = Path(j.get("path", ""))
     name = _display_name(src)
@@ -1795,6 +1826,26 @@ def report_pdf(job_id: str):
         tp.insert_text((50, y), "Not a project total: a run drawn on several "
                                 "sheets is counted once per sheet.",
                        fontsize=8)
+
+    # Stamp every page, not just the first. A summary page gets printed on its
+    # own and handed to somebody who never saw the rest of the document, and a
+    # quantity with no caveat attached is exactly how a beta number reaches a
+    # bid.
+    # The band is sized to the text, never the other way round. The first cut
+    # wrapped to 118 characters and printed [:2], which silently truncated the
+    # notice mid-sentence at "...are produced by" - a half-printed disclaimer
+    # is worse than none, and it would have broken again the moment anyone
+    # edited the wording.
+    _beta = textwrap.wrap(BETA_LONG, 150) or [""]
+    for _pg in out:
+        _w, _h = _pg.rect.width, _pg.rect.height
+        _band = 10 + 8 * len(_beta)
+        _pg.draw_rect(pymupdf.Rect(0, _h - _band, _w, _h),
+                      color=None, fill=(0.97, 0.93, 0.85), overlay=True)
+        _y = _h - _band + 9
+        for _seg in _beta:
+            _pg.insert_text((36, _y), _seg, fontsize=6.5, color=(0.45, 0.25, 0))
+            _y += 8
 
     pdf_path = jd / "takeoff_report.pdf"
     # deflate=True, garbage=4 - NOT cosmetic. Measured on one Beaumont sheet

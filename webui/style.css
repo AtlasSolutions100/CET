@@ -868,3 +868,21 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
 :root[data-theme="light"] .drop-card,
 :root[data-theme="light"] .up-bar { box-shadow: 0 16px 40px rgba(0,0,0,.16); }
+
+
+/* Beta notice. Not dismissible on purpose: the product's whole output is a
+   number somebody may put in a bid, and a caveat you can click away is a
+   caveat that is not there when it matters. Sticky so it survives scrolling. */
+.beta-banner {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: #3b2600;
+  background: #f5d67e;
+  border-bottom: 1px solid #c9a227;
+  text-align: center;
+}

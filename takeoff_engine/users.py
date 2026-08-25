@@ -117,6 +117,18 @@ def save(users: dict) -> None:
         pass                            # best effort; Windows dev boxes ignore it
 
 
+def is_staff(username: str) -> bool:
+    """Staff see every document on the box and may delete any of them.
+
+    Needed because ownership is per person: once the demo corpus belongs to
+    one account, nobody else on the team can open it, and duplicating twenty
+    pre-detected sheets per colleague is absurd. It is also how a client's
+    uploaded bid set gets cleaned off the box after a meeting.
+    """
+    rec = load().get(username)
+    return bool(isinstance(rec, dict) and rec.get("staff"))
+
+
 def check(username: str, password: str) -> str | None:
     """Return the canonical username on success, else None.
 
@@ -150,6 +162,9 @@ def _cli() -> int:
     a.add_argument("--password", help="omit to be prompted (preferred: a "
                                       "password on the command line lands in "
                                       "the shell history)")
+    a.add_argument("--staff", action="store_true",
+                   help="can see and delete EVERY document on the box, not "
+                        "just their own. For your own team only.")
     sub.add_parser("list", help="list usernames")
     r = sub.add_parser("remove", help="remove a user")
     r.add_argument("username")
@@ -160,7 +175,7 @@ def _cli() -> int:
         if not users:
             print("no users defined - the service is in single-password mode")
         for n in sorted(users):
-            print(n)
+            print(f"{n}{'  [staff]' if users[n].get('staff') else ''}")
         print(f"\nstore: {store_path()}")
         return 0
 
@@ -182,9 +197,14 @@ def _cli() -> int:
         print("refused: use at least 8 characters")
         return 1
     existed = args.username in users
-    users[args.username] = hash_password(pw)
+    rec = hash_password(pw)
+    # keep an existing staff flag on a password reset unless it is re-stated
+    if args.staff or (existed and users[args.username].get("staff")):
+        rec["staff"] = True
+    users[args.username] = rec
     save(users)
-    print(f"{'updated' if existed else 'added'} {args.username}; "
+    print(f"{'updated' if existed else 'added'} {args.username}"
+          f"{' (STAFF - sees every document)' if rec.get('staff') else ''}; "
           f"{len(users)} user(s) total -> {store_path()}")
     return 0
 
