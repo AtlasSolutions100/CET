@@ -905,3 +905,48 @@ button.ghost {
   border: 1px solid var(--line);
 }
 button.ghost:hover { color: var(--text); background: var(--hover); }
+
+
+/* Feedback dialog. A backdrop rather than an inline panel: the form has to be
+   reachable from anywhere in the app, including mid-review with the sidebar
+   scrolled somewhere else. */
+.fb-back {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0, 0, 0, .55);
+  display: grid; place-items: center; padding: 20px;
+}
+.fb-card {
+  width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 20px;
+}
+.fb-head { font-size: 15px; font-weight: 600; }
+.fb-sub { font-size: 12px; color: var(--dim); margin: 3px 0 16px; }
+.fb-lab {
+  display: block; font-size: 11px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--dim); margin: 12px 0 5px;
+}
+.fb-in {
+  width: 100%; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  color: var(--text); background: var(--field);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.fb-msg { resize: vertical; min-height: 84px; }
+.fb-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--dim); margin-top: 12px;
+}
+.fb-check input { width: auto; }
+.fb-ctx {
+  margin-top: 14px; padding: 9px 11px; border-radius: 6px;
+  background: var(--chip); border: 1px solid var(--line);
+}
+.fb-ctx-h { font-size: 10.5px; text-transform: uppercase;
+            letter-spacing: .05em; color: var(--dim); }
+.fb-ctx-b { font-size: 12px; margin-top: 4px; word-break: break-word; }
+.fb-actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
+}
+.fb-actions button { padding: 8px 16px; font-size: 13px; border-radius: 6px; }
+#fbSend { background: var(--accent); color: #071009; border: 0; font-weight: 600; }
+#fbSend[disabled] { opacity: .6; }

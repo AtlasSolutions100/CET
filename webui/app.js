@@ -4499,6 +4499,13 @@ async function loadWhoami() {
     const r = await fetch("/api/me");
     if (r.ok) me = await r.json();
   } catch (e) { return; }
+  // The CSV button is decided BEFORE the early return. On a box with no
+  // accounts (a laptop, or a freshly provisioned server) there is no user to
+  // name, but whoever is sitting there is effectively staff and the export
+  // endpoint already lets them through - hiding the button would only make it
+  // undiscoverable, not more private.
+  const x = $("fbExportBtn");
+  if (x && (!me || !me.accounts || me.staff)) x.hidden = false;
   if (!me || !me.user) return;          // no accounts configured; nothing to show
   const w = $("whoami");
   if (w) {
@@ -4515,6 +4522,143 @@ async function loadWhoami() {
   }
 }
 loadWhoami();
+
+// ---------------------------------------------------------------- feedback
+// Exists so a client does not have to phone somebody. The free text is the
+// least useful half: "the lines are wrong" cannot be acted on without knowing
+// which sheet, which style and which build, and the person reporting it should
+// not have to know that either. So it is collected here and sent with them.
+function fbContext() {
+  const sel = state.selected !== null ? chainById(state.selected) : null;
+  const styleId = sel ? sel.style_id : state.isolate;
+  return {
+    document: state.docName || null,
+    page: state.page !== undefined && state.page !== null ? state.page + 1 : null,
+    style: styleId !== null && styleId !== undefined
+      ? (state.labels.get(styleId) || "style " + styleId) : null,
+    scale: state.result && state.result.scale
+      ? (state.result.scale.text || String(state.result.scale.ft_per_in || "")) : null,
+    chains: state.result && state.result.chains ? state.result.chains.length : null,
+    app: (document.querySelector('script[src*="app.js"]') || {}).src?.split("?")[1] || null,
+    url: location.pathname + location.search,
+  };
+}
+
+function fbClose() {
+  const el = document.querySelector(".fb-back");
+  if (el) el.remove();
+}
+
+$("fbBtn").onclick = () => {
+  if (document.querySelector(".fb-back")) return fbClose();
+  const ctx = fbContext();
+
+  const back = document.createElement("div");
+  back.className = "fb-back";
+  // click-outside closes, but never mid-typing inside the card
+  back.onclick = (e) => { if (e.target === back) fbClose(); };
+
+  const card = document.createElement("div");
+  card.className = "fb-card";
+  card.innerHTML = `
+    <div class="fb-head">Send feedback</div>
+    <div class="fb-sub">Goes straight to Koby and Christian. No phone call needed.</div>
+
+    <label class="fb-lab" for="fbSev">How much is it hurting you?</label>
+    <select id="fbSev" class="fb-in">
+      <option value="wrong-number">A number came out wrong</option>
+      <option value="blocked">I am stuck and cannot carry on</option>
+      <option value="annoying" selected>Annoying, but I worked around it</option>
+      <option value="idea">Just an idea</option>
+    </select>
+
+    <label class="fb-lab" for="fbCat">What is it about?</label>
+    <select id="fbCat" class="fb-in">
+      <option value="wrong-quantity">A quantity or measurement is wrong</option>
+      <option value="missed-lines">It missed lines that are on the drawing</option>
+      <option value="extra-lines">It drew lines that are not there</option>
+      <option value="error">Something errored or would not load</option>
+      <option value="confusing">Confusing or hard to use</option>
+      <option value="feature">I want it to do something new</option>
+      <option value="other" selected>Something else</option>
+    </select>
+
+    <label class="fb-lab" for="fbMsg">What happened?</label>
+    <textarea id="fbMsg" class="fb-in fb-msg" rows="5" maxlength="4000"
+      placeholder="What you expected, and what you got instead."></textarea>
+
+    <label class="fb-check"><input type="checkbox" id="fbShot" checked>
+      Attach a picture of the sheet as it looks now</label>
+
+    <div class="fb-ctx">
+      <div class="fb-ctx-h">Sent with this, so you do not have to describe it:</div>
+      <div class="fb-ctx-b">${
+        [["Sheet", ctx.document], ["Page", ctx.page], ["Line style", ctx.style],
+         ["Scale", ctx.scale], ["Lines detected", ctx.chains]]
+          .filter(([, v]) => v !== null && v !== undefined && v !== "")
+          .map(([k, v]) => `${k}: ${String(v).replace(/[<>&]/g, "")}`)
+          .join(" &middot; ") || "nothing open yet"
+      }</div>
+    </div>
+
+    <div class="fb-actions">
+      <button id="fbCancel" class="ghost">Cancel</button>
+      <button id="fbSend">Send</button>
+    </div>`;
+  back.appendChild(card);
+  document.body.appendChild(back);
+  $("fbMsg").focus();
+  $("fbCancel").onclick = fbClose;
+
+  $("fbSend").onclick = async () => {
+    const msg = $("fbMsg").value.trim();
+    if (!msg) { $("fbMsg").focus(); return; }
+    const btn = $("fbSend");
+    btn.disabled = true; btn.textContent = "Sending…";
+
+    let shot = null;
+    if ($("fbShot").checked) {
+      const cv = $("view");
+      if (cv) {
+        try {
+          // Downscaled deliberately: full size is several MB per report and
+          // the point is to see WHICH bit of the sheet, not to read it.
+          const sc = Math.min(1, 1100 / Math.max(cv.width, 1));
+          const off = document.createElement("canvas");
+          off.width = Math.round(cv.width * sc);
+          off.height = Math.round(cv.height * sc);
+          off.getContext("2d").drawImage(cv, 0, 0, off.width, off.height);
+          shot = off.toDataURL("image/png");
+        } catch (e) { shot = null; }
+      }
+    }
+    try {
+      const r = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: msg, severity: $("fbSev").value,
+          category: $("fbCat").value, context: fbContext(), shot,
+        }),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        btn.disabled = false; btn.textContent = "Send";
+        return setStatus(e.detail || `could not send that (${r.status})`, "err");
+      }
+      fbClose();
+      setStatus("thanks \u2014 feedback sent");
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "Send";
+      setStatus("could not reach the server \u2014 try again", "err");
+    }
+  };
+};
+
+// Staff only. The button is hidden for everyone else, and the endpoint 404s
+// for them too - a hidden button is a courtesy, not a permission.
+$("fbExportBtn").onclick = () => { location.href = "/api/feedback.csv"; };
+
 
 // ---------- CSV export of the itemized takeoff (client-side blob) ----------
 function takeoffCsv() {

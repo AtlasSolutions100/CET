@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=38">
+<link rel="stylesheet" href="style.css?v=39">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - automated detection can be wrong. Check every quantity against the drawings before using it in a bid.</div>
@@ -21,6 +21,8 @@
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
   <div id="status" class="status"></div>
+  <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
+  <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
   <span id="whoami" class="whoami" hidden></span>
   <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
   <button id="aiBtn" hidden>Analyze</button>
@@ -328,6 +330,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=82"></script>
+<script src="app.js?v=84"></script>
 </body>
 </html>

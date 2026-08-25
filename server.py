@@ -544,6 +544,142 @@ def reopen_job(job_id: str):
             "sizes": sizes, "name": _display_name(src)}
 
 
+# FEEDBACK. Replaces a phone call. Stored as JSONL beside the job store so it
+# survives a redeploy the way the detection cache does, with no new service and
+# no new credential; staff pull it as CSV and triage in a spreadsheet.
+#
+# The free text is the least useful part. "The lines are wrong" cannot be acted
+# on - which sheet, which style, whose account, which build? So the CONTEXT is
+# captured automatically and the reporter does not have to know any of it.
+FEEDBACK_LOG = JOBS_DIR / "feedback.jsonl"
+
+# Plain language, because the people choosing are estimators mid-task, not
+# triagers. Ordered worst-first so the list reads as a scale.
+SEVERITIES = ["blocked", "wrong-number", "annoying", "idea"]
+CATEGORIES = ["wrong-quantity", "missed-lines", "extra-lines", "error",
+              "confusing", "feature", "other"]
+MAX_MSG = 4000
+
+
+class FeedbackBody(BaseModel):
+    message: str
+    severity: str = "annoying"
+    category: str = "other"
+    context: dict = {}
+    shot: str | None = None          # optional canvas PNG, as a data URL
+
+
+@app.post("/api/feedback")
+def submit_feedback(body: FeedbackBody, request: Request):
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(400, "say what happened")
+    if len(msg) > MAX_MSG:
+        msg = msg[:MAX_MSG] + " [truncated]"
+    # An unknown value is recorded as-is rather than rejected: losing a report
+    # because a future build sent a new category would be the worst trade here.
+    sev = body.severity if body.severity in SEVERITIES else "annoying"
+    cat = body.category if body.category in CATEGORIES else "other"
+
+    fid = uuid.uuid4().hex[:10]
+    shot_name = None
+    if body.shot and body.shot.startswith("data:image/png;base64,"):
+        import base64 as _b64
+        try:
+            raw = _b64.b64decode(body.shot.split(",", 1)[1], validate=True)
+            # A screenshot is worth more than the words on a drawing tool, but
+            # it must not be able to fill the disk one report at a time.
+            if len(raw) <= 4_000_000:
+                shot_name = f"feedback_{fid}.png"
+                (JOBS_DIR / shot_name).write_bytes(raw)
+        except Exception:
+            shot_name = None
+
+    ctx = body.context if isinstance(body.context, dict) else {}
+    row = {
+        "id": fid,
+        "when": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "user": _who(request) or "(no accounts configured)",
+        "severity": sev,
+        "category": cat,
+        "message": msg,
+        "status": "new",             # staff triage; the client never sets this
+        "document": str(ctx.get("document") or "")[:200],
+        "page": ctx.get("page"),
+        "style": str(ctx.get("style") or "")[:120],
+        "scale": str(ctx.get("scale") or "")[:80],
+        "chains": ctx.get("chains"),
+        "app": str(ctx.get("app") or "")[:40],
+        "url": str(ctx.get("url") or "")[:300],
+        "browser": (request.headers.get("user-agent") or "")[:200],
+        "shot": shot_name,
+    }
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(FEEDBACK_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError as e:
+        raise HTTPException(500, f"could not save that: {e}")
+    return {"ok": True, "id": fid}
+
+
+def _feedback_rows() -> list:
+    if not FEEDBACK_LOG.exists():
+        return []
+    out = []
+    for line in FEEDBACK_LOG.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue          # one bad line must not hide every other report
+    # worst first, then newest - the order you actually want to triage in
+    order = {s: i for i, s in enumerate(SEVERITIES)}
+    out.sort(key=lambda r: (order.get(r.get("severity"), 9),
+                            r.get("when", "")), reverse=False)
+    return out
+
+
+@app.get("/api/feedback")
+def list_feedback(request: Request):
+    if not _is_staff(request):
+        raise HTTPException(404, "not found")
+    rows = _feedback_rows()
+    counts: dict = {}
+    for r in rows:
+        counts[r.get("severity", "?")] = counts.get(r.get("severity", "?"), 0) + 1
+    return {"total": len(rows), "by_severity": counts, "rows": rows}
+
+
+@app.get("/api/feedback.csv")
+def feedback_csv(request: Request):
+    """Excel-ready. Staff only, and 404 rather than 403 for a client, so the
+    endpoint does not advertise that other people's reports exist."""
+    if not _is_staff(request):
+        raise HTTPException(404, "not found")
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    cols = ["when", "severity", "category", "status", "user", "message",
+            "document", "page", "style", "scale", "chains", "app", "url",
+            "browser", "shot", "id"]
+    w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore",
+                        lineterminator="\r\n")
+    w.writeheader()
+    for r in _feedback_rows():
+        w.writerow(r)
+    # utf-8-sig: Excel reads a plain UTF-8 CSV as the system codepage and
+    # mangles anything non-ASCII in a comment. The BOM is what makes it open
+    # correctly by double-click, which is the whole delivery mechanism here.
+    data = buf.getvalue().encode("utf-8-sig")
+    return Response(
+        content=data, media_type="text/csv",
+        headers={"Content-Disposition":
+                 'attachment; filename="core-takeoff-feedback.csv"'})
+
+
 @app.get("/api/beta-notice")
 def beta_notice():
     """The UI renders this rather than hard-coding it, so the banner on screen
