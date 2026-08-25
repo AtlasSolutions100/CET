@@ -4475,8 +4475,9 @@ function renderItemized() {
 // Appended to every CSV. Set from /api/beta-notice so it cannot drift from
 // the banner and the report stamp; the fallback matters because a CSV with no
 // caveat is the version that ends up pasted into a bid.
-let BETA_CSV_TAIL = "\n\nBETA SOFTWARE - NOT FOR COMMERCIAL USE. "
-  + "Check every quantity against the drawings.\n";
+let BETA_CSV_TAIL = "\n\nBETA SOFTWARE - quantities are produced by "
+  + "automated detection and can be wrong. Check every figure against the "
+  + "source drawings before relying on it.\n";
 
 async function loadBetaNotice() {
   let n = null;
