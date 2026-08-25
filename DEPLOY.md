@@ -104,15 +104,12 @@ incoming by default once enabled, so allow SSH *first* or you lock yourself out:
 ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw --force enable
 ```
 
-**6. Let the box pull the image.** The repo is private, so the GHCR package is
-private too and an unauthenticated `docker compose pull` fails with `denied`.
-Create a classic PAT with **`read:packages`**, then as `deploy`:
-
-```bash
-echo "$GHCR_PAT" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-```
-
-That writes `~/.docker/config.json` and persists, so CI never logs in itself.
+**6. Nothing to do for the registry.** The repo is private, so the GHCR
+package is private, but the box needs no credential of its own: the deploy
+workflow lends it the run's own `GITHUB_TOKEN`, which can read packages owned
+by this repo, expires with the job, and is logged out again afterwards. Nothing
+persists in `~/.docker/config.json`. Verified on the v1.0.0 deploy
+(`Login Succeeded`, pulled, recreated, healthy).
 
 **7. First boot**, as `deploy`:
 
@@ -147,12 +144,21 @@ Verified on the built image, both cases exit 1 and name the reason.
 
 ## Updates
 
-- **push to `main`** → builds, publishes `:latest`, deploys to **staging**
-- **push a `v*` tag** → publishes `:vN.N.N`, deploys to **production**
+- **push to `main`** -> builds, runs the import check, publishes `:latest`. **Does not touch the box.**
+- **push a `v*` tag** -> publishes `:vN.N.N` and **deploys**
+- **Run workflow** button -> deploys `:latest` on demand
 
-Continuous deploys go to staging only because a deploy restarts the single
-container and anyone demoing at that moment loses their session. The box a
-client sees moves when you tag it — which you do when nobody is in a meeting.
+There is one box, and it is the one clients see. A deploy restarts the
+container under whoever is demoing, so deploying is deliberate rather than
+automatic: tag it, or press the button, when nobody is in a meeting. The day a
+second box exists, point `main` at it and restore the staging environment.
+
+```bash
+git tag -a v1.0.1 -m "what changed" && git push origin v1.0.1
+```
+
+Repo secrets are already set: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_DIR`
+(`/home/deploy/takeoff`), `DEPLOY_SSH_KEY`.
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0    # production
