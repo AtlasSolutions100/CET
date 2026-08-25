@@ -12,7 +12,10 @@ name: build and deploy
 
 on:
   push:
-    branches: [main]
+    # dev builds and runs the import check but CANNOT deploy - see the `if` on
+    # the deploy job. That is the point of the branch: land work, let CI prove
+    # it builds, and leave the box clients are looking at alone.
+    branches: [main, dev]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -77,6 +80,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     environment: production
     steps:
+      - uses: actions/checkout@v4
+
       # Plain ssh rather than a third-party action, for one reason: it can
       # RETRY. Measured 2026-08-25 - the v1.1.0 tag deployed fine from runner
       # 64.236.143.216 at 15:35, then two dispatches fifteen minutes later
@@ -166,9 +171,19 @@ jobs:
           REMOTE
           } > "$RUNNER_TEMP/remote.sh"
 
+          # THE INFRA FILES LIVE ON THE BOX, NOT IN THE IMAGE. Without this a
+          # change to docker-compose.yml or the Caddyfile never reaches
+          # production and the box quietly keeps running last month's copy.
+          # That bit on 2026-08-25: TAKEOFF_UI_PASSWORD stopped being required,
+          # but the box's compose still declared it mandatory with `:?` and
+          # refused to come up. Sent inside the retry, so a flaky dial retries
+          # the whole attempt rather than half of it.
           for attempt in 1 2 3 4; do
             echo "::group::deploy attempt $attempt"
-            if ssh -i ~/.ssh/deploy_key \
+            if scp -i ~/.ssh/deploy_key \
+                   -o StrictHostKeyChecking=accept-new -o ConnectTimeout=25 \
+                   docker-compose.yml Caddyfile "$WHO@$BOX:$DIR/" \
+               && ssh -i ~/.ssh/deploy_key \
                    -o StrictHostKeyChecking=accept-new \
                    -o ConnectTimeout=25 -o ServerAliveInterval=20 \
                    -o ServerAliveCountMax=30 \

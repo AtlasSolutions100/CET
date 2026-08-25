@@ -21,8 +21,11 @@ services:
       # real memory. Lower it before lowering the RAM.
       TAKEOFF_WORKERS: ${TAKEOFF_WORKERS:-4}
       TAKEOFF_PAGE_BUDGET_S: ${TAKEOFF_PAGE_BUDGET_S:-900}
-      # entrypoint refuses to boot without this
-      TAKEOFF_UI_PASSWORD: ${TAKEOFF_UI_PASSWORD:?set TAKEOFF_UI_PASSWORD in .env}
+      # Optional since per-user logins exist. The entrypoint requires EITHER
+      # this or at least one account in users.json, so a box with real accounts
+      # boots fine without it - and `:?` here would stop compose dead before
+      # the entrypoint ever got to make that judgement.
+      TAKEOFF_UI_PASSWORD: ${TAKEOFF_UI_PASSWORD:-}
       TAKEOFF_LLM_MODEL: ${TAKEOFF_LLM_MODEL:-grok-4-fast-reasoning}
       XAI_API_KEY: ${XAI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
