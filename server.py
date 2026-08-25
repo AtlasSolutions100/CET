@@ -24,7 +24,7 @@ from collections import deque
 from pathlib import Path
 
 import pymupdf
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -98,9 +98,20 @@ def _client_pdf(raw: str) -> Path:
 
 app = FastAPI(title="Takeoff Detection Service")
 
-# Optional site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic
-# auth on every request (username is ignored). Meant for exposing the
-# review UI through a tunnel for remote demos.
+# Site password: set TAKEOFF_UI_PASSWORD to require HTTP Basic auth on every
+# request. TWO MODES, and which one is live depends on whether users.json
+# exists beside the job store (see takeoff_engine/users.py):
+#
+#   no users.json  - one shared password, the username is ignored, and every
+#                    document on the box is visible to anyone who has it.
+#                    This is the original behaviour and stays the default.
+#   users.json     - each person has their own login, and the shared password
+#                    stops working. Documents are owned by whoever uploaded
+#                    them, and you only see your own plus the shared demo set.
+#
+# The hook was always there: Basic auth sends a username and this code used to
+# throw it away on the split. Honouring it is the whole feature - no cookies,
+# no session store, no login page.
 _UI_PASSWORD = os.environ.get("TAKEOFF_UI_PASSWORD")
 if _UI_PASSWORD:
     import base64 as _b64
@@ -109,24 +120,70 @@ if _UI_PASSWORD:
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import Response as _StarResponse
 
+    from takeoff_engine import users as _users
+
+    # Ownership is enforced HERE rather than in each route. There are twenty-odd
+    # /api/job/{id}/... routes and more will be added; a check that has to be
+    # remembered per route is a check that eventually is not.
+    _JOB_PATH = re.compile(r"^/api/job/([0-9a-fA-F]{6,32})(?:/|$)")
+
+    def _forbidden_job(path: str, user):
+        """404 when `user` may not touch the job named in `path`, else None.
+
+        404 and not 403: a 403 confirms the job exists and belongs to somebody
+        else, which on a box holding several clients' bid documents leaks that
+        the other client is here at all.
+        """
+        if user is None:
+            return None                 # single-password mode, unchanged
+        m = _JOB_PATH.match(path)
+        if not m:
+            return None
+        with JOBS_LOCK:
+            j = JOBS.get(m.group(1))
+        if j is None:
+            return None                 # let the route answer its own 404
+        owner = j.get("owner")
+        if owner is None or owner == user:
+            return None                 # shared demo set, or theirs
+        return _StarResponse('{"detail":"unknown job"}', status_code=404,
+                             media_type="application/json")
+
     class _BasicAuth(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
             hdr = request.headers.get("authorization", "")
+            user = None
             ok = False
             if hdr.startswith("Basic "):
                 try:
                     creds = _b64.b64decode(hdr[6:]).decode()
-                    ok = _secrets.compare_digest(
-                        creds.split(":", 1)[1], _UI_PASSWORD)
+                    name, _, pw = creds.partition(":")
+                    if _users.load():
+                        # Per-user mode. The shared password deliberately no
+                        # longer opens anything - leaving it working would mean
+                        # one forgotten credential still sees every client.
+                        user = _users.check(name, pw)
+                        ok = user is not None
+                    else:
+                        ok = _secrets.compare_digest(pw, _UI_PASSWORD)
                 except Exception:
                     ok = False
             if not ok:
                 return _StarResponse(
                     "password required", status_code=401,
                     headers={"WWW-Authenticate": 'Basic realm="takeoff"'})
+            request.scope["tk_user"] = user
+            blocked = _forbidden_job(request.url.path, user)
+            if blocked is not None:
+                return blocked
             return await call_next(request)
 
     app.add_middleware(_BasicAuth)
+
+
+def _who(request: Request):
+    """Username for this request, or None in single-password mode."""
+    return request.scope.get("tk_user")
 
 # job_id -> {"path": str, "pages": int, "status": {page: "running"|"done"|"error:..."}}
 JOBS: dict = {}
@@ -142,7 +199,7 @@ def _save_registry() -> None:
         REGISTRY.write_text(json.dumps(
             {jid: {"path": j["path"], "pages": j["pages"],
                    "mtime": j.get("mtime"), "kinds": j.get("kinds"),
-                   "sizes": j.get("sizes")}
+                   "sizes": j.get("sizes"), "owner": j.get("owner")}
              for jid, j in JOBS.items()}, indent=1))
     except OSError:
         pass
@@ -166,9 +223,14 @@ def _load_registry() -> None:
                     status[int(f.name[1:].split("_")[0])] = "done"
                 except ValueError:
                     continue
+        # owner=None on rows written before per-user mode existed. That is
+        # the SHARED marker, so the demo corpus already on a box stays visible
+        # to everyone after logins are switched on - which is what you want
+        # for plans that are ours, and why new uploads get a real owner.
         JOBS[jid] = {"path": j["path"], "pages": j.get("pages", 0),
                      "mtime": j.get("mtime"), "kinds": j.get("kinds"),
-                     "sizes": j.get("sizes"), "status": status}
+                     "sizes": j.get("sizes"), "owner": j.get("owner"),
+                     "status": status}
 
 
 _load_registry()
@@ -185,7 +247,7 @@ class OpenPathBody(BaseModel):
 
 
 @app.get("/api/recent")
-def recent_documents():
+def recent_documents(request: Request):
     """Plan sets already on this box, newest first.
 
     On a hosted box filesystem paths are refused and /api/samples is empty, so
@@ -194,10 +256,18 @@ def recent_documents():
     detection the server had already done. Nothing here exposes a path: the
     only handle is the job id, which is all the reopen route takes.
     """
+    me = _who(request)
     out = []
     with JOBS_LOCK:
         items = list(JOBS.items())
     for jid, j in items:
+        owner = j.get("owner")
+        # In per-user mode you see your own plus the shared set (owner None,
+        # which is our demo corpus and anything registered before logins were
+        # switched on). In single-password mode `me` is None and nothing is
+        # filtered, which is exactly how this behaved before.
+        if me is not None and owner is not None and owner != me:
+            continue
         src = Path(j.get("path", ""))
         try:
             if not src.exists():
@@ -220,6 +290,13 @@ def recent_documents():
             "detected": done,
             "uploaded": bool(_UPLOAD_PREFIX.match(src.name)),
             "when": mtime,
+            # The UI groups on these rather than re-deriving ownership, and
+            # `deletable` keeps that judgement on the server where it is
+            # enforced instead of in JavaScript where it is only cosmetic.
+            "owner": owner,
+            "mine": owner is not None and owner == me,
+            "shared": owner is None,
+            "deletable": (me is None) or (owner == me),
         })
     out.sort(key=lambda r: -r["when"])
     return out[:60]
@@ -296,7 +373,7 @@ def _display_name(path) -> str:
     return _UPLOAD_PREFIX.sub("", Path(path).name)
 
 
-def _register(path: Path, classify: bool = True) -> dict:
+def _register(path: Path, classify: bool = True, owner=None) -> dict:
     """classify=False skips per-page vector/raster classification, which
     reads every drawing on every page. Rasterisation callers do not need it,
     and on a large package it dominates the cost of simply opening the file.
@@ -308,7 +385,12 @@ def _register(path: Path, classify: bool = True) -> dict:
     mtime = round(path.stat().st_mtime, 2)
     with JOBS_LOCK:
         for jid, j in JOBS.items():
-            if j.get("path") == str(path) and j.get("mtime") == mtime:
+            # Owner is part of the reuse key. Uploads are content-addressed,
+            # so two people uploading the same PDF land on the same path - and
+            # without this the second one would be handed the first one's job
+            # and then be refused access to it by the ownership check.
+            if (j.get("path") == str(path) and j.get("mtime") == mtime
+                    and j.get("owner") == owner):
                 kinds0 = j.get("kinds")
                 sizes0 = j.get("sizes")
                 # Gated on SIZES only. It used to require kinds too, so a job
@@ -325,7 +407,7 @@ def _register(path: Path, classify: bool = True) -> dict:
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[job_id] = {"path": str(path), "pages": doc.page_count,
-                        "mtime": mtime, "status": {}}
+                        "mtime": mtime, "owner": owner, "status": {}}
         _save_registry()
     # Page RECTS are free; classification is not. classify_page reads every
     # drawing on every page, and on a dense package that dominated the cost of
@@ -379,12 +461,12 @@ def _register(path: Path, classify: bool = True) -> dict:
 
 
 @app.post("/api/open-path")
-def open_path(body: OpenPathBody):
-    return _register(_client_pdf(body.path))
+def open_path(body: OpenPathBody, request: Request):
+    return _register(_client_pdf(body.path), owner=_who(request))
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile, classify: int = 1):
+async def upload(file: UploadFile, request: Request, classify: int = 1):
     """Take a plan set from the browser. The only way in on a hosted box.
 
     Named by CONTENT, not by a random id. Two things broke when it was random:
@@ -405,7 +487,7 @@ async def upload(file: UploadFile, classify: int = 1):
     dest = JOBS_DIR / f"upload_{digest}_{stem}"
     if not dest.exists() or dest.stat().st_size != len(raw):
         dest.write_bytes(raw)
-    return _register(dest, classify=bool(classify))
+    return _register(dest, classify=bool(classify), owner=_who(request))
 
 
 @app.get("/api/job/{job_id}/page/{page}/image")
@@ -712,6 +794,71 @@ def reset_job(job_id: str, preview: bool = False):
 
     out["removed"] = removed
     return out
+
+
+@app.delete("/api/job/{job_id}")
+def delete_job(job_id: str, request: Request):
+    """Remove a document from this box entirely.
+
+    `reset` throws away everything DERIVED and deliberately keeps the source
+    PDF, so a plan set reset in front of a client is still sitting on the box
+    afterwards, still listed, still openable by anyone who can log in. This is
+    the other half, and the one you want when a client's live bid set should
+    not outlive the meeting.
+
+    Deletes the job directory, the registry row, and the uploaded PDF. It will
+    NOT unlink a source that lives outside the job store - a sample opened by
+    path is somebody's actual file - and it will not unlink a content-addressed
+    upload that another job still points at, because two people uploading
+    identical bytes share one file on disk.
+    """
+    me = _who(request)
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve():
+        raise HTTPException(404, "unknown job")
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(404, "unknown job")
+        owner = j.get("owner")
+    # A user may delete their own. The shared demo corpus is deliberately not
+    # deletable through the UI: it is the thing every demo depends on, and one
+    # mis-click should not cost an hour of re-detection for everybody.
+    if me is not None and owner is None:
+        raise HTTPException(
+            403, "shared demo plans are managed on the server, not from here")
+
+    src = Path(j.get("path", ""))
+    name = _display_name(src)
+    removed = 0
+    if d.is_dir():
+        for f in sorted(d.iterdir()):
+            if f.is_file():
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+
+    with JOBS_LOCK:
+        JOBS.pop(job_id, None)
+        shared_source = any(x.get("path") == str(src) for x in JOBS.values())
+        _save_registry()
+
+    pdf_removed = False
+    if (not shared_source and _UPLOAD_PREFIX.match(src.name)
+            and src.parent.resolve() == JOBS_DIR.resolve() and src.exists()):
+        try:
+            src.unlink()
+            pdf_removed = True
+        except OSError:
+            pass
+    return {"ok": True, "name": name, "files_removed": removed,
+            "pdf_removed": pdf_removed}
 
 
 @app.get("/api/job/{job_id}/page/{page}/confidence")

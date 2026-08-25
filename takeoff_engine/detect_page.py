@@ -58,18 +58,42 @@ _ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
                  "classify_page.py")
 
 
+_SIG_CACHE: str = ""
+
+
 def engine_sig() -> str:
-    """Fingerprint of the code that produces a detect result."""
+    """Fingerprint of the code that produces a detect result.
+
+    CONTENT, not mtime. This hashed `stat().st_mtime_ns` until 2026-08-25, and
+    a container image rebuild writes every file fresh - so a deploy that
+    changed nothing in this package still moved the signature and marked every
+    cached result stale. Measured on the live box after the v1.0.0 deploy:
+    stored 36279aab064ac27d, recomputed 2c85e7633b183487, and all twenty
+    pre-detected demo pages came back `{"status":"idle","stale":true}`. The
+    plans were sitting right there and the next demo would have re-detected
+    every one of them.
+
+    Hashing the bytes means an identical build keeps the cache and a real code
+    change still invalidates it, which is what the signature was always meant
+    to express. Cached per process: the files cannot change under a running
+    service, and this is consulted on every status poll.
+    """
+    global _SIG_CACHE
+    if _SIG_CACHE:
+        return _SIG_CACHE
     import hashlib
 
     h = hashlib.sha1()
     here = Path(__file__).parent
     for name in _ENGINE_FILES:
         try:
-            h.update(f"{name}:{(here / name).stat().st_mtime_ns}|".encode())
+            h.update(name.encode() + b":")
+            h.update(hashlib.sha1((here / name).read_bytes()).digest())
+            h.update(b"|")
         except OSError:
             h.update(f"{name}:missing|".encode())
-    return h.hexdigest()[:16]
+    _SIG_CACHE = h.hexdigest()[:16]
+    return _SIG_CACHE
 
 
 def run_detect(pdf_path: str, page: int, job_dir: str) -> None:

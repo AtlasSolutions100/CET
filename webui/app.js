@@ -176,20 +176,87 @@ async function loadRecent() {
   sel.innerHTML = "";
   const head = document.createElement("option");
   head.value = "";
-  head.textContent = rows.length ? "Recent plans…" : "No plans on this server yet";
+  head.textContent = rows.length ? "Recent plans\u2026" : "No plans on this server yet";
   sel.appendChild(head);
-  for (const d of rows) {
+
+  // Remember, per job, whether the SERVER said it may be deleted. The button
+  // below only reads this to decide what to show; the service decides again
+  // when asked, because a disabled button is decoration, not a permission.
+  RECENT_META = {};
+  const opt = (d) => {
     const o = document.createElement("option");
     o.value = d.job_id;
     // say how much is already detected: it is the difference between opening
     // instantly and waiting out a cold run in front of a client
     const state = d.detected >= d.pages && d.pages
       ? "ready" : d.detected ? `${d.detected}/${d.pages} detected` : "not detected";
-    o.textContent = `${d.name} · ${d.pages}p · ${state}`;
-    sel.appendChild(o);
+    o.textContent = `${d.name} \u00b7 ${d.pages}p \u00b7 ${state}`;
+    RECENT_META[d.job_id] = d;
+    return o;
+  };
+
+  // Only group once there is something to separate. In single-password mode
+  // every row is "shared" and two headings over one list is just noise.
+  const mine = rows.filter(d => d.mine);
+  const shared = rows.filter(d => !d.mine);
+  if (mine.length && shared.length) {
+    const g1 = document.createElement("optgroup");
+    g1.label = "My plans";
+    for (const d of mine) g1.appendChild(opt(d));
+    sel.appendChild(g1);
+    const g2 = document.createElement("optgroup");
+    g2.label = "Shared demo plans";
+    for (const d of shared) g2.appendChild(opt(d));
+    sel.appendChild(g2);
+  } else {
+    for (const d of rows) sel.appendChild(opt(d));
   }
   sel.hidden = false;
+  syncRemoveBtn();
 }
+
+// job_id -> the row /api/recent returned for it
+let RECENT_META = {};
+
+// The remove button is only offered for a document the server called
+// deletable, and only while that document is the one on screen.
+function syncRemoveBtn() {
+  const b = $("docRemoveBtn");
+  if (!b) return;
+  const meta = state.job ? RECENT_META[state.job] : null;
+  const can = !!(meta && meta.deletable);
+  b.hidden = !can;
+  if (can) b.title = "Remove \"" + meta.name + "\" from this server "
+    + "\u2014 the uploaded PDF and everything detected from it";
+}
+$("docRemoveBtn").onclick = async () => {
+  const meta = state.job ? RECENT_META[state.job] : null;
+  if (!meta) return;
+  // Name what goes and what it costs. This is the one control that destroys
+  // a client's uploaded document, so the wording says "permanently" and says
+  // the PDF itself goes too - which is exactly how it differs from Reset.
+  if (!confirm("Remove \"" + meta.name + "\" from this server?\n\n"
+    + "This permanently deletes the uploaded PDF and everything detected from "
+    + "it \u2014 " + meta.detected + " of " + meta.pages + " page(s) already "
+    + "detected, plus any approved exports and report for it.\n\n"
+    + "Use this when a client's plans should not outlive the meeting. To "
+    + "re-run a demo from scratch while KEEPING the PDF, use \"Reset this "
+    + "document\" instead.\n\nThis cannot be undone.")) return;
+  setStatus("removing\u2026", "busy");
+  try {
+    const r = await fetch("/api/job/" + state.job, { method: "DELETE" });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      return setStatus(e.detail || ("could not remove it (" + r.status + ")"), "err");
+    }
+    const j = await r.json();
+    setStatus("removed " + j.name);
+    location.reload();
+  } catch (e) {
+    setStatus("could not remove it \u2014 the server did not answer", "err");
+  }
+};
+
 $("recentSel").onchange = async () => {
   const id = $("recentSel").value;
   if (!id) return;
@@ -282,6 +349,8 @@ async function openPath(path) {
 // the two entry points cannot drift - the upload path used to be unreachable
 // from the UI at all, which on a hosted server meant there was no way in.
 function applyOpened(j) {
+  // the remove button belongs to whatever is on screen now
+  setTimeout(syncRemoveBtn, 0);
   state.gen++;
   // a newly uploaded set should appear in the picker without a reload
   setTimeout(loadRecent, 300);
