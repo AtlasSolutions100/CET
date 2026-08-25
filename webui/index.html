@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=36">
+<link rel="stylesheet" href="style.css?v=37">
 </head>
 <body>
 <header>
@@ -12,6 +12,8 @@
   <select id="sampleSel"><option value="">Open sample plan…</option></select>
   <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
   <button id="openBtn">Open</button>
+  <button id="uploadBtn" title="Choose a PDF from this computer. You can also just drag one onto the window.">Upload plans</button>
+  <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
   <div id="docName" class="doc-name"></div>
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
@@ -30,6 +32,19 @@
   <input id="legendPath" type="hidden">
 </header>
 <div id="aiBanner" class="ai-banner" hidden></div>
+<!-- Drop target for the whole window. On a hosted box this is the only way a
+     set of plans gets in, so it is deliberately impossible to miss. -->
+<div id="dropZone" class="drop-zone" hidden>
+  <div class="drop-card">
+    <div class="drop-title">Drop the plan set here</div>
+    <div class="drop-sub">one PDF &middot; any number of sheets</div>
+  </div>
+</div>
+<div id="upBar" class="up-bar" hidden>
+  <div class="up-name" id="upName"></div>
+  <div class="up-track"><div class="up-fill" id="upFill"></div></div>
+  <div class="up-pct" id="upPct">0%</div>
+</div>
 <main>
   <nav id="pageStrip" class="page-strip" hidden>
     <div class="strip-head">
@@ -307,6 +322,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=75"></script>
+<script src="app.js?v=76"></script>
 </body>
 </html>

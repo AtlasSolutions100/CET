@@ -11,10 +11,12 @@ The service holds detection results per (document, page) on disk under
 out/jobs/, so re-opening a document reuses finished work.
 """
 
+import hashlib
 import json
 import math
 import multiprocessing
 import os
+import re
 import threading
 import time
 import uuid
@@ -176,6 +178,21 @@ class OpenPathBody(BaseModel):
     path: str
 
 
+@app.get("/api/config")
+def ui_config():
+    """What the UI needs to know about THIS box before it draws itself.
+
+    Hosted mode refuses filesystem paths (they would be an arbitrary file
+    read on a server), so on a hosted box uploading is the ONLY way in and
+    the path box has to go. The UI cannot infer that from an empty sample
+    list - an empty list is also what a local box with no plans looks
+    like."""
+    return {"hosted": HOSTED,
+            "auth": bool(_UI_PASSWORD),
+            "workers": TAKEOFF_WORKERS,
+            "page_budget_s": TAKEOFF_PAGE_BUDGET_S}
+
+
 @app.get("/api/samples")
 def list_samples():
     """Convenience: sample plans on this machine, for quick opening.
@@ -194,6 +211,17 @@ def list_samples():
             if size > 50_000:
                 out.append({"path": str(p), "name": p.name, "mb": round(size / 1e6, 1)})
     return out[:200]
+
+
+_UPLOAD_PREFIX = re.compile(r"^upload_[0-9a-f]{8,12}_")
+
+
+def _display_name(path) -> str:
+    """The document name the operator sees - and the key their saved work
+    hangs on (webui/app.js docKey). Our own "upload_<hash>_" prefix is
+    plumbing and must not appear in it, or the same plan set would look like
+    a different document every time it arrived."""
+    return _UPLOAD_PREFIX.sub("", Path(path).name)
 
 
 def _register(path: Path, classify: bool = True) -> dict:
@@ -221,7 +249,7 @@ def _register(path: Path, classify: bool = True) -> dict:
                     doc.close()
                     return {"job_id": jid, "pages": j["pages"],
                             "kinds": kinds0, "sizes": sizes0,
-                            "name": Path(path).name}
+                            "name": _display_name(path)}
     job_id = uuid.uuid4().hex[:12]
     with JOBS_LOCK:
         JOBS[job_id] = {"path": str(path), "pages": doc.page_count,
@@ -275,7 +303,7 @@ def _register(path: Path, classify: bool = True) -> dict:
     # sizes let a caller compute exact raster pixel dimensions without
     # decoding an image (a 36x24in sheet at 300dpi is 78 megapixels)
     return {"job_id": job_id, "pages": n_pages, "kinds": kinds,
-            "sizes": sizes, "name": Path(path).name}
+            "sizes": sizes, "name": _display_name(path)}
 
 
 @app.post("/api/open-path")
@@ -285,8 +313,26 @@ def open_path(body: OpenPathBody):
 
 @app.post("/api/upload")
 async def upload(file: UploadFile, classify: int = 1):
-    dest = JOBS_DIR / f"upload_{uuid.uuid4().hex[:8]}_{file.filename}"
-    dest.write_bytes(await file.read())
+    """Take a plan set from the browser. The only way in on a hosted box.
+
+    Named by CONTENT, not by a random id. Two things broke when it was random:
+      * Re-uploading the same set wrote a new path, so _register saw a new
+        file and re-detected everything - an hour of compute on a 54-sheet set
+        the server had already read.
+      * The review UI keys the reviewer's memory on the document NAME (see
+        docKey in webui/app.js), so every upload of the same plans started
+        with no labels, no prices and no scale picks. The work was there,
+        filed under a name nobody could reach again.
+    Same bytes now resolve to the same path, so _register's reuse test hits
+    and both the cached detections and the saved decisions come back. Written
+    only when genuinely new: rewriting would move the mtime reuse depends on.
+    """
+    raw = await file.read()
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    stem = Path(file.filename or "plans.pdf").name
+    dest = JOBS_DIR / f"upload_{digest}_{stem}"
+    if not dest.exists() or dest.stat().st_size != len(raw):
+        dest.write_bytes(raw)
     return _register(dest, classify=bool(classify))
 
 

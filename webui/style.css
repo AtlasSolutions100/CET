@@ -837,3 +837,34 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .ew-bound.on { border-color: var(--accent); background: var(--accent-deep); }
 .ew-bound.on .ew-bound-state { color: var(--accent); font-weight: 600; }
 :root[data-theme="light"] .ew-bound.on { background: #e6efe9; }
+
+/* --- upload: drag a plan set onto the window ----------------------------
+   On a hosted box TAKEOFF_HOSTED=1 refuses filesystem paths, so this is the
+   only way in. It is a full-window target because a header button is easy to
+   miss and a 40 MB plan set is something people drag. */
+.drop-zone { position: fixed; inset: 0; z-index: 90;
+  background: color-mix(in srgb, var(--stage) 82%, transparent);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; }
+.drop-card { border: 2px dashed var(--accent); border-radius: 16px;
+  padding: 40px 56px; background: var(--panel); text-align: center;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+.drop-title { font-size: 20px; font-weight: 600; color: var(--text); }
+.drop-sub { margin-top: 6px; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+
+.up-bar { position: fixed; left: 50%; transform: translateX(-50%); top: 14px;
+  z-index: 95; display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; border-radius: 10px; background: var(--panel);
+  border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  min-width: 320px; max-width: min(560px, 92vw); }
+.up-name { font-size: 12px; color: var(--text); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.up-track { flex: 1; height: 6px; border-radius: 999px; background: var(--chip);
+  overflow: hidden; }
+.up-fill { height: 100%; width: 0%; background: var(--accent);
+  transition: width .12s linear; }
+.up-pct { font-family: var(--mono); font-size: 11px; color: var(--dim);
+  font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+:root[data-theme="light"] .drop-card,
+:root[data-theme="light"] .up-bar { box-shadow: 0 16px 40px rgba(0,0,0,.16); }

@@ -86,11 +86,148 @@ fetch("/api/samples").then(r => r.json()).then(samples => {
 $("sampleSel").onchange = () => { if ($("sampleSel").value) openPath($("sampleSel").value); };
 $("openBtn").onclick = () => { if ($("pathInput").value.trim()) openPath($("pathInput").value.trim()); };
 
+// ---------- getting a plan set in --------------------------------------
+// Two ways: the button, and dropping a file anywhere on the window. On a
+// hosted box (TAKEOFF_HOSTED=1) filesystem paths are refused on purpose, so
+// this is the ONLY way in - which is why the drop target is the whole window
+// and not a small rectangle someone has to find.
+let UPLOADING = false;
+
+function uploadProgress(name, pct) {
+  const bar = $("upBar");
+  if (pct === null) { bar.hidden = true; return; }
+  bar.hidden = false;
+  $("upName").textContent = name;
+  $("upFill").style.width = pct + "%";
+  $("upPct").textContent = pct + "%";
+}
+
+function uploadPdf(file) {
+  if (UPLOADING) { setStatus("already uploading \u2014 one at a time", "err"); return; }
+  if (!file) return;
+  const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+  if (!isPdf) {
+    setStatus(`${file.name} is not a PDF \u2014 plans have to be a PDF`, "err");
+    return;
+  }
+  UPLOADING = true;
+  uploadProgress(file.name, 0);
+  const mb = (file.size / 1e6).toFixed(1);
+  setStatus(`uploading ${file.name} (${mb} MB)\u2026`, "busy");
+
+  // XHR, not fetch: fetch gives no upload progress, and a 40 MB plan set over
+  // a hotel wifi with a silent UI is indistinguishable from a hang - which is
+  // exactly the failure this app has already had once.
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/upload");
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable)
+      uploadProgress(file.name, Math.round(e.loaded / e.total * 100));
+  };
+  xhr.onload = () => {
+    UPLOADING = false;
+    uploadProgress(null, null);
+    if (xhr.status < 200 || xhr.status >= 300) {
+      let why = `upload failed (${xhr.status})`;
+      try {
+        const e = JSON.parse(xhr.responseText);
+        if (e && e.detail) why = "upload failed: " + String(e.detail);
+      } catch (err) { /* not JSON */ }
+      return setStatus(why, "err");
+    }
+    let j = null;
+    try { j = JSON.parse(xhr.responseText); } catch (e) { /* below */ }
+    if (!j || !j.job_id) return setStatus("upload failed: unreadable reply", "err");
+    applyOpened(j);
+  };
+  xhr.onerror = () => {
+    UPLOADING = false; uploadProgress(null, null);
+    setStatus("upload failed \u2014 the connection dropped", "err");
+  };
+  xhr.onabort = () => {
+    UPLOADING = false; uploadProgress(null, null);
+    setStatus("upload cancelled");
+  };
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  xhr.send(fd);
+}
+
+$("uploadBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = (e) => {
+  const f = e.target.files && e.target.files[0];
+  // reset so choosing the SAME file twice still fires a change
+  e.target.value = "";
+  uploadPdf(f);
+};
+
+// Drag and drop over the whole window. dragenter/dragleave fire for every
+// child element the pointer crosses, so count them rather than toggling on
+// each one - otherwise the overlay flickers off the moment the cursor moves
+// over the canvas.
+let DRAG_DEPTH = 0;
+function dragHasFile(e) {
+  const dt = e.dataTransfer;
+  if (!dt) return false;
+  if (dt.types) for (const t of dt.types) if (t === "Files") return true;
+  return false;
+}
+addEventListener("dragenter", (e) => {
+  if (!dragHasFile(e)) return;
+  e.preventDefault();
+  DRAG_DEPTH += 1;
+  $("dropZone").hidden = false;
+});
+addEventListener("dragover", (e) => { if (dragHasFile(e)) e.preventDefault(); });
+addEventListener("dragleave", (e) => {
+  if (!dragHasFile(e)) return;
+  DRAG_DEPTH = Math.max(0, DRAG_DEPTH - 1);
+  if (!DRAG_DEPTH) $("dropZone").hidden = true;
+});
+addEventListener("drop", (e) => {
+  if (!dragHasFile(e)) return;
+  e.preventDefault();
+  DRAG_DEPTH = 0;
+  $("dropZone").hidden = true;
+  const files = [...(e.dataTransfer.files || [])];
+  if (!files.length) return;
+  if (files.length > 1)
+    setStatus(`${files.length} files dropped \u2014 opening the first, `
+      + `${files[0].name}`, "busy");
+  uploadPdf(files[0]);
+});
+
+// What kind of box is this? A hosted one refuses filesystem paths, so the
+// path box is a dead control there and is removed rather than left to fail.
+fetch("/api/config").then(r => r.ok ? r.json() : null).then(cfg => {
+  if (!cfg || !cfg.hosted) return;
+  for (const id of ["pathInput", "openBtn", "sampleSel"]) {
+    const el = $(id);
+    if (el) el.hidden = true;
+  }
+  $("uploadBtn").textContent = "Upload plans";
+  $("uploadBtn").title = "Choose a PDF, or drag one anywhere onto this window.";
+}).catch(() => { /* a local box with no /api/config: leave the UI alone */ });
+
 async function openPath(path) {
   setStatus("opening…", "busy");
   const r = await fetch("/api/open-path", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
-  if (!r.ok) return setStatus(`could not open (${r.status})`, "err");
+  if (!r.ok) {
+    // 403 is the hosted box refusing a filesystem path on purpose - say what
+    // to do instead rather than leaving a bare status code on screen.
+    if (r.status === 403)
+      return setStatus("this server does not open files by path — use Upload plans", "err");
+    return setStatus(`could not open (${r.status})`, "err");
+  }
   const j = await r.json();
+  applyOpened(j);
+}
+
+// Everything that happens once a document exists, whichever way it arrived:
+// opened by path on a local box, or uploaded on the hosted one. Extracted so
+// the two entry points cannot drift - the upload path used to be unreachable
+// from the UI at all, which on a hosted server meant there was no way in.
+function applyOpened(j) {
   state.gen++;
   state.job = j.job_id; state.result = null;
   // The server no longer blocks the open on classifying every page (it read
