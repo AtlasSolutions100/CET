@@ -69,8 +69,13 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # A tag deploys to the box clients see; main only ever touches staging.
-    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}
+    # ONE BOX, so a push to main must never restart it. There is no separate
+    # staging host: core.workoptional.studio is what clients see, and a deploy
+    # restarts the container under whoever is demoing. So main only builds and
+    # publishes; DEPLOYING IS AN EXPLICIT ACT - tag it, or run the workflow by
+    # hand. Give this job a staging environment the day a second box exists.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    environment: production
     steps:
       - name: Pull and restart on the box
         uses: appleboy/ssh-action@v1
@@ -82,8 +87,15 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.DEPLOY_DIR }}
-            # Which tag this box should run. Production pins the version so a
-            # later push to main cannot move it underneath a demo.
+            # The repo is private, so the GHCR package is private and the box
+            # has no registry credentials. Rather than park a long-lived PAT on
+            # the box, lend it THIS RUN'S token - it can read packages owned by
+            # this repo, it expires when the job ends, and it is masked in the
+            # log. Logged out again below so nothing persists in
+            # ~/.docker/config.json between deploys.
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # Which tag this box runs. A tag pins the version so a later push
+            # cannot move it underneath a demo; a manual run takes latest.
             if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
               echo "TAG=${{ needs.build.outputs.tag }}" > .tag.env
             else
@@ -91,6 +103,7 @@ jobs:
             fi
             docker compose --env-file .env --env-file .tag.env pull app
             docker compose --env-file .env --env-file .tag.env up -d
+            docker logout ghcr.io || true
             docker image prune -f
 
             # Prove it came back. A deploy that silently left the box down is
