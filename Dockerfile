@@ -47,10 +47,14 @@ COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8100
+# 401 is HEALTHY - the site password being on is the whole point. Note the
+# trap this used to fall into: urllib.request.urlopen RAISES HTTPError on a
+# 401 instead of returning a response, so `r.status in (200,401)` never ran
+# and the container reported unhealthy forever while serving every request
+# fine. http.client returns the status rather than raising, so no exception
+# handling is needed; a genuinely dead app still fails by refusing connect.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request,sys; \
-    r=urllib.request.urlopen('http://127.0.0.1:8100/api/config', timeout=4); \
-    sys.exit(0 if r.status in (200,401) else 1)"
+  CMD python -c "import http.client,sys; c=http.client.HTTPConnection('127.0.0.1',8100,timeout=4); c.request('GET','/api/config'); sys.exit(0 if c.getresponse().status in (200,401) else 1)"
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8100"]
