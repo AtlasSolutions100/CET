@@ -95,12 +95,31 @@ jobs:
 
             # Prove it came back. A deploy that silently left the box down is
             # worse than one that failed loudly.
+            #
+            # ASK FOR THE SITE'S REAL NAME, not localhost. The Caddyfile
+            # declares one site block, {$SITE_HOST}, so a request to
+            # "localhost" never gets past the TLS handshake - there is no
+            # certificate for that SNI and curl returns 000, forever. Measured
+            # against the real Caddyfile: localhost 000, the site name 200.
+            # The earlier version of this check used localhost and would have
+            # failed every healthy production deploy.
+            #
+            # --resolve pins it to loopback so the probe never leaves the box
+            # and does not depend on the router hairpinning its own public IP.
+            SITE=$(grep '^SITE_HOST=' .env | head -1 | cut -d= -f2- | tr -d '"' | sed 's/[[:space:]]*$//')
+            if [ -z "$SITE" ]; then
+              echo "!! SITE_HOST is not set in .env on the box"; exit 1
+            fi
+            echo "probing https://$SITE/ (pinned to 127.0.0.1)"
             for i in $(seq 1 30); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' -k https://localhost/api/config || true)
+              code=$(curl -s -o /dev/null -w '%{http_code}' -k --resolve "$SITE:443:127.0.0.1" "https://$SITE/api/config" || true)
               # 401 is a PASS: the site password is on, which is the point.
               if [ "$code" = "401" ] || [ "$code" = "200" ]; then
                 echo "up (HTTP $code)"; exit 0
               fi
               sleep 4
             done
-            echo "!! did not come back healthy"; docker compose logs --tail 60 app; exit 1
+            echo "!! did not come back healthy (last code: $code)"
+            docker compose logs --tail 60 app
+            docker compose logs --tail 30 caddy
+            exit 1
