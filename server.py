@@ -37,7 +37,13 @@ from takeoff_engine.marks import read_mark_schedule
 from takeoff_engine.scale_detect import detect_scale
 
 ROOT = Path(__file__).parent
-JOBS_DIR = ROOT / "out" / "jobs"
+# Where every artifact lives: detection caches, page renders, approved
+# exports, report PDFs. Overridable because in a container this has to be
+# a mounted volume - losing it means every demo is cold again, 90s+ per
+# sheet on a big set. Defaults to out/jobs beside the source, which is
+# what a laptop wants.
+JOBS_DIR = Path(os.environ.get("TAKEOFF_JOBS_DIR")
+                or (ROOT / "out" / "jobs")).expanduser()
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 SAMPLES_DIR = (ROOT / ".." / "TakeoffPro AI").resolve()
 

@@ -1,0 +1,106 @@
+name: build and deploy
+
+# Two speeds on purpose.
+#
+#   push to main  -> build, publish :latest, deploy to STAGING
+#   push a v* tag -> publish :vN.N.N,   deploy to PRODUCTION
+#
+# The app runs as a single container, so a deploy restarts it and anyone
+# demoing at that moment loses their session. Continuous deploys therefore go
+# to staging only; the box a client sees moves when you tag it, which you do
+# when nobody is in a meeting.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sanity-check the app imports before shipping it
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet -r requirements.txt
+          # Catches the class of break that only shows at import time - a bad
+          # patch, a missing stdlib import - before an image reaches a client.
+          python -c "import server; print('server imports, routes:', len(server.app.routes))"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # deps layer is the expensive one and changes rarely
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # A tag deploys to the box clients see; main only ever touches staging.
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}
+    steps:
+      - name: Pull and restart on the box
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd ${{ secrets.DEPLOY_DIR }}
+            # Which tag this box should run. Production pins the version so a
+            # later push to main cannot move it underneath a demo.
+            if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+              echo "TAG=${{ needs.build.outputs.tag }}" > .tag.env
+            else
+              echo "TAG=latest" > .tag.env
+            fi
+            docker compose --env-file .env --env-file .tag.env pull app
+            docker compose --env-file .env --env-file .tag.env up -d
+            docker image prune -f
+
+            # Prove it came back. A deploy that silently left the box down is
+            # worse than one that failed loudly.
+            for i in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -k https://localhost/api/config || true)
+              # 401 is a PASS: the site password is on, which is the point.
+              if [ "$code" = "401" ] || [ "$code" = "200" ]; then
+                echo "up (HTTP $code)"; exit 0
+              fi
+              sleep 4
+            done
+            echo "!! did not come back healthy"; docker compose logs --tail 60 app; exit 1

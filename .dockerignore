@@ -1,0 +1,15 @@
+# Everything the image must not carry.
+.git
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.env
+.env.*
+out/
+docs/
+ground-truth/
+FINDINGS-*.md
+*.md
+.claude
+.DS_Store

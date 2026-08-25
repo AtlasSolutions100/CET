@@ -1,0 +1,60 @@
+# CORE takeoff, hosted.
+#
+#   cp .env.example .env   # fill in the password and the keys
+#   docker compose up -d
+#
+# ONE app container, on purpose. JOBS lives in process memory and the artifacts
+# live on the mounted volume, so a second replica would hold half the state.
+# Scale the box up, never out, until the job store moves somewhere shared.
+
+services:
+  app:
+    image: ghcr.io/atlassolutions100/takeoff-detection-engine:${TAG:-latest}
+    # local build: docker compose build
+    build: .
+    restart: unless-stopped
+    environment:
+      # Refuses client-supplied filesystem paths. Uploads are the way in.
+      TAKEOFF_HOSTED: "1"
+      TAKEOFF_JOBS_DIR: /data/jobs
+      # 4 workers x a heavy sheet peaking at multiple GB is why this box needs
+      # real memory. Lower it before lowering the RAM.
+      TAKEOFF_WORKERS: ${TAKEOFF_WORKERS:-4}
+      TAKEOFF_PAGE_BUDGET_S: ${TAKEOFF_PAGE_BUDGET_S:-900}
+      # entrypoint refuses to boot without this
+      TAKEOFF_UI_PASSWORD: ${TAKEOFF_UI_PASSWORD:?set TAKEOFF_UI_PASSWORD in .env}
+      TAKEOFF_LLM_MODEL: ${TAKEOFF_LLM_MODEL:-grok-4-fast-reasoning}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    volumes:
+      # The detection cache IS the demo experience. Named volume, never a
+      # bind into the image, and never anonymous - an anonymous volume is
+      # discarded on `compose down -v` and takes an hour of compute with it.
+      - takeoff-jobs:/data/jobs
+    expose:
+      - "8100"
+    # A single detection child can peak at multiple GB; without a ceiling a
+    # runaway page can take the whole box down with it, Caddy included.
+    mem_limit: ${APP_MEM_LIMIT:-24g}
+    shm_size: "1g"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # the hostname Caddy gets its certificate for
+      SITE_HOST: ${SITE_HOST:?set SITE_HOST in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  takeoff-jobs:
+  caddy-data:
+  caddy-config:
