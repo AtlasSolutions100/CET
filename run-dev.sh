@@ -16,6 +16,16 @@ export PATH="$PATH:/c/Program Files/Tesseract-OCR"
 export PYTHONIOENCODING=utf-8
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1          # a native crash prints a stack, not silence
+
+# The job store lives OUTSIDE OneDrive, deliberately.
+#
+# It held 1.3 GB across 1,481 files inside the synced tree, and every
+# detection writes a ~700 KB result plus page renders. OneDrive opens each
+# one to upload it while the service still has it open, which is a Windows
+# sharing violation - the "another app is using this file" errors, and the
+# freeze that took the machine out once already. Same reasoning that put
+# Postgres in C:/Users/kobys/takeoff-pg.
+export TAKEOFF_JOBS_DIR="${TAKEOFF_JOBS_DIR:-C:/Users/kobys/takeoff-jobs}"
 unset TAKEOFF_UI_PASSWORD
 unset TAKEOFF_HOSTED
 PY=./.venv/Scripts/python.exe
