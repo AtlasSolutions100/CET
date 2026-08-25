@@ -115,6 +115,11 @@ app = FastAPI(title="Takeoff Detection Service")
 # laptop wants.
 _UI_PASSWORD = os.environ.get("TAKEOFF_UI_PASSWORD")
 
+# The password every account is issued with. Safe only because the service
+# refuses to do anything except change it (see _RESET_OK), and because
+# /api/change-password will not accept it as the new one.
+DEFAULT_PASSWORD = "WorkOptional"
+
 SESSION_COOKIE = "tk_session"
 SESSION_DAYS = 7
 
@@ -196,6 +201,15 @@ if True:
     # nobody has authenticated to reach.
     _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico"}
 
+    # Reachable while signed in but still on the issued password. Everything
+    # else is refused until it is changed - that gate is the entire reason a
+    # shared starting password is acceptable rather than reckless, because
+    # until then the account is only as private as one word that 20 people
+    # were told.
+    _RESET_OK = {"/change-password", "/change-password.html",
+                 "/api/change-password", "/api/me", "/api/logout",
+                 "/api/beta-notice", "/favicon.ico"}
+
     # Crude per-IP throttle. Twenty known accounts on one box does not warrant
     # a real rate limiter, but it should not be a free password oracle either.
     _FAILS: dict = {}
@@ -267,6 +281,14 @@ if True:
 
             request.scope["tk_user"] = user
             request.scope["tk_staff"] = bool(user) and _users.is_staff(user)
+
+            if user and _users.must_change(user) and path not in _RESET_OK:
+                if path.startswith("/api/"):
+                    return _StarJSON(
+                        {"detail": "choose a new password before continuing"},
+                        status_code=403)
+                return _StarRedirect("/change-password", status_code=303)
+
             blocked = _forbidden_job(path, user, request.scope["tk_staff"])
             if blocked is not None:
                 return blocked
@@ -317,11 +339,42 @@ if True:
         r.delete_cookie(SESSION_COOKIE, path="/")
         return r
 
+    @app.get("/change-password")
+    def change_password_page():
+        return FileResponse(ROOT / "webui" / "change-password.html",
+                            media_type="text/html")
+
+    @app.post("/api/change-password")
+    async def change_password(request: Request):
+        u = request.scope.get("tk_user")
+        if not u:
+            raise HTTPException(401, "not signed in")
+        body = await request.json()
+        pw = str(body.get("password") or "")
+        if len(pw) < 8:
+            raise HTTPException(400, "Use at least 8 characters.")
+        # Refuse to "change" it to the word everyone was handed. Without this
+        # the whole gate is theatre: you could satisfy it by retyping the
+        # default and stay exactly as exposed as before.
+        if pw.strip().lower() == DEFAULT_PASSWORD.lower():
+            raise HTTPException(
+                400, "That is the temporary password. Choose a different one.")
+        if not _users.set_password(u, pw):
+            raise HTTPException(404, "unknown account")
+        # Re-issue the cookie so the session outlives the change cleanly.
+        r = JSONResponse({"ok": True})
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        r.set_cookie(SESSION_COOKIE, _sign_session(u),
+                     max_age=SESSION_DAYS * 86400, httponly=True,
+                     samesite="lax", secure=(proto == "https"), path="/")
+        return r
+
     @app.get("/api/me")
     def whoami(request: Request):
         """Who the UI is signed in as, so it can show it and offer sign-out."""
         u = request.scope.get("tk_user")
         return {"user": u, "staff": bool(request.scope.get("tk_staff")),
+                "must_change": bool(u and _users.must_change(u)),
                 "accounts": bool(_users.load())}
 
 

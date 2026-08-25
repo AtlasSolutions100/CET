@@ -4,6 +4,9 @@ Run INSIDE the app container, where /data/jobs is the live job store:
 
     docker compose exec -T app python provision_demo.py
 
+Add --reissue to reset EVERY account back to the shared starting password and
+force another change. Without it, accounts that already exist are left alone.
+
 Writes the credential list to /data/jobs/demo-credentials.txt (mode 600) and
 prints nothing secret to stdout, so it is safe to run over a shared terminal
 or from an automation log.
@@ -16,7 +19,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import sys
 from pathlib import Path
 
@@ -63,16 +65,24 @@ SHARED_PREFIXES = (
     "Belle Farms",
 )
 
-# Ambiguous glyphs removed: these get read off a screen and typed into a
-# browser prompt by someone who has never seen the product before.
-ALPHABET = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-
-
-def make_password(n: int = 14) -> str:
-    return "".join(secrets.choice(ALPHABET) for _ in range(n))
+# Everyone is issued the SAME starting password and must replace it at first
+# sign-in. Twenty distinct random strings had to be transcribed and delivered
+# by hand the night before a demo, which is its own kind of insecure; this is
+# the standard onboarding trade instead. It only holds because the service
+# refuses to serve anything but the change-password page until it is changed,
+# and will not accept this word as the replacement.
+#
+# The residual risk, stated plainly: until a given person signs in, ANYONE who
+# knows this word can sign in as them. Eighteen of these accounts belong to
+# contractors who compete with each other. Chase stragglers.
+DEFAULT_PASSWORD = "WorkOptional"
 
 
 def main() -> int:
+    # Re-issuing is deliberately opt-in. The default path must never silently
+    # reset a password somebody is already relying on - that would knock a
+    # contractor out of the account mid-demo with no warning.
+    reissue = "--reissue" in sys.argv
     jobs_dir = Path(os.environ.get("TAKEOFF_JOBS_DIR") or "/data/jobs")
     if not jobs_dir.is_dir():
         print(f"!! {jobs_dir} is not a directory - run this inside the app "
@@ -85,17 +95,19 @@ def main() -> int:
 
     for name in STAFF + CLIENTS:
         name = name.strip().lower()
-        if name in store:
+        if name in store and not reissue:
             # Never silently reset a password somebody is already using.
             creds.append((name, "(unchanged - account already existed)",
                           bool(store[name].get("staff"))))
             continue
-        pw = make_password()
-        rec = users.hash_password(pw)
-        if name in [s.lower() for s in STAFF]:
+        rec = users.hash_password(DEFAULT_PASSWORD)
+        rec["must_change"] = True
+        # staff is a property of the person, not of the password
+        if name in [s.lower() for s in STAFF] or (
+                name in store and store[name].get("staff")):
             rec["staff"] = True
         store[name] = rec
-        creds.append((name, pw, bool(rec.get("staff"))))
+        creds.append((name, DEFAULT_PASSWORD, bool(rec.get("staff"))))
 
     users.save(store)
 
@@ -122,25 +134,32 @@ def main() -> int:
     # --- credential file -------------------------------------------------
     out = jobs_dir / "demo-credentials.txt"
     lines = [
-        "CORE Takeoff - demo logins for https://core.workoptional.studio",
+        "CORE Takeoff - https://core.workoptional.studio",
         "",
-        "Give each person their own line. The username IS the email address.",
-        "Anything typed as the username must match; the password is what",
-        "matters and it is case-sensitive.",
+        f"Everyone signs in with their EMAIL and the password: {DEFAULT_PASSWORD}",
+        "They are then required to choose their own before they can do",
+        "anything else. Nothing else on the site works until they do.",
         "",
-        "DELETE THIS FILE once the passwords are distributed:",
-        f"  rm {out}",
+        "Until a person signs in, anyone who knows that word can sign in AS",
+        "them, and eighteen of these accounts compete with each other. Chase",
+        "anyone who has not logged in.",
         "",
     ]
     w = max(len(c[0]) for c in creds)
     for name, pw, staff in sorted(creds, key=lambda c: (not c[2], c[0])):
-        lines.append(f"{name.ljust(w)}  {pw}" + ("   [STAFF]" if staff else ""))
+        state = "STAFF" if staff else ""
+        if pw.startswith("("):
+            state = (state + " - password already changed").strip(" -")
+        lines.append(f"{name.ljust(w)}  {state}")
     out.write_text("\n".join(lines) + "\n")
     try:
         os.chmod(out, 0o600)
     except OSError:
         pass
 
+    if reissue:
+        print("REISSUED every password; everyone must choose a new one at "
+              "next sign-in.")
     fresh = sum(1 for c in creds if not c[1].startswith("("))
     print(f"users total      : {len(store)}")
     print(f"  new this run   : {fresh}")
@@ -148,7 +167,8 @@ def main() -> int:
     print(f"  staff          : {sum(1 for c in creds if c[2])}")
     print(f"plan sets shared : {kept}")
     print(f"plan sets staff-only: {moved}")
-    print(f"credentials      : {out}  (mode 600, nothing printed here)")
+    print(f"issued password  : {DEFAULT_PASSWORD} (each account must change it)")
+    print(f"roster           : {out}")
     print("\nRestart the app so it reloads registry.json:")
     print("  docker compose restart app")
     return 0

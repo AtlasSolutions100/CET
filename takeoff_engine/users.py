@@ -117,6 +117,32 @@ def save(users: dict) -> None:
         pass                            # best effort; Windows dev boxes ignore it
 
 
+def must_change(username: str) -> bool:
+    """True while this account is still on the password somebody else chose.
+
+    Everyone is issued the same starting password, so until it is changed the
+    account is only as private as that word is secret. The service refuses to
+    do anything but change it, which is the bit that makes a shared default
+    tolerable rather than reckless.
+    """
+    rec = load().get(username)
+    return bool(isinstance(rec, dict) and rec.get("must_change"))
+
+
+def set_password(username: str, password: str) -> bool:
+    """Replace a password and clear the must-change flag. Keeps `staff`."""
+    store = load()
+    rec = store.get(username)
+    if not isinstance(rec, dict):
+        return False
+    new = hash_password(password)
+    if rec.get("staff"):
+        new["staff"] = True
+    store[username] = new              # must_change deliberately not carried
+    save(store)
+    return True
+
+
 def is_staff(username: str) -> bool:
     """Staff see every document on the box and may delete any of them.
 
@@ -165,6 +191,10 @@ def _cli() -> int:
     a.add_argument("--staff", action="store_true",
                    help="can see and delete EVERY document on the box, not "
                         "just their own. For your own team only.")
+    a.add_argument("--force-change", action="store_true",
+                   help="make them choose a new password at next sign-in. Use "
+                        "whenever YOU picked the password rather than they "
+                        "did - the account is not private until they change it.")
     sub.add_parser("list", help="list usernames")
     r = sub.add_parser("remove", help="remove a user")
     r.add_argument("username")
@@ -175,7 +205,8 @@ def _cli() -> int:
         if not users:
             print("no users defined - the service is in single-password mode")
         for n in sorted(users):
-            print(f"{n}{'  [staff]' if users[n].get('staff') else ''}")
+            flags = ("  [staff]" if users[n].get("staff") else "") +                     ("  [must change password]" if users[n].get("must_change") else "")
+            print(f"{n}{flags}")
         print(f"\nstore: {store_path()}")
         return 0
 
@@ -201,10 +232,13 @@ def _cli() -> int:
     # keep an existing staff flag on a password reset unless it is re-stated
     if args.staff or (existed and users[args.username].get("staff")):
         rec["staff"] = True
+    if args.force_change:
+        rec["must_change"] = True
     users[args.username] = rec
     save(users)
     print(f"{'updated' if existed else 'added'} {args.username}"
-          f"{' (STAFF - sees every document)' if rec.get('staff') else ''}; "
+          f"{' (STAFF - sees every document)' if rec.get('staff') else ''}"
+          f"{' (must change at next sign-in)' if rec.get('must_change') else ''}; "
           f"{len(users)} user(s) total -> {store_path()}")
     return 0
 
