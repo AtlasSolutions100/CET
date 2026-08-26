@@ -952,26 +952,16 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 #fbSend[disabled] { opacity: .6; }
 
 
-/* Loading overlay. The lockup is drawn for a LIGHT background (#28292C ink,
-   #1F5C3F green), so it gets its own white plate rather than being dropped on
-   the dark canvas where the dark ink would be nearly invisible. Swap to a
-   per-theme file the day an on-dark version exists. */
-#loadWrap {
-  position: fixed; inset: 0; z-index: 300;
-  display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 18px;
-  background: rgba(10, 12, 10, .72);
-}
-#loadWrap[hidden] { display: none; }
-#loadLogo {
-  width: min(360px, 62vw); height: auto;
-  padding: 22px 26px; border-radius: 12px; background: #fff;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, .45);
-}
-#loadMsg {
-  font-size: 13px; letter-spacing: .03em; color: #e8ebe6;
-  background: rgba(0, 0, 0, .45); padding: 5px 12px; border-radius: 20px;
-}
+/* The animated lockup was tried here as a full-screen loading overlay and
+   removed the same day. It was hung off setStatus(..., "busy"), and "busy" in
+   this app means TWO different things: real work ("detecting...", "opening..."),
+   and an interactive prompt that needs the user to click the sheet ("structure:
+   click a closed line that is the building outline"). The overlay covered the
+   drawing exactly when the operator had to click it, so the tool could not be
+   completed. The status line at the top already reports both cases without
+   blocking anything. lockup-animated.svg is kept for a splash or a future
+   full-page load, but nothing renders it today. */
+
 .legal-link {
   font-size: 11px; color: var(--dim); text-decoration: none;
   align-self: center; white-space: nowrap;

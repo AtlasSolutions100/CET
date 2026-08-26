@@ -7995,39 +7995,7 @@ cv.addEventListener("wheel", (e) => {
 function fmtLen(pt) {
   return pt > 8000 ? `${(pt / 1000).toFixed(1)}k pt` : `${Math.round(pt)} pt`;
 }
-// The loading overlay hangs off setStatus rather than being wired into each
-// slow operation. 23 places raise a "busy" status - opening a document,
-// detecting a sheet, building a report - and a spinner that must be remembered
-// at each one is a spinner that gets forgotten at the next one.
-//
-// DELAYED, not immediate. Most busy states finish well under a second, and a
-// logo that flashes up and vanishes on every click reads as a glitch. It
-// appears only once something has actually been slow.
-const LOAD_DELAY_MS = 450;
-let loadTimer = null;
-
-function showLoading(msg) {
-  clearTimeout(loadTimer);
-  loadTimer = setTimeout(() => {
-    const w = $("loadWrap");
-    if (!w) return;
-    $("loadMsg").textContent = msg || "working…";
-    w.hidden = false;
-  }, LOAD_DELAY_MS);
-}
-
-function hideLoading() {
-  clearTimeout(loadTimer);
-  const w = $("loadWrap");
-  if (w) w.hidden = true;
-}
-
-function setStatus(t, cls) {
-  const el = $("status");
-  el.textContent = t;
-  el.className = "status " + (cls || "");
-  if (cls === "busy") showLoading(t); else hideLoading();
-}
+function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.className = "status " + (cls || ""); }
 
 // ---------- structure calculator: footprint dig + perimeter layback ----------
 // The excavator's bid-sheet formulas (client_meet/beaumont, "Bid sheet" p1,
