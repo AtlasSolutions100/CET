@@ -40,6 +40,9 @@ const state = window.state = {
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // one of POINT_TOOLS below, or null
   measurePts: [],
+  vScale: null,             // ft per paper inch for the VERTICAL axis on a
+                            // profile sheet, when it differs from horizontal.
+                            // null = one scale governs both, as on a plan.
   faithful: true,           // draw each line with its true pattern + weight
   gen: 0,                   // bumped per document/page switch; stale async
                             // callbacks compare against it and bail out
@@ -628,7 +631,7 @@ async function loadResult(gen = state.gen) {
   state.include = new Map(); state.labels = new Map();
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
-  state.tool = null; state.measurePts = [];
+  state.tool = null; state.measurePts = []; state.vScale = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
   // a limit of work belongs to ONE sheet: the next page's grading line is
@@ -4037,11 +4040,12 @@ function unionStats(chains) {
   let sumPt = 0;
   for (let ci = 0; ci < chains.length; ci++) {
     const ch = chains[ci];
-    sumPt += ch.length_pt;
+    sumPt += chainLenPt(ch);
     const p = ch.points;
     if (!p || p.length < 2) continue;
+    const _r = axisRatio();
     for (let i = 1; i < p.length; i++) {
-      const d = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      const d = Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * _r);
       if (d < 0.05) continue;   // same skip as tools/containment.py leg_index
       const key = legKey(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]);
       const e = legs.get(key);
@@ -4063,6 +4067,40 @@ function unionStats(chains) {
 // One computation for the itemized panel AND the CSV export: totals per
 // label, object counts, overrides, prices, trade grouping. Items come back
 // grouped in TRADES order, each group sorted by quantity descending.
+// ---- two scales on one sheet ------------------------------------------
+// A sewer PROFILE prints a horizontal scale and a vertical one, deliberately
+// different - 1"=50' across, 1"=5' up - so the slope is legible. A single
+// sloped line therefore needs BOTH at once: its run measured at one scale, its
+// rise at the other. No per-page or per-region scale can express that, which
+// is why this could not just be another entry in the scale list.
+//
+// Rather than thread two factors through the seven-odd places that turn points
+// into feet, everything funnels through an EFFECTIVE pt length: scale the y
+// component by fy/fx, and the existing `pt / 72 * ftPerIn` conversion then
+// yields hypot(dx*fx, dy*fy) / 72, which is the right answer.
+//
+// With no vertical scale set the ratio is exactly 1 and chainLenPt returns the
+// engine's own length_pt UNTOUCHED - not recomputed and re-rounded, the same
+// number. Every single-scale sheet is provably unaffected.
+function axisRatio() {
+  const sc = state.result && state.result.scale;
+  const fx = sc ? sc.ft_per_paper_inch : null;
+  if (!fx || !state.vScale) return 1;
+  const r = state.vScale / fx;
+  return (isFinite(r) && r > 0) ? r : 1;
+}
+
+function chainLenPt(ch) {
+  const r = axisRatio();
+  if (r === 1) return ch.length_pt;
+  const p = ch.points;
+  if (!p || p.length < 2) return ch.length_pt;
+  let s = 0;
+  for (let i = 1; i < p.length; i++)
+    s += Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * r);
+  return s;
+}
+
 function computeTakeoffRows() {
   if (!state.result) return null;
   const sc = state.result.scale;
@@ -4076,7 +4114,7 @@ function computeTakeoffRows() {
       state.labels.get(ch.style_id) || "unlabeled";
     const t = totals.get(label) ||
       { count: 0, pt: 0, objects: 0, objSids: new Set(), chains: [] };
-    t.count += 1; t.pt += ch.length_pt; t.chains.push(ch);
+    t.count += 1; t.pt += chainLenPt(ch); t.chains.push(ch);
     sheetChains.push(ch);
     if (state.measureMode.get(ch.style_id) === "object")
       t.objSids.add(ch.style_id);
