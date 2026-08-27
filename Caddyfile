@@ -1,3 +1,15 @@
+# Other projects on this box drop their own site blocks into conf.d.
+#
+# They live OUTSIDE this repo on purpose. Every deploy scp's this Caddyfile
+# onto the box and overwrites it, so a site block appended here by hand is
+# guaranteed to be wiped by the next takeoff release - and the other app 502s
+# at the following reload with nothing to explain why. A mounted directory is
+# untouched by that copy.
+#
+# Verified against caddy:2-alpine: an import matching ZERO files validates
+# fine, so this is safe on a box where conf.d is empty.
+import /etc/caddy/conf.d/*.caddy
+
 # TLS, and the two things a plan-set upload needs from a reverse proxy.
 {$SITE_HOST} {
 	encode zstd gzip

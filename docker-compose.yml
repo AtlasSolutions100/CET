@@ -54,8 +54,25 @@ services:
       SITE_HOST: ${SITE_HOST:?set SITE_HOST in .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Site blocks belonging to OTHER apps on this box. Not in this repo, and
+      # not overwritten by a takeoff deploy - see the note in the Caddyfile.
+      - ./caddy-sites:/etc/caddy/conf.d:ro
       - caddy-data:/data
       - caddy-config:/config
+    networks:
+      # `default` must be listed explicitly once any network is named, or the
+      # app container becomes unreachable from here.
+      - default
+      # Shared with other stacks so Caddy can reach their containers by name.
+      # Declared here rather than attached live with `docker network connect`,
+      # because a live attachment is lost the moment anything recreates Caddy.
+      - web-proxy
+
+networks:
+  web-proxy:
+    # Created once by hand: `docker network create web-proxy`. External so
+    # that tearing down this stack cannot take another project's network away.
+    external: true
 
 volumes:
   takeoff-jobs:
