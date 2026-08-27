@@ -4191,10 +4191,19 @@ function chainLenPt(ch) {
   if (r === 1) return ch.length_pt;
   const p = ch.points;
   if (!p || p.length < 2) return ch.length_pt;
-  let s = 0;
-  for (let i = 1; i < p.length; i++)
-    s += Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * r);
-  return s;
+  // SCALE the engine's length, never replace it. length_pt is NOT the polyline
+  // length of `points`: a chain that picks up across a gap adds that gap to its
+  // length without adding a leg. Measured on Kayden Springs p39, 515 of 682
+  // chains differ, one by 17.8%. Recomputing from points would silently drop
+  // every one of those gaps the moment a vertical scale was switched on.
+  let plain = 0, axis = 0;
+  for (let i = 1; i < p.length; i++) {
+    const dx = p[i][0] - p[i - 1][0], dy = p[i][1] - p[i - 1][1];
+    plain += Math.hypot(dx, dy);
+    axis += Math.hypot(dx, dy * r);
+  }
+  if (!(plain > 0)) return ch.length_pt;
+  return ch.length_pt * (axis / plain);
 }
 
 function computeTakeoffRows() {
@@ -6852,7 +6861,9 @@ $("approveBtn").onclick = async () => {
   const scaleOnScreen = (scOn && +scOn.ft_per_paper_inch > 0)
     ? { ft_per_paper_inch: +scOn.ft_per_paper_inch,
         text: scOn.text || null,
-        picked_by_reviewer: !!scOn.picked_by_reviewer }
+        picked_by_reviewer: !!scOn.picked_by_reviewer,
+        // the second axis, so the report cannot disagree with this panel
+        v_ft_per_paper_inch: state.vScale || null }
     : null;
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },

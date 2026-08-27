@@ -85,6 +85,32 @@ def _under_roots(p: Path) -> bool:
     return False
 
 
+def _axis_len_pt(points, ratio: float, length_pt: float) -> float:
+    """`length_pt` re-measured as if the two axes carried different scales.
+
+    Mirrors chainLenPt() in webui/app.js exactly, including the reason it
+    SCALES rather than recomputes: length_pt is not the polyline length of
+    `points`. A chain that picks up across a gap adds that gap to its length
+    without adding a leg, and on Kayden Springs p39 that makes 515 of 682
+    chains differ, one by 17.8%. Rebuilding the length from points would drop
+    every one of those gaps the moment a vertical scale was applied.
+
+    So take the ratio the axes change the geometry by, and apply it to the
+    length the engine already measured. ratio == 1.0 returns length_pt exactly.
+    """
+    if ratio == 1.0 or len(points) < 2:
+        return length_pt
+    plain = axis = 0.0
+    for i in range(1, len(points)):
+        dx = points[i][0] - points[i - 1][0]
+        dy = points[i][1] - points[i - 1][1]
+        plain += math.hypot(dx, dy)
+        axis += math.hypot(dx, dy * ratio)
+    if plain <= 0:
+        return length_pt
+    return length_pt * (axis / plain)
+
+
 def _client_pdf(raw: str) -> Path:
     """Validate a client-supplied PDF path or raise the right HTTP error."""
     if HOSTED:
@@ -1569,6 +1595,13 @@ class ApproveScale(BaseModel):
     ft_per_paper_inch: float
     text: str | None = None
     picked_by_reviewer: bool = False
+    # A PROFILE sheet prints two scales that are both right at once: the run
+    # measured across, the rise measured up, deliberately exaggerated so the
+    # slope is readable. When the reviewer has told the screen about the second
+    # one, it has to travel with the approve or the report PDF quietly
+    # disagrees with the panel it was approved from - and a report is the one
+    # artifact that leaves the building. None = one scale governs both axes.
+    v_ft_per_paper_inch: float | None = None
 
 
 class QtyOverride(BaseModel):
@@ -1652,6 +1685,16 @@ def approve(job_id: str, page: int, body: ApproveBody):
         raise HTTPException(404, "no result to approve")
     res = json.loads(f.read_text())
     scale = body.image_dpi / 72.0
+    # One ratio for the whole page: fy/fx, or exactly 1.0 when the sheet has a
+    # single scale - in which case _axis_len_pt is never called and every
+    # existing export is byte-for-byte what it was.
+    _v_ratio = 1.0
+    if body.scale and body.scale.v_ft_per_paper_inch:
+        _fx = body.scale.ft_per_paper_inch
+        _fy = body.scale.v_ft_per_paper_inch
+        if _fx > 0 and _fy > 0:
+            _v_ratio = _fy / _fx
+
     elements = []
     excluded = set(body.excluded_chain_ids)
     for ch in list(res["chains"]) + list(body.added_chains):
@@ -1669,6 +1712,13 @@ def approve(job_id: str, page: int, body: ApproveBody):
                          for x, y in ch["points"]],
             "detectedClass": ch["class"],
             "lengthPt": ch["length_pt"],
+            # `lengthPt` stays TRUE page points, always. When a vertical scale
+            # is in force this carries the axis-adjusted length beside it
+            # rather than quietly changing what lengthPt means - a field whose
+            # units depend on a flag elsewhere is how silent unit bugs start.
+            **({"lengthPtAxis": _axis_len_pt(ch["points"], _v_ratio,
+                                             ch["length_pt"])}
+               if _v_ratio != 1.0 else {}),
         })
     export = {
         "source": Path(JOBS[job_id]["path"]).name if job_id in JOBS else "",
@@ -1703,7 +1753,7 @@ def approve(job_id: str, page: int, body: ApproveBody):
     for el in elements:
         t = totals.setdefault(el["label"], {"count": 0, "length_pt": 0.0})
         t["count"] += 1
-        t["length_pt"] += el["lengthPt"]
+        t["length_pt"] += el.get("lengthPtAxis", el["lengthPt"])
     # `qty <= 0` is "no override" here because it is "no override" in the box:
     # computeTakeoffRows applies one only `if (!isNaN(ov) && ov > 0)`.
     ov_ft: dict = {}
