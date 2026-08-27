@@ -26,6 +26,13 @@ export PYTHONFAULTHANDLER=1          # a native crash prints a stack, not silenc
 # freeze that took the machine out once already. Same reasoning that put
 # Postgres in C:/Users/kobys/takeoff-pg.
 export TAKEOFF_JOBS_DIR="${TAKEOFF_JOBS_DIR:-C:/Users/kobys/takeoff-jobs}"
+
+# Client plan sets pulled off the box for development live OUTSIDE OneDrive,
+# for the same reason the job store does - and because a customer's drawings
+# should not be syncing into a personal cloud account by default. Setting this
+# REPLACES the defaults, so the sample corpus and client_meet are re-listed
+# here rather than lost.
+export TAKEOFF_PLAN_ROOTS="${TAKEOFF_PLAN_ROOTS:-../TakeoffPro AI;../client_meet;C:/Users/kobys/takeoff-plans;C:/Users/kobys/takeoff-jobs}"
 unset TAKEOFF_UI_PASSWORD
 unset TAKEOFF_HOSTED
 PY=./.venv/Scripts/python.exe

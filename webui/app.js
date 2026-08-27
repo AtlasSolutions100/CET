@@ -1161,8 +1161,104 @@ function renderScalePick(host) {
     row.appendChild(b);
   }
   host.appendChild(row);
+  renderVScalePick(host, uniq);
 }
-// reapply a remembered pick after a detect
+
+// ---------- the second scale, on the OTHER axis --------------------------
+// A profile sheet prints two scales that are both correct at once: the run
+// at one, the rise at the other. The picker above chooses which single scale
+// governs, which is right for a plan sheet printing a detail at a different
+// scale, and wrong here - picking one leaves every sloped pipe measured with
+// the other axis exaggerated.
+//
+// SUGGESTED, NEVER APPLIED. Measured on Kayden Springs Unit 2 p39: the
+// engine finds 1"=50' governing 100% of the linework and 1"=5' governing
+// 0.0%, because the ranking is region-scoped and a vertical scale governs no
+// REGION - it governs an axis. That 0%/100% split with the smaller reading
+// scoring zero is a good signal, but acting on it silently would change
+// every length on the page, which is the worst failure this product has.
+// So it is offered with the reason shown, and the operator confirms.
+function vScaleSuggestion(uniq) {
+  if (!uniq || uniq.length !== 2) return null;
+  const sc = state.result && state.result.scale;
+  if (!sc) return null;
+  const sorted = [...uniq].sort(
+    (x, y) => x.ft_per_paper_inch - y.ft_per_paper_inch);
+  const small = sorted[0], large = sorted[1];
+  // vertical exaggeration means the vertical scale shows FEWER feet per inch
+  if (!(small.ft_per_paper_inch < large.ft_per_paper_inch * 0.5)) return null;
+  // and the axis one governs no region, while the plan one governs the sheet
+  const gs = small.governs_pct, gl = large.governs_pct;
+  if (gs === null || gs === undefined || gl === null || gl === undefined)
+    return null;
+  if (!(gs <= 5 && gl >= 60)) return null;
+  return { vert: small, horiz: large };
+}
+
+function renderVScalePick(host, uniq) {
+  const sug = vScaleSuggestion(uniq);
+  const on = state.vScale !== null && state.vScale !== undefined;
+  if (!sug && !on) return;
+  const sc = state.result.scale;
+
+  const row = document.createElement("div");
+  row.className = "sh-scales";
+  const lab = document.createElement("span");
+  lab.className = "dim";
+  lab.textContent = on
+    ? `two axes \u2014 across ${(+sc.ft_per_paper_inch).toFixed(2)} ft/in, `
+      + `up ${(+state.vScale).toFixed(2)} ft/in:`
+    : "looks like a profile \u2014 second scale is for the VERTICAL axis:";
+  row.appendChild(lab);
+
+  const mk = (text, title, active, fn) => {
+    const b = document.createElement("button");
+    b.className = "sh-scale-pick" + (active ? " on" : "");
+    b.textContent = text;
+    b.title = title;
+    b.onclick = fn;
+    row.appendChild(b);
+  };
+
+  if (sug) {
+    mk(`use ${(+sug.vert.ft_per_paper_inch).toFixed(2)} ft/in up`,
+       `${sug.vert.text} governs no area of this sheet, and shows fewer feet `
+       + `per inch than ${sug.horiz.text}. On a profile that is the vertical `
+       + `exaggeration. Applying it measures each line's rise at this scale `
+       + `and its run at the other.`,
+       on,
+       () => {
+         // the horizontal scale must be the one governing the drawing
+         if (Math.abs(sc.ft_per_paper_inch - sug.horiz.ft_per_paper_inch) > 1e-6) {
+           state.result.scale = Object.assign({}, sc, {
+             text: sug.horiz.text,
+             ft_per_paper_inch: sug.horiz.ft_per_paper_inch,
+             count: sug.horiz.count, agrees: null, delta_pct: null,
+             picked_by_reviewer: true, typed_by_reviewer: false,
+           });
+         }
+         state.vScale = sug.vert.ft_per_paper_inch;
+         setStatus(`two scales applied \u2014 across `
+           + `${(+sug.horiz.ft_per_paper_inch).toFixed(2)} ft/in, up `
+           + `${(+sug.vert.ft_per_paper_inch).toFixed(2)} ft/in. Sloped lines `
+           + `are no longer measured as if the sheet were flat.`);
+         renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+         renderMiniLegend(); draw();
+       });
+  }
+  if (on) {
+    mk("one scale", "Go back to measuring both axes at the horizontal scale",
+       false,
+       () => {
+         state.vScale = null;
+         setStatus("back to a single scale for both axes");
+         renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+         renderMiniLegend(); draw();
+       });
+  }
+  host.appendChild(row);
+}
+  // reapply a remembered pick after a detect
 function scaleMemApply() {
   if (!state.result) return;
   const sc = state.result.scale;
