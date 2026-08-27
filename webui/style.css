@@ -89,6 +89,10 @@ aside { width: 330px; flex: none; background: var(--panel); border-right: 1px so
 
 #stage { flex: 1; position: relative; overflow: hidden; background: var(--stage); }
 canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+/* A tool is armed and the next click places a point, so stop advertising drag. */
+canvas#view.tool-point { cursor: crosshair; }
+/* Panning wins over both: while the sheet is actually moving under the
+   cursor, that is what the pointer should say, tool armed or not. */
 canvas#view.panning { cursor: grabbing; }
 .hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: var(--dim); pointer-events: none; }
 

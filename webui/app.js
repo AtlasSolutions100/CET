@@ -38,7 +38,7 @@ const state = window.state = {
   chainLabels: new Map(),   // chain_id -> label override (separate-from-group)
   nextChainId: 1,           // ids for chains created by edits
   clickPt: null,            // last click position on the selected chain (pt)
-  tool: null,               // "measure" | "extend" | null
+  tool: null,               // one of POINT_TOOLS below, or null
   measurePts: [],
   faithful: true,           // draw each line with its true pattern + weight
   gen: 0,                   // bumped per document/page switch; stale async
@@ -74,6 +74,36 @@ const state = window.state = {
   aiUndo: null,             // snapshot taken before applying AI focus
   view: { x: 0, y: 0, k: 1 },
 };
+
+// CURSOR. `grab` - the open hand - is a promise that dragging is what happens
+// next. It is the wrong promise the moment a tool is armed, because the next
+// click places a point. First piece of client feedback we got, on the measure
+// tool; every tool in this set has the same problem, so they all get it.
+const POINT_TOOLS = new Set([
+  "measure", "extend", "cutspan", "drawline", "merge", "reclass",
+  "ew-bound", "ew-pick", "st-pick", "st-draw",
+]);
+
+function syncCursor() {
+  const cv = document.getElementById("view");
+  if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
+}
+
+// Hooked to ASSIGNMENT, not to each of the ~20 places that arm or clear a
+// tool - including `state.tool = mode`, where the value is not even a literal.
+// This is the lesson from the loading overlay: a thing you must remember to
+// call at every site is a thing that gets forgotten at the next one.
+(() => {
+  let current = state.tool;
+  Object.defineProperty(state, "tool", {
+    get: () => current,
+    // enumerable so the property still behaves like the plain field it
+    // replaced, for anything that iterates or copies state
+    enumerable: true,
+    configurable: true,
+    set: (v) => { current = v; syncCursor(); },
+  });
+})();
 
 // ---------- boot ----------
 fetch("/api/samples").then(r => r.json()).then(samples => {
