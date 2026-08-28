@@ -3025,7 +3025,7 @@ function renderStyles() {
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${fmtQty(styleLenPt(s))} · ${s.n} lines · ${s.signature}`;
+    meta.textContent = `${fmtQty(styleLenPt(s))} · ${styleLiveCount(s.style_id)} lines · ${s.signature}`;
     main.append(lab, meta);
 
     const badge = document.createElement("span");
@@ -4406,7 +4406,60 @@ function chainLenPt(ch) {
 // be re-summed from that style's chains. Memoised on (ratio, generation): the
 // sidebar redraws on every tick and this walks every chain on the sheet.
 let _styleLen = null, _styleLenKey = null;
+// What is actually LEFT on a style row, after the reviewer's deletions.
+//
+// st.length_pt and st.n are the ENGINE's totals. They are written once at
+// detection and cannot know that a reviewer erased a line, so every readout
+// built on them goes stale the moment somebody uses the trash tool. Measured
+// on Kayden engine page index 38 = printed sheet C5.1: deleting chain 2151
+// (107.7pt) moved the bid line 3,913.6 -> 3,838.8 ft and the count 79 -> 78,
+// while the style row went on reading "606 LF - 8 lines" with 764pt / 7 lines
+// remaining. The money was right; the panel the estimator reads while
+// DECIDING was not.
+//
+// Summed live rather than subtracted from the stored total, for two reasons.
+// A split excludes the original and adds custom chains that were never in
+// st.length_pt, so subtraction over-counts the removal. And computeTakeoffRows
+// already sums chainLenPt over live chains, so summing the same way is what
+// makes the row and the bid line agree - which is the whole point.
+//
+// Cost, measured with NOTHING deleted: the displayed text changes on 4 of 148
+// rows on sheet C5.2 (2.7%) and 3 of 179 on C5.1 (1.7%), worst underlying
+// difference 0.05 pt - about 0.035 ft at 1"=50', i.e. a rounding boundary in
+// fmtQty. The new figure is the more accurate one; the stored total is the
+// engine's rounded copy.
+let _liveLen = null, _liveN = null, _liveKey = "";
+
+function _liveStyleTotals() {
+  const key = state.gen + ":" + state.excluded.size + ":" + axisRatio();
+  if (_liveKey !== key) {
+    _liveLen = new Map(); _liveN = new Map();
+    for (const ch of (state.result ? state.result.chains : [])) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      _liveLen.set(ch.style_id, (_liveLen.get(ch.style_id) || 0) + chainLenPt(ch));
+      _liveN.set(ch.style_id, (_liveN.get(ch.style_id) || 0) + 1);
+    }
+    _liveKey = key;
+  }
+}
+
+// 0 is a real answer here: a row whose every chain the reviewer deleted holds
+// nothing, and must say so. Falling back to the engine's total in that case is
+// exactly the bug this replaces.
+function styleLiveLen(sid) {
+  if (!state.result) return 0;
+  _liveStyleTotals();
+  return _liveLen.get(sid) || 0;
+}
+
+function styleLiveCount(sid) {
+  if (!state.result) return 0;
+  _liveStyleTotals();
+  return _liveN.get(sid) || 0;
+}
+
 function styleLenPt(st) {
+  if (state.result) return styleLiveLen(st.style_id);
   const r = axisRatio();
   if (r === 1) return st.length_pt;          // exact no-op, same as chainLenPt
   const key = r + "@" + state.gen;
@@ -8228,6 +8281,30 @@ function deleteVertex() {
   return true;
 }
 
+// Update the rows IN PLACE rather than calling renderStyles(). That function
+// does box.innerHTML = "" and rebuilds every row, which on a 280-row sheet
+// throws away the operator's scroll position under the cursor - the reason the
+// isolate handler already refuses to call it. Only two pieces of text on a row
+// can move when a line is deleted, so only those are rewritten.
+function refreshStyleRows() {
+  if (!state.result) return;
+  const byId = new Map(state.result.styles.map(s => [String(s.style_id), s]));
+  const splits = splitItems();
+  for (const row of document.querySelectorAll(".style-row")) {
+    const s = byId.get(row.dataset.sid);
+    if (!s) continue;
+    const meta = row.querySelector(".style-meta");
+    if (meta)
+      meta.textContent = `${fmtQty(styleLenPt(s))} · `
+        + `${styleLiveCount(s.style_id)} lines · ${s.signature}`;
+    const chip = row.querySelector(".item-split .is-txt");
+    const sp = splits.get(s.style_id);
+    if (chip && sp)
+      chip.textContent = fmtQty(sp.total) + " total, from "
+        + sp.parts.length + " layers";
+  }
+}
+
 function removeSelected() {
   if (state.selected === null) return;
   if (deleteVertex()) return;   // a picked point goes first, not the line
@@ -8237,6 +8314,8 @@ function removeSelected() {
   setStatus(`${state.excluded.size} line(s) removed`);
   $("restoreBtn").hidden = state.excluded.size === 0;
   renderItemized();
+  refreshStyleRows();   // the row's own footage and line count moved too
+  renderMiniLegend();
   draw();
 }
 $("removeBtn").onclick = removeSelected;
@@ -8252,6 +8331,8 @@ $("restoreBtn").onclick = () => {
   $("restoreBtn").hidden = true;
   setStatus("removed lines restored");
   renderItemized();
+  refreshStyleRows();
+  renderMiniLegend();
   draw();
 };
 function typing() {
