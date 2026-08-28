@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pymupdf
 
-from .chain import build_chains
+from .chain import build_chains, last_drop_ledger
 from .classify_page import classify_page
 from .extract import extract_strokes, page_words
 from .legend_detect import read_legend
@@ -147,6 +147,11 @@ def detect_page(pdf_path: str, page: int) -> dict:
 
             units.extend(extract_hybrid_image_units(pg))
     chains = build_chains(units, words=words)
+    # What the pruning stages threw away on this page, and why. Read
+    # immediately: the ledger is per-thread and the next build_chains on this
+    # thread clears it. Every one of these was an unconditional delete with no
+    # record, so "the last 2%" had no denominator - see chain.last_drop_ledger.
+    _drops = last_drop_ledger()
 
     _legend_labels: dict = {}
     styles: dict = defaultdict(lambda: {
@@ -281,6 +286,9 @@ def detect_page(pdf_path: str, page: int) -> dict:
             st["texture"] = True
     return {
         "page": pc.to_dict(),
+        # Disclosed, per the pattern `areas` already sets: a cap or a filter
+        # that reports nothing reads downstream as full coverage.
+        "drops": _drops,
         "scale": scale,
         "legend": legend["entries"],
         "styles": style_list,

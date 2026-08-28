@@ -16,6 +16,7 @@ Classes emitted:
 """
 
 import re
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -712,12 +713,49 @@ def _leader_annotation_units(units: list) -> set:
     return leaders
 
 
+# What each stage threw away, and why. Filled by build_chains and read back
+# through last_drop_ledger(); detect_page puts it in the result JSON.
+#
+# Every one of these was an unconditional delete with no record. A sheet could
+# lose a real dashed line to the hatch pruner or a short run to a minimum-gate
+# and nothing anywhere counted it, so "the last 2%" had no denominator and no
+# decomposition - every claim about detection completeness was unfalsifiable.
+# Counting is not fixing, but nothing can be fixed while it is invisible.
+# THREAD-LOCAL, not a module global. server.py runs detection on worker
+# threads (the detect-scheduler at server.py:1008), so two pages can be inside
+# build_chains at once in one process; a shared dict would interleave their
+# ledgers and report both sheets' drops on whichever finished last.
+_DROP_TLS = threading.local()
+
+
+def _drops() -> dict:
+    d = getattr(_DROP_TLS, "d", None)
+    if d is None:
+        d = _DROP_TLS.d = {}
+    return d
+
+
+def _drop(reason: str, n: int, ink: float = 0.0) -> None:
+    if not n:
+        return
+    e = _drops().setdefault(reason, {"n": 0, "ink": 0.0})
+    e["n"] += int(n)
+    e["ink"] += float(ink)
+
+
+def last_drop_ledger() -> dict:
+    """Drop ledger for the most recent build_chains call ON THIS THREAD."""
+    return {k: {"n": v["n"], "ink": round(v["ink"], 2)}
+            for k, v in sorted(_drops().items())}
+
+
 def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[LineChain]:
     """Main entry: stroke units -> classified line chains.
 
     words: optional page text words as (x0, y0, x1, y1, text) tuples for
     dash-text-dash bridging.
     """
+    _drops().clear()
     units = list(units)  # local copy: X-mark repair appends synthetic units
     units = _merge_twin_strokes(units)
     units = _merge_collinear_overlaps(units)
@@ -755,9 +793,15 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         dash_cand = [i for i in plain if units[i].length <= DASH_MAX_LEN and not units[i].closed]
         _glyphs, _blobs = _glyph_blobs(units, dash_cand)
         if _glyphs:
+            _drop("glyph_blob", sum(1 for i in dash_cand if i in _glyphs),
+                  sum(units[i].length for i in dash_cand if i in _glyphs))
             dash_cand = [i for i in dash_cand if i not in _glyphs]
             glyph_blobs.extend(_blobs)
+        _xn = len(dash_cand)
+        _xink = sum(units[i].length for i in dash_cand)
         dash_cand = _strip_x_marks(units, dash_cand)
+        _drop("x_mark", _xn - len(dash_cand),
+              _xink - sum(units[i].length for i in dash_cand))
         solid_cand = [i for i in plain if units[i].length > DASH_MAX_LEN or units[i].closed]
 
         # stipple textures: fields of thousands of dots (concrete/gravel
@@ -771,6 +815,8 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             centers = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2 for i in dots])
             counts = cKDTree(centers).query_ball_point(centers, 6.0, return_length=True)
             crowded = {i for i, cnt in zip(dots, counts) if cnt > 5}
+            _drop("crowded_dot", sum(1 for i in dash_cand if i in crowded),
+                  sum(units[i].length for i in dash_cand if i in crowded))
             dash_cand = [i for i in dash_cand if i not in crowded]
 
         # 2) chain the dash candidates. Search radius adapts to the group's
