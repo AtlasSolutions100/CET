@@ -4473,6 +4473,31 @@ function styleLenPt(st) {
   return v === undefined ? st.length_pt : v;
 }
 
+// How much of this sheet's included length is NOT measured ink.
+//
+// Every chain now carries gap_pt (blank paper welded into it by a stitch, a
+// join, or the approach to a picked-up mark) and pickup_pt (ink taken from
+// elsewhere, which the chain it came from may still be counting). Neither was
+// knowable before 2026-08-27, so a quantity could never state its own
+// denominator - which the project's accuracy contract requires.
+//
+// Measured on Kayden sheet C5.1: 2.27% of the sheet is welded gap, and on its
+// billable layers C-U2-PROP-LOT carries 1,923 ft of blank paper (6.10% of
+// 31,497 ft) and C-U2-ROAD-DRWY 848 ft (4.90%). That is footage an estimator
+// would price and which is not on the drawing.
+function sheetOverCapture() {
+  if (!state.result) return null;
+  let len = 0, gap = 0, pick = 0;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    len += ch.length_pt;
+    gap += ch.gap_pt || 0;
+    pick += ch.pickup_pt || 0;
+  }
+  return len > 0 ? { len, gap, pick } : null;
+}
+
 function computeTakeoffRows() {
   if (!state.result) return null;
   const sc = state.result.scale;
@@ -4879,6 +4904,16 @@ function renderItemized() {
             ? (uf >= 1000 ? (uf/1000).toFixed(1) + "k" : uf.toFixed(0)) + " ft"
             : fmtLen(sheet.unionPt))
         : "")
+    + (() => {
+        // Stated once, on the sheet total, rather than on every row: a
+        // per-row threshold is a judgement about how much welded gap matters
+        // to a given trade, and that is the estimator's call, not this
+        // function's. Hidden under 0.5% only because a figure that small is
+        // rounding, not a finding.
+        const oc = sheetOverCapture();
+        if (!oc || oc.gap / oc.len <= 0.005) return "";
+        return ` · ${(100 * oc.gap / oc.len).toFixed(1)}% welded`;
+      })()
     + (grand ? ` · $${grand.toFixed(0)}` : "");
   const ovPrefix = ovRowN
     ? `${ovRowN} row(s) on this sheet carry a quantity YOU typed, so "billed" `
@@ -4895,6 +4930,22 @@ function renderItemized() {
       `ways. Identical-geometry test, so it is a lower bound.`
     : `No included chain on this sheet shares a polyline segment with ` +
       `another, so the sum already counts each segment once.`);
+  const _oc = sheetOverCapture();
+  if (_oc && _oc.len > 0) {
+    tb.title += `
+
+Of the measured length, ${fmtLen(_oc.gap)} `
+      + `(${(100 * _oc.gap / _oc.len).toFixed(2)}%) is blank paper the tracer `
+      + `welded into a chain - a stitch across a gap, a join between two `
+      + `chains, or the approach to a mark it picked up. A further `
+      + `${fmtLen(_oc.pick)} (${(100 * _oc.pick / _oc.len).toFixed(2)}%) is `
+      + `ink picked up from elsewhere on the sheet, which the chain it came `
+      + `from may also still be counting.
+
+Both are included in every `
+      + `figure above. They are shown so the number can state what it is made `
+      + `of; nothing is removed.`;
+  }
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";
