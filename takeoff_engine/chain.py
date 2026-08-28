@@ -62,6 +62,25 @@ class LineChain:
     style_id: int = -1
     layer: str = ""
     ink: float = 0.0  # stroke length excluding gaps; 0 -> use length
+    # --- provenance of `length` -----------------------------------------
+    # `length` is not all measured ink, and until now nothing recorded which
+    # part was not. Three passes inflate it: _stitch_across_styles and the
+    # merge below weld members together and BILL THE GAPS BETWEEN THEM;
+    # _pickup_end_marks adds a mark that may already belong to another chain,
+    # plus its approach gap; _join_chain_ends adds the join gap. A chain that
+    # cannot say how much of itself is blank paper makes recall and ink
+    # capture ungateable, because both clamp at 1.0 and duplicated ink raises
+    # them - see takeoff_engine/regress.py _check().
+    #
+    #   measured ink  ==  length - gap_pt - pickup_pt
+    #
+    # gap_pt     blank paper inside `length`: stitch gaps, join gaps, and the
+    #            approach gap of a picked-up mark. Never real ink.
+    # pickup_pt  ink picked up from elsewhere on the sheet. Real ink, but it
+    #            may also be counted by the chain it came from, so it is the
+    #            double-count candidate.
+    gap_pt: float = 0.0
+    pickup_pt: float = 0.0
     template: list = None  # one period as [dash, gap, dash, gap, ...] -
                            # the RENDERABLE truth. The signature compresses
                            # to length-classes (d9 d45 g9), which cannot say
@@ -90,6 +109,8 @@ class LineChain:
             "label_texts": self.label_texts,
             "style_id": self.style_id,
             "ink_pt": round(self.ink or self.length, 2),
+            "gap_pt": round(self.gap_pt, 2),
+            "pickup_pt": round(self.pickup_pt, 2),
             "template": [round(float(v), 2) for v in self.template]
             if self.template else None,
             "seg_counts": [int(n) for n in self.seg_counts]
@@ -2383,6 +2404,9 @@ def _stitch_across_styles(chains: list) -> list:
         base.pts = pts
         base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
+        base.gap_pt = float(sum(gaps)) + float(
+            sum(cands[k].gap_pt for k, _ in seq))
+        base.pickup_pt = float(sum(cands[k].pickup_pt for k, _ in seq))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
         for k, _ in seq:
@@ -2582,6 +2606,9 @@ def _join_chain_ends(chains: list) -> list:
         base.pts = pts
         base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
+        base.gap_pt = float(sum(gaps)) + float(
+            sum(cands[k].gap_pt for k, _ in seq))
+        base.pickup_pt = float(sum(cands[k].pickup_pt for k, _ in seq))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
         for k, _ in seq:
@@ -2860,6 +2887,8 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
                     if c.seg_counts is not None:
                         c.seg_counts = c.seg_counts + [len(seg)]
                 c.length += u.length + d
+                c.pickup_pt += u.length   # may belong to another chain too
+                c.gap_pt += d             # the approach, always blank paper
                 c.ink = (c.ink or 0.0) + u.length
                 c.n_dashes += 1
                 used.add(i)
@@ -3208,7 +3237,10 @@ def _merge_into(a, b, a_end, b_end, text):
     a.seg_counts = a_sc + b_sc if (a_sc is not None and b_sc is not None) \
         else None
     a.pts = np.vstack([a_pts, b_pts])
-    a.length += b.length + float(np.hypot(*(b_pts[0] - a_pts[-1])))
+    _join_gap = float(np.hypot(*(b_pts[0] - a_pts[-1])))
+    a.length += b.length + _join_gap
+    a.gap_pt += b.gap_pt + _join_gap
+    a.pickup_pt += b.pickup_pt
     a.ink = (a.ink or 0.0) + (b.ink or b.length)
     a.n_dashes += b.n_dashes
     if text:
