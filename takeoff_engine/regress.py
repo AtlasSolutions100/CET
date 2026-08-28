@@ -12,6 +12,8 @@ Usage:  python -m takeoff_engine.regress            # fast gate (10 sheets)
 
 import argparse
 import hashlib
+import json
+import sys
 import os
 import pickle
 import time
@@ -212,6 +214,112 @@ def _run_sheet(args):
     }
 
 
+BASELINE = Path(__file__).parent.parent / "gate-baseline.json"
+
+# Tolerance on a class-accuracy fraction. Detection is deterministic (accept
+# loops are order-pinned), so this is not for run-to-run noise - it is for
+# float formatting drift across library versions.
+_EPS = 5e-4
+
+
+def _check(now: dict) -> int:
+    """Compare against the committed baseline. 0 = pass, 1 = regression.
+
+    TWO TIERS, and the split is the whole point of this function.
+
+    HARD - fails the build. Metrics that duplicated ink cannot flatter:
+      phantom      spans traced that the source does not contain. Only goes
+                   up when the tracer invents geometry.
+      spikes       reversal vertices the source strokes do not contain, i.e.
+                   bad welds. Only goes up when a join is wrong.
+      truth class  per-layer classification accuracy. Tracing the same ink
+                   twice does not make its CLASS more correct.
+      precision    per-class. Same argument.
+      chains       any movement at all, in either direction. A chain-count
+                   change is the loudest signal this harness has and it must
+                   never pass silently; re-baseline with --accept when the
+                   change is intended and explained.
+
+    SOFT - printed with deltas, never fails. Recall, coverage and ink capture
+    all clamp at 1.0, so tracing the same ink twice RAISES them. The repo's
+    own before/after for the known double-count in chain.py:860-937 shows
+    derived recall dropping 93.0 -> 91.6 when the duplicates are removed. Gate
+    on that and the double-count is pinned in place for good, because every
+    future fix to it reads as a regression. These become gateable only once a
+    chain can say which of its length is measured ink, which is a weld across
+    blank paper, and which was picked up from a neighbour - i.e. once length
+    carries provenance. Until then, reporting them is honest and failing on
+    them is not.
+    """
+    if not BASELINE.exists():
+        print(f"\nGATE: no baseline at {BASELINE} - run with --accept to "
+              f"create one.")
+        return 1
+    base = json.loads(BASELINE.read_text(encoding="utf-8"))
+    if base.get("corpus") != now.get("corpus"):
+        print(f"\nGATE: baseline is the {base.get('corpus')!r} corpus and "
+              f"this run is {now.get('corpus')!r}. Compare like with like.")
+        return 1
+    fails, notes = [], []
+    bs, ns = base["sheets"], now["sheets"]
+    for name in sorted(set(bs) | set(ns)):
+        if name not in ns:
+            fails.append(f"{name}: sheet missing from this run")
+            continue
+        if name not in bs:
+            fails.append(f"{name}: sheet not in the baseline")
+            continue
+        b, n = bs[name], ns[name]
+        if b["chains"] != n["chains"]:
+            fails.append(f"{name}: chains {b['chains']} -> {n['chains']}")
+        for k in ("phantom", "spikes"):
+            if n[k] > b[k]:
+                fails.append(f"{name}: {k} {b[k]} -> {n[k]}  (worse)")
+            elif n[k] < b[k]:
+                notes.append(f"{name}: {k} {b[k]} -> {n[k]}  (better)")
+        for lay, bv in b["truth"].items():
+            nv = n["truth"].get(lay)
+            if nv is None:
+                fails.append(f"{name}: truth layer {lay} disappeared")
+            elif nv < bv - _EPS:
+                fails.append(f"{name}: truth {lay} {bv:.1%} -> {nv:.1%}")
+            elif nv > bv + _EPS:
+                notes.append(f"{name}: truth {lay} {bv:.1%} -> {nv:.1%}  (better)")
+        for cls, bv in b["precision"].items():
+            nv = n["precision"].get(cls)
+            if nv is not None and nv < bv - _EPS:
+                fails.append(f"{name}: precision {cls} {bv:.1%} -> {nv:.1%}")
+
+    ba, na = base["aggregate"], now["aggregate"]
+    for k in ("n_lost", "n_misfiled"):
+        if na[k] > ba[k]:
+            fails.append(f"aggregate {k} {ba[k]} -> {na[k]}  (worse)")
+        elif na[k] < ba[k]:
+            notes.append(f"aggregate {k} {ba[k]} -> {na[k]}  (better)")
+
+    print("\n" + "=" * 72)
+    for line in notes:
+        print(f"  improved  {line}")
+    # The soft numbers, always, so a change that moves them is VISIBLE even
+    # though it cannot fail here.
+    for k, bv in (base.get("soft") or {}).items():
+        nv = (now.get("soft") or {}).get(k)
+        if bv is None or nv is None:
+            continue
+        if abs(nv - bv) > _EPS:
+            print(f"  (not gated) {k} {bv:.1%} -> {nv:.1%}")
+    if fails:
+        print(f"GATE FAILED - {len(fails)} regression(s):")
+        for line in fails:
+            print(f"    {line}")
+        print("\n  If every line above is intended and explained in the commit"
+              "\n  message, re-baseline with:  python -m takeoff_engine.regress"
+              " --accept")
+        return 1
+    print("GATE PASSED - no hard metric regressed.")
+    return 0
+
+
 def _wmean(pairs):
     """Ink-weighted mean of (value, ink) pairs; None when there is no ink."""
     tot = sum(w for _, w in pairs)
@@ -224,6 +332,13 @@ def main():
     ap.add_argument("--serial", action="store_true")
     ap.add_argument("--full", action="store_true",
                     help="add the wide layer sweep (slower, more sheets)")
+    ap.add_argument("--check", action="store_true",
+                    help="compare against gate-baseline.json and exit 1 on "
+                         "a regression")
+    ap.add_argument("--accept", action="store_true",
+                    help="rewrite gate-baseline.json from this run")
+    ap.add_argument("--json", metavar="PATH",
+                    help="also write the machine-readable summary here")
     args = ap.parse_args()
     t0 = time.time()
     corpus = CORPUS + CORPUS_BEAUMONT + (CORPUS_FULL_EXTRA if args.full else [])
@@ -342,6 +457,45 @@ def main():
                   f"cov={(m['coverage'] or 0.0):6.1%} "
                   f"any={(m['coverage_any'] or 0.0):6.1%} "
                   f"chains={m['n_chains']}")
+
+
+    # ---- the verdict ----------------------------------------------------
+    summary = {
+        "corpus": "full" if args.full else "fast",
+        "sheets": {
+            r["sheet"]: {
+                "chains": r["chains"],
+                "phantom": r["phantom"],
+                "spikes": r["spikes"],
+                "precision": r["precision"],
+                "truth": r["truth"],
+                "n_lost": r["n_lost"],
+                "n_misfiled": r["n_misfiled"],
+            } for r in results
+        },
+        "aggregate": {
+            "mean_truth_class_acc": (sum(accs) / len(accs)) if accs else None,
+            "phantom_total": sum(r["phantom"] for r in results),
+            "spikes_total": sum(r["spikes"] for r in results),
+            "n_lost": n_lost,
+            "n_misfiled": n_misfiled,
+        },
+        # Reported, never gated. See _check() for why.
+        "soft": {
+            "linework_coverage_any": wla,
+            "linework_coverage_own": wl,
+            "linework_raw_recall": wlr,
+            "symbol_coverage": ws,
+            "annotation_coverage": wa,
+        },
+    }
+    if args.json:
+        Path(args.json).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    if args.accept:
+        BASELINE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(f"\nbaseline rewritten: {BASELINE}")
+    if args.check:
+        sys.exit(_check(summary))
 
 
 if __name__ == "__main__":
