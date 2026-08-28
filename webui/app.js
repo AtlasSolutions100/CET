@@ -1179,7 +1179,42 @@ function renderScalePick(host) {
 // scoring zero is a good signal, but acting on it silently would change
 // every length on the page, which is the worst failure this product has.
 // So it is offered with the reason shown, and the operator confirms.
+// WITHDRAWN 2026-08-27 - do not re-enable without the region test below.
+//
+// The control applies one ratio to the WHOLE PAGE. On a plan-and-profile
+// sheet only the bottom graph carries two scales, so the plan half above it
+// gets divided down too. Measured on the delivered approve for Kayden Springs
+// U2 engine page index 39 = printed sheet C5.2
+// (takeoff-jobs/d0e10205df40/p39_elements.json, 354 elements):
+//
+//   sheet total                       52,854.3 ft -> 33,949.7 ft   -35.8%
+//   "Profile sewer pipe" - the ONLY thing it exists to fix    -1.6 ft  -0.1%
+//   C-U2-PROP-LOT                                         -2,288.7 ft -85.9%
+//   TITLEBLOCK - SHEET                                    -2,004.6 ft -37.3%
+//   G-TBLK-LOGO                                             -675.5 ft -44.7%
+//
+// It buys 1.6 ft of correctness and destroys 18,904 ft. It shrinks the
+// sheet's own title block by 37% and the company logo by 45%, because those
+// have vertical edges and the ratio hits every y component on the page.
+//
+// Two things compound it. state.vScale is persisted nowhere, so the same
+// sheet approved twice ships 33,949.7 ft and then 52,854.3 ft under a
+// byte-identical scale block. And _scale_report_lines() in server.py can only
+// print one "Scale: 1 inch = X ft", so the report states a single scale above
+// a table computed from two.
+//
+// The fix is not a patch: the ratio has to apply only to chains inside the
+// profile region. The two bands ARE separable in the shipped file - plan
+// geometry at export-px y 1600-2731, profile pipes at y 4956-5119 - so the
+// region test is available and none is applied.
+//
+// Safe to withdraw this way: with no vertical scale set every path returns
+// the engine's own number untouched, and this suggestion is the only thing
+// that can set one. Nothing approved to date is affected.
+const V_SCALE_ENABLED = false;
+
 function vScaleSuggestion(uniq) {
+  if (!V_SCALE_ENABLED) return null;
   if (!uniq || uniq.length !== 2) return null;
   const sc = state.result && state.result.scale;
   if (!sc) return null;
