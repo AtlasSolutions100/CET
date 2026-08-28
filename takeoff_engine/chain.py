@@ -82,6 +82,14 @@ class LineChain:
     #            double-count candidate.
     gap_pt: float = 0.0
     pickup_pt: float = 0.0
+    # The drafter's OWN name for this line: the short code CAD prints inside
+    # the gaps of the linework itself (OHE, EX-SS, EX-FO). Deliberately NOT
+    # label_texts - _mark_glyph_text_chains assigns that field unconditionally
+    # with synthetic blob ids (`c.label_texts = [top] * n_top`), so a real word
+    # placed there can be overwritten by a placeholder, the first-writer-wins
+    # shape CLAUDE.md section 5 warns about. Kept separate so neither clobbers
+    # the other.
+    inline_labels: list = field(default_factory=list)
     template: list = None  # one period as [dash, gap, dash, gap, ...] -
                            # the RENDERABLE truth. The signature compresses
                            # to length-classes (d9 d45 g9), which cannot say
@@ -112,6 +120,7 @@ class LineChain:
             "ink_pt": round(self.ink or self.length, 2),
             "gap_pt": round(self.gap_pt, 2),
             "pickup_pt": round(self.pickup_pt, 2),
+            "inline_labels": list(self.inline_labels),
             "template": [round(float(v), 2) for v in self.template]
             if self.template else None,
             "seg_counts": [int(n) for n in self.seg_counts]
@@ -1070,6 +1079,8 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     if words:
         _demote_text_chains(chains, words)
 
+    if words:
+        _attach_inline_labels(chains, words)
     _assign_styles(chains)
     return chains
 
@@ -3145,6 +3156,61 @@ def _chain_closed(c) -> bool:
     if len(pts) < 4:
         return False
     return float(np.hypot(*(pts[0] - pts[-1]))) <= max(2.0, 0.02 * c.length)
+
+
+# A short code the drafter printed along a line IS that line's name, and it
+# is the highest-authority name available - better than a legend guess and far
+# better than a machine signature like "dash1 d184.4 g25.6".
+#
+# _bridge_text already sees these words, but only as a MERGE trigger: it
+# records one when it welds two dashed chains across a label, which needs both
+# sides to exist as separate chains and to agree on colour, width and layer. A
+# label sitting mid-chain, or on a solid line, records nothing. Measured on
+# Oncor engine page index 3 = printed sheet C-04: the page prints 43 inline
+# utility codes (OHE x18, EX-FO x9, EX-W x9, EX-SS x6, EX-CABLE x1), ALL 43
+# lie within 15 pt of a detected chain vertex - 19 of them within 6 pt - and
+# _bridge_text captured real words on just 4 chains.
+#
+# So this is a separate, purely additive pass: it attaches, it never merges,
+# never reclassifies and never changes a length. Reading the name is a
+# different job from deciding the geometry, and conflating them is why 39 of
+# 43 names were lost.
+_INLINE_CODE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
+
+
+def _attach_inline_labels(chains: list, words: list, radius: float = 15.0) -> None:
+    """Record the drafter's inline codes on the chain each one sits on."""
+    from scipy.spatial import cKDTree
+
+    cand = []
+    for w in words:
+        t = str(w[4]).strip().upper()
+        # a CODE, not prose and not a number: short, starts with a letter, and
+        # no lowercase survived the upper() comparison below
+        if not (1 <= len(t) <= 8) or not _INLINE_CODE.match(t):
+            continue
+        if t != str(w[4]).strip():      # it was lowercase/mixed: prose, not a code
+            continue
+        cand.append((t, (float(w[0]) + float(w[2])) / 2.0,
+                     (float(w[1]) + float(w[3])) / 2.0))
+    if not cand:
+        return
+
+    pts, owner = [], []
+    for c in chains:
+        if c.klass == "annotation":
+            continue
+        for q in c.pts:
+            pts.append((float(q[0]), float(q[1])))
+            owner.append(c)
+    if not pts:
+        return
+    tree = cKDTree(np.asarray(pts))
+    for t, x, y in cand:
+        d, i = tree.query([x, y], distance_upper_bound=radius)
+        if not np.isfinite(d):
+            continue
+        owner[int(i)].inline_labels.append(t)
 
 
 def _bridge_text(chains: list, words: list) -> list:
