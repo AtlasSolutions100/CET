@@ -988,7 +988,7 @@ function renderMiniLegend() {
       || `${st.class} · ${st.signature}`;
     const ft = document.createElement("span");
     ft.className = "ml-ft";
-    const q = ftPerIn ? st.length_pt / 72 * ftPerIn : st.length_pt;
+    const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
     ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
       + (ftPerIn ? " ft" : " pt");
     row.append(cnv, lab, ft);
@@ -2633,7 +2633,7 @@ function scopeTally() {
     // the operator's own tick state, before this filter touched anything
     if (!(state.scopeOwnerOn && state.scopeOwnerOn.has(s.style_id))) continue;
     t.on += 1;
-    const ft = ftPerIn ? s.length_pt / 72 * ftPerIn : s.length_pt;
+    const ft = ftPerIn ? styleLenPt(s) / 72 * ftPerIn : styleLenPt(s);
     t["ft" + d.v.charAt(0).toUpperCase() + d.v.slice(1)] += ft;
   }
   t.ftUnit = ftPerIn ? "ft" : "pt";
@@ -2880,7 +2880,7 @@ function renderStyles() {
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${fmtQty(s.length_pt)} · ${s.n} lines · ${s.signature}`;
+    meta.textContent = `${fmtQty(styleLenPt(s))} · ${s.n} lines · ${s.signature}`;
     main.append(lab, meta);
 
     const badge = document.createElement("span");
@@ -4206,6 +4206,25 @@ function chainLenPt(ch) {
   return ch.length_pt * (axis / plain);
 }
 
+// A STYLE's total, axis-aware. state.result.styles carries a length the engine
+// summed at detect time, which knows nothing about a second scale, so it has to
+// be re-summed from that style's chains. Memoised on (ratio, generation): the
+// sidebar redraws on every tick and this walks every chain on the sheet.
+let _styleLen = null, _styleLenKey = null;
+function styleLenPt(st) {
+  const r = axisRatio();
+  if (r === 1) return st.length_pt;          // exact no-op, same as chainLenPt
+  const key = r + "@" + state.gen;
+  if (_styleLenKey !== key) {
+    _styleLen = new Map();
+    for (const ch of (state.result ? state.result.chains : []))
+      _styleLen.set(ch.style_id, (_styleLen.get(ch.style_id) || 0) + chainLenPt(ch));
+    _styleLenKey = key;
+  }
+  const v = _styleLen.get(st.style_id);
+  return v === undefined ? st.length_pt : v;
+}
+
 function computeTakeoffRows() {
   if (!state.result) return null;
   const sc = state.result.scale;
@@ -4577,7 +4596,7 @@ function renderItemized() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
-    inkPt += ch.length_pt;
+    inkPt += chainLenPt(ch);
   }
   // What the sheet is BILLING, which is not always what the detector measured.
   // The tally used to print the raw chain sum beside a dollar figure that came
@@ -5900,7 +5919,7 @@ $("trCalc").onclick = () => {
   const N = 60;  // integration steps along each run
   let dig = 0, bed = 0, runFt = 0;
   for (const c of chains) {
-    const L = c.length_pt * ftPerPt;
+    const L = chainLenPt(c) * ftPerPt;
     runFt += L;
     for (let i = 0; i < N; i++) {
       const x = (i + 0.5) / N;
@@ -6708,7 +6727,7 @@ function renderAiBanner() {
                         + `no new information)</span>`;
     }
     if (p.kind === "off")
-      what += ` <span class="ai-warn">removes ${esc(aiQty(p.st.length_pt))}`
+      what += ` <span class="ai-warn">removes ${esc(aiQty(styleLenPt(p.st)))}`
             + ` from the takeoff</span>`;
     const txt = document.createElement("span");
     txt.className = "ai-prop-txt";
@@ -7992,7 +8011,7 @@ function updateSelBar(ch) {
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
   const el = z !== undefined ? ` · EL ${z}` : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(ch.length_pt)}${pt}${el}`;
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${pt}${el}`;
 }
 
 function deleteVertex() {
