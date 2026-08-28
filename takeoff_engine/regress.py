@@ -209,6 +209,11 @@ def _run_sheet(args):
                                         "coverage", "coverage_any",
                                         "n_chains")}
                      for r in d["misfiled"][:8]],
+        # OVER-CAPTURE. Length that is not measured ink: welded gaps and
+        # marks picked up from elsewhere. See LineChain.gap_pt / pickup_pt.
+        "length_pt": float(sum(c.length for c in chains)),
+        "gap_pt": float(sum(c.gap_pt for c in chains)),
+        "pickup_pt": float(sum(c.pickup_pt for c in chains)),
         "n_lost": len(d["lost"]),
         "n_misfiled": len(d["misfiled"]),
     }
@@ -296,6 +301,21 @@ def _check(now: dict) -> int:
             fails.append(f"aggregate {k} {ba[k]} -> {na[k]}  (worse)")
         elif na[k] < ba[k]:
             notes.append(f"aggregate {k} {ba[k]} -> {na[k]}  (better)")
+    # The over-capture pair. These are the metrics recall could never be:
+    # welding more blank paper into a chain, or picking up more ink that
+    # another chain is already counting, makes them rise and can never make
+    # them fall. So "must not increase" is an honest gate, and a change that
+    # REMOVES a double-count improves them instead of looking like a
+    # regression - which is exactly what raw recall got wrong.
+    for k in ("welded_frac", "pickup_frac"):
+        bv, nv = ba.get(k), na.get(k)
+        if bv is None or nv is None:
+            continue
+        if nv > bv + _EPS:
+            fails.append(f"aggregate {k} {bv:.2%} -> {nv:.2%}  "
+                         f"(worse: more length that is not measured ink)")
+        elif nv < bv - _EPS:
+            notes.append(f"aggregate {k} {bv:.2%} -> {nv:.2%}  (better)")
 
     print("\n" + "=" * 72)
     for line in notes:
@@ -471,6 +491,8 @@ def main():
                 "truth": r["truth"],
                 "n_lost": r["n_lost"],
                 "n_misfiled": r["n_misfiled"],
+                "welded_frac": (r["gap_pt"] / r["length_pt"]) if r["length_pt"] else 0.0,
+                "pickup_frac": (r["pickup_pt"] / r["length_pt"]) if r["length_pt"] else 0.0,
             } for r in results
         },
         "aggregate": {
@@ -479,6 +501,10 @@ def main():
             "spikes_total": sum(r["spikes"] for r in results),
             "n_lost": n_lost,
             "n_misfiled": n_misfiled,
+            "welded_frac": (sum(r["gap_pt"] for r in results)
+                            / sum(r["length_pt"] for r in results)),
+            "pickup_frac": (sum(r["pickup_pt"] for r in results)
+                            / sum(r["length_pt"] for r in results)),
         },
         # Reported, never gated. See _check() for why.
         "soft": {
