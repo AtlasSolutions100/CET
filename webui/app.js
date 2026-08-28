@@ -29,6 +29,7 @@
 const url = (p) => location.origin + p;
 const $ = (id) => document.getElementById(id);
 const IMG_DPI = 130; // must match /image endpoint default
+const LF = String.fromCharCode(10);   // newline for title= tooltips
 
 const state = window.state = {
   job: null, page: 0, kinds: [],
@@ -2271,6 +2272,18 @@ function layerTail(lay) {
   return parts.length > 1 ? "…" + parts[parts.length - 1] : parts[0];
 }
 
+// The same string, split rather than truncated. AutoCAD stamps every layer
+// that arrives through an external reference with the source drawing's name,
+// so `A|B` is layer B seen through xref A. layerTail() prints "…B", which
+// makes a bare B and an xref'd B indistinguishable on screen - and those two
+// are routinely different things: on Kayden Springs U2 sheet 39 the bare
+// C-U2-SSWR-LAT is two NTS lot details, the xref'd one is the actual laterals.
+function layerSplit(lay) {
+  const s = String(lay);
+  const i = s.lastIndexOf("|");
+  return i < 0 ? { xref: null, leaf: s } : { xref: s.slice(0, i), leaf: s.slice(i + 1) };
+}
+
 // ======================= operator-declared trade scope =====================
 // The engine measures everything drawn. On Beaumont's Barn Civil that is
 // 697,036 ft of default-on linework across 12 scaled sheets against a bid
@@ -2776,6 +2789,102 @@ function renderSymScope() {
 }
 // ===================== end operator-declared trade scope ===================
 
+// ---- one bid line, more than one place on the sheet ----------------------
+// computeTakeoffRows() groups by LABEL, not by style, so every style carrying
+// the same name sums into a single itemized row. Usually that is exactly
+// right: one CAD layer drawn in two weights is one item. It is NOT right when
+// the contributing styles come from DIFFERENT CAD layers AND sit in different
+// parts of the sheet, because that is the shape a typical-detail block makes -
+// same layer name, own scale, parked in a corner.
+//
+// Measured on Kayden Springs U2 sheet 39: the itemized panel reads
+// `C-U2-SSWR-LAT 79 lines 3913.6 ft` while the plan holds 71 lines / 3,308 ft.
+// The surplus is eight lines inside TYPICAL 35' and 25' WIDE LOT - LATERAL
+// DETAIL, both captioned NTS, so they have no length at the sheet's scale at
+// all. Nothing on screen could have led anyone to that.
+//
+// Both narrowing tests earn their place. Same-label-different-style alone
+// fires on 74% of that sheet's rows (median 52% across 110 cached client
+// sheets) - wallpaper. Requiring different layer STRINGS and disjoint bounding
+// boxes drops it to 20% there and a median of 0% across the corpus, with 63 of
+// 110 sheets showing nothing at all.
+//
+// It states the arithmetic and shows you where the other piece is. It does not
+// judge which piece belongs - an engine-side merge of these was tried and cost
+// C9.0 4.3pp of ink recall, because that sheet's bare layers are legend
+// swatches. Deciding is the estimator's.
+function splitItems() {
+  if (!state.result) return new Map();
+  const chains = new Map();
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    let e = chains.get(ch.style_id);
+    if (!e) chains.set(ch.style_id, e = { n: 0, pt: 0, bb: null });
+    e.n++; e.pt += chainLenPt(ch);
+    for (const p of ch.points) {
+      if (!e.bb) e.bb = [p[0], p[1], p[0], p[1]];
+      else {
+        if (p[0] < e.bb[0]) e.bb[0] = p[0];
+        if (p[1] < e.bb[1]) e.bb[1] = p[1];
+        if (p[0] > e.bb[2]) e.bb[2] = p[0];
+        if (p[1] > e.bb[3]) e.bb[3] = p[1];
+      }
+    }
+  }
+  // Aggregate by LAYER inside each label, not by style. The chip's claim is
+  // "this item comes from N layers in different places", so the disjointness
+  // test has to be between LAYERS. Comparing style to style instead fired on
+  // NOTES: that label carries 14 styles across only 2 layers - the same
+  // annotation layer drawn at a dozen widths, scattered over the sheet - and
+  // each little blob is disjoint from the others, so every one of them lit up.
+  // 14 of the first build's 22 chips on Kayden sheet 39 were that, and a chip
+  // on a 14-way split is useless anyway: there is nothing to go and look at.
+  const byLabel = new Map();
+  for (const [sid, e] of chains) {
+    const st = state.result.styles.find(x => x.style_id === sid);
+    if (!st) continue;
+    const lab = (state.labels.get(sid) || st.suggested_label || "unlabeled").trim();
+    const lay = (st.layer || "").trim();
+    if (!byLabel.has(lab)) byLabel.set(lab, new Map());
+    const byLayer = byLabel.get(lab);
+    let g = byLayer.get(lay);
+    if (!g) byLayer.set(lay, g = { layer: lay, n: 0, pt: 0, bb: null, sids: [] });
+    g.n += e.n; g.pt += e.pt; g.sids.push(sid);
+    if (e.bb) {
+      if (!g.bb) g.bb = e.bb.slice();
+      else {
+        g.bb[0] = Math.min(g.bb[0], e.bb[0]); g.bb[1] = Math.min(g.bb[1], e.bb[1]);
+        g.bb[2] = Math.max(g.bb[2], e.bb[2]); g.bb[3] = Math.max(g.bb[3], e.bb[3]);
+      }
+    }
+  }
+  const apart = (p, q) => p.bb && q.bb &&
+    (p.bb[2] < q.bb[0] || q.bb[2] < p.bb[0] ||
+     p.bb[3] < q.bb[1] || q.bb[3] < p.bb[1]);
+  const out = new Map();
+  for (const [lab, byLayer] of byLabel) {
+    const parts = [...byLayer.values()];
+    if (parts.length < 2) continue;
+    // The chip exists to point at ONE other place worth looking at. When an
+    // item is spread over more than a handful of style rows, no row-level chip
+    // can do that, and plain fragmentation is a likelier read than a hidden
+    // detail block. Measured: this cut takes Kayden sheet 39 from 22 flagged
+    // rows to 8 - exactly the four civil layers that are genuinely split - and
+    // across 110 cached client sheets it drops the worst sheet from 89% of
+    // rows to 10%, mean 5% to 2%, without changing the 67 sheets that flag
+    // nothing at all.
+    const rowsInLabel = parts.reduce((t, p) => t + p.sids.length, 0);
+    if (rowsInLabel > 4) continue;
+    const total = parts.reduce((t, p) => t + p.pt, 0);
+    for (const p of parts) {
+      if (!parts.some(q => q !== p && apart(p, q))) continue;
+      for (const sid of p.sids) out.set(sid, { label: lab, total, parts, me: p });
+    }
+  }
+  return out;
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -2807,6 +2916,7 @@ function renderStyles() {
     CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class)
     || b.length_pt - a.length_pt);
   let lastClass = null;
+  const splits = splitItems();
   for (const s of styles) {
     const label = state.labels.get(s.style_id) ?? "";
     // The layer joins the searchable text as the WHOLE string, not the
@@ -2931,9 +3041,19 @@ function renderStyles() {
       if (lay) {
         const tag = document.createElement("span");
         tag.className = "sl-tag"; tag.textContent = "layer";
+        const parts = layerSplit(lay);
+        layerEl.append(tag);
+        if (parts.xref) {
+          // the xref name may be elided - it says where the layer came from,
+          // not what it is - but it must be VISIBLE, because its presence or
+          // absence is the only thing separating two same-named rows
+          const xr = document.createElement("span");
+          xr.className = "sl-xref"; xr.textContent = parts.xref + "|";
+          layerEl.appendChild(xr);
+        }
         const nm = document.createElement("span");
-        nm.className = "sl-name"; nm.textContent = layerTail(lay);
-        layerEl.append(tag, nm);
+        nm.className = "sl-name"; nm.textContent = parts.leaf;
+        layerEl.appendChild(nm);
         // The full string, un-elided, plus what the field IS - the row shows
         // both names side by side and says nothing about which is right,
         // because deciding that is the estimator's job and a wrong verdict
@@ -2979,6 +3099,46 @@ function renderStyles() {
 
     row.append(cb, sw, main, mm, badge);
     if (layerEl) row.appendChild(layerEl);
+    const sp = splits.get(s.style_id);
+    if (sp) {
+      const el = document.createElement("button");
+      el.className = "item-split";
+      const others = sp.parts.filter(p => p !== sp.me);
+      el.innerHTML = '<span class="is-tag">item</span>'
+        + '<span class="is-txt">' + fmtQty(sp.total) + " total, from "
+        + sp.parts.length + " layers</span>";
+      el.title = 'The takeoff adds up by NAME, so the item "' + sp.label
+        + '" is the total of these ' + sp.parts.length + " CAD layers:" + LF + LF
+        + sp.parts.map(p => "   " + (p === sp.me ? "→ " : "   ")
+            + (p.layer || "(no layer)") + "   " + fmtQty(p.pt) + ", "
+            + p.n + " lines").join(LF)
+        + LF + LF
+        + "They are different CAD layers and they sit in different parts of "
+        + "the sheet. Often that is fine. Sometimes one of them is a TYPICAL "
+        + "… DETAIL drawn to its own scale, or marked NTS, filed under the "
+        + "same layer name as the real linework - and it is being added to "
+        + "your quantity." + LF + LF
+        + "Click to isolate the other row on the canvas so you can see where "
+        + "it is. Nothing is added, removed or merged.";
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        const cur = others.findIndex(p => p.sids.includes(state.isolate));
+        const next = others[(cur + 1) % others.length];
+        const tgt = next.sids[0];
+        state.isolate = state.isolate === tgt ? null : tgt;
+        for (const r of box.querySelectorAll(".style-row.iso")) r.classList.remove("iso");
+        if (state.isolate !== null) {
+          const t = box.querySelector('.style-row[data-sid="' + state.isolate + '"]');
+          if (t) { t.classList.add("iso"); t.scrollIntoView({ block: "nearest" }); }
+        }
+        setStatus(state.isolate === null ? "isolate off"
+          : "isolated: " + (next.layer || "(no layer)") + " — "
+            + fmtQty(next.pt) + ", " + next.n + " lines of the "
+            + fmtQty(sp.total) + ' in "' + sp.label + '". Esc shows everything again');
+        draw();
+      };
+      row.appendChild(el);
+    }
     if (scopeEl) row.appendChild(scopeEl);
     row.onmouseenter = () => { state.hot = s.style_id; draw(); };
     row.onmouseleave = () => { state.hot = null; draw(); };

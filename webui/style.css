@@ -971,3 +971,25 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   align-self: center; white-space: nowrap;
 }
 .legal-link:hover { color: var(--text); text-decoration: underline; }
+
+/* The xref prefix on a layer name: visible, but plainly subordinate to the
+   leaf. It may ellipsize; the leaf never does. Two rows whose layers differ
+   only by this prefix used to print identically. */
+.sl-xref { flex: 0 1 auto; min-width: 0; font-family: var(--mono);
+  font-size: 10px; line-height: 1.2; color: var(--dim); opacity: .6;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.style-layer .sl-name { flex: none; }
+
+/* "this item totals X, from N layers" - the row's own number is not the
+   number the takeoff prints. Sits under the layer line, same left edge. */
+.item-split { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
+  align-items: baseline; margin-top: 2px; padding: 1px 5px 1px 0;
+  background: none; border: 0; border-left: 2px solid #d08a3c;
+  padding-left: 6px; cursor: pointer; text-align: left; font: inherit; }
+.item-split .is-tag { flex: none; font-size: 9px; line-height: 1.2;
+  letter-spacing: .1em; text-transform: uppercase; color: #d08a3c; }
+.item-split .is-txt { min-width: 0; font-size: 10px; line-height: 1.25;
+  color: var(--text); opacity: .78; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.item-split:hover .is-txt { opacity: 1; }
+.item-split:hover { background: var(--hover); }
