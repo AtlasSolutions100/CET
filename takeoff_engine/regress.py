@@ -294,6 +294,16 @@ def _check(now: dict) -> int:
             nv = n["precision"].get(cls)
             if nv is not None and nv < bv - _EPS:
                 fails.append(f"{name}: precision {cls} {bv:.1%} -> {nv:.1%}")
+        # PER SHEET as well as in aggregate. An aggregate-only comparison lets
+        # one sheet get worse while another gets better and the total stay
+        # flat - which is exactly how the xref-layer merge hid its damage on
+        # 2026-08-27: chain counts, spikes, phantom and mean truth accuracy
+        # were all identical, and C9.0 alone had lost 4.3pp of ink recall.
+        for k in ("n_lost", "n_misfiled"):
+            if n[k] > b[k]:
+                fails.append(f"{name}: {k} {b[k]} -> {n[k]}  (worse)")
+            elif n[k] < b[k]:
+                notes.append(f"{name}: {k} {b[k]} -> {n[k]}  (better)")
 
     ba, na = base["aggregate"], now["aggregate"]
     for k in ("n_lost", "n_misfiled"):
