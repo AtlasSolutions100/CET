@@ -1010,3 +1010,36 @@ vs the sheet's own table 2,236,137 / 1,631,080. Residual = surface
 fidelity; the measured next target is elevation assignment for UNLABELED
 intermediate contours (the sheet draws them, the surface never sees
 them) - that, not the boundary, closes the gap.
+
+## 25. The Stice residual, closed as a question (2026-08-30 evening)
+
+Koby asked whether an operator (human or me) reading the map could close
+the remaining cut/fill gap. Measured answer: NO - and now we know why.
+
+* The contour ladder was BUILT and scored: sandwich-interpolation put
+  elevations on 1,111 of the 1,881 unlabeled sibling contours (1,145
+  abstained honestly). Result: cut/fill moved LESS THAN 2% - and slightly
+  AWAY from truth. Finding: interpolated intermediates are tautological -
+  a TIN already interpolates linearly between labeled contours; an added
+  contour only helps when it carries a PRINTED elevation.
+  (out/verify/2026-08-30/stice-recipe/ladder.json + the run table.)
+* Where the missing ~0.5M CY each way lives: the steep zones. Rendered
+  the hottest abstention cluster at 400 dpi: the mountain toe prints as
+  UNLABELED contour texture too dense to resolve - the sheet even prints
+  its own "Obscured Area" note. The elevations are NOT on the sheet.
+  The engineer's RAW table comes from their design model, not from these
+  plotted contours; a human gridding this same PDF lands in our range or
+  applies slope-projection judgment in the toe zones.
+* Josh's 2.2M/1.6M "own takeoff" equals the printed table to the
+  rounding - his score was the model's numbers, not an independent
+  hand-takeoff of this PDF.
+
+WHAT WOULD ACTUALLY CLOSE IT (ranked):
+1. LandXML / design-surface import - when the client can get the
+   engineer's surface file, the raw quantities become exact by
+   construction. Real-world excavators often CAN get it. Estimated M.
+2. Slope-projection in unlabeled steep zones (extend the last labeled
+   gradient at its measured slope until the next labeled contour) - an
+   estimator's judgment codified, cited as such, operator-consented.
+3. Denser gap-label OCR in the readable mid-zones (marginal - one label
+   was gained there tonight).
