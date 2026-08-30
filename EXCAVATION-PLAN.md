@@ -750,3 +750,29 @@ it cannot regress detection: `earthwork.py` is absent from `_ENGINE_FILES`, so
 
 The trade is **173 confidently-wrong elevations for 173 honestly-blank ones** —
 the direction this codebase already chose the last time it faced the question.
+
+---
+
+## 18. Build ledger — overnight session 2026-08-30 (Fable)
+
+Committed on `provenance-and-gate`, dev-only, live-verified each:
+
+| commit | what | evidence |
+|---|---|---|
+| 9f12e2b | stale-volume banner on scale change; second pipe system no longer deletes the first | live: banner at 30→60 typed scale ("expect 4.0×"), both trench systems coexist, recalc replaces |
+| 5390b3f | datum abstain rule: band strength decides, conflict always surfaces, typed datum outranks all | 173 grades corrected (C3.3 7705–7735, was 100 ft low), C3.1's 272 preserved; tests 7/7 |
+| 32ce71d | legend vocabulary guards (definition rows, 95% strip locality, stipple refusal, column split, colon captions) + calibrate-scale-from-known-line (Jeff, was BLOCKED) | C3.0: BOW/FIN/RIM/DRAINAGE thefts dead, real EXISTING CONTOUR matched; corpus 0 bad-shaped; calibration live-verified with the STOP cross-check catching a bogus value |
+| 9fab065 | continuation extension: a broken line keeps its name (joints + sparse-pickup cadence kinship) | 224 (5,976 ft) recovered; 7900 index row restored; all 7 C3.0 contour families named |
+
+### Follow-ups surfaced by measurement
+
+* **Per-chain rescue**: 35,182 pt corpus-wide of unlabeled chains geometrically
+  CONTINUE a labeled family but sit inside pools too large/mixed to extend
+  wholesale (C3.0's 174-chain solid pool etc.). The honest treatment is
+  chain-level relabeling — `chain_labels` already exists in the approve flow —
+  offered as a suggestion, never automatic. Needs a design pass.
+* **Klayton's station-scale feature: BLOCKED on his actual file.** The PVP pdf
+  is not on this machine; his visible sheet family (klayton.pdf, 174-page Zayo
+  set) has NO text layer and zero station tokens even under OCR at 200 dpi,
+  while its title block prints `SCALE: 1"=50'` (OCR-reachable). Chase the file;
+  do not build against nothing.
