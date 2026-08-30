@@ -1981,6 +1981,94 @@ def get_scale_pick(job_id: str, page: int):
     }
 
 
+# ---------- calculator-input sidecar --------------------------------------
+# The review UI's calculator panels (earthwork contours, trench, structure)
+# hold operator DECISIONS - surface assignments, corrected elevations, layer
+# stacks, trench depths, structure outlines - and until this sidecar they
+# lived only in browser memory: a reload emptied the panel while the priced
+# row it produced survived, so the takeoff could say "Site Cut 13,677 CY"
+# with nothing behind it. Same pattern as the scale pick (_scale_pick_path):
+# one JSON file per page in the job dir, so a reload AND another seat both
+# get the inputs back. The blob is opaque to the server on purpose - its
+# shape belongs to the UI (webui/app.js calcStatePayload), and it carries
+# engine_sig so the UI can tell when chain-keyed choices predate the current
+# detection instead of silently mis-applying them.
+
+CALCSTATE_MAX_BYTES = 256 * 1024
+
+
+def _calcstate_path(job_id: str, page: int) -> Path:
+    return _job_dir(job_id) / f"p{page}_calcstate.json"
+
+
+def _calcstate_guard(job_id: str) -> None:
+    """Refuse a job_id that is not a direct child of JOBS_DIR (`..` and
+    friends), same rule the delete route enforces - this route WRITES."""
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve():
+        raise HTTPException(404, "unknown job")
+
+
+def _calcstate_check(raw: bytes) -> dict:
+    """The blob the UI may store: a JSON object, size-capped.
+
+    The cap exists because this is an unstructured write path into the job
+    dir: without one a bug that serialises the whole detection result (or a
+    hostile client) turns every page flip into megabytes on disk. 256 KB is
+    ~13x a deliberately heavy blob (200 contour rows + 4 layers + 3 drawn
+    structures serialises to 19.4 KB, measured 2026-08-30)."""
+    if len(raw) > CALCSTATE_MAX_BYTES:
+        raise HTTPException(413, (
+            f"calculator state is {len(raw):,} bytes; the cap is "
+            f"{CALCSTATE_MAX_BYTES:,}. Nothing was saved - the earlier "
+            f"record, if any, still stands."))
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "calculator state must be JSON")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "calculator state must be a JSON object")
+    return data
+
+
+def _calcstate_put(job_id: str, page: int, raw: bytes) -> dict:
+    """Validate and store one page's calculator inputs. Atomic: a crash
+    mid-write must leave the previous record intact, not half a file -
+    json.loads on the GET side would otherwise return {} and the operator's
+    decisions would look deleted rather than merely stale."""
+    _calcstate_guard(job_id)
+    if job_id not in JOBS and not (JOBS_DIR / job_id).is_dir():
+        raise HTTPException(404, "unknown job")
+    data = _calcstate_check(raw)
+    f = _calcstate_path(job_id, page)
+    # unique tmp name: two debounced saves landing together must not
+    # interleave in one tmp file and publish a torn record
+    tmp = f.with_name(f"{f.name}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.replace(tmp, f)
+    return {"ok": True, "bytes": len(raw)}
+
+
+@app.get("/api/job/{job_id}/page/{page}/calcstate")
+def get_calcstate(job_id: str, page: int):
+    """The stored calculator inputs for this page, or {} when none exist.
+    {} rather than 404 so the UI's restore path is one unconditional GET."""
+    _calcstate_guard(job_id)
+    f = _calcstate_path(job_id, page)
+    if not f.exists():
+        return {}
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+@app.post("/api/job/{job_id}/page/{page}/calcstate")
+async def post_calcstate(job_id: str, page: int, request: Request):
+    return JSONResponse(_calcstate_put(job_id, page, await request.body()))
+
+
 @app.get("/api/job/{job_id}/page/{page}/elements")
 def get_elements(job_id: str, page: int):
     f = _job_dir(job_id) / f"p{page}_elements.json"

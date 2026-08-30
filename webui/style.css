@@ -1018,3 +1018,15 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 /* calibrate-from-a-known-line, inline in the measure readout */
 .cal-ft { width: 64px; margin: 0 2px; }
 .cal-sep { color: var(--dim); }
+
+/* Calculator inputs restored from the server sidecar: how many earlier
+   choices no longer match this detection. Same amber register as .ew-stale -
+   informational, not dismissible, and never silent. */
+.calc-restore-note {
+  margin: 6px 12px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid #7a5a1c; background: #2c2415; color: #e2b04a;
+  font-size: 12px; line-height: 1.4;
+}
+:root[data-theme="light"] .calc-restore-note {
+  border-color: #d9bd7e; background: #fbf3e2; color: #8a5a06;
+}

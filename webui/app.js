@@ -686,6 +686,14 @@ async function loadResult(gen = state.gen) {
   // restored here for the same reason: they belong to this sheet, and the
   // operator committed them.
   calcRestore();
+  // ...and the INPUTS behind those rows - contour surface picks, layer
+  // stacks, trench depths, structure outlines - live in a server-side
+  // sidecar (p<N>_calcstate.json, audit item 11), so a reload and every
+  // other seat get them back too. Awaited BEFORE the first render of the
+  // calculator panels: an opened panel must start from the saved record,
+  // not from defaults that a slower fetch corrects behind the operator.
+  await calcStateLoad(gen);
+  if (gen !== state.gen) return;
   // The remembered scale pick has to be back in state.result BEFORE anything
   // paints. renderSheetHead draws the scale chip, the picker's ON highlight
   // AND the confidence banner's opening sentence straight off
@@ -4101,6 +4109,315 @@ function calcRestore() {
   } catch (e) { /* same */ }
 }
 
+// ---------- calculator INPUT sidecar (the server record) -----------------
+// calcSave above keeps the priced ROWS in this browser; this keeps the
+// INPUTS behind them on the SERVER - p<N>_calcstate.json in the job dir,
+// the same pattern as the scale pick - so a reload, and any OTHER seat
+// opening the same page, gets the earthwork surface assignments, corrected
+// elevations, layer stacks, spot toggles, datum, limit of work, trench
+// setup and structure outlines back instead of an empty panel underneath a
+// priced takeoff row.
+//
+// Inputs, never results. Earthwork volumes are integrated server-side, so
+// a restored panel shows its inputs and NO result until Calculate is
+// pressed again - nothing is staged. Chain- and style-keyed choices apply
+// only while those ids still exist in the loaded detection; the rest are
+// COUNTED and said out loud in the panel (calcDropText), never dropped
+// silently. The blob carries engine_sig so "the chain renumbered" can be
+// told from "the engine changed since these were saved".
+let calcStateTimer = null;
+let calcStatePending = null;  // {url, txt, gen} snapshot taken at edit time
+let calcStateSent = null;     // last blob known to be on the server, as text
+
+function calcStateUrl() {
+  return `/api/job/${state.job}/page/${state.page}/calcstate`;
+}
+
+// JSON numbers only - +null is 0 and +"" is 0, and both have already put
+// wrong elevations into panels elsewhere in this file's history
+const calcNum = v => (typeof v === "number" && isFinite(v)) ? v : null;
+
+function calcStatePayload() {
+  if (!state.result) return null;
+  const saved = state.calcSaved || {};
+  const out = { v: 1, engine_sig: state.result.engine_sig || null };
+  if (state.ew) {
+    out.ew = {
+      rows: state.ew.rows.map(r => ({
+        chain_id: r.chain_id,
+        z: calcNum(r.z), surface: r.surface || null,
+        width: r.width || 0, dist: r.dist == null ? null : r.dist,
+        manual: !!r.manual,
+      })),
+      layers: {
+        existing: state.ew.layers.existing.map(l => Object.assign({}, l)),
+        proposed: state.ew.layers.proposed.map(l => Object.assign({}, l)),
+      },
+      spotOn: Object.assign({}, state.ew.spotOn),
+      spotSide: state.ew.spotSide,
+      spotDatum: calcNum(state.ew.spotDatum),
+      areaSf: calcNum(state.ew.areaSf),
+      added: !!state.ew.added,
+    };
+    const m = state.ewBound && /^chain (\d+)$/.exec(state.ewBound.src || "");
+    out.ew_bound = m ? { chain_id: +m[1] } : null;
+  } else {
+    // panel never opened this session: the earlier record stands untouched
+    if (saved.ew) out.ew = saved.ew;
+    if (saved.ew_bound) out.ew_bound = saved.ew_bound;
+  }
+  if (state.tr) {
+    out.tr = {
+      style_id: typeof state.tr.style_id === "number" ? state.tr.style_id : null,
+      od_in: state.tr.od_in, d0_ft: state.tr.d0_ft, d1_ft: state.tr.d1_ft,
+      rules: state.tr.rules.map(r => ({ to_ft: r.to_ft, clr_in: r.clr_in })),
+    };
+  } else if (saved.tr) out.tr = saved.tr;
+  const st = (state.st && state.st.result === state.result
+              && state.calcStApplied) ? state.st : null;
+  if (st) {
+    out.st = {
+      items: st.items.map(it => ({
+        name: it.name, pts: it.pts.map(p => [p[0], p[1]]),
+        source: it.source, chain_id: it.chain_id == null ? null : it.chain_id,
+        gap_pt: it.gap_pt || 0, depth_ft: it.depth_ft,
+        layback_ft: it.layback_ft, footing_ft: it.footing_ft,
+      })),
+      seq: st.seq, depth_ft: st.depth_ft,
+      layback_ft: st.layback_ft, footing_ft: st.footing_ft,
+    };
+  } else if (saved.st) out.st = saved.st;
+  return out;
+}
+
+// Debounced save. The payload is SNAPSHOTTED at edit time: the operator can
+// flip pages inside the debounce window, and this save must go to the page
+// the edit was made on, not wherever state.page points a second later.
+function calcStateDirty() {
+  if (!state.result) return;
+  if (!state.calcSavedLoaded) {
+    if (state.calcSaveBroken && !state.calcSaveWarned) {
+      state.calcSaveWarned = true;
+      setStatus("calculator inputs are NOT being saved: the saved-inputs "
+        + "record could not be read when this page loaded. Reload to retry.", "err");
+    }
+    return;
+  }
+  const body = calcStatePayload();
+  if (!body) return;
+  calcStatePending = { url: calcStateUrl(), txt: JSON.stringify(body), gen: state.gen };
+  if (calcStateTimer) clearTimeout(calcStateTimer);
+  calcStateTimer = setTimeout(calcStatePush, 1000);
+}
+
+async function calcStatePush() {
+  if (calcStateTimer) { clearTimeout(calcStateTimer); calcStateTimer = null; }
+  const p = calcStatePending;
+  calcStatePending = null;
+  if (!p || p.txt === calcStateSent) return;
+  try {
+    const r = await fetch(p.url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: p.txt,
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      setStatus(e.detail || ("calculator inputs NOT saved (" + r.status + ")"), "err");
+      return;
+    }
+    if (p.gen === state.gen) {
+      calcStateSent = p.txt;
+      state.calcSaved = JSON.parse(p.txt);
+    }
+  } catch (e) {
+    setStatus("calculator inputs NOT saved " + '\u2014' + " server unreachable", "err");
+  }
+}
+
+// One GET per page load, awaited by loadResult before the panels can paint.
+async function calcStateLoad(gen) {
+  state.calcSaved = null; state.calcSavedLoaded = false; state.calcStApplied = false;
+  state.calcSaveBroken = false; state.calcSaveWarned = false;
+  calcStateSent = null;
+  const job = state.job, page = state.page;
+  let j = {}, ok = false;
+  try {
+    const r = await fetch(`/api/job/${job}/page/${page}/calcstate`);
+    if (r.ok) { j = await r.json(); ok = true; }
+  } catch (e) { /* fall through: ok stays false */ }
+  if (gen !== state.gen) return;
+  if (!ok) {
+    // A record that CANNOT BE READ is not the same as no record: saving
+    // over it from a blank panel would destroy the operator's inputs.
+    // Saves stay off for this page load, and the first edit says so.
+    state.calcSaveBroken = true;
+    return;
+  }
+  state.calcSaved = (j && typeof j === "object" && !Array.isArray(j)) ? j : {};
+  state.calcSavedLoaded = true;
+  // what the server holds right now, so a no-op save is never sent
+  calcStateSent = JSON.stringify(calcStatePayload());
+  stApplySaved();
+}
+
+// The count-of-dropped sentence, in the panel where the loss happened.
+function calcNotePut(hintId, txt) {
+  const anchor = $(hintId);
+  if (!anchor || !anchor.parentElement) return;
+  let n = anchor.parentElement.querySelector(".calc-restore-note");
+  if (!txt) { if (n) n.remove(); return; }
+  if (!n) {
+    n = document.createElement("div");
+    n.className = "calc-restore-note";
+    anchor.insertAdjacentElement("afterend", n);
+  }
+  n.textContent = txt;
+}
+
+function calcDropText(n) {
+  const sig = state.calcSaved && state.calcSaved.engine_sig;
+  const cur = state.result && state.result.engine_sig;
+  return n + " earlier choice" + (n === 1 ? "" : "s") + " no longer "
+    + (n === 1 ? "matches" : "match") + " this detection"
+    + (sig && cur && sig !== cur
+        ? " (the engine has changed since they were saved)" : "")
+    + " and " + (n === 1 ? "was" : "were") + " not applied.";
+}
+
+// Merge the saved earthwork inputs into the panel state ewBtn just built
+// from /earthwork/suggest. Chain-keyed values only where the chain still
+// exists; everything else counted into the panel note.
+function ewApplySaved() {
+  const saved = state.calcSaved || {};
+  const sv = saved.ew;
+  let dropped = 0, applied = 0;
+  const chains = new Map(state.result.chains.map(c => [c.chain_id, c]));
+  if (sv) {
+    const live = new Map(state.ew.rows.map(r => [r.chain_id, r]));
+    for (const r of (Array.isArray(sv.rows) ? sv.rows : [])) {
+      if (!r || typeof r.chain_id !== "number") continue;
+      const surf = (r.surface === "existing" || r.surface === "proposed") ? r.surface : null;
+      const row = live.get(r.chain_id);
+      const ch = chains.get(r.chain_id);
+      if (row) {
+        if (calcNum(r.z) !== null) row.z = r.z;
+        row.surface = surf;
+        applied++;
+      } else if (ch && !ch.custom) {
+        // usually a hand-added contour: its chain is still on the sheet
+        state.ew.rows.push({ chain_id: r.chain_id,
+          z: calcNum(r.z) !== null ? r.z : NaN,
+          width: calcNum(r.width) !== null ? r.width : (ch.width || 0),
+          dist: r.dist == null ? null : r.dist,
+          surface: surf, manual: !!r.manual });
+        applied++;
+      } else dropped++;
+    }
+    if (sv.layers && Array.isArray(sv.layers.existing) && Array.isArray(sv.layers.proposed)) {
+      const lay = (l, ex) => Object.assign(
+        { name: String((l && l.name) || ""), thickness_in: calcNum(l && l.thickness_in) || 0 },
+        ex ? { reuse_pct: calcNum(l && l.reuse_pct),
+               respread_pct: calcNum(l && l.respread_pct),
+               destination: (l && l.destination !== undefined) ? l.destination : "on site" } : {});
+      state.ew.layers = { existing: sv.layers.existing.map(l => lay(l, true)),
+                          proposed: sv.layers.proposed.map(l => lay(l, false)) };
+    }
+    if (sv.spotOn && typeof sv.spotOn === "object") state.ew.spotOn = Object.assign({}, sv.spotOn);
+    if (sv.spotSide === "existing" || sv.spotSide === "proposed") state.ew.spotSide = sv.spotSide;
+    if (calcNum(sv.spotDatum) !== null) state.ew.spotDatum = sv.spotDatum;
+    if (calcNum(sv.areaSf) !== null && sv.areaSf > 0) state.ew.areaSf = sv.areaSf;
+    state.ew.added = !!sv.added;
+  }
+  const bd = saved.ew_bound;
+  if (bd && typeof bd.chain_id === "number" && !state.ewBound) {
+    const ch = chains.get(bd.chain_id);
+    if (ch && ewBoundSet(ch.points, "chain " + ch.chain_id)) applied++;
+    else dropped++;
+  }
+  calcNotePut("ewHint", dropped ? calcDropText(dropped) : "");
+  if (applied) setStatus("earthwork inputs restored from this page's saved record "
+    + '\u2014' + " press Calculate to recompute");
+  return dropped;
+}
+
+function trApplySaved() {
+  const sv = (state.calcSaved || {}).tr;
+  let dropped = 0;
+  if (sv) {
+    const t = state.tr;
+    if (typeof sv.style_id === "number") {
+      if (state.result.styles.some(s => s.style_id === sv.style_id)) t.style_id = sv.style_id;
+      else dropped++;   // style ids renumber on a re-detect, like chain ids
+    }
+    if (calcNum(sv.od_in) !== null) t.od_in = sv.od_in;
+    if (calcNum(sv.d0_ft) !== null) t.d0_ft = sv.d0_ft;
+    if (calcNum(sv.d1_ft) !== null) t.d1_ft = sv.d1_ft;
+    if (Array.isArray(sv.rules) && sv.rules.length)
+      t.rules = sv.rules.map(r => ({
+        to_ft: calcNum(r && r.to_ft) !== null ? r.to_ft : 99,
+        clr_in: calcNum(r && r.clr_in) !== null ? r.clr_in : 6 }));
+    setStatus("trench inputs restored from this page's saved record "
+      + '\u2014' + " press Calculate to recompute");
+  }
+  calcNotePut("trHint", dropped ? calcDropText(dropped) : "");
+  return dropped;
+}
+
+// Structure outlines are geometry in page pt, not chain references, so they
+// survive a re-detect intact. Their bid-sheet rows are re-DERIVED (stCalc at
+// the scale in force), never restored as stored numbers - and they were all
+// behind an explicit "Add to takeoff" when they were saved, so re-deriving
+// them into the takeoff honours a consent that was actually given.
+function stApplySaved() {
+  if (state.calcStApplied || !state.calcSavedLoaded) return;
+  if (!state.st || state.st.result !== state.result) return;
+  state.calcStApplied = true;
+  const sv = (state.calcSaved || {}).st;
+  if (!sv) return;
+  const st = state.st;
+  if (Array.isArray(sv.items) && !st.items.length) {
+    for (const it of sv.items) {
+      if (!it || !Array.isArray(it.pts)) continue;
+      const pts = it.pts
+        .filter(p => Array.isArray(p) && calcNum(p[0]) !== null && calcNum(p[1]) !== null)
+        .map(p => [p[0], p[1]]);
+      if (pts.length < 3) continue;
+      st.items.push({
+        name: String(it.name || ("Structure " + (st.items.length + 1))), pts,
+        source: it.source === "line" ? "line" : "drawn",
+        chain_id: typeof it.chain_id === "number" ? it.chain_id : null,
+        gap_pt: calcNum(it.gap_pt) || 0,
+        depth_ft: calcNum(it.depth_ft) !== null ? it.depth_ft : 8,
+        layback_ft: calcNum(it.layback_ft) !== null ? it.layback_ft : 4,
+        footing_ft: calcNum(it.footing_ft) !== null ? it.footing_ft : 0,
+      });
+    }
+  }
+  if (calcNum(sv.seq) !== null) st.seq = sv.seq;
+  if (calcNum(sv.depth_ft) !== null) st.depth_ft = sv.depth_ft;
+  if (calcNum(sv.layback_ft) !== null) st.layback_ft = sv.layback_ft;
+  if (calcNum(sv.footing_ft) !== null) st.footing_ft = sv.footing_ft;
+  if (st.items.length && stFtPerPt()) {
+    stApplyItems();
+    if (!$("stPanel").hidden) renderSt();
+    setStatus(st.items.length + " structure outline" + (st.items.length === 1 ? "" : "s")
+      + " restored from this page's saved record");
+  }
+}
+
+// Any input or click inside a calculator panel may be an input edit; the
+// 1s debounce collapses bursts, and an identical blob is never re-sent.
+// Delegation instead of per-field hooks so a field added later cannot be
+// forgotten. Edits made on the CANVAS (limit-of-work pick, + Add contour)
+// call calcStateDirty at their own mutation sites.
+for (const pid of ["ewPanel", "trPanel", "stPanel"]) {
+  const el = $(pid);
+  if (el) {
+    el.addEventListener("input", calcStateDirty);
+    el.addEventListener("click", calcStateDirty);
+  }
+}
+
 function ovKey(label, unit) {
   return docKey() + "::p" + state.page + "::ov:" + unit + ":"
        + label.trim().toUpperCase();
@@ -5340,6 +5657,12 @@ $("ewBtn").onclick = async () => {
       // Session-only and per detection result, like the rest of this panel.
       added: false,
     };
+    // the durable inputs for this page (server sidecar), applied before
+    // the panel's first paint; chain-keyed values only where the chain
+    // still exists - ewApplySaved counts and reports the rest
+    if (state.calcSavedLoaded) ewApplySaved();
+    else if (state.calcSaveBroken)
+      calcNotePut("ewHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
   renderEw();
   renderEwLayers();
@@ -5371,11 +5694,13 @@ function ewBoundSet(pts, src) {
   const gap = Math.hypot(dx, dy);
   state.ewBound = { pts: p, src: src || "picked", gap };
   renderEwBound();
+  calcStateDirty();
   return true;
 }
 function ewBoundClear() {
   state.ewBound = null;
   renderEwBound();
+  calcStateDirty();
 }
 function renderEwBound() {
   const box = $("ewBound"), st = $("ewBoundState"), clr = $("ewBoundClear");
@@ -5511,6 +5836,7 @@ function ewAppendRow(cid) {
   const inp = $("ewRows").querySelector(`input[name="ew-z-${cid}"]`);
   if (inp) inp.focus();
   setStatus(`chain ${cid} added — type its elevation, then EXIST or PROP`);
+  calcStateDirty();
 }
 $("ewAddRow").onclick = () => {
   if (!state.ew) return setStatus("run Detect first", "err");
@@ -6242,6 +6568,9 @@ $("trBtn").onclick = () => {
       style_id: null, od_in: 6, d0_ft: 2, d1_ft: 8,
       rules: TR_DEFAULT_RULES.map(r => ({ ...r })),
     };
+    if (state.calcSavedLoaded) trApplySaved();
+    else if (state.calcSaveBroken)
+      calcNotePut("trHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
   renderTr();
 };
@@ -8965,6 +9294,7 @@ function stSync() {
     if (state.tool === "st-pick" || state.tool === "st-draw") state.tool = null;
     $("stPanel").hidden = true;
     $("stResult").textContent = "";
+    stApplySaved();   // saved outlines for THIS page, once the sidecar answered
   }
   $("stBtn").hidden = !state.result;
   return state.st;
