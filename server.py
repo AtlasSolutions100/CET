@@ -3032,14 +3032,44 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
                       return_grid=return_grid, boundary=body.boundary)
     if "error" in result:
-        raise HTTPException(400, result["error"])
+        # UNWELD (audit item 10): stripping is pure area x depth and owes
+        # nothing to a TIN. A clearing / erosion-control sheet has no
+        # proposed contours, so cut_fill legitimately fails - but welding
+        # the layer slabs to that failure returned 0 CY for an item family
+        # worth $88,815 on Estimate #853. If the operator gave an area to
+        # strip over (a typed strip area, or a limit-of-work polygon whose
+        # shoelace area stands in for it), the layers still compute; the
+        # cut/fill failure is REPORTED, never papered over with zeros -
+        # cut_yd3/fill_yd3 stay absent so no consumer can print a zero.
+        area0 = None
+        if body.strip_area_sf:
+            area0 = float(body.strip_area_sf)
+        elif body.boundary and len(body.boundary) >= 3:
+            a = 0.0
+            bpts = body.boundary
+            for i in range(len(bpts)):
+                x0, y0 = bpts[i - 1][0], bpts[i - 1][1]
+                x1, y1 = bpts[i][0], bpts[i][1]
+                a += (x0 + x1) * (y0 - y1)
+            area0 = abs(a / 2.0) * ft_per_pt * ft_per_pt
+        if not ((ex_layers or pr_layers) and area0):
+            raise HTTPException(400, result["error"])
+        result = {"layers_only": True,
+                  "cut_fill_error": str(result["error"]),
+                  "area_source": ("typed strip area" if body.strip_area_sf
+                                  else "limit-of-work outline"),
+                  "area_sf": None, "net_yd3": None}
     result["ft_per_pt"] = round(ft_per_pt, 5)
     result["existing_offset_ft"] = round(ex_off, 4)
     result["proposed_offset_ft"] = round(pr_off, 4)
     # layer volumes: a slab of the strip area at the layer's thickness.
     # Default area is the TIN overlap (the region the cut/fill itself
     # covers); strip_area_sf overrides it with e.g. the clear & grub area.
-    area = float(body.strip_area_sf) if body.strip_area_sf else float(result["area_sf"])
+    if result.get("layers_only"):
+        area = area0
+    else:
+        area = (float(body.strip_area_sf) if body.strip_area_sf
+                else float(result["area_sf"]))
     result["layer_area_sf"] = round(area, 0)
     layers = []
     for side, rows in (("existing", ex_layers), ("proposed", pr_layers)):
@@ -3062,11 +3092,11 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     # bids it the same way: Strip Topsoil over the Clear & Grub area,
     # Site Cut / Site Fill over the graded region.
     result["balance"] = material_balance(
-        result["cut_yd3"], result["fill_yd3"], layers,
+        result.get("cut_yd3") or 0.0, result.get("fill_yd3") or 0.0, layers,
         cut_reuse_pct=body.cut_reuse_pct,
         export_factor=body.export_factor,
         import_factor=body.import_factor,
-        cut_area_sf=result["area_sf"], layer_area_sf=area)
+        cut_area_sf=result.get("area_sf") or area, layer_area_sf=area)
     # The scale this volume was computed at. Since 2026-08-23 the route
     # honours a scale the reviewer typed, which means the answer can now
     # depend on a number they are free to change afterwards - and a cubic

@@ -6407,10 +6407,16 @@ $("ewCalc").onclick = async () => {
   const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
   renderEwStale();
   renderEwBound();
-  $("ewResult").innerHTML =
-    `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
-    ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
-    (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
+  // Layers-only (audit item 10): a clearing sheet has no cut/fill TIN, but
+  // stripping is area x depth. The failure is stated, never zeroed - a
+  // printed "cut 0 CY" on a sheet nobody graded is a confident wrong number.
+  $("ewResult").innerHTML = j.layers_only
+    ? `<b>no cut/fill:</b> ${j.cut_fill_error} ` +
+      `<br><span class="ew-meta">layer volumes below still compute ` +
+      `(${Number(j.layer_area_sf).toLocaleString()} SF from the ${j.area_source})</span>`
+    : `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
+      ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
+      (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
   // per-layer slabs: area x thickness, shown under the stacks
   const out = $("ewLayerOut");
   out.innerHTML = "";
@@ -6543,8 +6549,10 @@ function renderEwTake() {
 function renderEwBasis(j, body) {
   const box = $("ewBasis");
   if (!box) return;
-  box.classList.toggle("off", !j);
-  if (!j) return;
+  // a layers-only answer has no interpolation to describe
+  const show = j && !j.layers_only;
+  box.classList.toggle("off", !show);
+  if (!show) return;
   const ex = j.existing_contours, pr = j.proposed_contours;
   const nPts = ((body && body.existing_points) || []).length
              + ((body && body.proposed_points) || []).length;
