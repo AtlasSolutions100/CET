@@ -850,3 +850,35 @@ next attempt:
   71 round-dot candidates waiting). So the structure counter's real
   prerequisite is a Kayden-corpus legend tuning session, then dots-on-
   chains is a small addition on top.
+
+## 20. Per-chain orphan rescue - design (from the 35,182 pt measurement)
+
+The continuation extension (9fab065) names whole FAMILIES; it refuses
+pools too big or mixed to extend wholesale (C3.0's 174-chain generic-solid
+pool). Inside those pools, 35,182 pt corpus-wide of individual chains
+geometrically CONTINUE a labeled family: ends within 12 pt of a labeled
+chain's end, tangents opposed, colors within 0.15.
+
+Design (suggestion-only, operator-consented - same consent shape as every
+calculator):
+
+1. Engine (detect-time, cheap): for each unlabeled chain in a pool the
+   family extension REFUSED, if it has >= 1 qualifying end-joint to a
+   LABELED chain, stamp `continues: {style_id, joint_pt, dot}` on the
+   chain JSON. No label moves; provenance only. Gate impact: none - no
+   labels, classes or geometry change.
+2. UI: the style row gains "N nearby fragments look like continuations
+   (X ft) - review". Clicking isolates them on canvas EXACTLY like the
+   existing sid-isolation, each with an accept/reject pair. Accept =
+   chain-level relabel through the EXISTING chain_labels approve path
+   (already in the approve flow); reject stamps a refusal so it never
+   re-suggests.
+3. Ranking honesty: suggestions ordered by joint quality (distance, dot),
+   never auto-accepted, and the style row's own footage NEVER includes
+   suggested fragments until accepted - the number the geometry produced
+   stays the number.
+4. Measurement bar before shipping: on Barn C3.0 count accepted-vs-
+   rejected in a manual pass; if acceptance under review is < 80%,
+   tighten the joint test before offering it to a client seat.
+
+Estimated M. Depends on nothing above; collides with nothing tonight.
