@@ -3464,7 +3464,10 @@ def _symbols_compute(job_id: str, page: int):
         else:
             out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
     out.sort(key=lambda g: -g["n"])
-    return {"groups": out[:15], "schedule": sched,
+    # a silent cap reports as full coverage (section-5 trap): the bound
+    # stays for response size, but the total is disclosed so the panel can
+    # say "40 of 57" instead of implying the sheet holds 15 symbol groups
+    return {"groups": out[:40], "groups_total": len(out), "schedule": sched,
             "schedule_marks": doc_sched.get("marks") or [],
             "schedule_page": doc_sched.get("page"),
             "schedule_header": doc_sched.get("header", ""),
@@ -3507,7 +3510,7 @@ def _symbols_raster(job: dict, page: int, vocab: list, sched: dict,
         out.append(g)
     out.sort(key=lambda g: (0 if g.get("name") else 1 if g.get("off_schedule")
                             else 2, -g["n"]))
-    return {"groups": out[:15], "schedule": sched,
+    return {"groups": out[:40], "groups_total": len(out), "schedule": sched,
             "schedule_marks": doc_sched.get("marks") or [],
             "schedule_page": doc_sched.get("page"),
             "schedule_header": doc_sched.get("header", ""),

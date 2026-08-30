@@ -7386,6 +7386,17 @@ function renderSym() {
   box.innerHTML = "";
   renderSymScope();   // sets g._scope on every group; must run before the rows
 
+  // groups beyond the response cap exist but are not in this list - say so
+  // (the count implies completeness otherwise; audit B3)
+  if (info.groups_total > (state.sym || []).length) {
+    const d = document.createElement("div");
+    d.className = "ew-hint";
+    d.textContent = `showing ${state.sym.length} of ${info.groups_total} `
+      + `repeated-symbol groups - the smallest ${info.groups_total - state.sym.length} `
+      + `are not listed or counted here`;
+    box.appendChild(d);
+  }
+
   // what the sheet's own schedule says, and where it was read from - the
   // estimator needs to know whether the cross-check column is trustworthy
   const sb = $("symSched");
