@@ -1657,6 +1657,14 @@ function renderScaleTyped(host) {
 function scaleRepaint() {
   renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
   renderMiniLegend(); draw();
+  // Cut/fill does NOT follow a scale change - the surfaces are integrated
+  // server-side at whatever scale was in force when Calculate was pressed
+  // (see ewScaleStale). The warning banner existed for exactly this case but
+  // was only painted by the Calculate handler itself, so the natural order -
+  // Calculate, notice the lengths look wrong, correct the scale - repainted
+  // the stale cubic yards as priced rows with no banner at all. Volume moves
+  // with the SQUARE of the scale; a silent 2x here is 4x on every CY.
+  renderEwStale();
 }
 
 // Restore a scale a reviewer set on an EARLIER visit to this page. The
@@ -6236,7 +6244,20 @@ $("trCalc").onclick = () => {
     `<b>dig ${cy(dig).toLocaleString()} CY</b> · <b>bedding ${cy(bed).toLocaleString()} CY</b>` +
     ` · backfill ${cy(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
   const name = (state.labels.get(t.style_id) || "pipe").slice(0, 40);
-  state.extraItems = state.extraItems.filter(it => !it.label.startsWith("Trench") && !it.label.startsWith("Bedding") && !it.label.startsWith("Backfill") && !it.label.endsWith("(run)"));
+  // Replace only THIS system's four rows. The old filter removed every row
+  // starting Trench/Bedding/Backfill or ending (run), so calculating a second
+  // pipe system silently deleted the first - a job with sanitary + storm +
+  // water + force main could only ever hold one of the four. Matching the
+  // exact labels this calculation regenerates (the style's name is embedded
+  // in all four) scopes the replacement to one system. Label-based on
+  // purpose: calcSave strips rows to {label, qty, unit}, so a hidden style-id
+  // tag would not survive a session restore and restored rows would stop
+  // being replaced. Trade-off accepted: renaming a style between calculates
+  // leaves the old name's rows behind - visible and deletable, which beats
+  // the silent deletion this replaces.
+  const mine = new Set([`${name} (run)`, `Trench excavation (${name})`,
+                        `Bedding gravel (${name})`, `Backfill (${name})`]);
+  state.extraItems = state.extraItems.filter(it => !mine.has(it.label));
   // The FOOTAGE is the line item an excavator actually bids. Every utility
   // row on Beaumont's Estimate #853 is priced per LF - the perimeter drain
   // alone is 3,395 LF / $105,245 - while the CY volumes below are the
