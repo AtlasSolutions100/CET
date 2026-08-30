@@ -1125,3 +1125,12 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 .bid-bysize { padding: 0 0 3px 15px; color: var(--dim); font-size: 10px;
   font-family: var(--mono); }
 .bid-none { color: var(--dim); font-size: 11px; padding: 6px 0; }
+
+/* cut/fill map legend: the gradient IS the map's own color ramp (cut blue,
+   fill yellow-orange), labeled with the ref depth so "how dark = how deep"
+   is on screen, not in a tooltip. */
+.ew-map-legend { display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 10px; font-size: 10px; color: var(--dim); }
+.ew-map-legend .eml-bar { width: 92px; height: 9px; border-radius: 4px;
+  background: linear-gradient(90deg, rgba(43,98,209,.95), rgba(43,98,209,0) 48%,
+    rgba(232,150,34,0) 52%, rgba(232,150,34,.95)); border: 1px solid var(--line, #333); }

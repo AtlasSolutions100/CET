@@ -54,6 +54,7 @@ const state = window.state = {
   selPt: null,              // index of the selected vertex on state.selected
   cutA: null,               // first anchor of an in-progress cut-span
   drawPts: [],              // vertices of the in-progress drawn line
+  ewBoundDraft: [],         // vertices of an in-progress hand-drawn limit of work
   drawSrc: null,            // chain_id whose family a drawn line joins
   hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
@@ -101,7 +102,7 @@ const state = window.state = {
 // tool; every tool in this set has the same problem, so they all get it.
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
-  "ew-bound", "ew-pick", "st-pick", "st-draw", "wz-draw",
+  "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
 ]);
 
 function syncCursor() {
@@ -493,6 +494,7 @@ async function selectPage(p) {
   // the wrong sheet). Page switch is the reliable chokepoint; the new
   // page's own saved boxes come back via wzApplySaved in calcStateLoad.
   state.workZones = []; state.wzDrag = null; state.wzRev++;
+  state.ewBoundDraft = []; state.ewBoundHover = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
@@ -781,6 +783,7 @@ async function loadResult(gen = state.gen) {
   // the WORK AREA is per sheet for the same reason; this page's own boxes
   // come back from the calcstate sidecar below (wzApplySaved)
   state.workZones = []; state.wzDrag = null; state.wzRev++;
+  state.ewBoundDraft = []; state.ewBoundHover = null;
   state.conf = null; state.confKey = null; state.confErr = false;
   // review queue: check-offs belong to a page and a detection; reseeded
   // from the calcstate sidecar once it loads (renderCheckQueue)
@@ -4940,13 +4943,20 @@ function calcStatePayload() {
       areaSf: calcNum(state.ew.areaSf),
       added: !!state.ew.added,
     };
-    // The SEED chain, not the stitched ring: geometry is re-derived from
-    // the live detection on restore, so a re-detect that renumbers or
-    // improves the family re-stitches instead of replaying stale points.
+    // Picked/stitched boundary: the SEED chain, not the ring - geometry
+    // re-derives from the live detection on restore, so a re-detect that
+    // renumbers or improves the family re-stitches instead of replaying
+    // stale points. HAND-DRAWN boundary: the points themselves - they are
+    // the operator's own geometry, tied to no chain, and a re-detect can
+    // neither improve nor orphan them.
     const m = state.ewBound && /^chain (\d+)$/.exec(state.ewBound.src || "");
     const seed = state.ewBound && typeof state.ewBound.seed === "number"
       ? state.ewBound.seed : (m ? +m[1] : null);
-    out.ew_bound = seed !== null ? { chain_id: seed } : null;
+    if (seed !== null) out.ew_bound = { chain_id: seed };
+    else if (state.ewBound && state.ewBound.src === "drawn outline")
+      out.ew_bound = { pts: state.ewBound.pts.map(q =>
+        [Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10]) };
+    else out.ew_bound = null;
   } else {
     // panel never opened this session: the earlier record stands untouched
     if (saved.ew) out.ew = saved.ew;
@@ -5133,7 +5143,12 @@ function ewApplySaved() {
     state.ew.added = !!sv.added;
   }
   const bd = saved.ew_bound;
-  if (bd && typeof bd.chain_id === "number" && !state.ewBound) {
+  if (bd && Array.isArray(bd.pts) && bd.pts.length >= 3 && !state.ewBound) {
+    if (ewBoundSet(bd.pts, "drawn outline")) {
+      state.ewBound.seed = null;
+      applied++;
+    } else dropped++;
+  } else if (bd && typeof bd.chain_id === "number" && !state.ewBound) {
     const ch = chains.get(bd.chain_id);
     const st = ch ? ewBoundStitch(ch) : null;
     if (st && ewBoundSet(st.pts, st.n > 1
@@ -7508,6 +7523,69 @@ $("ewBoundPick").onclick = () => {
   setStatus("limit of work: click the grading-limit line on the sheet "
     + '—' + " Esc cancels", "busy");
 };
+// Hand-drawn limit of work (Jason Knudson's requirement, verbatim: "an
+// automatic boundary would be cool, but it would have to be editable" -
+// F145). A picked chain only works when the sheet draws ONE clean limit
+// line; Stice's Coral Mountain sheet fragments its GRADING LIMITS line and
+// the tract ring over-includes interior no-work areas. Drawing follows the
+// odd cuts a real site has. Same interaction grammar as the structure
+// outline (st-draw): click corners, Enter/double-click closes, Esc backs
+// up one corner then cancels.
+$("ewBoundDraw").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "ew-bound-draw") { ewBoundDrawCancel("limit of work: drawing cancelled"); return; }
+  state.tool = "ew-bound-draw";
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.add("active");
+  syncCursor();
+  setStatus("limit of work: click the corners of the graded area "
+    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+};
+function ewBoundDrawClick(px, py) {
+  const d = state.ewBoundDraft;
+  const last = d[d.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
+  d.push([px, py]);
+  const ftPerPt = (state.result && state.result.scale
+    && state.result.scale.ft_per_paper_inch)
+    ? state.result.scale.ft_per_paper_inch / 72 : null;
+  let live = "";
+  if (d.length >= 3 && ftPerPt) {
+    const sf = Math.abs(polyAreaPt(d)) * ftPerPt * ftPerPt;
+    live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
+  }
+  setStatus(`limit of work: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  draw();
+}
+function ewBoundDrawFinish() {
+  const pts = [];
+  for (const q of state.ewBoundDraft)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length-1][0], q[1] - pts[pts.length-1][1]) > 0.5)
+      pts.push(q);
+  if (pts.length < 3) {
+    return ewBoundDrawCancel("limit of work: a boundary needs at least 3 corners "
+      + '—' + " drawing cancelled");
+  }
+  state.tool = null;
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.remove("active");
+  syncCursor();
+  if (ewBoundSet(pts, "drawn outline")) {
+    state.ewBound.seed = null;        // persisted by its points, not a chain
+    calcStateDirty();
+    setStatus(`limit of work drawn ${'—'} ${pts.length} corners ${'—'} recalculate to apply`);
+  }
+  draw();
+}
+function ewBoundDrawCancel(msg) {
+  state.tool = null;
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.remove("active");
+  syncCursor();
+  if (msg) setStatus(msg);
+  draw();
+}
+
 function ewDisarmBound(msg) {
   if (state.tool !== "ew-bound") return;
   state.tool = null;
@@ -8070,6 +8148,10 @@ $("ewCalc").onclick = async () => {
       `(${Number(j.layer_area_sf).toLocaleString()} SF from the ${j.area_source})</span>`
     : `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
       ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
+      (j.max_cut_ft || j.max_fill_ft
+        ? `<br><span class="ew-meta">deepest cut ${j.max_cut_ft} ft · ` +
+          `deepest fill ${j.max_fill_ft} ft — eyeball these against the ` +
+          `contours; a peak that surprises you is a row to check</span>` : "") +
       (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
   // per-layer slabs: area x thickness, shown under the stacks
   const out = $("ewLayerOut");
@@ -8331,12 +8413,21 @@ async function ewFetchMap() {
   const img = await createImageBitmap(blob);
   if (!state.ew) return;
   state.ew.map = { img, bbox, refDz: refDz ? parseFloat(refDz) : null };
+  // the legend makes the ramp readable: full color = the ref depth
+  const leg = $("ewMapLegend");
+  if (leg) {
+    const r = refDz ? parseFloat(refDz) : null;
+    leg.hidden = false;
+    leg.querySelector(".eml-txt").textContent = r
+      ? `cut −${r.toFixed(1)} ft … +${r.toFixed(1)} ft fill (full color)`
+      : "cut blue · fill orange";
+  }
   draw();
 }
 $("ewMap").onchange = async () => {
   if (!state.ew) { $("ewMap").checked = false; return; }
   if ($("ewMap").checked) await ewFetchMap();
-  else { state.ew.map = null; draw(); }
+  else { state.ew.map = null; $("ewMapLegend").hidden = true; draw(); }
 };
 
 // ---------- pipe trench calculator ----------
@@ -10100,6 +10191,28 @@ function draw() {
     ctx.lineWidth = 1.5 / k; ctx.strokeStyle = "#ffffff"; ctx.stroke();
   }
   // in-progress drawn line
+  if (state.tool === "ew-bound-draw" && state.ewBoundDraft.length) {
+    const f2b = IMG_DPI / 72;
+    ctx.save();
+    ctx.strokeStyle = "rgba(67,160,71,.95)";
+    ctx.lineWidth = 2 / state.view.k;
+    ctx.setLineDash([8 / state.view.k, 5 / state.view.k]);
+    ctx.beginPath();
+    ctx.moveTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
+    for (let i = 1; i < state.ewBoundDraft.length; i++)
+      ctx.lineTo(state.ewBoundDraft[i][0] * f2b, state.ewBoundDraft[i][1] * f2b);
+    if (state.ewBoundHover && !panning)
+      ctx.lineTo(state.ewBoundHover[0] * f2b, state.ewBoundHover[1] * f2b);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of state.ewBoundDraft) {
+      ctx.beginPath();
+      ctx.arc(q[0] * f2b, q[1] * f2b, 4 / state.view.k, 0, Math.PI * 2);
+      ctx.fillStyle = "#43a047";
+      ctx.fill();
+    }
+    ctx.restore();
+  }
   if (state.tool === "drawline" && state.drawPts.length) {
     const f2 = IMG_DPI / 72;
     ctx.beginPath();
@@ -11362,6 +11475,45 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 cv.addEventListener("dblclick", () => { if (state.tool === "st-draw") stFinishDraw(); });
+
+// same interception grammar for the hand-drawn limit of work
+const _ewbClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "ew-bound-draw") {
+    const [px, py] = ptFromEvent(e);
+    return ewBoundDrawClick(px, py);
+  }
+  return _ewbClickBefore(e);
+};
+cv.addEventListener("dblclick", () => {
+  if (state.tool === "ew-bound-draw") ewBoundDrawFinish();
+});
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "ew-bound-draw" || panning || !state.ewBoundDraft.length) return;
+  state.ewBoundHover = ptFromEvent(e);
+  draw();
+});
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "ew-bound-draw") return;
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    ewBoundDrawFinish();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (state.ewBoundDraft.length) {
+      state.ewBoundDraft.pop();
+      setStatus(state.ewBoundDraft.length
+        ? `limit of work: ${state.ewBoundDraft.length} corner(s) ` + '—' + " Esc again removes another"
+        : "all corners removed " + '—' + " Esc again exits", "busy");
+      draw();
+    } else {
+      ewBoundDrawCancel("limit of work: drawing cancelled");
+    }
+  }
+}, true);
 // capture phase so the generic Esc (clear selection) never sees these keys
 // while the structure tool owns them
 addEventListener("keydown", (e) => {

@@ -177,6 +177,12 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         "boundary_points": (len(boundary) if boundary is not None else 0),
         "cut_yd3": round(cut_ft3 / 27.0, 1),
         "fill_yd3": round(fill_ft3 / 27.0, 1),
+        # The deepest single cell each way, in feet - what the color map's
+        # darkest spots ARE. A volume alone hides whether the site moves
+        # 2 ft everywhere or 40 ft in one canyon; the extremes are the
+        # sanity check an estimator runs by eye against the contours.
+        "max_cut_ft": round(float(-dz[dz < 0].min()) if (dz < 0).any() else 0.0, 2),
+        "max_fill_ft": round(float(dz[dz > 0].max()) if (dz > 0).any() else 0.0, 2),
         "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),
         "area_sf": round(float(ok.sum()) * cell_area_ft2, 0),
         "cell_ft": round(cell_ft, 2),
