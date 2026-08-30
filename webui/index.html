@@ -68,6 +68,26 @@
     <!-- What to doubt on this sheet, in the operator's language, before any
          number below it is priced. Built by renderConfidence() in app.js. -->
     <div id="confBanner" class="conf" hidden></div>
+    <!-- The confidence-ranked review queue (EXCAVATION-PLAN.md section 7
+         item 2). The banner above says what to doubt about the SHEET; this
+         lists the specific THINGS the engine is least sure about, most
+         consequential first, each with a click that goes there. Derived
+         entirely from data the app already holds - it never fetches, and it
+         says which checks could not run yet. Built by renderCheckQueue()
+         in app.js. -->
+    <div id="ckPanel" class="ew-panel ck-panel" hidden>
+      <div class="side-head" id="ckHead"><h2 id="ckTitle">Check these</h2>
+        <button id="ckToggle" class="mini">hide</button></div>
+      <div id="ckBody">
+        <div class="ew-hint" id="ckHint">What the engine is least sure about on
+          this sheet, most consequential first. Click a row to go to the thing
+          &mdash; that marks it checked. Everything not listed came through the
+          checks that have run without a doubt to report.</div>
+        <div id="ckRows" class="ck-rows"></div>
+        <button id="ckMore" class="ck-more" hidden></button>
+        <div id="ckPending" class="ck-pending" hidden></div>
+      </div>
+    </div>
     <div class="side-head" id="legendHead" hidden><h2>Sheet legend</h2></div>
     <div id="legendBox" class="legend-box" hidden></div>
     <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet</h2>
@@ -367,6 +387,6 @@
 </main>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=114"></script>
+<script src="app.js?v=115"></script>
 </body>
 </html>

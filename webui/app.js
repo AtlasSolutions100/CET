@@ -59,6 +59,12 @@ const state = window.state = {
                             // NOT-TO-SCALE + spot-elevation provenance, the
                             // two trust facts the detect result cannot carry
   confKey: null,            // "job:page" the payload above belongs to
+  ckDone: null,             // Set of review-queue entry ids the operator has
+                            // clicked through; null until the calcstate
+                            // sidecar has answered so a saved check-off is
+                            // never clobbered by an empty first save
+  ckShowAll: false,         // "and N more" pressed: the cap is open
+  ckCollapsed: false,       // queue body folded to its header (session-only)
   hotChain: null,           // chain highlighted from a calculator row
   extraItems: [],           // calculator outputs: {label, qty, unit}
   areaInc: new Map(),       // area group_id -> included in the takeoff
@@ -484,6 +490,9 @@ async function selectPage(p) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
+  // check-offs are per page and per detection; loadResult reseeds them, but
+  // a page with no result yet must not inherit the previous page's set
+  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
   updateSelBar(null);
   // scaleMemApply BEFORE renderSheetHead, always - see loadResult().
   scaleMemApply();
@@ -670,6 +679,9 @@ async function loadResult(gen = state.gen) {
   // come back from the calcstate sidecar below (wzApplySaved)
   state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.conf = null; state.confKey = null; state.confErr = false;
+  // review queue: check-offs belong to a page and a detection; reseeded
+  // from the calcstate sidecar once it loads (renderCheckQueue)
+  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
   state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
@@ -2323,7 +2335,8 @@ async function confLoad(gen, key) {
 function renderConfidence() {
   const box = $("confBanner");
   if (!box) return;
-  if (!state.result) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!state.result) { box.hidden = true; box.innerHTML = "";
+    renderCheckQueue(); return; }   // hides the review queue too
   const key = state.job + ":" + state.page;
   if (state.confKey !== key) {
     state.confKey = key; state.conf = null; state.confErr = false;
@@ -2356,7 +2369,607 @@ function renderConfidence() {
     + lines.map(l => `<div class="conf-line ${l.level}">`
         + `<span class="conf-dot ${l.level}"></span>`
         + `<span class="conf-txt">${l.html}</span></div>`).join("");
+  renderCheckQueue();
 }
+
+// ---------- CHECK THESE: the confidence-ranked review queue ---------------
+// The style list on a civil sheet runs to 280 undifferentiated rows (Barn
+// C3.0, engine page index 2 = printed sheet 3), and a list with no opinion
+// about which rows matter moves the checking work onto the operator instead
+// of removing it (EXCAVATION-PLAN.md section 7 item 2). This panel lists the
+// specific things the engine is LEAST sure about on this sheet, most
+// consequential first, and presents everything else as decided.
+//
+// Rules it lives under:
+//   * Nothing here is a new number. Every entry is a regrouping of
+//     measurements and flags the app already holds - state.result, the
+//     /confidence payload, the /earthwork/suggest payload, the calcstate
+//     sidecar, the symbol groups. The panel never fetches: a source that has
+//     not been loaded contributes no entries, and the panel SAYS which
+//     checks could not run yet rather than implying a clean bill.
+//   * The cap is disclosed. At most CK_CAP entries show; the rest are one
+//     click away behind "and N more", never silently gone.
+//   * Clicking an entry navigates to the thing and marks it checked - a
+//     visible struck-through state, undoable, persisted per page through
+//     the calcstate sidecar (additive `checks` key). A check-off changes
+//     NOTHING about the takeoff; it is the operator's own reading log.
+//   * Severity colours match the confidence banner's contract for the same
+//     facts (stop = two sources contradict or no scale at all; warn = one
+//     source, or a choice the reviewer has to make), so the two surfaces
+//     can never disagree about the same doubt.
+//
+// The block between the markers below is PURE - no DOM, no state.*, no
+// fetch - and tests/test_check_queue.js evals exactly that block standalone
+// (same technique as tests/test_trench_math.js). Keep it that way.
+
+// CHECK-QUEUE-BEGIN
+
+// At most this many entries render before the "and N more" button. The
+// target the plan states is "show the ~12 things the engine is least sure
+// about"; 12 also keeps the panel under one screen at the sidebar's 330px.
+const CK_CAP = 12;
+
+// A style whose welded-gap + picked-up-ink share exceeds this fraction of
+// its footage is queued: a quarter of the length being paper the drafter
+// never inked is past what routine stitching produces (Kayden C5.1's whole
+// sheet measures 2.27% welded; its worst billable layer 6.10%), so 25%
+// marks a style whose number is substantially inferred rather than drawn.
+const CK_WELD_FRAC = 0.25;
+
+// Footage floor for per-style entries. 500 pt is the codebase's own
+// existing "big enough to matter" line - loadResult ticks a solid style on
+// by default only above it - and the 1%-of-sheet term keeps the floor
+// proportionate on dense sheets so the queue is never 12 slivers while a
+// real doubt waits below the cap.
+const CK_STYLE_FLOOR_PT = 500;
+const CK_STYLE_FLOOR_SHARE = 0.01;
+function ckStyleFloor(totalPt) {
+  return Math.max(CK_STYLE_FLOOR_PT, CK_STYLE_FLOOR_SHARE * (totalPt || 0));
+}
+
+// Ranking weights. The common currency is AFFECTED FOOTAGE in paper points
+// (paper points, not feet, because the no-scale case still has to rank and
+// feet do not exist there). Per-style entries carry exactly the footage in
+// doubt; page-wide entries carry the page's included footage times a share
+// factor:
+//   CK_W_PAGE  = 1.0   no-scale / caption-vs-bar / printed-sf-vs-scale /
+//                      datum conflict: the doubt multiplies EVERY quantity
+//                      on the page (scale) or every volume (datum), so it
+//                      carries the whole page.
+//   CK_W_OCR   = 0.6   a scale read by OCR off a scan: one page-wide number
+//                      from the least trustworthy reader this app has, with
+//                      no second reading on the sheet to catch it - below
+//                      the outright contradictions, above the multi-scale
+//                      choice (which at least prints its alternatives).
+//   CK_W_MULTI = 0.5   several printed scales and the engine could not
+//                      settle which governs: an even choice between
+//                      captions puts half the expected footage at stake.
+//   CK_W_MULTI_RANKED = 0.25  several printed scales but the engine ranked
+//                      one decisively (governs, margin > 1.5): the residual
+//                      doubt of a measured pick that is still, finally, the
+//                      reviewer's choice to confirm.
+//   CK_W_DROPS = 0.4   saved operator inputs that no longer match this
+//                      detection: a silently reverted decision. Bounded by
+//                      the calculators' scope rather than the whole sheet,
+//                      but it undoes work the operator believes done - so
+//                      above any single style short of ~40% of the page.
+//   CK_W_SCHED = 0.35  a mark count the sheet's own schedule contradicts:
+//                      a genuine two-source disagreement, but bounded to
+//                      one mark family; |delta| breaks ties inside it.
+//   spots unresolved:  totalPt * (unresolved / n) - the share of the
+//                      sheet's elevation evidence that carries no height.
+// Severity sorts before weight (stop always outranks warn), so these
+// factors order entries WITHIN a colour, never across it.
+const CK_W_PAGE = 1.0;
+const CK_W_OCR = 0.6;
+const CK_W_MULTI = 0.5;
+const CK_W_MULTI_RANKED = 0.25;
+const CK_W_DROPS = 0.4;
+const CK_W_SCHED = 0.35;
+
+// 720 pt at 30 ft/in -> "300 ft"; no scale -> honest paper units, because a
+// queue entry must never print a foot the sheet cannot back.
+function ckFt(pt, ftPerIn) {
+  if (!ftPerIn) {
+    const inch = pt / 72;
+    return (inch >= 100 ? Math.round(inch) : +inch.toFixed(1)) + " paper-inches";
+  }
+  const ft = pt / 72 * ftPerIn;
+  return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " ft";
+}
+// 30 -> "30", 5.333 -> "5.33" (same trim rule as confFt, kept local so the
+// marked block stays standalone)
+function ckDec(v) {
+  const n = +v;
+  if (!isFinite(n)) return "?";
+  return n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+// How many of the calcstate sidecar's chain/style-keyed inputs would NOT
+// survive being applied to this detection. Mirrors the drop arms of
+// ewApplySaved (a contour row or limit-of-work seed whose chain id is gone)
+// and trApplySaved (a pipe-run style id that renumbered) so this count and
+// the in-panel calcDropText can never disagree - with one honest gap: a
+// bound seed whose chain exists but no longer stitches into a ring is only
+// discovered by the stitcher at panel-open, so this may undercount by that
+// one case, never overcount.
+function ckDrops(saved, chainIds, styleIds) {
+  const cs = new Set(chainIds || []), ss = new Set(styleIds || []);
+  let ew = 0, tr = 0;
+  const sv = saved && saved.ew;
+  if (sv && Array.isArray(sv.rows))
+    for (const r of sv.rows)
+      if (r && typeof r.chain_id === "number" && !cs.has(r.chain_id)) ew++;
+  const bd = saved && saved.ew_bound;
+  if (bd && typeof bd.chain_id === "number" && !cs.has(bd.chain_id)) ew++;
+  const tv = saved && saved.tr;
+  if (tv && typeof tv.style_id === "number" && !ss.has(tv.style_id)) tr++;
+  return { ew: ew, tr: tr };
+}
+
+// Build the queue from plain data. Input contract (everything optional
+// except totalPt/styles; an absent source contributes no entries and, where
+// it means a check has not run, one `pending` line):
+//   totalPt   included footage on the sheet, paper pt
+//   ftPerIn   ft per paper inch, or null when no scale is in force
+//   styles    [{sid, pt, name, legend, layerLeaf, named, included, weldPt}]
+//   scale     {present, text, ftIn, conflict, corroborated, barFt,
+//              deltaPct, source, operator, multi:{n,lo,hi,settled}|null}
+//   tag       {agrees, implied, ratio, n} | null   (printed-sf cross-check)
+//   datum     {state:"checked"|"pending"|"failed", conflict, declared,
+//              bandBase, bandN}
+//   spots     {state, n, unresolved}
+//   drops     {state, ew, tr, sigChanged}
+//   marks     [{code, n, sched}] | null   (null = Count never pressed)
+// Returns {entries:[{id, sev, w, head, text, act}], pending:[string]}.
+// Entries are NOT capped or ordered here - ckOrder does that - so no
+// caller can accidentally rank and cap with different rules.
+function ckBuild(inp) {
+  const out = [], pending = [];
+  const totalPt = +inp.totalPt || 0;
+  const fpi = inp.ftPerIn || null;
+  const sc = inp.scale || { present: false };
+
+  // ---- the scale: the one number under every other number ---------------
+  if (!sc.present) {
+    out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "No scale could be read off this sheet.",
+      text: "Nothing below is real feet until one is set - use the scale "
+        + "box in the sheet header before pricing anything from this page.",
+      act: { t: "sheethead" } });
+  } else if (sc.conflict) {
+    out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "Two readings of the scale disagree.",
+      text: "The printed caption says 1 in = " + ckDec(sc.ftIn) + " ft, the "
+        + "drawn bar measures 1 in = " + ckDec(sc.barFt) + " ft - "
+        + ckDec(sc.deltaPct) + "% apart, and every foot on this sheet moves "
+        + "with the answer. The caption is in force; settle it in the header.",
+      act: { t: "sheethead" } });
+  } else if (!sc.operator && sc.source === "ocr" && sc.corroborated !== true) {
+    out.push({ id: "scale", sev: "warn", w: totalPt * CK_W_OCR,
+      head: "The scale was read by OCR off a scan.",
+      text: "Character recognition is the least trustworthy reading this app "
+        + "has and nothing on the sheet backs it up - check 1 in = "
+        + ckDec(sc.ftIn) + " ft against a dimension printed on the drawing.",
+      act: { t: "sheethead" } });
+  }
+  // A single uncorroborated printed caption is deliberately NOT queued: it
+  // is the normal case on this corpus, the banner already says it in words,
+  // and a queue that fires on the norm stops meaning "least sure".
+  if (sc.present && sc.multi && !sc.operator) {
+    // reviewer-picked or typed scales are the operator's own decision and
+    // do not queue; the engine's unsettled or merely-ranked pick does
+    const m = sc.multi;
+    out.push({ id: "scales", sev: "warn",
+      w: totalPt * (m.settled ? CK_W_MULTI_RANKED : CK_W_MULTI),
+      head: "This sheet prints " + m.n + " different scales.",
+      text: (m.settled
+        ? "The engine measured 1 in = " + ckDec(sc.ftIn) + " ft as governing "
+          + "most of the drawing, but details here are drawn to others ("
+          + ckDec(m.lo) + " to " + ckDec(m.hi) + " ft/in) and the pick is "
+          + "still yours to confirm in the header."
+        : "From 1 in = " + ckDec(m.lo) + " ft to 1 in = " + ckDec(m.hi)
+          + " ft, and nothing on the sheet settled which governs the "
+          + "drawing - confirm the pick in the header before pricing."),
+      act: { t: "sheethead" } });
+  }
+  if (inp.tag && inp.tag.agrees === false) {
+    out.push({ id: "scaletag", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "The sheet's own printed areas contradict the scale.",
+      text: inp.tag.n + " area figure" + (inp.tag.n === 1 ? "" : "s")
+        + " printed on this page impl" + (inp.tag.n === 1 ? "ies" : "y")
+        + " 1 in = " + ckDec(inp.tag.implied) + " ft, not the "
+        + ckDec(sc.ftIn) + " ft in force - square-foot numbers are out "
+        + "roughly " + (inp.tag.ratio >= 10 ? Math.round(inp.tag.ratio)
+                        : (+inp.tag.ratio).toFixed(1)) + "x.",
+      act: { t: "sheethead" } });
+  }
+
+  // ---- the spot-elevation datum: worth 100 ft per elevation -------------
+  const dt = inp.datum || { state: "pending" };
+  if (dt.state === "checked" && dt.conflict) {
+    out.push({ id: "datum", sev: "warn", w: totalPt * CK_W_PAGE,
+      head: "The sheet disagrees with itself about the elevation datum.",
+      text: "Its own note reads " + ckDec(dt.declared) + " ft while "
+        + dt.bandN + " printed elevation" + (dt.bandN === 1 ? " sits" : "s sit")
+        + " in the " + ckDec(dt.bandBase) + " ft band - a wrong pick moves "
+        + "every cut/fill volume by the difference. Open Earthwork and check "
+        + "one printed elevation by eye.",
+      act: { t: "ew" } });
+  }
+  const sp = inp.spots || { state: "pending" };
+  if (sp.state === "checked" && sp.n > 0 && sp.unresolved > 0) {
+    out.push({ id: "spots", sev: "warn",
+      w: totalPt * (sp.unresolved / sp.n),
+      head: sp.unresolved + " of " + sp.n
+        + " spot elevations carry no height.",
+      text: "The sheet prints them shortened and nothing readable on the "
+        + "page says what the missing hundreds are - they stay out of every "
+        + "volume until a base elevation is typed in Earthwork.",
+      act: { t: "ew" } });
+  }
+  if (dt.state === "pending" || sp.state === "pending")
+    pending.push("Elevation checks have not answered yet - where each spot "
+      + "elevation's base height came from is still being read off the page "
+      + "(earthwork not opened; the page reader runs on its own).");
+  else if (dt.state === "failed" || sp.state === "failed")
+    pending.push("Elevation checks could not run - the page reader did not "
+      + "answer, so nothing here has ruled out a guessed datum. Reload the "
+      + "sheet, or open Earthwork to read the elevations directly.");
+
+  // ---- saved operator inputs that no longer apply ------------------------
+  const dr = inp.drops || { state: "pending" };
+  if (dr.state === "checked") {
+    const sig = dr.sigChanged
+      ? " (the engine has changed since they were saved)" : "";
+    if (dr.ew > 0)
+      out.push({ id: "drops:ew", sev: "warn", w: totalPt * CK_W_DROPS,
+        head: dr.ew + " saved earthwork input" + (dr.ew === 1 ? "" : "s")
+          + " no longer match" + (dr.ew === 1 ? "es" : "") + " this detection.",
+        text: "Contour or boundary picks made on an earlier detection"
+          + sig + " cannot be applied, and any volume they fed needs "
+          + "re-checking - open Earthwork to see what survives.",
+        act: { t: "ew" } });
+    if (dr.tr > 0)
+      out.push({ id: "drops:tr", sev: "warn", w: totalPt * CK_W_DROPS,
+        head: "The saved trench pipe-run no longer matches this detection.",
+        text: "The line style it pointed at" + sig + " is gone or "
+          + "renumbered, so the saved trench setup cannot be applied - "
+          + "open Trench and re-pick the run.",
+        act: { t: "tr" } });
+  } else if (dr.state === "failed") {
+    pending.push("The saved-inputs record could not be read, so stale "
+      + "operator inputs cannot be checked this load.");
+  } else {
+    pending.push("Saved calculator inputs not read yet - the stale-input "
+      + "check is pending.");
+  }
+
+  // ---- mark counts vs the sheet's own schedule ---------------------------
+  if (inp.marks === null || inp.marks === undefined) {
+    pending.push("Mark counts vs the sheet's schedule: unchecked - press "
+      + "Count to scan this page's symbols.");
+  } else {
+    for (const mk of inp.marks) {
+      if (typeof mk.sched !== "number" || mk.sched === mk.n) continue;
+      out.push({ id: "sym:" + mk.code, sev: "warn",
+        w: totalPt * CK_W_SCHED + Math.abs(mk.n - mk.sched),
+        head: mk.code + ": counted " + mk.n + ", the schedule says "
+          + mk.sched + ".",
+        text: "The sheet's own schedule contradicts the geometric count - "
+          + "one of the two is wrong. Hover the row in Counts to see every "
+          + "counted instance.",
+        act: { t: "sym" } });
+    }
+  }
+
+  // ---- per-style doubts ---------------------------------------------------
+  const floor = ckStyleFloor(totalPt);
+  for (const s of (inp.styles || [])) {
+    if (!s.included || !(s.pt >= floor)) continue;
+    // Unnamed AND unfiled: no legend row matched it, the drafter gave it no
+    // usable layer (empty, or AutoCAD's default "0"), and the operator has
+    // not named it. On Barn C4.0, 38.8% of the footage had no name at all
+    // (EXCAVATION-PLAN.md section 15 item 14) - footage that reaches the
+    // priced takeoff under a pattern string.
+    const leaf = (s.layerLeaf || "").trim();
+    if (!s.legend && !s.named && (leaf === "" || leaf === "0")) {
+      out.push({ id: "style:" + s.sid, sev: "warn", w: s.pt,
+        head: ckFt(s.pt, fpi) + " of linework has no name.",
+        text: "No legend row matched it and the drafter filed it under "
+          + (leaf === "0" ? "layer \"0\"" : "no CAD layer")
+          + " (shown as \"" + (s.name || "unnamed") + "\") - if it is your "
+          + "trade it is unpriced under that blank; if not, it pads the "
+          + "sheet totals. Click to isolate it on the canvas.",
+        act: { t: "style", sid: s.sid } });
+    }
+    // Substantially inferred footage: welded gap + picked-up ink past a
+    // quarter of the style's length. The number is real geometry, but much
+    // of it is paper the drafter never inked - the operator should look at
+    // the run before pricing it.
+    if (s.pt > 0 && s.weldPt / s.pt > CK_WELD_FRAC) {
+      out.push({ id: "weld:" + s.sid, sev: "warn", w: s.weldPt,
+        head: Math.round(100 * s.weldPt / s.pt) + "% of \""
+          + (s.name || "style " + s.sid) + "\" is inferred, not drawn.",
+        text: "Of " + ckFt(s.pt, fpi) + ", " + ckFt(s.weldPt, fpi)
+          + " is welded gap or ink picked up from elsewhere rather than "
+          + "drawn line. Click to isolate the run and look before pricing.",
+        act: { t: "style", sid: s.sid } });
+    }
+  }
+  return { entries: out, pending: pending };
+}
+
+// Order and cap. Checked-off entries sink to the bottom (dealt with, still
+// visible), severity sorts before weight (stop always above warn), weight
+// before id (id keeps the order deterministic on ties). The cap never
+// hides: callers must render `more` as an opener when it is nonzero.
+function ckOrder(entries, doneIds, cap, showAll) {
+  const done = new Set(doneIds || []);
+  const sevRank = (e) => e.sev === "stop" ? 2 : 1;
+  const sorted = [...entries].sort((a, b) =>
+    (done.has(a.id) ? 1 : 0) - (done.has(b.id) ? 1 : 0)
+    || sevRank(b) - sevRank(a)
+    || b.w - a.w
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const shown = showAll ? sorted : sorted.slice(0, cap);
+  return { shown: shown, more: sorted.length - shown.length,
+           total: sorted.length,
+           unchecked: entries.reduce((n, e) => n + (done.has(e.id) ? 0 : 1), 0) };
+}
+// CHECK-QUEUE-END
+
+// Everything the pure block needs, read out of live state in one place.
+// READ-ONLY over state: collecting must never mutate a pick, a label or a
+// fetch. Sources that have not been loaded map to state:"pending"/"failed"
+// or marks:null - the pure block turns those into `pending` lines.
+function ckCollect() {
+  const res = state.result;
+  const sc = res.scale;
+  let totalPt = 0, allPt = 0;
+  for (const s of res.styles) {
+    const pt = styleLenPt(s);
+    allPt += pt;
+    if (state.include.get(s.style_id)) totalPt += pt;
+  }
+  if (!totalPt) totalPt = allPt;   // nothing ticked: rank against the sheet
+  // welded/picked-up footage per style, honouring excluded chains the same
+  // way sheetOverCapture does
+  const weld = new Map();
+  for (const ch of res.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    weld.set(ch.style_id, (weld.get(ch.style_id) || 0)
+      + (ch.gap_pt || 0) + (ch.pickup_pt || 0));
+  }
+  const styles = res.styles.map(s => {
+    const seed = (state.seedLabels.get(s.style_id) || "").trim();
+    const cur = (state.labels.get(s.style_id) ?? s.suggested_label ?? "").trim();
+    return {
+      sid: s.style_id,
+      pt: styleLenPt(s),
+      name: cur || (s.suggested_label || "").trim(),
+      legend: /\(legend\)\s*$/.test(s.suggested_label || ""),
+      layerLeaf: layerSplit((s.layer || "").trim()).leaf,
+      // named = anything beyond the seeded default: the operator typed, the
+      // label memory restored a past decision, or a legend-sheet name was
+      // applied. All three are decisions; a decided row is not queued.
+      named: cur !== "" && cur !== seed,
+      included: !!state.include.get(s.style_id),
+      weldPt: weld.get(s.style_id) || 0,
+    };
+  });
+  let scale = { present: false };
+  if (sc) {
+    const uniq = scaleCandidates();
+    const why = (sc.typed_by_reviewer || sc.picked_by_reviewer)
+      ? null : scalePickWhy();
+    scale = {
+      present: true,
+      text: sc.text || "",
+      ftIn: +sc.ft_per_paper_inch,
+      conflict: sc.agrees === false,
+      corroborated: sc.agrees === true,
+      barFt: sc.bar_ft_per_paper_inch,
+      deltaPct: sc.delta_pct,
+      source: sc.source || "text",
+      operator: !!(sc.typed_by_reviewer || sc.picked_by_reviewer),
+      multi: uniq.length > 1 ? {
+        n: uniq.length,
+        lo: Math.min(...uniq.map(c => +c.ft_per_paper_inch)),
+        hi: Math.max(...uniq.map(c => +c.ft_per_paper_inch)),
+        settled: !!(why && why.kind === "governs" && !why.thin),
+      } : null,
+    };
+  }
+  const tc = confTagCheck();
+  const tag = tc ? { agrees: tc.agrees, implied: tc.implied,
+                     ratio: tc.ratio, n: tc.tc.n_matched } : null;
+  // datum + spots: the earthwork suggest payload when the panel has been
+  // opened, else the /confidence payload, else pending/failed. Item 3 and
+  // item 5 of the queue spec, one truth each, never both counted twice.
+  const dj = (state.ew && state.ew.datum)
+    || (state.conf && state.conf.spots && state.conf.spots.datum) || null;
+  const checkedSrc = !!(state.ew || state.conf);
+  const dstate = checkedSrc ? "checked" : (state.confErr ? "failed" : "pending");
+  const datum = { state: dstate, conflict: !!(dj && dj.conflict),
+    declared: dj && dj.declared, bandBase: dj && dj.band_base,
+    bandN: (dj && dj.band_n) || 0 };
+  let spots = { state: dstate, n: 0, unresolved: 0 };
+  if (state.ew && Array.isArray(state.ew.spots)) {
+    spots = { state: "checked", n: state.ew.spots.length,
+      unresolved: state.ew.spots.filter(g => !g.resolved).length };
+  } else if (state.conf && state.conf.spots) {
+    spots = { state: "checked", n: state.conf.spots.n || 0,
+      unresolved: state.conf.spots.unresolved || 0 };
+  }
+  let drops = { state: state.calcSaveBroken ? "failed" : "pending",
+                ew: 0, tr: 0, sigChanged: false };
+  if (state.calcSavedLoaded) {
+    const saved = state.calcSaved || {};
+    // custom chains are excluded from the live set on purpose: ewApplySaved
+    // drops a saved row that points at one, so this count must too
+    const d = ckDrops(saved,
+      res.chains.filter(c => !c.custom).map(c => c.chain_id),
+      res.styles.map(s => s.style_id));
+    drops = { state: "checked", ew: d.ew, tr: d.tr,
+      sigChanged: !!(saved.engine_sig && res.engine_sig
+                     && saved.engine_sig !== res.engine_sig) };
+  }
+  const marks = state.sym
+    ? state.sym.filter(g => (g.name || "").trim()
+                            && g.schedule_qty !== undefined)
+        .map(g => ({ code: g.name.trim(), n: g.n, sched: g.schedule_qty }))
+    : null;
+  return { totalPt: totalPt, ftPerIn: sc ? sc.ft_per_paper_inch : null,
+           styles: styles, scale: scale, tag: tag, datum: datum,
+           spots: spots, drops: drops, marks: marks };
+}
+
+function renderCheckQueue() {
+  const panel = $("ckPanel");
+  if (!panel) return;
+  if (!state.result) { panel.hidden = true; return; }
+  // Seed the check-offs from the calcstate sidecar exactly once per page
+  // load. A check-off attests to what the operator SAW, and style ids
+  // renumber when the engine changes - so on an engine_sig mismatch every
+  // saved check-off is dropped rather than re-attached to whatever now
+  // wears the id. Dropped check-offs come back as UNCHECKED entries: the
+  // conservative direction (re-ask, never silently vouch).
+  if (state.ckDone === null && state.calcSavedLoaded) {
+    const saved = state.calcSaved || {};
+    const ids = (saved.checks && Array.isArray(saved.checks.done))
+      ? saved.checks.done.filter(x => typeof x === "string") : [];
+    const same = saved.engine_sig && state.result.engine_sig
+      && saved.engine_sig === state.result.engine_sig;
+    state.ckDone = new Set(same ? ids : []);
+  }
+  const built = ckBuild(ckCollect());
+  const done = state.ckDone || new Set();
+  const ord = ckOrder(built.entries, [...done], CK_CAP, state.ckShowAll);
+  panel.hidden = false;
+  $("ckTitle").textContent = "Check these (" + ord.unchecked + ")";
+  $("ckToggle").textContent = state.ckCollapsed ? "show" : "hide";
+  $("ckBody").hidden = state.ckCollapsed;
+  if (state.ckCollapsed) return;
+  const rows = $("ckRows");
+  rows.innerHTML = "";
+  $("ckHint").hidden = !built.entries.length;
+  if (!built.entries.length) {
+    const d = document.createElement("div");
+    d.className = "ck-clean";
+    d.textContent = built.pending.length
+      ? "Nothing queued by the checks that have run. Some could not run "
+        + "yet - see below."
+      : "Every check that could run on this sheet came back with nothing "
+        + "to hold.";
+    rows.appendChild(d);
+  }
+  for (const e of ord.shown) {
+    const isDone = done.has(e.id);
+    const row = document.createElement("div");
+    row.className = "ck-row " + e.sev + (isDone ? " done" : "");
+    const dot = document.createElement("span");
+    dot.className = "ck-dot " + e.sev;
+    const txt = document.createElement("span");
+    txt.className = "ck-txt";
+    const b = document.createElement("b");
+    b.textContent = e.head;
+    txt.appendChild(b);
+    txt.appendChild(document.createTextNode(" " + e.text));
+    row.append(dot, txt);
+    row.title = isDone
+      ? "You checked this off. Click to go there again; “not done” puts it back."
+      : "Click to go to it - that marks it checked (undoable, and it changes nothing in the takeoff).";
+    if (isDone) {
+      const un = document.createElement("button");
+      un.className = "mini ck-undo";
+      un.textContent = "not done";
+      un.onclick = (ev) => { ev.stopPropagation(); ckSetDone(e.id, false); };
+      row.appendChild(un);
+    }
+    row.onclick = () => {
+      if (!isDone) ckSetDone(e.id, true);
+      ckGo(e);
+    };
+    rows.appendChild(row);
+  }
+  const more = $("ckMore");
+  if (ord.more > 0) {
+    more.hidden = false;
+    more.textContent = "and " + ord.more + " more, ranked lower - show the "
+      + "whole list (the cap hides nothing; this opens it)";
+    more.onclick = () => { state.ckShowAll = true; renderCheckQueue(); };
+  } else if (state.ckShowAll && ord.total > CK_CAP) {
+    more.hidden = false;
+    more.textContent = "showing all " + ord.total
+      + " - collapse to the top " + CK_CAP;
+    more.onclick = () => { state.ckShowAll = false; renderCheckQueue(); };
+  } else {
+    more.hidden = true;
+  }
+  const pend = $("ckPending");
+  if (built.pending.length) {
+    pend.hidden = false;
+    pend.innerHTML = "";
+    const h = document.createElement("div");
+    h.className = "ck-pend-line";
+    h.textContent = "Could not run yet:";
+    pend.appendChild(h);
+    for (const p of built.pending) {
+      const d = document.createElement("div");
+      d.className = "ck-pend-line";
+      d.textContent = "· " + p;
+      pend.appendChild(d);
+    }
+  } else pend.hidden = true;
+}
+
+// The check-off itself. Session state plus the calcstate sidecar (additive
+// `checks` key), through the same debounced push every calculator input
+// uses. It is the operator's reading log - it never touches a quantity.
+function ckSetDone(id, val) {
+  if (!state.ckDone) state.ckDone = new Set();   // sidecar broken: session-only
+  if (val) state.ckDone.add(id); else state.ckDone.delete(id);
+  calcStateDirty();
+  renderCheckQueue();
+}
+
+// Go TO the thing. Isolation reuses the style list's own mechanic
+// (state.isolate + the row's .iso class via renderStyles), panels reuse
+// their own open buttons - opening Earthwork from here runs the exact
+// handler the toolbar button runs, fetch and consent story included,
+// because the click on this row IS the operator asking for that panel.
+function ckGo(e) {
+  const a = e.act || {};
+  if (a.t === "style") {
+    state.isolate = a.sid;
+    renderStyles(); renderMiniLegend(); draw();
+    const row = document.querySelector(
+      '#styleList .style-row[data-sid="' + a.sid + '"]');
+    if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+    const st = state.result.styles.find(s => s.style_id === a.sid);
+    setStatus("isolated: "
+      + (state.labels.get(a.sid) || (st && st.suggested_label) || ("style " + a.sid))
+      + " — Esc shows everything again");
+  } else if (a.t === "sheethead") {
+    const el = $("sheetHead");
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "ew") {
+    if ($("ewPanel").hidden) $("ewBtn").onclick();
+    else $("ewPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "tr") {
+    if ($("trPanel").hidden) $("trBtn").onclick();
+    else $("trPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "sym") {
+    if (!$("symPanel").hidden)
+      $("symPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+}
+
+$("ckToggle").onclick = () => {
+  state.ckCollapsed = !state.ckCollapsed;
+  renderCheckQueue();
+};
 
 // ---------- what the drafter called it -----------------------------------
 // `s.layer` is the CAD layer name and it is the only field on a style row
@@ -4246,6 +4859,12 @@ function calcStatePayload() {
   // and an empty list correctly writes no key (= zones cleared).
   if (state.workZones && state.workZones.length)
     out.zones = state.workZones.map(z => [z[0], z[1], z[2], z[3]]);
+  // Review-queue check-offs (additive key, same carry-forward rule as the
+  // panels above: until the queue has seeded from the sidecar, the earlier
+  // record stands untouched). Ids only - a check-off is the operator saying
+  // "I looked at this", never a number.
+  if (state.ckDone) out.checks = { done: [...state.ckDone].sort() };
+  else if (saved.checks) out.checks = saved.checks;
   return out;
 }
 
@@ -5995,6 +6614,9 @@ $("ewBtn").onclick = async () => {
   // panel head 58px above the fold on C3.1 (measured) - the smooth scroll
   // that ran at open had already finished aiming at the old layout.
   panel.scrollIntoView({ block: "start" });
+  // the suggest payload carries the datum + spot facts the review queue
+  // reports (items 3 and 5), and ewApplySaved just settled the drop count
+  renderCheckQueue();
 };
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
@@ -7020,6 +7642,7 @@ $("trBtn").onclick = () => {
       calcNotePut("trHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
   renderTr();
+  renderCheckQueue();   // trApplySaved may have settled a stale-input entry
 };
 
 function renderTr() {
