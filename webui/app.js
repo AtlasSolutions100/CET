@@ -1501,6 +1501,24 @@ let scaleTypedOpen = false;
 let scaleTypedDraft = "";
 let scaleTypedFor = null;
 
+// The ONE way a human-entered scale lands: undo capture, scaleTypedObj (which
+// stamps typed_by_reviewer so the approve payload and the p<N>_scale.json
+// sidecar both record whose number this is), session store, repaint. The
+// typed-scale box and the measure-line calibration both commit through here -
+// two entrances, one path, so they cannot drift apart.
+function applyTypedScale(ft, text) {
+  if (scaleUndo.key !== scaleTypedKey()) {
+    scaleUndo.key = scaleTypedKey();
+    scaleUndo.scale = state.result.scale || null;
+  }
+  state.result.scale = scaleTypedObj(state.result.scale, ft, text);
+  try {
+    store.setItem(scaleTypedKey(), JSON.stringify({ ft, text }));
+    store.removeItem(scaleKey());
+  } catch (e) { /* private mode: this session still honours it */ }
+  scaleRepaint();
+}
+
 function renderScaleTyped(host) {
   if (!state.result) return;
   if (scaleTypedFor !== scaleTypedKey()) {
@@ -1631,20 +1649,11 @@ function renderScaleTyped(host) {
     use.onclick = () => {
       const p = reread();
       if (p.err || p.err === "") { inp.focus(); return; }
-      if (scaleUndo.key !== scaleTypedKey()) {
-        scaleUndo.key = scaleTypedKey();
-        scaleUndo.scale = state.result.scale || null;
-      }
-      state.result.scale = scaleTypedObj(state.result.scale, p.ft, p.text);
-      try {
-        store.setItem(scaleTypedKey(), JSON.stringify({ ft: p.ft, text: p.text }));
-        store.removeItem(scaleKey());
-      } catch (e) { /* private mode: this session still honours it */ }
+      applyTypedScale(p.ft, p.text);
       scaleTypedOpen = false; scaleTypedDraft = "";
       setStatus(`scale set BY HAND to ${p.ft.toFixed(2)} ft per inch — every `
         + `quantity on this sheet recalculated from a number you typed, not `
         + `one the sheet states`);
-      scaleRepaint();
     };
     reread();
     setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
@@ -8356,9 +8365,58 @@ function updateMeasureInfo() {
   if (state.measurePts.length < 2) { info.hidden = true; return; }
   const pt = polyLen(state.measurePts);
   const sc = state.result && state.result.scale;
-  info.textContent = sc
+  info.innerHTML = "";
+  const read = document.createElement("span");
+  read.textContent = sc
     ? `${(pt / 72 * sc.ft_per_paper_inch).toFixed(1)} ft`
     : fmtLen(pt);
+  info.appendChild(read);
+  // Calibrate the sheet from this line. Jeff Ellis (ECI Foundations,
+  // feedback 2026-08-27, BLOCKED): "The selected line should be 24' but is
+  // showing 9'. I wonder if you can make it so that the scale can be entered
+  // manually based on a selected line." The operator measures something whose
+  // true dimension they know, types that dimension, and the page scale is
+  // DERIVED: ft_per_paper_inch = true_feet / measured_inches. It commits
+  // through applyTypedScale - the same single path as the typed-scale box -
+  // so it records as reviewer-set, travels in the approve payload, and lands
+  // in the p<N>_scale.json sidecar like any other human scale decision.
+  if (state.result && pt > 1e-6) {
+    const sep = document.createElement("span");
+    sep.className = "cal-sep";
+    sep.textContent = " · should be ";
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = "any"; inp.min = "0";
+    inp.className = "cal-ft"; inp.name = "calibrate-ft";
+    inp.placeholder = "true ft";
+    const go = document.createElement("button");
+    go.className = "mini"; go.textContent = "set scale";
+    go.title = "Derive the page scale from this line: the feet you typed "
+      + "divided by the inches of paper the line spans.";
+    const commit = () => {
+      const trueFt = parseFloat(inp.value);
+      if (!(trueFt > 0)) { inp.focus(); return; }
+      const ft = trueFt / (pt / 72);
+      if (!scaleSane(ft)) {
+        setStatus(`refusing ${ft.toFixed(3)} ft per inch - outside the sane `
+          + `band (${SCALE_FT_MIN}-${SCALE_FT_MAX}). Check the line and the `
+          + `feet you typed.`);
+        return;
+      }
+      applyTypedScale(ft, `${trueFt}' over a measured line`);
+      setStatus(`scale CALIBRATED: this line = ${trueFt} ft, so 1 inch = `
+        + `${ft.toFixed(2)} ft. Every quantity on this sheet recalculated. `
+        + `The line now reads ${trueFt} ft - confirm that, then spot-check `
+        + `one other known dimension.`);
+      updateMeasureInfo();   // the reading flips to the typed feet - the
+                             // operator's own confirmation the math landed
+    };
+    go.onclick = commit;
+    inp.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      e.stopPropagation();   // keep review shortcuts off a focused input
+    };
+    info.append(sep, inp, document.createTextNode(" ft "), go);
+  }
   info.hidden = false;
 }
 

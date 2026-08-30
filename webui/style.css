@@ -1001,3 +1001,7 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   background: rgba(208, 138, 60, .08); border-radius: 4px;
   font-size: 11px; line-height: 1.5; }
 .sp-datum.sp-conflict input { margin-top: 4px; }
+
+/* calibrate-from-a-known-line, inline in the measure readout */
+.cal-ft { width: 64px; margin: 0 2px; }
+.cal-sep { color: var(--dim); }
