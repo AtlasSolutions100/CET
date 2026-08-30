@@ -807,3 +807,28 @@ PASSED every time) and live-verified on :8128 with annotated captures.
    classified as cache in that dialog. Follow-up.
 4. **Over-excavation pairing** (equal dig/backfill CY, #853's three exact
    pairs) is recorded in the research but NOT yet a UI feature.
+
+### Structures-from-legend-symbol: measured findings (2026-08-30, withdrawn)
+
+Three versions built and A/B'd on Kayden C5.1; all failed the honesty bar
+(commit 40987e4 carries the full record). The load-bearing facts for the
+next attempt:
+
+* The corpus HAS the test case: Kayden p38/p39 legends define EXISTING/
+  PROPOSED FIRE HYDRANT, GATE VALVE, SANITARY SEWER MANHOLE; the SSMH row
+  matches no line style today (invisible to the takeoff) - Pierce's exact
+  miss.
+* Vector congruence keys fail two ways: single-unit keys collide with text
+  (882 letter glyphs named as a note row) and with line markers (the 12
+  "W" bubbles riding the waterline); composed-glyph verification finds
+  zero real sets because the legend draws its symbol at a different
+  size/block than the plan instances (manhole anchor 4x on plan, companion
+  circle never co-located; 1 of 3 hydrants verified).
+* A point-symbol legend row legitimately holds a pipe stub - open ink is a
+  RANKER between claimant rows, never a veto.
+* THE ROUTE THAT SHOULD WORK: raster template matching seeded from the
+  legend-strip render. marks.build_family + find_tags already do exactly
+  this for scanned mark bubbles; render the vector sheet at 300 dpi, seed
+  the family from the strip crop, count matches. Size/block mismatch
+  disappears because the template IS the legend's own picture. Estimated
+  M; needs the usual corpus A/B before shipping.
