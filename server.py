@@ -950,11 +950,24 @@ def _sched_finish_locked(key: tuple, reason: str | None = None) -> None:
     """Record the outcome of a child that has exited (reason=None: read it
     off the disk) or that we killed (reason given: clean partial files)."""
     job_id, page = key
-    proc = _SCHED_RUNNING.pop(key)["proc"]
+    info = _SCHED_RUNNING.pop(key)
+    proc = info["proc"]
     d = _job_dir(job_id)
     rf, ef = result_path(d, page), error_path(d, page)
     if reason is None:
+        # Success means the child WROTE a result - not that one exists. A
+        # stale file from an older engine sits at the same path, and "does
+        # rf exist" read a child that died on startup (OOM during numpy
+        # import, measured 2026-08-30 on ellis p42) as done: the status
+        # then reported idle-stale and the UI polled "detecting..."
+        # forever. Freshness = mtime at-or-after the moment we spawned.
+        fresh = False
         if rf.exists():
+            try:
+                fresh = rf.stat().st_mtime >= info["t0"] - 2.0
+            except OSError:
+                fresh = False
+        if fresh:
             st = "done"
         elif ef.exists():
             try:

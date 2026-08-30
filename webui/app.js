@@ -504,7 +504,15 @@ async function poll(gen = state.gen) {
     setPageStatus(state.page, "error");
     return setStatus(j.status, "err");
   }
-  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); }
+  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); return; }
+  // "idle" while we are polling = the worker exited without writing a
+  // result OR an error. The old code fell through here silently: no timer,
+  // no message, "detecting…" frozen on screen until a reload (measured on
+  // ellis p42 when a memory-starved child died during numpy import). The
+  // server now reports most of these as errors (fresh-result check in
+  // _sched_finish_locked); this is the belt for a race or an old server.
+  setPageStatus(state.page, "idle");
+  setStatus("the detection worker exited without a result — press Detect to retry", "err");
 }
 
 // ---------- page thumbnail strip: the whole-PDF page-by-page flow --------
