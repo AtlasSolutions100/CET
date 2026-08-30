@@ -7302,7 +7302,7 @@ $("ewBtn").onclick = async () => {
       // contours say 7700 - the engine now resolves by band strength, but a
       // disagreement like that must reach the operator's eyes either way.
       datum: j.spot_datum || null,
-      spotOn: { FG: true, ME: true, EG: true },
+      spotOn: { FG: true, ME: true, EG: true, PE: true },  // PE = pad elevation, proposed ground
       spotSide: "proposed",
       spotDatum: null,
       areaSf: null,

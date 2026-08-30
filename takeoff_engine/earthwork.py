@@ -774,8 +774,14 @@ def _is_plan_chain(c) -> bool:
 # appear in the Beaumont Guide civil legend, and 11 printed labels were being
 # skipped for want of them. Same standard of evidence as the rest of the list
 # - the sheet's own vocabulary, each printed with a value beside it.
+# PE = pad elevation, the finish grade of a building pad. Measured absent
+# on 2026-08-30: Stice's Coral Mountain preliminary grading sheet prints
+# ~204 "PE 486.0" pad callouts and every one was invisible to this reader
+# (out/verify/2026-08-30/stice-recipe/RECIPE.md). A pad elevation is
+# PROPOSED ground, like FG.
 _SPOT_TAG = re.compile(
-    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
+    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|PE)\s*:?$",
+    re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
 _SPOT_VALUE = re.compile(r"^\d{1,4}(\.\d{1,2})?$")
@@ -988,9 +994,27 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
             chosen=("declared" if use_declared and declared is not None
                     else "band" if band else None))
 
+    # A 3-digit spot on a 3-digit site is printed in full, not truncated.
+    # Measured 2026-08-30 on Stice's Coral Mountain sheet (site runs
+    # 425-521 ft): 191 PE pad elevations print as 466.0-style values and
+    # the >= 1000 rule alone left every one unresolved. The truncation
+    # convention keeps the LAST TWO digits (Barn: 7705.25' prints as
+    # 05.25'), so a value >= 100 is only "full" when the sheet's own full
+    # elevations corroborate it - at least two page anchors within 100 ft.
+    # A lone 3-digit value on a 7,000-ft sheet still falls through to the
+    # datum machinery / honest unresolved.
+    full3 = sorted(av for _, _, av in raw_anchors)
+    def _corroborated(v):
+        import bisect
+        i = bisect.bisect_left(full3, v - 100.0)
+        j = bisect.bisect_right(full3, v + 100.0)
+        return (j - i) >= 2
+
     for g in out:
         val = g["value"]
         if val >= 1000.0:
+            g.update(z=val, base=None, resolved=True)
+        elif val >= 100.0 and _corroborated(val):
             g.update(z=val, base=None, resolved=True)
         elif use_declared and val < 100.0:
             g.update(z=declared + val, base=declared, resolved=True)

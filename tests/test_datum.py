@@ -143,6 +143,31 @@ def test_printed_in_full_never_touched():
     assert out[0]["z"] == 7718.89
 
 
+@case
+def test_pe_tag_and_three_digit_full_site():
+    """Stice shape: PE pad elevations on a 3-digit site resolve as printed.
+
+    Coral Mountain (site 425-521 ft) prints ~200 "PE 466.0" pads; before
+    2026-08-30 the PE tag was unknown and a 3-digit value could never be
+    printed-in-full (the rule was >= 1000). Corroboration required: at
+    least two page anchors within 100 ft, so a lone 466 on a 7,000-ft
+    sheet still abstains.
+    """
+    words = []
+    words.append((50.0, 100.0, 80.0, 108.0, "PE"))
+    words.append((82.0, 100.0, 112.0, 108.0, "466.0"))
+    x = 400.0
+    for e in (452, 470, 480):          # the sheet's own full elevations
+        words.append((x, 300.0, x + 30.0, 308.0, f"{e}"))
+        x += 220.0
+    out = read_spot_grades(words, lines=[])
+    assert out and out[0]["tag"] == "PE", out
+    assert out[0]["resolved"] and out[0]["z"] == 466.0, out
+    # the same value with NO corroborating anchors must abstain
+    out2 = read_spot_grades(words[:2], lines=[])
+    assert not out2[0]["resolved"] and out2[0]["z"] is None, out2
+
+
 def main() -> int:
     failed = []
     for fn in CASES:
