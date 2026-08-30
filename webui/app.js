@@ -5978,11 +5978,16 @@ function ewDispRow(lay, i) {
 
 $("ewStrip").onclick = () => {
   if (!state.ew) return;
-  // Topsoil is stripped first on every job; 12" is a placeholder for the
-  // soils-report thickness (Beaumont quoted 12"; their Barn bid works out
-  // to ~8.3") - editable like any other row
+  // Topsoil comes off first on every job. Default thickness is the LOCAL
+  // prior: Beaumont Estimate #853's own arithmetic is 8.29 in (5,730 CY
+  // strip x 27 / 224,058 SF clear-and-grub), inside the national 4-8 in
+  // band (NRCS IL Urban Manual spec 752; MS DEQ) - see
+  // webui/ew_defaults.js and docs/earthwork-defaults-research.json.
+  // Editable like any other row; the soils report outranks every default.
   if (!state.ew.layers.existing.some(l => /topsoil/i.test(l.name)))
-    state.ew.layers.existing.unshift({ name: "Topsoil", thickness_in: 12,
+    state.ew.layers.existing.unshift({ name: "Topsoil",
+      thickness_in: (typeof EW_RESEARCH !== "undefined"
+                     ? EW_RESEARCH.strip_depth_in.value : 8),
       ...EW_DISP_DEFAULT });
   renderEwLayers();
 };
@@ -6046,6 +6051,33 @@ function ewBody() {
 // in-place yards between the two surfaces, and #853 applies no swell,
 // shrink or compaction factor anywhere, so 1.0 is the evidenced default;
 // these fields exist only for a job that needs one.
+// Material presets fill the two factor boxes from the researched table in
+// webui/ew_defaults.js - export rides bank->loose (dug yards swell into the
+// truck), import rides 1/bank->compacted (buying enough bank yards that the
+// compacted fill measures out). Defaults stay 1.0 until the operator picks
+// one - #853 applies no factor anywhere and that evidence stands - and the
+// boxes remain editable after; picking a preset is a suggestion accepted,
+// not a lock. The title carries the citation so the operator can see WHERE
+// the number came from before pricing on it.
+(function ewWireMatPresets() {
+  const sel = $("ewMatPreset");
+  if (!sel || typeof EW_RESEARCH === "undefined") return;
+  for (const name of Object.keys(EW_RESEARCH.materials)) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    sel.append(o);
+  }
+  sel.onchange = () => {
+    const m = EW_RESEARCH.materials[sel.value];
+    if (!m) { sel.title = ""; return; }
+    $("ewFacExp").value = m.b2l.toFixed(2);
+    $("ewFacImp").value = (1 / m.b2c).toFixed(2);
+    sel.title = m.src;
+    $("ewFacExp").dispatchEvent(new Event("input", { bubbles: true }));
+    $("ewFacImp").dispatchEvent(new Event("input", { bubbles: true }));
+  };
+})();
+
 function ewFactor(id) {
   const el = $(id);
   const v = el ? parseFloat(el.value) : NaN;

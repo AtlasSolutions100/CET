@@ -1,0 +1,158 @@
+{
+ "table": {
+  "strip_depth_in": {
+   "default": 6,
+   "range": [
+    4,
+    8
+   ],
+   "units": "inches over clear-and-grub / disturbed area",
+   "local_prior": {
+    "value_in": 8.29,
+    "basis": "Beaumont Estimate #853 (client corpus): 5,730 CY topsoil strip x 27 / 224,058 SF clear-and-grub area = 0.6905 ft = 8.29 in (arithmetic re-verified)"
+   },
+   "policy": "default, overridable",
+   "sources": [
+    "Illinois Urban Manual (NRCS-IL-URB, Aug 1994), Construction Specification 752 'Stripping, Stockpiling, Site Preparation, and Spreading Topsoil', Sec. 2 Stripping, p. 752-1: 'A 4-to-6-inch stripping depth is common, but depth varies depending on site.' https://illinoisurbanmanual.org/wp-content/uploads/2025/02/Construction-Specification-752-Stripping-Stockpiling-Site-Preparation-and-Spreading-Topsoil.pdf",
+    "Mississippi DEQ, Erosion Control, Sediment Control and Stormwater Management on Construction Sites and Urban Areas (2nd Ed.), Vol. 1 Ch. 4, Topsoiling (TSG) practice, p. 3 of section: 'A normal stripping depth is 4-6\", but deeper depths may be satisfactory if the soil is suitable and undercutting is allowable.' https://opcgis.deq.state.ms.us/Erosion_Stormwater_Manual_2ndEd/Volume1/Chap_4_Sections/4_2/V1_Chap4_2_Site_Prep_TSG.pdf",
+    "The Virtual Estimation, 'Sitework Estimating Guide: Excavation, Grading, Utilities and Paving': 'The geotechnical report defines the depth of topsoil to be stripped, typically 4 to 12 inches.' https://thevirtualestimation.com/blog/Sitework%20Estimating:%20Excavation,%20Grading,%20Utilities%20and%20Paving/",
+    "Beaumont Estimate #853 (local corpus) - strongest local prior at 8.29 in"
+   ]
+  },
+  "factors": {
+   "topsoil_loam": {
+    "swell_pct": 43,
+    "shrink_pct": 26,
+    "bank_to_loose": 1.43,
+    "bank_to_compacted": 0.74,
+    "policy": "default, overridable",
+    "note": "Topsoil is the fluffiest common material. Cat load factor 0.70 implies 43% swell; Church/FHWA give 56% swell and -26% to compacted. Respread topsoil is only lightly compacted, so bank_to_compacted is rarely exercised.",
+    "sources": [
+     "Caterpillar Performance Handbook Ed. 50 (SEBD0351-50, June 2022), Tables p. 27-6 'Weight of Materials': Top Soil load factor 0.70 (=> swell 1/0.70-1 = 43%). https://www.ringpower.com/media/oujnpuga/caterpillarperfhandbook_ed50.pdf",
+     "Church, H.K., Excavation Handbook (McGraw-Hill, 1981), as republished in WisDOT Report 0092-22-05 Table A.3: Topsoil swell 56%, fill condition -26%. https://wisconsindot.gov/documents2/research/0092-22-05-final-report.pdf",
+     "FHWA (2022) design-manual factors, as republished in WisDOT Report 0092-22-05 Table A.4: Topsoil swell 56%, embankment -26%."
+    ]
+   },
+   "clay": {
+    "swell_pct": 30,
+    "shrink_pct": 10,
+    "bank_to_loose": 1.3,
+    "bank_to_compacted": 0.9,
+    "policy": "default, overridable",
+    "note": "Sources span 22-67% swell; 30% is the consensus midpoint (DOT survey 30-50%, estimating guides 25-35%, Cat 22-25%, Church 35-40%). Shrink -10% per Church and FHWA.",
+    "sources": [
+     "Caterpillar Performance Handbook Ed. 50, Tables p. 27-6: Clay natural bed LF 0.82 (22% swell), dry 0.81 (23.5%), wet 0.80 (25%).",
+     "Church (1981) via WisDOT 0092-22-05 Table A.3: Clay dry swell 35%, damp 40%; fill -10%.",
+     "FHWA (2022) via WisDOT 0092-22-05 Table A.4: Clay dry swell 50%, damp 67%; embankment -10%.",
+     "Crooks, A., 'Application of Shrinkage and Swelling Factors on State Highway Construction' (Auburn Univ. MS thesis, 2013): clays swell 30-50%, shrink 10-18%. https://etd.auburn.edu/bitstream/handle/10415/3532/Crooks,%20Alexandria_MS%20Thesis_Spring%202013.pdf"
+    ]
+   },
+   "sand_gravel": {
+    "swell_pct": 12,
+    "shrink_pct": 8,
+    "bank_to_loose": 1.12,
+    "bank_to_compacted": 0.92,
+    "policy": "default, overridable",
+    "note": "Tightest agreement of any class: Cat LF 0.89-0.91 (10-12% swell), FHWA sand 5-11% / gravel 10-20%, estimating guides 10-15% swell and 5-10% shrink. Assumes damp material - dry sand compacts much harder (see disagreements).",
+    "sources": [
+     "Caterpillar Performance Handbook Ed. 50, Tables p. 27-6: Sand dry/damp/wet LF 0.89; sand & gravel dry 0.89, wet 0.91; gravel pitrun/dry 0.89.",
+     "FHWA (2022) via WisDOT 0092-22-05 Table A.4: Sand dry swell 11% / wet 5%, embankment -11%; Gravel avg gradation dry swell 20%, embankment -8%; Church (1981) Table A.3: gravel dry +15%/-7%, wet +5%/-3%.",
+     "Burch, D., Estimating Excavation (Craftsman Book Co., 1997), via WisDOT 0092-22-05 Table A.5: damp sand swell 1.16-1.27, shrink 0.93-0.98 at Proctor targets; damp gravel swell 1.23-1.39, shrink 0.78-0.93."
+    ]
+   },
+   "common_earth": {
+    "swell_pct": 25,
+    "shrink_pct": 12,
+    "bank_to_loose": 1.25,
+    "bank_to_compacted": 0.88,
+    "policy": "default, overridable",
+    "note": "The classic contractor rule of thumb (25% swell, ~10-15% shrink) and Cat's 'Earth - dry packed' LF 0.80 (exactly 25% swell) coincide. Church loam: dry +35%/-12%, damp +40%/-4%.",
+    "sources": [
+     "Caterpillar Performance Handbook Ed. 50, Tables p. 27-6: Earth dry packed LF 0.80 (25% swell), wet excavated 0.79 (26.6%), loam 0.81 (23.5%).",
+     "Church (1981) via WisDOT 0092-22-05 Table A.3: Earth/loam dry swell 35%, fill -12%; damp swell 40%, fill -4%.",
+     "FHWA (2022) via WisDOT 0092-22-05 Table A.4: Earth/loam dry swell 50%, embankment -12%; damp swell 43%, embankment -4%."
+    ]
+   },
+   "rock_blasted": {
+    "swell_pct": 60,
+    "shrink_pct": -30,
+    "bank_to_loose": 1.6,
+    "bank_to_compacted": 1.3,
+    "policy": "default, overridable",
+    "note": "WARNING: blasted rock NEVER returns to bank volume - compacted rock fill occupies MORE than the bank cut (multiplier > 1). Swell 50-72% depending on rock type (limestone 63%, granite 72%, sandstone 61%); compacted fill +30% to +43% over bank. A rock cut GENERATES fill; it does not shrink into it.",
+    "sources": [
+     "Caterpillar Performance Handbook Ed. 50, Tables p. 27-6: Limestone broken LF 0.59 (69% swell), Granite broken 0.61 (64%), Sandstone 0.60 (67%), Basalt 0.67 (49%).",
+     "Church (1981) via WisDOT 0092-22-05 Table A.3: Limestone swell 63% loose / +36% in fill; Granite 72% / +33%; Sandstone 61% / +34%; Basalt 64% / +36%.",
+     "Indiana DOT (2013) via WisDOT 0092-22-05 Table A.1: Rock fill expansion (swell) factor 30-35%.",
+     "FHWA (2022) via WisDOT 0092-22-05 Table A.4: hard rock embankment swell +34% to +43%."
+    ]
+   }
+  },
+  "volume_states": {
+   "bank": {
+    "definition": "One cubic yard of material as it lies in its natural, in-place (in-situ) state in the ground - BCY.",
+    "source": "Caterpillar Performance Handbook Ed. 50, Sec. 25 'Mining and Earthmoving', p. 25-2: 'BCY - one cubic yard of material as it lies in the natural bank state.'"
+   },
+   "loose": {
+    "definition": "One cubic yard of material after it has been dug and has swelled from being disturbed - LCY; what sits in a truck bed or stockpile.",
+    "source": "Cat Performance Handbook Ed. 50, p. 25-2: 'LCY - one cubic yard of material which has been disturbed and has swelled as a result of movement.'"
+   },
+   "compacted": {
+    "definition": "One cubic yard after placement and compaction, denser than bank - CCY; what the finished fill or embankment is measured in.",
+    "source": "Cat Performance Handbook Ed. 50, p. 25-2: 'CCY - one cubic yard of material which has been compacted and has become more dense as a result of compaction.'"
+   },
+   "drawing_cutfill_measures": "bank",
+   "drawing_cutfill_rationale": "Cut/fill from plan surfaces measures the ground in place, i.e. bank by definition; Cat PHB p. 25-1: earthmoving is 'generally calculated by volume (bank cubic meters or bank cubic yards)'. WisDOT 0092-22-05 Ch. 1 describes excavation as removal FROM the bank state.",
+   "trucking_priced_in": "loose",
+   "trucking_rationale": "Haul bodies are rated and loaded in loose cubic yards (Cat PHB Ed. 50 p. 25-3 example: 'Haul unit is rated 14 loose cubic yards struck and 20 loose cubic yards heaped'); The Virtual Estimation sitework guide: a 1,000 BCY clay cut at 30% swell 'requires trucks to haul 1,300 loose cubic yards.'",
+   "fill_accepted_in": "compacted",
+   "fill_rationale": "Embankment/fill pay quantity is the compacted neat-line volume; Cat PHB p. 25-2: shrinkage factor S.F. = CCY/BCY is 'obtained from job plans or specifications which show the conversion from compacted measure to bank measure.'"
+  },
+  "over_excavation": {
+   "separate_bid_item": true,
+   "paired_equal_quantities": true,
+   "convention": "Over-excavation (removal of unsuitable material below plan subgrade) is conventionally carried as its own unit-price bid item, with the replacement backfill measured to the same neat-line cubic yards as the removal - dig and backfill appear as an exactly-equal pair, or equivalently one measured quantity paid at a combined (e.g. 2x) rate.",
+   "local_evidence": "Beaumont Estimate #853 (client corpus) carries three exactly-equal dig/backfill pairs: 3,919/3,919, 411/411, and 770/770 CYD.",
+   "policy": "default, overridable (pair the two line items; let the user break the equality only deliberately)",
+   "sources": [
+    "TxDOT Standard Specifications, Item 400 'Excavation and Backfill for Structures': removal and replacement of unstable material paid 'at a price equal to 200% of the unit price bid per cubic yard for Structural Excavation' - one measured CY quantity, paid twice (dig + replace). https://ftp.dot.state.tx.us/pub/txdot-info/pbqna/prod/A00062297/FM00000039276/TxDOT%20Standard%20Specification%20Item%20400.pdf",
+    "Iowa SUDAS Standard Specifications, Section 3010 'Trench Excavation and Backfill': replacement backfill measured 'in cubic yards for the quantity of backfill material required to replace unsuitable backfill material removed', paid at the unit price for the replacement material furnished. https://www.iowasudas.org/wp-content/uploads/sites/15/2020/02/3010.pdf",
+    "Bowman Construction Consulting, 'Construction Knowledge (Earthwork) Series: What is Over-Excavation?': 'a cubic yard unit price is often agreed upon prior to starting the work and the earthwork contractor would get paid for the over-excavation that was required.' https://www.bowmancc.com/articles/construction-knowledge-earthwork-seriesnbsp-what-is-over-excavation"
+   ]
+  }
+ },
+ "tooltips": {
+  "strip_depth_in": "Default 6 in, overridable. Erosion-control standards (Illinois Urban Manual Spec 752; Mississippi DEQ manual) call 4-6 in the 'common/normal' stripping depth, while estimating guides note the geotech report governs and typically lands at 4-12 in. The strongest local prior is 8.29 in, back-computed from Beaumont Estimate #853 (5,730 CY over 224,058 SF of clear-and-grub). 6 in is the top of the standard range and the closest round default to the local evidence; nudge toward 8 in on deep-topsoil sites like Beaumont, down to 4 in on thin-soil ground.",
+  "factors": "Defaults, all overridable. Swell is how much a bank (in-ground) yard grows when dug loose: loose = bank x bank_to_loose. Shrink is how much a bank yard condenses when compacted into fill: compacted = bank x bank_to_compacted. Both multiply the BANK quantity your drawing takeoff produces. Classic sources: Caterpillar Performance Handbook Ed. 50 (load factors, Tables p. 27-6), Church's Excavation Handbook (1981), FHWA (2022) factor tables, and Burch's Estimating Excavation (Craftsman, 1997) - the last three conveniently republished in WisDOT research report 0092-22-05, Appendix C. Site-specific geotech data always beats these defaults.",
+  "factors.topsoil_loam": "Default swell 43% (1.43x), shrink 26% (0.74x), overridable. Topsoil fluffs more than any common soil - Cat says 43%, Church/FHWA say 56% - so a stripped pile looks much bigger than the hole it came from.",
+  "factors.clay": "Default swell 30% (1.30x), shrink 10% (0.90x), overridable. Published clay swell runs anywhere from 22% (Cat) to 67% (FHWA, damp); 30% is the mid-range a DOT survey (30-50%) and estimating guides (25-35%) agree on. Moisture content moves this a lot.",
+  "factors.sand_gravel": "Default swell 12% (1.12x), shrink 8% (0.92x), overridable. Granular material barely swells and compacts predictably - the tightest consensus of any class. Caveat: DRY sand can compact to 0.72-0.78x bank (Burch); the default assumes damp material.",
+  "factors.common_earth": "Default swell 25% (1.25x), shrink 12% (0.88x), overridable. 'Common earth' (loam, silty/sandy clay - typical unclassified excavation) uses the oldest rule of thumb in dirt work: a bank yard hauls as 1.25 loose yards and builds about 0.88 yards of compacted fill.",
+  "factors.rock_blasted": "Default swell 60% (1.60x); compacted fill = 1.30x BANK - note it is GREATER than 1, overridable. Blasted rock never fits back in its hole: it hauls at 1.5-1.7x bank and, even compacted in fill, occupies roughly 1.3x its bank volume (Church +33-36%, InDOT 30-35%). A rock cut is a fill generator - never apply an earth-style shrink to it.",
+  "volume_states": "Bank (BCY) is the ground in place; loose (LCY) is the swelled state in the bucket, truck, or stockpile; compacted (CCY) is the denser state after placement and rolling (Caterpillar Performance Handbook Ed. 50, p. 25-2). Cut/fill measured from a drawing is BANK by definition - it is the in-place ground between two surfaces. Trucking is capacity-limited and priced in LOOSE yards (haul bodies are rated in LCY). Finished fills are measured and accepted in COMPACTED yards. One bank yard of common earth = ~1.25 loose yards on the truck = ~0.88 compacted yards in the fill.",
+  "over_excavation": "Yes - over-excavation of unsuitable material is conventionally its own unit-price bid item, and the replacement backfill is measured to the same neat lines as the dig, so the two quantities appear as an exactly-equal pair (TxDOT Item 400 formalizes this by paying one measured CY at 200% of the excavation unit price; Iowa SUDAS 3010 measures replacement backfill as the CY of unsuitable material removed). The local corpus agrees: Beaumont Estimate #853 carries three equal pairs - 3,919/3,919, 411/411, 770/770 CYD. Default behavior (overridable): when the user adds an over-excavation item, auto-create the paired backfill item at the identical quantity."
+ },
+ "disagreements": [
+  "Clay swell spans 2-3x across named sources: Cat PHB Ed. 50 load factors imply 22-25%, Church (1981) gives 35-40%, FHWA (2022) gives 50-67%, and a southeastern-DOT survey (Crooks/Auburn 2013) reports 30-50%. The 30% default is a deliberate compromise - surface it as low-confidence and let moisture/plasticity override it.",
+  "Roadway-agency 'shrinkage factors' (TDOT 2021: 30-50% for light cuts; InDOT 2013: 15-35%; NCDOT 2021: 15-30%; all via WisDOT 0092-22-05 Table A.1) are NOT pure density conversions - they fold in ground loss under equipment, stripping waste, and subgrade subsidence. Do not mix them with the density-based 8-12% shrink defaults in this table; if the app ever adds a 'waste/ground loss' knob, that is where the extra 10-20% lives.",
+  "Topsoil swell: Cat PHB implies 43% (LF 0.70) vs Church/FHWA 56%; plain 'loam' rows run only 23-40%. The topsoil/loam class is intrinsically wide - the 43% default follows Cat, the 26% shrink follows Church/FHWA (Cat gives no topsoil shrink).",
+  "Sand bank-to-compacted depends heavily on moisture: Burch (1997) shows DRY sand compacting to 0.72-0.78x bank at Proctor targets while damp sand is 0.93-0.98x. The 0.92 default assumes damp material; a dry-sand site can genuinely need 20%+ more borrow than the default predicts.",
+  "Compacted rock fill factor: Church +33-36% over bank vs FHWA (2022) embankment +34-43% vs InDOT rock-fill 30-35%. All agree the multiplier is GREATER than 1 (rock never shrinks back); they disagree on magnitude. 1.30 follows the InDOT/Church cluster.",
+  "Strip depth: erosion-control specs standardize 4-6 in, estimating guides defer to the geotech report at 4-12 in, and the one real local bid (Beaumont #853) implies 8.29 in. The 6-in default splits the difference; region and soil survey should override it."
+ ],
+ "sources_list": [
+  "Illinois Urban Manual (NRCS-IL-URB, Aug 1994), Construction Specification 752 'Stripping, Stockpiling, Site Preparation, and Spreading Topsoil', Sec. 2, p. 752-1 - https://illinoisurbanmanual.org/wp-content/uploads/2025/02/Construction-Specification-752-Stripping-Stockpiling-Site-Preparation-and-Spreading-Topsoil.pdf",
+  "Mississippi DEQ, Erosion Control, Sediment Control and Stormwater Management on Construction Sites and Urban Areas, 2nd Ed., Vol. 1 Ch. 4, Topsoiling (TSG) practice - https://opcgis.deq.state.ms.us/Erosion_Stormwater_Manual_2ndEd/Volume1/Chap_4_Sections/4_2/V1_Chap4_2_Site_Prep_TSG.pdf",
+  "The Virtual Estimation, 'Sitework Estimating Guide: Excavation, Grading, Utilities and Paving' - https://thevirtualestimation.com/blog/Sitework%20Estimating:%20Excavation,%20Grading,%20Utilities%20and%20Paving/",
+  "Caterpillar Performance Handbook, Edition 50 (SEBD0351-50, June 2022): Sec. 25 'Mining and Earthmoving' pp. 25-1 to 25-3 (BCY/LCY/CCY definitions, swell, load factor, shrinkage factor) and Sec. 27 Tables p. 27-6 'Weight of Materials' (per-material load factors) - https://www.ringpower.com/media/oujnpuga/caterpillarperfhandbook_ed50.pdf (local copy: C:\\Users\\kobys\\.claude\\projects\\C--Users-kobys-OneDrive-Desktop-past-P-Takeoff-Automation\\fc226ab2-6540-49f2-bbc8-3035ec48a0f9\\tool-results\\webfetch-1788070964031-eb19i3.pdf)",
+  "Cetin, Bulduk, Likos & Edil, 'Weight-Volume Relationships and Conversion Factors for Soils and Aggregates of Wisconsin', WisDOT Research Report 0092-22-05 / G22-05, Dec 2023 - Appendix C Tables A.1 (InDOT 2013, TDOT 2021, NCDOT 2021, MassDOT 2006), A.2 (AKDOT 1983), A.3 (Church 1981), A.4 (FHWA 2022), A.5 (Burch 1997) - https://wisconsindot.gov/documents2/research/0092-22-05-final-report.pdf (local copy: ...\\tool-results\\webfetch-1788070739096-5gzm5l.pdf)",
+  "Church, Horace K., Excavation Handbook, McGraw-Hill, 1981 (factors republished in WisDOT 0092-22-05 Table A.3; Church notes +/-33% average variation on swell/shrink factors)",
+  "FHWA (2022) design-manual earthwork factors (republished in WisDOT 0092-22-05 Table A.4)",
+  "Burch, Deryl, Estimating Excavation, Craftsman Book Co., 1997 (swell/shrink multipliers by Proctor target, republished in WisDOT 0092-22-05 Table A.5) - preview: https://www.craftsman-book.com/media/static/previews/Estimating-Excavation-book-preview.pdf",
+  "Crooks, Alexandria, 'Application of Shrinkage and Swelling Factors on State Highway Construction', MS thesis, Auburn University, 2013 - https://etd.auburn.edu/bitstream/handle/10415/3532/Crooks,%20Alexandria_MS%20Thesis_Spring%202013.pdf",
+  "TxDOT Standard Specifications, Item 400 'Excavation and Backfill for Structures' - https://ftp.dot.state.tx.us/pub/txdot-info/pbqna/prod/A00062297/FM00000039276/TxDOT%20Standard%20Specification%20Item%20400.pdf",
+  "Iowa SUDAS Standard Specifications, Section 3010 'Trench Excavation and Backfill' - https://www.iowasudas.org/wp-content/uploads/sites/15/2020/02/3010.pdf",
+  "Bowman Construction Consulting PLLC, 'Construction Knowledge (Earthwork) Series: What is Over-Excavation?' - https://www.bowmancc.com/articles/construction-knowledge-earthwork-seriesnbsp-what-is-over-excavation",
+  "Beaumont Estimate #853 (client corpus) - local priors: 8.29 in strip depth implied; three equal over-ex dig/backfill pairs (3,919/3,919, 411/411, 770/770 CYD)"
+ ]
+}
