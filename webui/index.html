@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=47">
+<link rel="stylesheet" href="style.css?v=48">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
@@ -310,6 +310,20 @@
         <span id="stResult" class="ew-result"></span>
       </div>
     </div>
+    <!-- BID VIEW (EXCAVATION-PLAN.md section 7 item 1): the itemized takeoff
+         regrouped into the handful of line families an excavator actually
+         bids, above the style drill-down. Grouping is a deterministic
+         keyword rule table (BIDVIEW-RULES in app.js) over the names already
+         on the rows; it moves no quantity - every bucket figure is the sum
+         of the measured rows beneath it, read from the SAME
+         computeTakeoffRows() pass as the itemized takeoff and the tally, so
+         the three cannot disagree. Rows no rule names land in UNASSIGNED,
+         counted and footaged, never silently. Built by renderBidView(). -->
+    <div class="side-head bid-head" id="bidHead" hidden>
+      <h2>Bid view</h2>
+      <span class="bid-honesty">grouped by name rules &mdash; every number is the sum of the measured rows below it</span>
+    </div>
+    <div id="bidBox" class="bid-view" hidden></div>
     <div class="side-head" id="stylesHead">
       <h2>Line styles</h2>
       <div class="side-actions">
@@ -387,6 +401,6 @@
 </main>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=115"></script>
+<script src="app.js?v=116"></script>
 </body>
 </html>

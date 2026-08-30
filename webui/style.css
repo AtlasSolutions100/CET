@@ -1063,3 +1063,47 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   line-height: 1.5; }
 .ck-pending .ck-pend-line { padding-top: 2px; }
 .ck-clean { font-size: 12px; color: var(--dim); padding: 4px 12px 8px; }
+/* ---------- bid view (EXCAVATION-PLAN.md section 7 item 1) ----------
+   The takeoff regrouped as a bid schedule, above the style drill-down.
+   Same visual register as the trade heads in the itemized takeoff. */
+.bid-head { flex-wrap: wrap; }
+.bid-honesty { flex-basis: 100%; color: var(--dim); font-size: 10px;
+  line-height: 1.35; }
+.bid-view { padding: 0 10px 6px; }
+.bid-bucket { border-top: 1px solid var(--line); }
+.bid-bucket summary { display: flex; align-items: baseline; gap: 8px;
+  list-style: none; cursor: pointer; padding: 6px 0 3px;
+  font-family: var(--mono); font-size: 10.5px; }
+.bid-bucket summary::-webkit-details-marker { display: none; }
+.bid-bucket summary::before { content: "\25B8"; color: var(--dim);
+  font-size: 9px; }
+.bid-bucket[open] summary::before { content: "\25BE"; }
+.bid-b-name { font-weight: 600; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--accent); white-space: nowrap; }
+.bid-b-sub { color: var(--dim); letter-spacing: .04em; margin-left: auto;
+  text-align: right; }
+/* UNASSIGNED is a finding, not a bid line: amber, the register the app
+   already uses for "look at this" (.ew-stale, .sp-conflict). */
+.bid-unassigned .bid-b-name { color: #d08a3c; }
+:root[data-theme="light"] .bid-unassigned .bid-b-name { color: #8a5a06; }
+.bid-member { display: flex; align-items: center; gap: 6px;
+  padding: 2px 0 2px 15px; font-size: 11px; cursor: pointer; }
+.bid-member:hover .bm-label { color: var(--accent); }
+.bid-member.nogeom { cursor: default; }
+.bid-member.nogeom:hover .bm-label { color: inherit; }
+.bid-member.bid-iso .bm-label { color: var(--accent); font-weight: 600; }
+.bm-label { flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.bm-size { flex: none; font-size: 9px; line-height: 1.4; padding: 0 3px;
+  border: 1px solid var(--line); border-radius: 3px; color: var(--dim); }
+.bm-qty { flex: none; font-family: var(--mono); font-size: 10px;
+  color: var(--dim); white-space: nowrap; }
+.bid-member select.bid-pick { flex: none; max-width: 88px;
+  font-family: var(--mono); font-size: 9px; padding: 0 1px;
+  background: transparent; border: none; color: var(--dim);
+  cursor: pointer; }
+.bid-member select.bid-pick:hover { color: var(--accent); }
+.bid-member select.bid-pick.ov { color: var(--accent); font-weight: 600; }
+.bid-bysize { padding: 0 0 3px 15px; color: var(--dim); font-size: 10px;
+  font-family: var(--mono); }
+.bid-none { color: var(--dim); font-size: 11px; padding: 6px 0; }

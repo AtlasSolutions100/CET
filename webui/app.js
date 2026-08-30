@@ -5806,9 +5806,13 @@ function computeTakeoffRows() {
   // came to print (contour feet + cut CY + fill CY + slab SF) as one number
   // with "ft" after it: the subtotal test was `cnt === "EA"`, and "CY" is not
   // "EA". `cnt` is left alone so nothing downstream moves yet.
+  // sids: which style rows this item's chains came from. Additive, for the
+  // bid view's drill-down (isolate a member's linework) - the quantities
+  // above do not read it.
   const items = [...totals.entries()].map(([label, t]) => t.objects
     ? { label, cnt: "EA", unit: "EA", qty: t.objects,
         qtyText: String(t.objects), priced: true, isObj: true,
+        sids: [...new Set(t.chains.map(c => c.style_id))],
         ft: ftPerIn ? t.pt / 72 * ftPerIn : null }
     : { label, cnt: String(t.count), unit: ftPerIn ? "ft" : "pt",
         qty: pt2q(t.pt),
@@ -5816,6 +5820,7 @@ function computeTakeoffRows() {
         unionQty: pt2q(t.dup.unionPt),
         dupQty: pt2q(t.dup.excessPt),
         dupLegs: t.dup.sharedLegs,
+        sids: [...new Set(t.chains.map(c => c.style_id))],
         qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
     items.push({ label: it.label, cnt: it.unit, unit: it.unit, qty: it.qty,
@@ -5980,6 +5985,499 @@ function panelRefocus(root, f) {
     }
 }
 
+// ---------- bid view: the takeoff regrouped as a bid schedule -------------
+// EXCAVATION-PLAN.md section 7 item 1: "Organise the panel around a bid
+// schedule, not a style list. ~15 line items with quantities, not 280 rows.
+// The style list becomes the drill-down."
+//
+// This block is the deterministic rule table that files a takeoff row into
+// a bid-schedule bucket by keywords over the names the document and the
+// operator already gave it (legend/operator label first, CAD layer as the
+// tie-breaker). It is a REGROUPING only - no AI, no new quantity anywhere:
+// every bucket figure the panel shows is the sum of rows produced by the
+// same computeTakeoffRows() pass the itemized takeoff and the tally bar
+// read, so the three can never disagree. A row no rule names lands in
+// UNASSIGNED, with its count and footage said out loud, never silently.
+//
+// Kept pure (no DOM, no state.*) between the markers so
+// tests/test_bidview_rules.js can eval it standalone - same technique as
+// the TRENCH-MATH block below.
+// BIDVIEW-RULES-BEGIN
+
+// Bucket names, in DISPLAY order. The set is EXCAVATION-PLAN.md section 0's
+// excavator bid families (cut/fill CY, topsoil strip, trench by depth band,
+// pipe by size and material, structures EA, erosion control LF/EA,
+// aggregate/base) crossed with the line families the one estimate on disk
+// actually bills - Beaumont Estimate #853: nine per-LF utility lines
+// $224,200 (section 15 item 2), the topsoil family $88,815 (item 10),
+// Clear & Grub 224,058 SF (item 9), Perimeter Drain 3,395 LF (item 14),
+// Paths To Subgrade / Slab Prep by the SF (quoted at arData() above) - and
+// the Pierce transcript conventions (section 13: pipe separated by size,
+// sewer priced in 2-ft depth bands). Structures (manholes, inlets,
+// hydrants) ride their SYSTEM's bucket, which is how #853 bills them.
+// There is deliberately no dry-utilities bucket: gas/electric/telecom are
+// not in section 0's families, so they land in UNASSIGNED - which says so
+// - rather than being filed under a wet system by default.
+const BID_UNASSIGNED = "UNASSIGNED";
+const BID_BUCKETS = [
+  "Erosion & Sediment Control",
+  "Clearing/Limits",
+  "Earthwork",
+  "Storm Drainage",
+  "Sanitary Sewer",
+  "Water",
+  "Site Concrete/Paving",
+  "Walls",
+  "Landscape/Other",
+  BID_UNASSIGNED,
+];
+
+// The rule table. FIRST MATCH WINS, top to bottom, tokens tried in the
+// order written; display order above and rule order here differ where a
+// stated collision forces it. Token grammar (see bidTokenHit):
+//   - 3 characters or fewer: whole-word match over the normalised text
+//     ("SD" must never match inside "SDWK")
+//   - "=" prefix: whole-word match regardless of length ("=FILL" must not
+//     match inside "BACKFILL", which belongs to the trench rows)
+//   - otherwise: substring over the normalised text ("WALL" matches
+//     "A WALL" and "HEADWALL"; the ordering settles those collisions)
+// Normalisation uppercases and collapses every non-alphanumeric run to one
+// space, so hyphens and pipes in CAD layer paths split into words.
+// A rule may instead carry `re`, a regex over the RAW label - used only to
+// mirror label families this file itself emits.
+const BID_RULES = [
+  // 1. The earthwork calculator's own rows. Verbatim mirror of EW_ITEM_RE
+  //    (defined near ewClearItems below - keep the two identical; the node
+  //    test compares their sources) plus the structure panel's dig/backfill
+  //    labels (ST_LABELS). These names are emitted by this file, so they
+  //    are matched exactly rather than by keyword - and BEFORE everything
+  //    else, so "Export Asphalt" stays earthwork rather than paving.
+  { bucket: "Earthwork",
+    re: /^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Place |Export |Import Structural$|(Cut|Fill) \(earthwork\))/ },
+  { bucket: "Earthwork",
+    tokens: ["MASS EXCAVATION", "STRUCTURE EXCAVATION",
+             "STRUCTURE BACKFILL"] },
+  //    Slab Prep is billed as hardscape by the SF ("Slab Prep 9,237 SF",
+  //    Estimate #853, quoted at arData() above), not as dirt.
+  { bucket: "Site Concrete/Paving", tokens: ["SLAB PREP"] },
+  // 2. Erosion & sediment control - section 0's "erosion control LF/EA"
+  //    family. BEFORE Clearing/Limits and Landscape so SILT FENCE and TREE
+  //    PROTECTION never fall through to FENCE/TREE, and INLET PROTECTION
+  //    never reads as a storm INLET.
+  { bucket: "Erosion & Sediment Control",
+    tokens: ["SILT", "EROSION", "SWPPP", "SEDIMENT", "WATTLE",
+             "FIBER ROLL", "INLET PROTECTION", "CONSTRUCTION ENTRANCE",
+             "TREE PROTECTION", "RIPRAP", "ESC"] },
+  // 3. Clearing / limits - #853's own "Clear & Grub 224,058 SF" and Barn
+  //    C3.0's "BG-Limit of disturbance" layer (section 15 item 9).
+  { bucket: "Clearing/Limits",
+    tokens: ["LIMIT OF DISTURBANCE", "LIMITS OF DISTURBANCE",
+             "LIMIT OF WORK", "LIMITS OF WORK", "LOD", "CLEARING", "CLEAR",
+             "GRUB", "DEMOLITION", "DEMO"] },
+  // 4. Reference linework the sheet draws but nobody digs - property,
+  //    easement, right-of-way, setback, boundary, centerline. Filed under
+  //    Landscape/Other (the named-but-not-excavation catch-all) BEFORE the
+  //    system rules so a SEWER EASEMENT or a ROAD R.O.W. line reads as the
+  //    reference line it is, not as pipe or pavement. ESMT / BNDY /
+  //    PROP LOT are the Kayden p39 drafter's own abbreviations
+  //    (C-U2-ESMT-UTIL, C-U2-BNDY, C-U2-PROP-LOT).
+  { bucket: "Landscape/Other",
+    tokens: ["PROPERTY", "EASEMENT", "ESMT", "SETBACK", "RIGHT OF WAY",
+             "R O W", "ROW", "BOUNDARY", "BNDY", "LOT LINE", "PROP LOT",
+             "CENTERLINE", "CENTER LINE"] },
+  // 5. Earthwork keywords - contours are the grading surface source
+  //    (section 3); topsoil is #853's $88,815 family (section 15 item 10);
+  //    import/export/haul is section 0's haul-off family. "=CUT"/"=FILL"
+  //    are word-bound so BACKFILL stays with its trench run; "=GRADE" so
+  //    "PATHS TO SUBGRADE" (#853 hardscape) never reads as grading;
+  //    "=BERM" so BERMUDA sod never reads as a berm. EXCAVAT is
+  //    deliberately ABSENT: the trench tool emits "Trench excavation
+  //    (<run name>)" and that row must follow its run's system in rules
+  //    6-8 (an unnamed run still lands in Earthwork via rule 13, and the
+  //    structure panel's excavation rows matched exactly in rule 1).
+  { bucket: "Earthwork",
+    tokens: ["CONTOUR", "GRADING", "=GRADE", "TOPO", "TOPSOIL",
+             "EARTHWORK", "SLOPE", "SWALE", "DITCH", "=BERM", "=CUT",
+             "=FILL", "IMPORT", "EXPORT", "HAUL"] },
+  // 6. Storm drainage - #853's Perimeter Drain 3,395 LF is drawn as
+  //    FOUNDATION DRAIN / FOOTER DRAIN and the drafter's own typo FOTER
+  //    (section 15 item 14), so all three are tokens. BEFORE Sanitary so
+  //    STORM SEWER stays storm; BEFORE Walls so a HEADWALL stays a storm
+  //    structure. Bare DRAIN is the family's net and comes last. A bare
+  //    "CB" token was tried and WITHDRAWN: Barn's own xref namespace is
+  //    BG-SWCR-CB-MATERIALS / -CB-PLANTING, so one two-letter project code
+  //    read a whole planting plan as catch basins (caught by the node
+  //    test). Catch basins still arrive via CATCH BASIN and INLET.
+  { bucket: "Storm Drainage",
+    tokens: ["STORM", "SD", "RCP", "CMP", "CULVERT", "CATCH BASIN",
+             "INLET", "HEADWALL", "FES", "ROOF DRAIN", "DOWNSPOUT",
+             "UNDERDRAIN", "PERIMETER DRAIN", "FOUNDATION DRAIN",
+             "FOOTER DRAIN", "FOTER", "INFILTR", "DRAIN"] },
+  // 7. Sanitary sewer - "sanitary + storm + water + force main" are #853's
+  //    per-LF utility families (section 15 item 2); SSMH / MANHOLE per the
+  //    Kayden legend's SANITARY SEWER MANHOLE row (section 19); SSWR is
+  //    that drafter's layer abbreviation (C-U2-SSWR-PIPE); OWTS is an
+  //    onsite wastewater treatment system (septic - Barn's
+  //    SE-P-OWTS-PDchmbr-trench sys). A storm MANHOLE already matched
+  //    STORM above, so the bare word lands here.
+  { bucket: "Sanitary Sewer",
+    tokens: ["SANITARY", "SEWER", "SSWR", "SSMH", "SS", "FORCE MAIN",
+             "FORCEMAIN", "OWTS", "CLEANOUT", "MANHOLE", "MH"] },
+  // 8. Water - hydrants and gate valves are the Kayden legend's own water
+  //    rows (section 19); WATR is that drafter's layer abbreviation. "W"
+  //    is the lettered-run code (the dash-text class prints W for
+  //    waterline) and is tested against the LABEL only (BID_LABEL_ONLY),
+  //    so a layer path can never read as water by one letter.
+  { bucket: "Water",
+    tokens: ["WATER", "WATR", "HYDRANT", "GATE VALVE", "DOMESTIC",
+             "POTABLE", "FIRE LINE", "FIRELINE", "FIREWATER", "IRRIG",
+             "WM", "W"] },
+  // 9. Walls BEFORE concrete/paving, mirroring tradeFor()'s
+  //    footing-before-paving precedent: CONCRETE RETAINING WALL is a wall.
+  //    A-WALL is C4.3's own building-wall layer (section 15 item 14).
+  { bucket: "Walls",
+    tokens: ["RETAINING", "GABION", "MSE", "SCREEN WALL", "WALL"] },
+  //    The trench tool's bedding row for a run whose name matched nothing
+  //    above. BEFORE the aggregate GRAVEL token so "Bedding gravel (run)"
+  //    stays with its trench (a named run's bedding already matched its
+  //    system in rules 6-8, because the run name is inside the label).
+  { bucket: "Earthwork", tokens: ["BEDDING GRAVEL"] },
+  // 10. Site concrete / paving - #853 bills hardscape by the SF ("Paths To
+  //     Subgrade 22,796 SF", quoted at arData()); aggregate/base is
+  //     section 0's own family. GUT / FOC / BOC / SWLK / DRWY are the
+  //     Kayden road-layer abbreviations (gutter, face/back of curb,
+  //     sidewalk, driveway).
+  { bucket: "Site Concrete/Paving",
+    tokens: ["CURB", "GUTTER", "=GUT", "FOC", "BOC", "SIDEWALK", "SWLK",
+             "SDWK", "CROSSWALK", "PAVEMENT", "PAVING", "PAVER", "ASPHALT",
+             "CONCRETE", "CONC", "FLATWORK", "APRON", "DRIVEWAY", "DRWY",
+             "ROAD", "PARKING", "AGGREGATE", "BASE COURSE", "GRAVEL",
+             "EOP", "SLAB", "PATH", "STAIR"] },
+  // 11. Landscape / other named families. FENCE and RAIL sit here so a
+  //     PIPE RAIL never reads as pipe (the generic-pipe rule is below);
+  //     "=TREE" is word-bound so STREET never reads as a tree; PLNT /
+  //     EDGER / BOULDER are Barn's own planting-plan layer names.
+  { bucket: "Landscape/Other",
+    tokens: ["LANDSCAP", "=TREE", "TREES", "SHRUB", "PLNT", "PLANT",
+             "SOD", "SEED", "MULCH", "EDGER", "BOULDER", "POOL", "FENCE",
+             "RAIL", "=GATE", "BUILDING", "BLDG"] },
+  // 12. A pipe named only by its material. The one measured instance in
+  //     this corpus is storm - C4.3 style 106, PROPOSED PVC SURFACE STORM
+  //     DRAIN PIPE, 380.9 LF (the section 15 item 14 family) - so the
+  //     default is Storm Drainage. The material is genuinely ambiguous
+  //     (sanitary runs PVC too); the per-row override exists for exactly
+  //     this row, and the row is listed under the bucket, never hidden.
+  { bucket: "Storm Drainage",
+    tokens: ["PVC", "HDPE", "CPP", "DIP", "PIPE"] },
+  // 13. Trench tool rows whose run name matched nothing above - the dig
+  //     and backfill of an unnamed run is dirt work (section 0's "trench,
+  //     BY DEPTH BAND" family).
+  { bucket: "Earthwork", tokens: ["TRENCH", "BEDDING", "BACKFILL"] },
+];
+// Tokens matched against the LABEL alone, never the CAD layer: a single
+// letter is a line code only when the legend or the lettered-run
+// classifier wrote it; in a layer path it is noise.
+const BID_LABEL_ONLY = ["W"];
+
+// Uppercase, and collapse every non-alphanumeric run to one space, so
+// hyphenated CAD layer paths split into words. Padded with spaces so
+// whole-word tests are one indexOf.
+function bidNormText(s) {
+  return (" " + String(s == null ? "" : s).toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ").trim() + " ");
+}
+function bidTokenHit(norm, tok) {
+  const word = tok.charAt(0) === "=";
+  const t = word ? tok.slice(1) : tok;
+  if (word || t.length <= 3) return norm.indexOf(" " + t + " ") >= 0;
+  return norm.indexOf(t) >= 0;
+}
+// Two passes: the name the legend or the operator gave the row outranks
+// the CAD layer path (a FIRE HYDRANT filed on a PROP-LOT layer is a
+// hydrant). The layer is the tie-breaker for rows whose label matches
+// nothing (Kayden's garbled "$nWonLo (legend)" label on the
+// C-U2-ESMT-SSWR layer is an easement).
+function bidBucketFor(label, layer) {
+  const rawLabel = String(label == null ? "" : label);
+  const passes = [bidNormText(rawLabel),
+                  bidNormText(rawLabel + " "
+                    + String(layer == null ? "" : layer))];
+  for (let p = 0; p < passes.length; p++)
+    for (const r of BID_RULES) {
+      if (r.re) {
+        if (p === 0 && r.re.test(rawLabel))
+          return { bucket: r.bucket, token: "re" };
+        continue;
+      }
+      for (const tok of r.tokens) {
+        if (p === 1 && BID_LABEL_ONLY.indexOf(tok) >= 0) continue;
+        if (bidTokenHit(passes[p], tok))
+          return { bucket: r.bucket, token: tok };
+      }
+    }
+  return { bucket: BID_UNASSIGNED, token: null };
+}
+// A size token the LABEL itself carries - 8", 10'', 8IN, 12-INCH. Display
+// grouping only (Pierce, section 13: "Combined the 8\" and 12\" sewer line
+// into one item. It would be preferable if it was separated"). Nothing is
+// inferred: no token in the name, no size on the row. A bare "8 PVC" is
+// deliberately NOT read as a size - a number with no inch mark could be a
+// station, a count, or a type code.
+function bidSizeToken(label) {
+  const m = /(\d{1,3})\s*(?:"|”|''|[- ]?IN(?:CH)?\b)/i
+    .exec(String(label == null ? "" : label));
+  return m ? m[1] + '"' : null;
+}
+// The grouping. rows: [{label, layer, unit, qty, ...}] - the takeoff rows,
+// already filtered and override-adjusted by computeTakeoffRows, NEVER the
+// raw chains. ovFor(label) -> bucket name or null is the operator's
+// override; an unknown name is ignored (the rule bucket stands) rather
+// than inventing a bucket. Returns every bucket in display order; sums are
+// kept PER UNIT - ft, EA, CY, SF are never added together.
+function bidGroupRows(rows, ovFor) {
+  const byB = {};
+  for (const b of BID_BUCKETS)
+    byB[b] = { bucket: b, n: 0, byUnit: {}, members: [] };
+  for (const r of rows || []) {
+    const ruled = bidBucketFor(r.label, r.layer);
+    const ovRaw = ovFor ? ovFor(r.label) : null;
+    const ov = ovRaw && BID_BUCKETS.indexOf(ovRaw) >= 0 ? ovRaw : null;
+    const m = Object.assign({}, r, {
+      bucket: ov || ruled.bucket,
+      ruleBucket: ruled.bucket,
+      token: ruled.token,
+      via: ov ? "override" : "rule",
+      size: bidSizeToken(r.label),
+    });
+    const B = byB[m.bucket];
+    B.n += 1;
+    if (typeof m.qty === "number" && isFinite(m.qty))
+      B.byUnit[m.unit] = (B.byUnit[m.unit] || 0) + m.qty;
+    B.members.push(m);
+  }
+  for (const b of BID_BUCKETS)
+    byB[b].members.sort((x, y) => y.qty - x.qty);
+  return BID_BUCKETS.map((b) => byB[b]);
+}
+// Footage per size token within one bucket's members, for the Storm
+// Drainage sub-line (Pierce, section 13). Rows with no size token in their
+// own name are reported as such - never guessed into a size.
+function bidBySize(members, unit) {
+  const out = {};
+  for (const m of members) {
+    if (m.unit !== unit) continue;
+    const k = m.size || "no size in name";
+    out[k] = (out[k] || 0) + m.qty;
+  }
+  return out;
+}
+// BIDVIEW-RULES-END
+
+// The operator's bucket override for one takeoff row: doc-scoped and
+// label-keyed like the trade store (tradeKey), page-free on purpose - "this
+// document's THERMAL WELLS row bids as Water" holds on every sheet the
+// label appears on, exactly like a trade pick. Written with store.setItem
+// (a real decision: it persists and counts on the Saved-work button).
+function bidKey(label) {
+  return docKey() + "::bid::" + label.trim().toUpperCase();
+}
+// Which buckets stay expanded across repaints. Session-only, like the
+// collapsible sections.
+const bidOpen = new Set();
+
+// Isolate a bid member's linework on the canvas, reusing the style-row
+// isolation state (state.isolate + .iso on the style row + mini legend +
+// draw). A member can span several styles (the takeoff adds up by NAME);
+// repeated clicks cycle through them and then turn the isolate off, the
+// same gesture as the style list's item-split button.
+function bidIsolate(m, rowEl) {
+  const sids = m.sids || [];
+  if (!sids.length) return;
+  const cur = sids.indexOf(state.isolate);
+  const next = cur < 0 ? sids[0]
+    : (cur + 1 < sids.length ? sids[cur + 1] : null);
+  state.isolate = next;
+  const list = $("styleList");
+  for (const r of list.querySelectorAll(".style-row.iso"))
+    r.classList.remove("iso");
+  for (const r of $("bidBox").querySelectorAll(".bid-member.bid-iso"))
+    r.classList.remove("bid-iso");
+  if (next !== null) {
+    const t = list.querySelector('.style-row[data-sid="' + next + '"]');
+    if (t) { t.classList.add("iso"); t.scrollIntoView({ block: "nearest" }); }
+    if (rowEl) rowEl.classList.add("bid-iso");
+  }
+  setStatus(next === null ? "isolate off"
+    : "isolated: " + m.label
+      + (sids.length > 1
+        ? " — style " + (sids.indexOf(next) + 1) + " of " + sids.length
+          + ", click again for the next" : "")
+      + " — Esc shows everything again");
+  renderMiniLegend(); draw();
+}
+
+// Painted from the rows renderItemized just computed - one source, so the
+// bid view, the itemized takeoff and the tally can never disagree.
+function renderBidView(groups, ftPerIn) {
+  const head = $("bidHead"), box = $("bidBox");
+  if (!head || !box) return;
+  if (!groups) {
+    head.hidden = true; box.hidden = true; box.innerHTML = "";
+    return;
+  }
+  head.hidden = false;
+  box.hidden = head.classList.contains("closed");
+  box.innerHTML = "";
+  const u = ftPerIn ? "ft" : "pt";
+  // Flatten the trade groups back to plain rows: the bid view is a second
+  // GROUPING of the same items, never a second computation. it.qty here
+  // already carries the operator's quantity override, like every reader
+  // of computeTakeoffRows.
+  const rows = [];
+  for (const g of groups)
+    for (const it of g.items) {
+      const layers = [];
+      for (const sid of (it.sids || [])) {
+        const st = state.result.styles.find((s) => s.style_id === sid);
+        const lay = st && st.layer ? String(st.layer) : "";
+        if (lay && layers.indexOf(lay) < 0) layers.push(lay);
+      }
+      rows.push({ label: it.label, layer: layers.join(" | "),
+                  unit: it.unit === "pt" || it.unit === "ft" ? u : it.unit,
+                  qty: it.qty, cnt: it.cnt, sids: it.sids || [],
+                  isCalc: !!it.isCalc, ov: !!it.ov });
+    }
+  const buckets = bidGroupRows(rows, (label) => {
+    const v = store.getItem(bidKey(label));
+    return v && BID_BUCKETS.indexOf(v) >= 0 ? v : null;
+  });
+  const abbr = (v) => v >= 1000 ? (v / 1000).toFixed(1) + "k"
+    : String(Math.round(v * 10) / 10);
+  const unitOrder = (x) => x === "ft" || x === "pt" ? 0 : x === "EA" ? 1 : 2;
+  const chipText = (byUnit) => {
+    const parts = [];
+    for (const k of Object.keys(byUnit).sort(
+           (a, b) => unitOrder(a) - unitOrder(b) || a.localeCompare(b)))
+      if (byUnit[k]) parts.push(abbr(byUnit[k]) + " " + k);
+    return parts.join(" · ");
+  };
+  let any = false;
+  for (const B of buckets) {
+    if (!B.n) continue;   // an empty bucket is not a bid line
+    any = true;
+    const un = B.bucket === BID_UNASSIGNED;
+    const d = document.createElement("details");
+    d.className = "bid-bucket" + (un ? " bid-unassigned" : "");
+    d.open = bidOpen.has(B.bucket);
+    d.addEventListener("toggle", () => {
+      if (d.open) bidOpen.add(B.bucket); else bidOpen.delete(B.bucket);
+    });
+    const sum = document.createElement("summary");
+    const nm = document.createElement("span");
+    nm.className = "bid-b-name"; nm.textContent = B.bucket;
+    const sub = document.createElement("span");
+    sub.className = "bid-b-sub";
+    sub.textContent = un
+      ? B.n + " row" + (B.n === 1 ? "" : "s") + " / "
+        + (chipText(B.byUnit) || "0 " + u)
+        + " not yet assigned — open the style list"
+      : (chipText(B.byUnit) || "0") + " · " + B.n
+        + " row" + (B.n === 1 ? "" : "s");
+    sum.append(nm, sub);
+    sum.title = un
+      ? "No name rule matched these rows and no bucket was picked by hand. "
+        + "They are still measured and still in the takeoff - this line "
+        + "exists so they cannot vanish quietly. Expand to file each one, "
+        + "or open the style list below to work on them."
+      : "The sum of the measured takeoff rows filed under this bid line by "
+        + "the name rules (or by your own pick on a row). Same rows, same "
+        + "filters, same overrides as the itemized takeoff - regrouped, "
+        + "never recomputed. Expand for the rows; click a row to isolate "
+        + "its linework.";
+    d.appendChild(sum);
+    // Storm by size, when any member's own label carries a size token
+    // (Pierce: pipe separated by size).
+    if (B.bucket === "Storm Drainage") {
+      const bs = bidBySize(B.members, u);
+      const keys = Object.keys(bs);
+      if (keys.length > 1 || (keys.length === 1 && keys[0] !== "no size in name")) {
+        const line = document.createElement("div");
+        line.className = "bid-bysize";
+        line.textContent = "by size: " + keys.sort()
+          .map((k) => k + " " + abbr(bs[k]) + " " + u).join(" · ");
+        line.title = "Split by the size token in each row's own name. "
+          + "Rows with no size in the name are never guessed into one.";
+        d.appendChild(line);
+      }
+    }
+    for (const m of B.members) {
+      const row = document.createElement("div");
+      row.className = "bid-member" + (m.sids.length ? "" : " nogeom")
+        + (m.sids.indexOf(state.isolate) >= 0 ? " bid-iso" : "");
+      const lab = document.createElement("span");
+      lab.className = "bm-label";
+      lab.textContent = m.label;
+      lab.title = m.label + (m.layer ? "\nCAD layer: " + m.layer : "")
+        + (m.sids.length
+          ? "\n\nClick to isolate this row's linework on the canvas."
+          : "\n\nA calculator row - no linework of its own to isolate.");
+      row.appendChild(lab);
+      if (m.size) {
+        const sz = document.createElement("span");
+        sz.className = "bm-size"; sz.textContent = m.size;
+        sz.title = "size token read from the row's own name";
+        row.appendChild(sz);
+      }
+      const q = document.createElement("span");
+      q.className = "bm-qty";
+      q.textContent = abbr(m.qty) + " " + m.unit
+        + (m.isCalc || m.unit === "EA" ? "" : " · " + m.cnt + " lines");
+      q.title = m.qty.toLocaleString(undefined,
+        { maximumFractionDigits: 1 }) + " " + m.unit
+        + (m.ov ? " (your override; the itemized row discloses the "
+                  + "detected figure)" : "");
+      row.appendChild(q);
+      const pick = document.createElement("select");
+      pick.className = "bid-pick" + (m.via === "override" ? " ov" : "");
+      pick.name = "bid-" + m.label;
+      const auto = document.createElement("option");
+      auto.value = "";
+      auto.textContent = "auto · " + m.ruleBucket;
+      auto.selected = m.via !== "override";
+      pick.appendChild(auto);
+      for (const b of BID_BUCKETS) {
+        const o = document.createElement("option");
+        o.value = b; o.textContent = b;
+        o.selected = m.via === "override" && m.bucket === b;
+        pick.appendChild(o);
+      }
+      pick.title = "Which bid line this row belongs to. “auto” is "
+        + "the name rule's filing; your pick overrides it for this document "
+        + "and is remembered.";
+      pick.onclick = (e) => e.stopPropagation();
+      pick.onchange = () => {
+        if (pick.value === "") store.removeItem(bidKey(m.label));
+        else store.setItem(bidKey(m.label), pick.value);
+        renderItemized();
+      };
+      row.appendChild(pick);
+      if (m.sids.length) {
+        row.onclick = () => bidIsolate(m, row);
+        row.onmouseenter = () => { state.hot = m.sids[0]; draw(); };
+        row.onmouseleave = () => { state.hot = null; draw(); };
+      }
+      d.appendChild(row);
+    }
+    box.appendChild(d);
+  }
+  if (!any) {
+    const none = document.createElement("div");
+    none.className = "bid-none";
+    none.textContent = "nothing measured yet";
+    box.appendChild(none);
+  }
+}
+
 function renderItemized() {
   const box = $("itemized");
   const keepFocus = panelFocus(box);
@@ -5990,6 +6488,8 @@ function renderItemized() {
     // PREVIOUS sheet's "12.4k ft measured - $84320" sitting under it. A stale
     // number with no table under it reads as this sheet's total.
     $("tallyBar").textContent = "";
+    // ...and the bid view mirrors these rows, so it goes stale the same way
+    renderBidView(null);
     return;
   }
   const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
@@ -6247,6 +6747,9 @@ Both are included in every `
     row.innerHTML = `<div>TOTAL</div><div></div><div></div><div></div><div>${grand.toFixed(0)}</div>`;
     box.appendChild(row);
   }
+  // The bid view is the SAME rows regrouped, so it repaints wherever the
+  // itemized takeoff does - one call site, and the two cannot drift.
+  renderBidView(groups, ftPerIn);
   // The panel was torn down and rebuilt; put the operator's cursor back on the
   // same field. This covers the ~30 callers other than the price box, notably
   // the 350 ms label-typing timer and every spinner click on a quantity box.
@@ -6521,6 +7024,7 @@ $("csvBtn").onclick = () => {
 const SECTIONS = [
   ["legendHead", ["legendBox"]],
   ["arHead", ["arList", "arScale", "arUnmatched"]],
+  ["bidHead", ["bidBox"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewLimit", "ewLayers", "ewActions",
@@ -10390,6 +10894,10 @@ addEventListener("keydown", (e) => {
     if (state.isolate !== null) {
       state.isolate = null;
       renderStyles(); renderMiniLegend();
+      // the bid view marks its member rows the same way the style rows are
+      // marked, so the same clear has to reach them
+      for (const r of document.querySelectorAll("#bidBox .bid-member.bid-iso"))
+        r.classList.remove("bid-iso");
       setStatus("isolate off");
     }
     draw();
