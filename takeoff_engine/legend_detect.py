@@ -148,6 +148,13 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                     runs.append([])
                 runs[-1].append(w)
             ws = runs[0]
+            # An index-contour row prints its NUMBER riding the sample bar,
+            # a bar-width gap before the words: "7900   EXISTING CONTOUR
+            # INTERVAL". A first run with no two letters in a row is not a
+            # name by itself - join the next run rather than orphan the row.
+            if len(runs) > 1 and not _is_usable_label(
+                    " ".join(str(w[4]).strip() for w in ws)):
+                ws = ws + runs[1]
             label = " ".join(str(w[4]).strip() for w in ws).strip()
             if not (3 <= len(label) <= 60):
                 continue
@@ -500,7 +507,121 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 if r.color and max(abs(a - b) for a, b in
                                    zip(base.color, r.color)) <= 0.2:
                     _assign_label(style_labels, sid, e["label"])
+    _extend_by_continuation(style_labels, chains)
     return {"entries": entries, "style_labels": style_labels}
+
+
+def _extend_by_continuation(style_labels: dict, chains: list) -> None:
+    """A labeled line that BREAKS mid-run keeps its name across the break.
+
+    The chainer sometimes reads one physical line as two styles: on Barn C3.0
+    the grey existing contours (d9.0 g4.5) continue end-to-end into a sibling
+    style reading d9.0 g44.3 - same 9pt dashes, gaps read one-dash-sparse -
+    11 chains / 14,343 pt (5,976 ft at 1"=30') of contour footage that would
+    otherwise sit unlabeled, invisible to the earthwork panel's contour
+    suggestions, under a machine name.
+
+    Evidence gates, all three required, measured against the smear cases:
+      * >= 2 joints - chain ends within 12 pt, outgoing tangents opposed
+        (dot < -0.6): geometric continuation, not proximity
+      * joints >= 0.25 x the target style's chain count - a 174-chain
+        generic-solid pool with 3 incidental joints must NOT inherit the
+        name (that is the Oncor masonry smear with extra steps); a small
+        fragment family with joints on a quarter of its chains is the same
+        physical line
+      * colors within 0.15 per channel, and never onto annotation class
+    Label-layer only: no geometry, class or quantity moves.
+    """
+    from scipy.spatial import cKDTree
+
+    labeled = set(style_labels)
+    if not labeled:
+        return
+    by_sid: dict = defaultdict(list)
+    for c in chains:
+        by_sid[c.style_id].append(c)
+
+    def _ends(c):
+        p = np.asarray(c.pts, float)
+        if len(p) < 2:
+            return []
+        out = []
+        for a, b in ((p[1], p[0]), (p[-2], p[-1])):
+            v = b - a
+            n = float(np.hypot(*v))
+            if n > 0:
+                out.append((b, v / n))
+        return out
+
+    src_pts, src_dirs = [], []
+    for sid in labeled:
+        for c in by_sid.get(sid, ()):
+            for pt, tv in _ends(c):
+                src_pts.append(pt)
+                src_dirs.append((sid, tv))
+    if not src_pts:
+        return
+    tree = cKDTree(np.asarray(src_pts))
+
+    joints: dict = defaultdict(int)
+    for sid, cs in by_sid.items():
+        if sid in labeled or not cs or cs[0].klass == "annotation":
+            continue
+        for c in cs:
+            # count per END, up to two per chain: a fragment whose BOTH ends
+            # continue into the labeled family is sandwiched inside the same
+            # physical line - the strongest evidence, not double counting
+            for pt, tv in _ends(c):
+                for k in tree.query_ball_point(pt, 12.0):
+                    ssid, stv = src_dirs[k]
+                    if float(tv @ stv) < -0.6:
+                        joints[(sid, ssid)] += 1
+                        break
+
+    import re as _re
+
+    def _dg(c):
+        m = _re.match(r"d([\d.]+) g([\d.]+)", c.dash_signature or "")
+        return (float(m.group(1)), float(m.group(2))) if m else None
+
+    def _sparse_kin(cs, ssid):
+        """Same physical linetype read one-dash-sparse by the chainer.
+
+        Barn C3.0: existing contours are d9.0 g4.5 (period 13.5); their broken
+        siblings read d9.0 g44.3 - the same 9pt dashes with the gap spanning
+        an integer number of periods minus one dash ((44.3+9.0)/13.5 = 3.95).
+        Demands: dash within 10%, color within 0.1, and gap+dash an integer
+        multiple (2..6) of the parent period within 15%. This is cadence
+        arithmetic, not proximity - a different linetype cannot satisfy it by
+        accident and a generic solid pool has no cadence at all.
+        """
+        a, b = (by_sid[ssid] or [None])[0], cs[0]
+        if a is None or not a.klass.startswith("dash")                 or not b.klass.startswith("dash"):
+            return False
+        da, db = _dg(a), _dg(b)
+        if not da or not db:
+            return False
+        if abs(da[0] - db[0]) > 0.10 * max(da[0], db[0]):
+            return False
+        if a.color and b.color and                 max(abs(x - y) for x, y in zip(a.color, b.color)) > 0.10:
+            return False
+        period = da[0] + da[1]
+        k = (db[1] + db[0]) / period
+        return 2.0 <= k <= 6.0 and abs(k - round(k)) <= 0.15
+
+    for (sid, ssid), n in sorted(joints.items(), key=lambda kv: -kv[1]):
+        if sid in style_labels:
+            continue
+        cs = by_sid[sid]
+        if n < 2:
+            continue
+        if n < 0.25 * len(cs) and not _sparse_kin(cs, ssid):
+            continue
+        a = cs[0].color
+        b = (by_sid[ssid] or [None])[0]
+        if a and b is not None and b.color and                 max(abs(x - y) for x, y in zip(a, b.color)) > 0.15:
+            continue
+        _assign_label(style_labels, sid, style_labels[ssid])
 
 
 def read_legend_sheet(words: list, chains: list) -> list:
