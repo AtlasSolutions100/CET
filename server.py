@@ -3329,6 +3329,12 @@ def _doc_schedule(job_id: str, path: str, page: int) -> dict:
     return best
 
 
+# bump when the symbol finder's own logic changes (it lives in this file,
+# outside engine_sig's hash): 3 = disclosed caps + legend glyph naming
+# (line-row veto, composed glyphs, twin candidates)
+SYMBOLS_ALGO = 4
+
+
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
 def symbols_suggest(job_id: str, page: int):
     """Cached wrapper. The finding is deterministic for a given page, and on
@@ -3346,14 +3352,19 @@ def symbols_suggest(job_id: str, page: int):
             # Same rule as a detect result (F96): a cache keyed only on the
             # PDF happily serves counts the current code would not produce.
             # This one feeds /marks-rollup, so a stale entry becomes a stale
-            # quantity in the number Bill faxes a supplier.
-            if js.get("engine_sig") == sig:
+            # quantity in the number Bill faxes a supplier. SYMBOLS_ALGO
+            # exists because this route's own logic lives in server.py,
+            # which engine_sig does not hash - bumping it here is what
+            # invalidates these caches when the finder changes.
+            if (js.get("engine_sig") == sig
+                    and js.get("symbols_algo") == SYMBOLS_ALGO):
                 return JSONResponse(js)
         except (OSError, ValueError):
             pass
     out = _symbols_compute(job_id, page)
     try:
         out["engine_sig"] = sig
+        out["symbols_algo"] = SYMBOLS_ALGO
         _job_dir(job_id).mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(out))
     except OSError:
@@ -3430,7 +3441,7 @@ def _symbols_compute(job_id: str, page: int):
         return None
 
     out = []
-    for (w, h, _), centers in groups.items():
+    for (w, h, l4), centers in groups.items():
         # a symbol repeats; also drop coincident duplicates (drawn twice)
         uniq = []
         for c in centers:
@@ -3453,17 +3464,31 @@ def _symbols_compute(job_id: str, page: int):
             # mark-bubble family: one countable group per mark, named by
             # the sheet, cross-checked against its own schedule
             for m in sorted(marks):
-                g = {"w": w, "h": h, "n": len(marks[m]),
+                g = {"w": w, "h": h, "l4": l4, "n": len(marks[m]),
                      "centers": marks[m], "name": m}
                 if m in sched:
                     g["schedule_qty"] = sched[m]
                 out.append(g)
             if len(unmarked) >= 3:
-                out.append({"w": w, "h": h, "n": len(unmarked),
+                out.append({"w": w, "h": h, "l4": l4, "n": len(unmarked),
                             "centers": unmarked})
         else:
-            out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
+            out.append({"w": w, "h": h, "l4": l4, "n": len(uniq),
+                        "centers": uniq})
     out.sort(key=lambda g: -g["n"])
+
+    # Legend-glyph naming (Pierce's missed manhole) was BUILT AND REMOVED
+    # here on 2026-08-30 - three versions, each measured on Kayden C5.1:
+    # a flat (w, h, length) key named a NOTES row onto 882 letter glyphs
+    # and a waterline row onto its 12 line markers; composed-glyph
+    # verification (all strip units co-occurring) then found ZERO real
+    # structures, because the legend draws its symbol at a different size
+    # or block than the plan instances (4 anchor units on the plan, the
+    # companion circle never beside them; 1 of 3 hydrants verified). A
+    # namer that hits one instance in three is a confident wrong count.
+    # The working route is raster template matching seeded from the
+    # legend-strip render - marks.build_family already does exactly this
+    # for scanned bubbles - measured design in EXCAVATION-PLAN.md.
     # a silent cap reports as full coverage (section-5 trap): the bound
     # stays for response size, but the total is disclosed so the panel can
     # say "40 of 57" instead of implying the sheet holds 15 symbol groups
