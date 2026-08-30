@@ -987,3 +987,26 @@ was a typed zero (isFinite(null), 7ccae92) and PE pad elevations were
 invisible + 3-digit sites could never print in full (5ffe5b2; Stice goes
 0 -> 191 resolved pad grades). Surface-fidelity (~25% under-read inside
 the ring on Stice) is the next measured engineering target.
+
+## 24. Boundary drawing + cut/fill visibility + V5 (2026-08-30 afternoon)
+
+Koby's feedback on V2 ("they don't have a full square, it has odd cuts")
+became two tools (4a254c6) and the capstone video:
+
+* DRAW IT: hand-drawn polygon limit of work (Jason's editable-boundary
+  requirement, F145); persists by its own points; live SF while drawing.
+* Map legend + peak depths: cut_fill returns max_cut_ft/max_fill_ft; the
+  overlay carries a readable ramp legend. The peaks caught the phantom
+  z=655 row on their FIRST live use (deepest fill 199 ft on 96 ft of
+  relief).
+* V5 "Automate 80%, Finish 20%" (2m39s, delivered): peaks flag -> 3-row
+  fix -> 14-corner drawn boundary along the real tract cuts -> map ->
+  hand-added contour -> bid view -> cited market price -> export, with
+  the detected/corrected/manual split in the closing caption. The PE
+  pad fix is in the on-camera math (191 proposed spot grades).
+
+Bounded-with-everything Stice landing: cut 1,562,526 / fill 1,200,501 CY
+vs the sheet's own table 2,236,137 / 1,631,080. Residual = surface
+fidelity; the measured next target is elevation assignment for UNLABELED
+intermediate contours (the sheet draws them, the surface never sees
+them) - that, not the boundary, closes the gap.
