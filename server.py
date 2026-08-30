@@ -1299,23 +1299,25 @@ def page_confidence(job_id: str, page: int):
         lines = _page_lines(pg)
     finally:
         doc.close()
+    dinfo = {}
     try:
-        spots = read_spot_grades(words, lines=lines)
+        spots = read_spot_grades(words, lines=lines, datum_info=dinfo)
     except Exception:
-        spots = []
-    declared = read_spot_datum(lines)
-    # Which branch of read_spot_grades resolved each grade, reconstructed
-    # from the same three inputs the reader itself used (value >= 1000 ->
-    # printed in full; declared datum -> the sheet's own note; otherwise
-    # the consensus guess). Reconstructed here rather than returned by the
-    # reader so that no stored detect result changes shape.
+        spots, dinfo = [], {}
+    declared = dinfo.get("declared")
+    # Which branch resolved each grade, reconstructed with the SAME rule the
+    # reader now applies: the note only wins where read_spot_grades let it
+    # win (dinfo["chosen"]). The old reconstruction assumed the note always
+    # wins - the exact assumption that shipped 171 grades 100 ft low on Barn
+    # C3.3 under "from_sheet_note: 171".
+    note_won = dinfo.get("chosen") == "declared"
     n_printed = n_note = n_inferred = n_unresolved = 0
     for g in spots:
         if not g.get("resolved"):
             n_unresolved += 1
         elif g["value"] >= 1000.0:
             n_printed += 1
-        elif declared is not None and g["value"] < 100.0:
+        elif note_won and g["value"] < 100.0:
             n_note += 1
         else:
             n_inferred += 1
@@ -1328,6 +1330,10 @@ def page_confidence(job_id: str, page: int):
             "inferred": n_inferred,
             "unresolved": n_unresolved,
             "declared_datum": declared,
+            # Both candidates and the disagreement, so no banner ever again
+            # asserts "the drafter's statement" while the sheet's own
+            # contours read 100 ft higher.
+            "datum": dinfo,
         },
     }
 
@@ -2800,7 +2806,9 @@ def earthwork_suggest(job_id: str, page: int):
     # and the whole population used to be invisible. They are POINT
     # elevations, so they ride alongside the contour rows.
     from takeoff_engine.earthwork import read_spot_grades
-    spots = read_spot_grades(words, lines=lines)
+    spot_datum_info = {}
+    spots = read_spot_grades(words, lines=lines,
+                             datum_info=spot_datum_info)
 
     # Two junk sources make the contour suggestions untrustworthy on sparse
     # sheets (Barn C3.4 offered 6 rows of which 4 were noise):
@@ -2838,6 +2846,7 @@ def earthwork_suggest(job_id: str, page: int):
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
             "spot_grades": spots,
+            "spot_datum": spot_datum_info,
             "spot_datum_needed": bool(spots) and not any(
                 g.get("resolved") for g in spots),
             "scale": res.get("scale"),

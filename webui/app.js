@@ -2130,7 +2130,23 @@ function confLines() {
   // plausible elevation. See takeoff_engine/earthwork.read_spot_datum.
   const sp = cf && cf.spots;
   if (sp && sp.n) {
-    if (sp.from_sheet_note)
+    // A sheet can disagree WITH ITSELF: Barn C3.3's legend note reads 7605.25
+    // while its own printed contours sit at 7720-7735. The old banner called
+    // the note "the drafter's statement" unconditionally and coloured it
+    // green - over 171 elevations that were exactly 100 ft low. When the two
+    // sources conflict, say so first, in warn colour, with both numbers.
+    const dtm = sp.datum;
+    if (dtm && dtm.conflict)
+      say("warn", `<b>This sheet disagrees with itself about the spot-`
+        + `elevation datum.</b> Its legend note reads <span class="conf-num">`
+        + `${confFt(dtm.declared)} ft</span>, but ${dtm.band_n} full `
+        + `elevation${confPlural(dtm.band_n, "")} printed on the drawing sit`
+        + `${dtm.band_n === 1 ? "s" : ""} in the <span class="conf-num">`
+        + `${confFt(dtm.band_base)} ft</span> band. Using <b>`
+        + `${confFt(dtm.chosen === "band" ? dtm.band_base : dtm.declared)} ft`
+        + `</b>. Check one printed elevation by eye before pricing anything `
+        + `built on these.`);
+    if (sp.from_sheet_note && !(dtm && dtm.conflict))
       say("ok", `<b>${sp.from_sheet_note} spot elevation`
         + `${confPlural(sp.from_sheet_note, "")} read from this sheet.</b> `
         + `The sheet prints them shortened, and its own legend states what `
@@ -2142,7 +2158,15 @@ function confLines() {
         + `${confPlural(sp.printed_in_full, "")} printed in full</b> on the `
         + `sheet — nothing about ${confPlural(sp.printed_in_full, "it", "them")}`
         + ` had to be worked out.`);
-    if (sp.inferred)
+    if (sp.inferred && dtm && dtm.conflict)
+      // The conflict banner above already carries the story; this one must
+      // not claim "no note could be read" when a note WAS read and overruled.
+      say("warn", `<b>${sp.inferred} spot elevation`
+        + `${confPlural(sp.inferred, "")} anchored to the sheet's printed `
+        + `elevations</b> after its legend note was overruled (above). `
+        + `Confirm one against an elevation you can read before trusting `
+        + `any cut or fill volume.`);
+    if (sp.inferred && !(dtm && dtm.conflict))
       say("warn", `<b>${sp.inferred} spot elevation`
         + `${confPlural(sp.inferred, "")} rest on a guess.</b> The sheet `
         + `prints them shortened (“FG: 15.96”) and no note saying what the `
@@ -5274,6 +5298,12 @@ $("ewBtn").onclick = async () => {
       // one, and they are POINT elevations, not lines. Ground tags default ON;
       // structure tops (RIM, wall, step) are not ground and stay off.
       spots: j.spot_grades || [],
+      // How the truncated spot values were anchored, and whether the sheet's
+      // two sources disagreed: {declared, band_base, band_n, chosen,
+      // conflict}. On Barn C3.3 the legend note says 7600 while four printed
+      // contours say 7700 - the engine now resolves by band strength, but a
+      // disagreement like that must reach the operator's eyes either way.
+      datum: j.spot_datum || null,
       spotOn: { FG: true, ME: true, EG: true },
       spotSide: "proposed",
       spotDatum: null,
@@ -5680,6 +5710,16 @@ function ewActiveSpots() {
   return state.ew.spots
     .filter(g => state.ew.spotOn[g.tag])
     .map(g => {
+      // A typed datum outranks the engine's resolution for every TRUNCATED
+      // value - resolved ones included. The old order (resolved wins, datum
+      // only fills the unresolved) made the override useless on the sheet
+      // that needs it most: a bogus legend note resolves everything, so a
+      // correct typed 7700 changed nothing. Authority is human > sheet note
+      // > consensus band. Values printed in full (>= 1000) keep their
+      // printed elevation - the datum is the hundreds the sheet OMITTED,
+      // and nothing was omitted from those.
+      if (isFinite(base) && g.value < 100.0)
+        return { ...g, z: base + g.value };
       if (g.resolved && isFinite(g.z)) return g;
       if (!isFinite(base)) return null;
       return { ...g, z: base + g.value };   // datum = the hundreds the sheet omitted
@@ -5721,7 +5761,36 @@ function renderEwSpots() {
     tags.appendChild(l);
   }
   box.appendChild(tags);
-  if (!sp.some(g => g.resolved)) {
+  // The override box shows when nothing resolved (nothing to anchor to) OR
+  // when the sheet's two datum sources DISAGREE. The old gate was
+  // resolved-only, which is precisely how Barn C3.3 shipped 171 grades
+  // 100 ft low with the override hidden: a bogus legend note resolved
+  // everything, so the one control that could fix it never rendered.
+  // Wrong-and-visible is survivable; wrong-and-green-with-no-override is
+  // what loses a client.
+  const dat = state.ew.datum;
+  if (dat && dat.conflict) {
+    const d = document.createElement("div");
+    d.className = "sp-datum sp-conflict";
+    const chose = dat.chosen === "band" ? dat.band_base : dat.declared;
+    const msg = document.createElement("div");
+    msg.innerHTML = `<b>This sheet disagrees with itself about the datum.</b> `
+      + `Its legend note reads <b>${dat.declared}</b>; its own printed `
+      + `elevations (${dat.band_n} of them) sit in the <b>${dat.band_base}</b> `
+      + `band. Using <b>${chose}</b> — ${dat.chosen === "band"
+          ? `${dat.band_n} full elevations printed on the drawing outrank one `
+            + `boilerplate legend sentence`
+          : `a ${dat.band_n}-label band is the shape the legend's own sample `
+            + `text produces, so the note stands`}. `
+      + `If the sheet means the other one, type it:`;
+    d.appendChild(msg);
+    const i = document.createElement("input");
+    i.type = "number"; i.step = "100"; i.placeholder = String(chose);
+    i.value = isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
+    d.appendChild(i);
+    box.appendChild(d);
+  } else if (!sp.some(g => g.resolved)) {
     const d = document.createElement("div");
     d.className = "sp-datum";
     d.append(document.createTextNode("No contour label on this sheet to anchor them. Datum:"));

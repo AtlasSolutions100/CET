@@ -827,7 +827,8 @@ _SPOT_SAME_R2 = 10.0 ** 2
 
 
 def read_spot_grades(words: list, max_dx: float = 26.0,
-                     row_tol: float = 6.0, lines: list | None = None) -> list:
+                     row_tol: float = 6.0, lines: list | None = None,
+                     datum_info: dict | None = None) -> list:
     """Spot elevations printed as `FG: 15.96` / `TW: 7918.60`.
 
     Civil sheets abbreviate: the value carries only the last two digits and
@@ -947,18 +948,51 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     if len(band) < 2:
         band = []          # one lone number is not a datum
 
-    # The sheet's own declared datum outranks the consensus guess. Consensus
-    # reads other numbers ON the sheet and infers; this line is the drafter
-    # telling us. Where they disagree the guess has been wrong by a clean
-    # multiple of 100 ft, which is invisible in a review because every value
-    # still looks like a plausible elevation.
+    # The sheet's own declared datum versus the consensus band - and NEITHER
+    # always wins, because each has a measured failure on this one plan set:
+    #
+    #   Barn C3.1 (engine index 3): the note's 7705.25 is RIGHT and the band
+    #   is a false [7900] built from the legend's own sample text, two labels
+    #   strong. Declared-always-wins was added for this sheet; before it, all
+    #   272 spot grades shipped exactly 200 ft high.
+    #
+    #   Barn C3.3 (engine index 5, printed sheet C3.3): the note reads
+    #   "EXAMPLE: TOP OF PATIO @ 7605.25'" - a stale boilerplate value - while
+    #   the sheet's own contours print 7720/7725/7730/7735, a four-label band.
+    #   Declared-always-wins shipped all 171 spot grades exactly 100 ft LOW,
+    #   marked resolved, under a green banner. Same defect on C3.5 and C3.6
+    #   (1 grade each).
+    #
+    # The prefix cannot distinguish them: every datum line in the set, genuine
+    # and stale alike, begins "EXAMPLE:" (it is how the legend note is
+    # worded). What distinguishes them is BAND STRENGTH. Three or more full
+    # elevations printed on the sheet body agreeing with each other outrank
+    # one boilerplate legend sentence; a two-label band is exactly the shape a
+    # legend echo produces and must not veto the note. Measured on all 15
+    # pages of the Barn set: this rule corrects the 3 poisoned pages (173
+    # grades fall to their genuine bands) and preserves C3.1's 272.
+    #
+    # Where the two sources disagree AT ALL, the disagreement is reported, not
+    # swallowed - `datum_info["conflict"]` - so the UI can show both numbers
+    # and offer the override. A wrong elevation that is visible is survivable;
+    # the shipped defect was wrong-and-green with the override hidden.
     declared = read_spot_datum(lines)
+    band_base = float(int(band[0][2] // 100) * 100) if band else None
+    conflict = (declared is not None and band_base is not None
+                and abs(band_base - declared) > 50.0)
+    use_declared = declared is not None and not (conflict and len(band) >= 3)
+    if datum_info is not None:
+        datum_info.update(
+            declared=declared, band_base=band_base, band_n=len(band),
+            conflict=bool(conflict),
+            chosen=("declared" if use_declared and declared is not None
+                    else "band" if band else None))
 
     for g in out:
         val = g["value"]
         if val >= 1000.0:
             g.update(z=val, base=None, resolved=True)
-        elif declared is not None and val < 100.0:
+        elif use_declared and val < 100.0:
             g.update(z=declared + val, base=declared, resolved=True)
         elif band:
             ax, ay, av = min(band, key=lambda a: (a[0] - g["x"]) ** 2

@@ -993,3 +993,11 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   text-overflow: ellipsis; }
 .item-split:hover .is-txt { opacity: 1; }
 .item-split:hover { background: var(--hover); }
+
+/* The sheet's two datum sources disagree - both candidates shown, override
+   offered. Amber, not red: the engine chose by evidence strength, but the
+   operator must see that a choice was made. */
+.sp-datum.sp-conflict { border-left: 3px solid #d08a3c; padding: 6px 8px;
+  background: rgba(208, 138, 60, .08); border-radius: 4px;
+  font-size: 11px; line-height: 1.5; }
+.sp-datum.sp-conflict input { margin-top: 4px; }
