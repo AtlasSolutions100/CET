@@ -776,3 +776,34 @@ Committed on `provenance-and-gate`, dev-only, live-verified each:
   set) has NO text layer and zero station tokens even under OCR at 200 dpi,
   while its title block prints `SCALE: 1"=50'` (OCR-reachable). Chase the file;
   do not build against nothing.
+
+## 19. Parallel-builders integration — same night, second wave
+
+Five workflow agents (worktrees `wf_42f2a5c9-0c3-*`) built in parallel;
+integrated SERIALLY onto main, each landing re-gated (`regress --check`
+PASSED every time) and live-verified on :8128 with annotated captures.
+
+| commit | builder task | headline measurement |
+|---|---|---|
+| 43cba20 | A2: unit-free `1:100` = ratio (8.333), thousands separators, `_RATIO_FPI_MAX` | 6,947-page A/B: only 3 pages move, both corrections verified against the sheets' own ink (soil-map bar to 0.02%; NTS fabrication gone) |
+| 33fecaf | printed sheet number read live off the title block | Barn 15/15, Oncor 9/9, Kayden 43/48 + 5 truthful abstains; chip "C3.1 (page 4 of 15)"; my own audit map corrected at idx12 = C4.3 (render-proven) |
+| 9f4b2ec | trench consent gate + 6a/6b guards + Pierce depth bands | bedding 137%→86.9% of dig with structural invariant; sloped-run integral exact to 1e-6; bands 30/15 LF hand-checked live |
+| df4e28d | calcstate persistence (`p<N>_calcstate.json`, GET/POST route) | full-reload restore of datum/trench inputs live-proven; results never staged; stale choices counted out loud |
+| becd81c | earthwork defaults: research + cite + default + override | strip 8 in (local #853 prior 8.29), 5 material presets w/ cited factors, default stays 1.0 per #853 |
+
+### Decisions I made overnight that need Koby's eyes
+
+1. **Trench model overruled** (9f4b2ec): the builder's band-by-band
+   cross-section met the audit's continuity bound but models a hole narrower
+   above than below — physically impossible, reads LOW into a bid. Restored
+   FULL BOTTOM WIDTH per depth class; the +40% step crossing a rule edge is
+   now INTENTIONAL (a depth class is a price step — same shape as Pierce's
+   2-ft bands). One clearance in every rule row = no steps. Tests pin both
+   sides.
+2. **Restored "added" = standing consent** (df4e28d): a fresh seat pressing
+   Calculate re-enters previously-consented rows without a new Add click.
+   One-line change if per-seat re-consent is wanted.
+3. **Job reset sweeps calcstate sidecars with the caches** — operator work
+   classified as cache in that dialog. Follow-up.
+4. **Over-excavation pairing** (equal dig/backfill CY, #853's three exact
+   pairs) is recorded in the research but NOT yet a UI feature.
