@@ -33,6 +33,7 @@ const LF = String.fromCharCode(10);   // newline for title= tooltips
 
 const state = window.state = {
   job: null, page: 0, kinds: [],
+  triage: null,             // /triage reply: per-page excavation tiers
   img: null, result: null,
   include: new Map(), labels: new Map(), isolate: null, hot: null,
   selected: null, excluded: new Set(),
@@ -407,6 +408,7 @@ function applyOpened(j) {
   // a newly uploaded set should appear in the picker without a reload
   setTimeout(loadRecent, 300);
   state.job = j.job_id; state.result = null;
+  state.triage = null;      // the old document's tiers must not paint this one
   // The server no longer blocks the open on classifying every page (it read
   // every drawing on every page: 16s for a 20-page set, 38s for a 15-page
   // one, with nothing on screen saying the app had not hung). The page list
@@ -428,6 +430,7 @@ function applyOpened(j) {
   $("detectAllBtn").textContent = "Detect all";
   renderPageStrip();
   refreshPageStatuses();
+  loadTriage(state.job);
   selectPage(0);
   setStatus(`${j.pages} pages`);
   if (!j.kinds) pollKinds(state.job, state.gen);
@@ -569,11 +572,13 @@ function renderPageStrip() {
     foot.className = "thumb-foot";
     const num = document.createElement("span");
     num.textContent = p + 1;
+    const tag = document.createElement("span");
+    tag.className = "tri-tag";        // filled by applyTriageToStrip()
     const badge = document.createElement("span");
     const st = state.pageStatus[p] || "idle";
     badge.className = "thumb-badge " + st;
     badge.title = BADGE_TITLE[st] || st;
-    foot.append(num, badge);
+    foot.append(num, tag, badge);
     t.append(img, foot);
     t.onclick = () => {
       if (p === state.page) return;
@@ -582,6 +587,7 @@ function renderPageStrip() {
     };
     list.appendChild(t);
   });
+  applyTriageToStrip();
 }
 function markCurrentThumb() {
   const list = $("thumbList");
@@ -608,6 +614,100 @@ async function refreshPageStatuses() {
   if (job !== state.job) return;   // another document won the race
   res.forEach((j, p) => setPageStatus(p,
     j.status === "done" ? "done" : j.status === "running" ? "running" : "idle"));
+}
+// ---------- sheet triage: which pages LOOK like excavation work ----------
+// Attention paint only. The tiers come from GET /triage - a text-layer
+// keyword score computed server-side, with the evidence attached (hits =
+// the term-by-term computation). Nothing here detects, excludes, or touches
+// a quantity: a tint, a tooltip that shows WHY, and an operator-toggled dim
+// of the other-trade pages. Dimmed is never hidden - every thumb stays in
+// place, stays clickable, and opens its page exactly as before.
+const TRI_TIER_WORD = {
+  core: "strong excavation signals",
+  maybe: "some excavation signals",
+  other: "looks like another trade",
+  unknown: "no text - not triaged",
+};
+async function loadTriage(job) {
+  let d = null;
+  try {
+    const r = await fetch(`/api/job/${job}/triage`);
+    if (r.ok) d = await r.json();
+  } catch (e) { return; }             // no triage is just an unpainted strip
+  if (!d || !Array.isArray(d.pages)) return;
+  // Job-scoped guard, NOT the page generation token: triage is a property
+  // of the DOCUMENT, and openJob calls selectPage(0) right after this -
+  // which bumps state.gen, so a gen guard discarded every reply (caught
+  // live on ellis: endpoint 200 with 54 pages scored, strip never painted).
+  if (state.job !== job) return;      // a different document opened since
+  state.triage = d;
+  applyTriageToStrip();
+}
+function triageTitle(p, r) {
+  const kind = state.kinds[p];
+  const head = `page ${p + 1}`
+    + (r.sheet_no ? ` — sheet ${r.sheet_no}` : "")
+    + (kind && kind !== "unknown" ? ` — ${kind}` : "");
+  if (r.tier === "unknown") return head + LF + TRI_TIER_WORD.unknown;
+  const ev = (r.hits || []).slice(0, 5)
+    .map(h => `${h[0]}×${h[1]} (${h[2] > 0 ? "+" : ""}${h[2]})`)
+    .join(", ");
+  return head + LF
+    + `${TRI_TIER_WORD[r.tier] || r.tier} (score ${r.score})` + LF
+    + (ev || "no keyword hits");
+}
+function applyTriageToStrip() {
+  const d = state.triage;
+  const hl = localStorage.getItem("core-triage-hl") === "on";
+  [...$("thumbList").children].forEach((t, p) => {
+    t.classList.remove("tri-core", "tri-maybe", "tri-other",
+                       "tri-unknown", "tri-dim");
+    const r = d && d.pages && d.pages[p];
+    if (!r) return;
+    t.classList.add("tri-" + r.tier);
+    if (hl && (r.tier === "other" || r.tier === "unknown"))
+      t.classList.add("tri-dim");     // dim, never hide
+    t.title = triageTitle(p, r);
+    const tag = t.querySelector(".tri-tag");
+    if (tag) tag.textContent =
+      r.tier === "unknown" ? "no text" : (r.sheet_no || "");
+  });
+  renderTriageBar();
+}
+function renderTriageBar() {
+  const bar = $("triageBar");
+  const d = state.triage;
+  if (!d || !Array.isArray(d.pages) || !d.pages.length) {
+    bar.hidden = true;
+    return;
+  }
+  const n = d.pages.filter(r => r.tier === "core" || r.tier === "maybe").length;
+  const dim = d.pages.length - n;     // what "highlight" would dim
+  const unk = (d.counts && d.counts.unknown) || 0;
+  const hl = localStorage.getItem("core-triage-hl") === "on";
+  bar.innerHTML = "";
+  const txt = document.createElement("span");
+  txt.className = "tri-text";
+  txt.textContent =
+    `${n} of ${d.pages.length} sheets look like excavation work`
+    + (unk ? ` (${unk} not triaged: no text)` : "");
+  bar.appendChild(txt);
+  if (dim > 0) {
+    const b = document.createElement("button");
+    b.className = "mini";
+    b.textContent = hl ? `undim ${dim}` : "highlight";
+    b.title = hl
+      ? "Restore full brightness on the dimmed pages"
+      : `Dim the ${dim} pages that look like other trades (or have no`
+        + ` text). Nothing is hidden or excluded — every page still opens,`
+        + ` and detection and quantities are untouched.`;
+    b.onclick = () => {
+      localStorage.setItem("core-triage-hl", hl ? "off" : "on");
+      applyTriageToStrip();
+    };
+    bar.appendChild(b);
+  }
+  bar.hidden = false;
 }
 $("stripToggle").onclick = () => {
   const min = $("pageStrip").classList.toggle("collapsed");

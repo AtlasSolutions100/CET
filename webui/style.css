@@ -537,6 +537,24 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .thumb-badge.error { background: #e5645a; border-color: #e5645a; }
 @keyframes pulse { 50% { opacity: .35; } }
 
+/* sheet triage: attention paint only. Tier tint on the thumb's top edge;
+   "highlight" DIMS other-trade pages, never hides them (hover restores
+   full brightness so a dimmed page is still readable and clickable). */
+.triage-bar { padding: 2px 8px 6px; font-size: 10.5px; line-height: 1.35;
+  color: var(--dim); display: flex; flex-direction: column; gap: 4px;
+  border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.triage-bar .mini { align-self: flex-start; }
+.page-strip.collapsed .triage-bar { display: none; }
+.thumb.tri-core { border-top: 3px solid var(--ok); }
+.thumb.tri-maybe { border-top: 3px solid #e0a83c; }
+.thumb.tri-unknown { border-top: 3px dashed var(--dim); }
+.thumb.tri-dim { opacity: .35; }
+.thumb.tri-dim:hover { opacity: 1; }
+.tri-tag { font-size: 8.5px; color: rgba(255,255,255,.85);
+  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 58px; margin: 0 3px; flex: 1;
+  text-align: center; }
+
 /* ---------- structure calculator (footprint dig + layback) ---------- */
 .st-modes { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .st-modes button.active { background: #00a8e8; border-color: #00a8e8; color: #fff; }

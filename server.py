@@ -32,7 +32,8 @@ from pydantic import BaseModel
 
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
-from takeoff_engine.detect_page import error_path, result_path, run_detect
+from takeoff_engine.detect_page import (error_path, read_sheet_number,
+                                        result_path, run_detect)
 from takeoff_engine.extract import extract_strokes, page_words
 from takeoff_engine.marks import read_mark_schedule
 from takeoff_engine.scale_detect import detect_scale
@@ -1213,6 +1214,201 @@ def job_kinds(job_id: str):
                 "done": kinds is not None,
                 "progress": int(j.get("kinds_progress") or 0),
                 "pages": int(j.get("pages") or 0)}
+
+
+# ---------------------------------------------------------------------------
+# SHEET TRIAGE - which pages of a set matter to excavation (EXCAVATION-PLAN
+# section 7 item 4: "48-page set, the operator knows in 30 seconds which 12
+# matter"). CLASSIFICATION ONLY: this paints attention in the page strip and
+# never detects, excludes, or produces a quantity. Text-layer only and cheap
+# on purpose - no detection, no AI call, no render: one get_text() pass per
+# page plus the title-block probe the engine already has (read_sheet_number),
+# cached to a triage.json sidecar in the job dir.
+#
+# The score is a transparent keyword tally so the UI can show WHY a page was
+# tiered: the `hits` list IS the whole computation, term by term. Weights and
+# caps were calibrated against the measured text of three real sets on
+# 2026-08-30 (Barn civil 15p, Kayden Springs 48p, ellis 54p; the synthetic
+# edge of each rule is pinned in tests/test_triage.py):
+#   * counts are CAPPED per family (min(count, cap)) so one repeated word
+#     cannot carry a page: ellis SD1, a structural-detail sheet, says FILL
+#     five times in compaction notes and must stay "other";
+#   * bare GRADE, RIM, INV and ELEVATION are deliberately NOT signals -
+#     measured ambiguity: "GRADE 60" is rebar steel on ellis SD1, RIM is a
+#     rim joist on ellis SD1/SD3 (x11/x26), and ELEVATION is a building
+#     facade on every ellis A3.x sheet;
+#   * DRAIN scores +1 where DRAINAGE scores +2: roof drains put DRAINx3 on
+#     ellis A4.10, an architectural wall-section sheet.
+
+TRIAGE_VERSION = 1          # bump when the table below changes - cached
+                            # triage.json sidecars key on it
+
+# (label, regex over the UPPERCASED whitespace-normalized page text,
+#  points per occurrence, cap on occurrences counted)
+_TRIAGE_KW = [
+    # --- excavation / civil signals (positive) ---------------------------
+    # weight 3: words that in this corpus only appear on earth-moving sheets
+    ("GRADING",     re.compile(r"\b(?:RE)?GRADING\b"),             3, 5),
+    ("EARTHWORK",   re.compile(r"\bEARTHWORKS?\b"),                3, 5),
+    ("EXCAVATION",  re.compile(r"\bEXCAVAT\w*"),                   3, 5),
+    # weight 2: civil utility / sitework vocabulary
+    ("CONTOUR",     re.compile(r"\bCONTOURS?\b"),                  2, 5),
+    ("TOPSOIL",     re.compile(r"\bTOPSOIL\b"),                    2, 5),
+    ("EROSION",     re.compile(r"\bEROSION\b"),                    2, 5),
+    ("STORM",       re.compile(r"\bSTORM\b"),                      2, 5),
+    ("SANITARY",    re.compile(r"\bSANITARY\b"),                   2, 5),
+    ("SEWER",       re.compile(r"\bSEWERS?\b"),                    2, 5),
+    ("WATER LINE",  re.compile(r"\bWATER\s?(?:LINES?|MAINS?)\b"),  2, 5),
+    ("UTILITY",     re.compile(r"\bUTILIT(?:Y|IES)\b"),            2, 5),
+    ("DRAINAGE",    re.compile(r"\bDRAINAGE\b"),                   2, 5),
+    ("TRENCH",      re.compile(r"\bTRENCH\w*"),                    2, 5),
+    ("MANHOLE",     re.compile(r"\bMANHOLES?\b"),                  2, 5),
+    ("SWALE",       re.compile(r"\bSWALES?\b"),                    2, 5),
+    ("SILT FENCE",  re.compile(r"\bSILT\s+FENCE\b"),               2, 5),
+    ("CULVERT",     re.compile(r"\bCULVERTS?\b"),                  2, 5),
+    ("GRUBBING",    re.compile(r"\bGRUB(?:BING)?\b"),              2, 5),
+    # weight 1: civil-leaning but shared with other trades
+    ("DEMO",        re.compile(r"\bDEMO\w*"),                      1, 5),
+    ("SITE",        re.compile(r"\bSITE\b"),                       1, 5),
+    ("HYDRANT",     re.compile(r"\bHYDRANTS?\b"),                  1, 5),
+    ("DRAIN",       re.compile(r"\bDRAINS?\b"),                    1, 5),
+    ("CUT",         re.compile(r"\bCUT\b"),                        1, 3),
+    ("FILL",        re.compile(r"\bFILL\b"),                       1, 3),
+    # --- other-trade signals (negative) -----------------------------------
+    ("ELECTRICAL",  re.compile(r"\bELECTRICAL\b"),                -2, 5),
+    ("MECHANICAL",  re.compile(r"\bMECHANICAL\b"),                -2, 5),
+    ("PLUMBING",    re.compile(r"\bPLUMBING\b"),                  -2, 5),
+    ("HVAC",        re.compile(r"\bHVAC\b"),                      -2, 5),
+    ("REFLECTED CEILING", re.compile(r"\bREFLECTED\s+CEILING\b"), -3, 3),
+    ("DOOR SCHEDULE",     re.compile(r"\bDOOR\s+SCHEDULES?\b"),   -3, 3),
+    ("WINDOW SCHEDULE",   re.compile(r"\bWINDOW\s+SCHEDULES?\b"), -3, 3),
+]
+
+# Printed sheet-number prefix, when read_sheet_number found one. C is the
+# civil series on every set measured; A/S/M/E/P are architectural,
+# structural, mechanical, electrical, plumbing. -6 rather than -4 because
+# ellis A1.02 - an architectural index sheet, 3,413 words - name-drops
+# GRADING, EXCAVATION and DRAINAGE and needs the prefix to outweigh the
+# borrowed vocabulary. Every other letter (V survey, G general, T title...)
+# is neutral: no evidence either way.
+_TRIAGE_CIVIL_PREFIX = 4
+_TRIAGE_OTHER_PREFIX = -6
+
+# Tier thresholds. A bare C prefix (+4) lands in "maybe", not "core": a C
+# detail sheet with no excavation words on it is plausibly relevant, not
+# certainly - core demands keyword evidence. Calibrated so that on ellis
+# (54 pages, 3 civil) exactly the civil sheets are core, and on Barn
+# (15 pages, all civil) all 15 are.
+_TRIAGE_CORE_MIN = 6    # score >= 6  -> "core"
+_TRIAGE_MAYBE_MIN = 2   # score >= 2  -> "maybe"; below -> "other"
+
+
+def triage_score(text: str, sheet_no: "str | None") -> dict:
+    """Score one page's TEXT LAYER for excavation relevance. Pure - no I/O,
+    nothing but the constant table above - so tests/test_triage.py can run
+    it on synthetic word lists with no PDF and no server.
+
+    Returns {"tier", "score", "words", "hits"} where hits is the full
+    term-by-term computation [[label, count, points], ...] sorted by
+    |points| descending, so a tooltip can lead with the strongest evidence.
+    Never a quantity: the only outputs are a tier and the words that earned
+    it.
+
+    A page with NO text abstains: tier "unknown". A raster/scanned sheet is
+    invisible to a text probe, and calling it "other" would dim a page this
+    code knows nothing about.
+    """
+    T = " ".join((text or "").upper().split())
+    if not T:
+        return {"tier": "unknown", "score": 0, "words": 0, "hits": []}
+    words = len(T.split())
+    score = 0
+    hits = []
+    for label, rx, pts, cap in _TRIAGE_KW:
+        n = len(rx.findall(T))
+        if not n:
+            continue
+        p = pts * min(n, cap)
+        score += p
+        hits.append([label, n, p])
+    pre = (sheet_no or "").strip().upper()
+    m = re.match(r"[A-Z]+", pre)
+    if m:
+        letter = m.group(0)[0]
+        if letter == "C":
+            score += _TRIAGE_CIVIL_PREFIX
+            hits.append([f"sheet {pre} (C = civil)", 1, _TRIAGE_CIVIL_PREFIX])
+        elif letter in "ASMEP":
+            score += _TRIAGE_OTHER_PREFIX
+            hits.append([f"sheet {pre} ({letter} = other trade)", 1,
+                         _TRIAGE_OTHER_PREFIX])
+    hits.sort(key=lambda h: (-abs(h[2]), h[0]))
+    tier = ("core" if score >= _TRIAGE_CORE_MIN
+            else "maybe" if score >= _TRIAGE_MAYBE_MIN else "other")
+    return {"tier": tier, "score": score, "words": words, "hits": hits}
+
+
+@app.get("/api/job/{job_id}/triage")
+def job_triage(job_id: str):
+    """Per-page excavation-relevance tiers for the whole set, with evidence.
+
+    Cheap by construction - text layer plus the title-block sheet-number
+    probe, page by page; no detection, no AI, no render. Measured first-call
+    cost on this box: 5.0 s for 15 pages (Barn), 12.0 s for 48 (Kayden),
+    5.7 s for 54 (ellis); afterwards served from the triage.json sidecar,
+    which keys on TRIAGE_VERSION + the PDF mtime the registry recorded.
+    /reset sweeps the sidecar with the other derived files, so a reset demo
+    recomputes it live.
+    """
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(404, "unknown job")
+        src = Path(j.get("path", ""))
+        mtime = j.get("mtime")
+    side = _job_dir(job_id) / "triage.json"
+    if side.exists():
+        try:
+            d = json.loads(side.read_text())
+            if d.get("version") == TRIAGE_VERSION and d.get("mtime") == mtime:
+                return d
+        except (OSError, ValueError):
+            pass                     # corrupt cache; recompute below
+    if not src.exists():
+        raise HTTPException(410, "that plan set is no longer on this server")
+    pages = []
+    doc = pymupdf.open(src)
+    try:
+        for i in range(doc.page_count):
+            pg = doc[i]
+            try:
+                txt = pg.get_text("text")
+            except Exception:
+                txt = ""             # a broken page abstains as "unknown"
+            try:
+                sn = read_sheet_number(pg)
+            except Exception:
+                sn = None
+            row = triage_score(txt, sn)
+            row["page"] = i
+            row["sheet_no"] = sn
+            pages.append(row)
+    finally:
+        doc.close()
+    counts = {"core": 0, "maybe": 0, "other": 0, "unknown": 0}
+    for r in pages:
+        counts[r["tier"]] += 1
+    d = {"version": TRIAGE_VERSION, "mtime": mtime,
+         "pages": pages, "counts": counts}
+    # atomic like the calcstate sidecar: a crash mid-write must leave no
+    # half-file for the next GET to trip over
+    tmp = side.with_name(f"{side.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(d, indent=1))
+        os.replace(tmp, side)
+    except OSError:
+        pass                         # cache write is best-effort; still reply
+    return d
 
 
 @app.get("/api/job/{job_id}/page/{page}/result")
