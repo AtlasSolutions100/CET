@@ -172,7 +172,19 @@ That is the same requirement as the object-keyed database in §6 — a surface,
 like a manhole, is an object that appears on several sheets. Building one
 gets the other.
 
-### Conventions needed (do NOT invent these — get them from Koby or a source)
+### Conventions needed — AMENDED 2026-08-30 by Koby
+
+> "I think you can invent these for this demo state, just do some research and
+> do most common based on material type or whatever it may vary on and then
+> have them overridable." — Koby, 2026-08-30
+
+The rule is now RESEARCH + CITE + DEFAULT + OVERRIDE: pull the industry-common
+value with a named source, seed it as an editable default, and show the source
+in the UI tooltip. Never bake an uncited number into a computation silently.
+A research agent is collecting the table (strip depth, shrink/swell by
+material, bank/loose/compacted, over-ex pairing) with citations.
+
+Original list (now to be researched rather than blocked on):
 
 * typical topsoil strip depth (commonly 4–8 in, varies by spec)
 * shrink/swell factors by material
