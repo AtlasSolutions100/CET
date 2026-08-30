@@ -260,8 +260,8 @@ canvas#view.panning { cursor: grabbing; }
 /* .off, not the hidden attribute: the section collapse handler writes
    el.hidden on every id it owns and would un-hide these on expand */
 .ew-basis.off, .ew-take.off { display: none; }
-#ewAdd { font-weight: 600; }
-#ewAdd.on { background: #4d2f1f; border-color: #c07a3c; color: #f0c99b; }
+#ewAdd, #trAdd { font-weight: 600; }
+#ewAdd.on, #trAdd.on { background: #4d2f1f; border-color: #c07a3c; color: #f0c99b; }
 .ew-take-note { font-size: 10.5px; color: var(--dim); line-height: 1.45; flex: 1; min-width: 160px; }
 
 .side-head h2, .takeoff-head h2 { cursor: pointer; user-select: none; }
@@ -274,6 +274,19 @@ canvas#view.panning { cursor: grabbing; }
 .tr-grid input, .tr-grid select { width: 100%; padding: 3px 6px; font-size: 12px; }
 .tr-rules { font-size: 11px; color: var(--dim); }
 .tr-rule { display: grid; grid-template-columns: 1fr 66px 1fr 66px; gap: 5px; align-items: center; padding: 2px 0; }
+/* Pierce depth bands (read-only LF per band, from the typed profile).
+   .off like .ew-take: the trHead collapse handler owns `hidden`, so an
+   attribute here would be un-hidden on every expand. */
+.tr-bands { margin: 2px 12px 4px; padding: 7px 9px; border: 1px solid var(--line);
+  border-radius: 7px; font-size: 11.5px; }
+.tr-bands.off { display: none; }
+.tr-bands-head { font-weight: 600; cursor: help; }
+.tr-bands-cfg { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  color: var(--dim); font-size: 11px; margin: 4px 0; }
+.tr-bands-cfg input { width: 54px; padding: 2px 5px; font-size: 11px; }
+.tr-band-row { display: flex; justify-content: space-between; gap: 8px;
+  padding: 1px 2px; font-variant-numeric: tabular-nums; }
+.tr-bands-note { color: var(--dim); font-size: 10.5px; line-height: 1.45; margin-top: 4px; }
 
 .sym-row { display: grid; grid-template-columns: 54px 1fr 60px; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 6px; }
 .sym-row:hover { background: var(--hover); }

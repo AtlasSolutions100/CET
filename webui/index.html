@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=46">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
@@ -204,9 +204,36 @@
         bedding rules to the spec. Depth interpolates start&rarr;end along each line; trench width =
         pipe OD + clearance each side, growing with depth per the rules.</div>
       <div id="trBody" class="tr-body"></div>
+      <!-- Pierce's per-foot depth bands, read-only. Rendered by
+           renderTrBands() only after Calculate has run. Class .off, not the
+           hidden attribute: the trHead collapse handler writes el.hidden on
+           every id it owns and would un-hide an empty table on expand.
+           TYPED d0/d1 depths only - profile-DERIVED depths are forbidden
+           until the datum work (commit 5390b3f) is wired into profiles;
+           EXCAVATION-PLAN.md section 16. -->
+      <div id="trBandBox" class="tr-bands off">
+        <div class="tr-bands-head" title="Rick, Pierce Site Work (transcript 2026-08-27): &quot;we price by the foot to install pipe... it's a two-ft interval. So within 8-in sewer main we need to know how much of it is 0 to six feet deep, how much is 6 to 8, how much is 8 to 10, and so on. Sometimes we're up to 24 feet deep.&quot; The 6-ft first edge and 2-ft step are his convention; both are editable.">Depth bands (LF per band)</div>
+        <div class="tr-bands-cfg">
+          <label for="trBandEdge">first band to</label>
+          <input id="trBandEdge" type="number" min="0.5" step="0.5" value="6">
+          <span>ft, then every</span>
+          <input id="trBandStep" type="number" min="0.5" step="0.5" value="2">
+          <span>ft</span>
+        </div>
+        <div id="trBandRows"></div>
+        <div class="tr-bands-note">From the typed start/end depths, interpolated linearly along the run
+          as of the last Calculate. Depths read off profile sheets are not wired in yet.</div>
+      </div>
       <div class="ew-actions" id="trActions">
         <button id="trCalc">Calculate trench</button>
         <span id="trResult" class="ew-result"></span>
+      </div>
+      <!-- Consent, same rule as earthwork above: Calculate is looking;
+           nothing reaches the itemized takeoff (or the priced report)
+           until this is pressed. -->
+      <div class="ew-take off" id="trTake">
+        <button id="trAdd">Add to takeoff</button>
+        <span class="ew-take-note" id="trTakeNote"></span>
       </div>
     </div>
     <div id="coPanel" class="ew-panel" hidden>
@@ -332,6 +359,6 @@
   </section>
 </main>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=101"></script>
+<script src="app.js?v=102"></script>
 </body>
 </html>

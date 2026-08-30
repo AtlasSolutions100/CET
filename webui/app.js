@@ -652,6 +652,13 @@ async function loadResult(gen = state.gen) {
   $("ewBasis").innerHTML = ""; $("ewBasis").classList.add("off");
   $("ewTake").classList.add("off"); $("ewAdd").classList.remove("on");
   $("trPanel").hidden = true; $("trBtn").hidden = false;
+  // trench: same three rules as earthwork just above. Stale numbers must
+  // not survive a doc/page switch, the consent button must not offer to
+  // "Remove" rows state.tr no longer describes, and the band table must
+  // not describe the previous sheet's run.
+  $("trResult").textContent = "";
+  $("trTake").classList.add("off"); $("trAdd").classList.remove("on");
+  $("trBandBox").classList.add("off"); $("trBandRows").innerHTML = "";
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("rollPanel").hidden = true; $("rollBtn").hidden = false;
   $("xsPanel").hidden = true; $("xsBtn").hidden = false; state.xs = null;
@@ -5262,7 +5269,7 @@ const SECTIONS = [
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewLimit", "ewLayers", "ewActions",
               "ewBasis", "ewTake", "ewBalance"]],
-  ["trHead", ["trBody", "trHint", "trActions"]],
+  ["trHead", ["trBody", "trHint", "trBandBox", "trActions", "trTake"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
 ];
@@ -6295,6 +6302,166 @@ function renderTr() {
   });
 }
 
+// ---------- trench math (pure) -------------------------------------------
+// No DOM and no state.* in this block: tests/test_trench_math.js slices the
+// file between the TRENCH-MATH markers and evals it standalone, so keep it
+// self-contained.
+// TRENCH-MATH-BEGIN
+
+// Rules normalised for arithmetic: junk rows dropped, sorted ascending by
+// depth edge, clearances in feet. Sorted on purpose - trClrAt takes the
+// FIRST band the depth fits, and the panel lets the operator reorder rows,
+// so an out-of-order table must not hand a 1-ft-deep pipe the 99-ft band.
+// An empty table falls back to 6 in everywhere, as before.
+function trNormRules(rules) {
+  const rs = (rules || [])
+    .filter(r => r && isFinite(r.to_ft) && r.to_ft > 0
+                   && isFinite(r.clr_in) && r.clr_in >= 0)
+    .map(r => ({ to: +r.to_ft, clr: r.clr_in / 12.0 }))
+    .sort((a, b) => a.to - b.to);
+  return rs.length ? rs : [{ to: Infinity, clr: 0.5 }];
+}
+
+// Clearance (ft) for a pipe whose invert sits at depth d. Depths past the
+// last edge keep the last band's clearance - unchanged semantics.
+function trClrAt(rs, d) {
+  for (const r of rs) if (d <= r.to) return r.clr;
+  return rs[rs.length - 1].clr;
+}
+
+// Hole cross-section (sf) at invert depth d: FULL BOTTOM WIDTH for the
+// whole column, A(d) = (OD + 2 x clearance(d)) x d. The builder agent
+// proposed integrating band by band down the wall instead (each depth
+// band at its own rule width), which makes A(d) continuous - but that
+// hole is NARROWER ABOVE THAN BELOW whenever clearance grows with depth,
+// which no excavation can be, and it reads LOW against any physical
+// trench (-20% at a constant 4 ft with a 6-in pipe). A low dig number
+// reaching a bid is the expensive direction, so the full-width neat-line
+// convention stands (CONVENTION: trench pay width = pipe OD + a
+// clearance set by the trench's depth class, applied full depth - the
+// vertical-wall / trench-box reading, the MINIMUM physical cut; source:
+// general practice for neat-line trench payment, and it is how this
+// calculator always read). The consequence is embraced, not hidden:
+// crossing a rule edge re-prices the whole column, so 4.00 -> 4.01 ft
+// with the default table steps +40% BY DESIGN - a depth-class boundary
+// is a price step, the same shape as Pierce's 2-ft pricing bands. What
+// WAS a bug is fixed downstream: along a sloped run each slice is split
+// at rule-edge crossings (trRunVolumes), so the integral is exact for a
+// linear profile instead of whole slices snapping with their midpoints.
+function trHoleArea(rs, odFt, d) {
+  if (!(d > 0)) return 0;
+  return (odFt + 2 * trClrAt(rs, d)) * d;
+}
+
+// Bedding-envelope cross-section (sf): the pipe zone - a square of side
+// (OD + 2 x clearance) at the trench bottom - taken as a z-sub-range of
+// the hole itself, at the hole's own width. min(h, d) is what makes the
+// audit-6a clamp structural: a sub-range of the hole cannot out-measure
+// the hole, so bedding can never again exceed the dig (the shipped 6a
+// defect had bedding at 137% of the dig on a 1-ft-deep run).
+function trEnvArea(rs, odFt, d) {
+  if (!(d > 0)) return 0;
+  const w = odFt + 2 * trClrAt(rs, d);
+  return w * Math.min(w, d);
+}
+
+// One run: lenFt of pipe, invert depth linear d0 -> d1 along it. N slices
+// along the run as before (N = 60, set at the call site); WITHIN each
+// slice the depth interval is split at every rule edge it crosses, and
+// each sub-piece is evaluated at its MIDPOINT. Between edges both
+// trHoleArea (w x d, w constant in-band) and trEnvArea are linear in d,
+// so midpoint x length is the exact integral on every piece; a piece
+// endpoint sitting exactly ON an edge would sample the wrong band, which
+// is why midpoints and not trapezoid endpoints. Net: exact for a linear
+// profile under the full-width model - the old code let whole slices
+// snap with their midpoint sample, a genuine staircase error on sloped
+// runs, which is the part of audit 6b that was a bug.
+function trRunVolumes(rs, odFt, lenFt, d0, d1, N) {
+  const a0 = Math.max(isFinite(d0) ? d0 : 0, 0);
+  const a1 = Math.max(isFinite(d1) ? d1 : 0, 0);
+  let dig = 0, env = 0;
+  const dL = lenFt / N;
+  for (let i = 0; i < N; i++) {
+    const dA = a0 + (a1 - a0) * (i / N);
+    const dB = a0 + (a1 - a0) * ((i + 1) / N);
+    const lo = Math.min(dA, dB), hi = Math.max(dA, dB), span = hi - lo;
+    if (span <= 0) {  // level slice: nothing to split
+      dig += trHoleArea(rs, odFt, dA) * dL;
+      env += trEnvArea(rs, odFt, dA) * dL;
+      continue;
+    }
+    const cuts = [lo];
+    for (const r of rs) if (r.to > lo && r.to < hi) cuts.push(r.to);
+    cuts.push(hi);
+    cuts.sort((x, y) => x - y);
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const u1 = cuts[k], u2 = cuts[k + 1], f = (u2 - u1) / span;
+      if (!(f > 0)) continue;
+      const dm = (u1 + u2) / 2;
+      dig += trHoleArea(rs, odFt, dm) * f * dL;
+      env += trEnvArea(rs, odFt, dm) * f * dL;
+    }
+  }
+  return { dig, env };
+}
+
+// Whole-run totals with the audit-6a INVARIANT enforced and stated:
+//   bed + backfill + pipe <= dig, always; and whenever the pipe actually
+//   fits its hole (pipeVol <= dig), the three parts sum to dig EXACTLY.
+// env <= dig holds structurally (see trEnvArea) - the min() mops up float
+// noise only. bed and backfill floor at 0: a pipe that cannot fit its own
+// trench (OD deeper than the invert) yields zeros, never negatives.
+// Before this, 100 LF at 1.0 ft returned bedding = 137% of its own hole.
+function trTotals(dig, env, pipeVol) {
+  env = Math.min(env, dig);
+  const bed = Math.max(env - pipeVol, 0);
+  const backfill = Math.max(dig - bed - pipeVol, 0);
+  return { dig, bed, backfill, pipeVol };
+}
+
+// Display rounding for trench volumes, unchanged: 0.1 CY.
+function trCY(v) { return Math.round(v / 27 * 10) / 10; }
+
+// LF per depth band from the TYPED d0/d1 linear profile. Rick, Pierce Site
+// Work (transcript 2026-08-27): "we price by the foot to install pipe...
+// it's a two-ft interval. So within 8-in sewer main we need to know how
+// much of it is 0 to six feet deep, how much is 6 to 8, how much is 8 to
+// 10, and so on. Sometimes we're up to 24 feet deep." First edge and step
+// are arguments (panel defaults 6 and 2 = his convention, in writing at
+// EXCAVATION-PLAN.md section 16), so the bands run [0,F], (F,F+S], ... out
+// to the deepest typed invert. A run sitting exactly ON an edge counts in
+// the SHALLOWER band - the same convention as the bedding rules' d <= to.
+//
+// TYPED DEPTHS ONLY - DO NOT WIRE PROFILE-DERIVED DEPTHS IN HERE. Deriving
+// depth from INV/RIM text is forbidden until the datum work (commit
+// 5390b3f, the abstain rule) is wired into profile reading: 81.9% of spot
+// grades on the Barn set come back with the hundreds digit unresolved, and
+// differencing truncated elevations puts a confident wrong number in a
+// priced band. EXCAVATION-PLAN.md section 16 is the binding instruction.
+function trDepthBands(runFt, d0, d1, firstEdge, step, maxRows) {
+  const F = +firstEdge, S = +step;
+  if (!(F > 0) || !(S > 0) || !(runFt > 0)) return null;
+  const a0 = Math.max(isFinite(d0) ? d0 : 0, 0);
+  const a1 = Math.max(isFinite(d1) ? d1 : 0, 0);
+  const dmin = Math.min(a0, a1), dmax = Math.max(a0, a1);
+  // measure of the run at depth <= d; the profile is linear, so exact
+  const fracLE = (d) => d >= dmax ? 1
+    : (d < dmin || dmax === dmin) ? 0
+    : (d - dmin) / (dmax - dmin);
+  const rows = [];
+  let lo = 0, hi = F, truncated = false;
+  for (;;) {
+    // the first band's floor is 0 outright, so a run typed at 0 ft still
+    // lands in [0,F] instead of vanishing between two edges
+    rows.push({ lo, hi, lf: runFt * (fracLE(hi) - (lo === 0 ? 0 : fracLE(lo))) });
+    if (hi >= dmax) break;
+    if (rows.length >= (maxRows || 64)) { truncated = true; break; }
+    lo = hi; hi = lo + S;
+  }
+  return { rows, truncated };
+}
+// TRENCH-MATH-END
+
 $("trCalc").onclick = () => {
   const t = state.tr;
   if (!t || t.style_id === null) { $("trResult").textContent = "pick the pipe run first"; return; }
@@ -6305,55 +6472,137 @@ $("trCalc").onclick = () => {
     c.style_id === t.style_id && !state.excluded.has(c.chain_id));
   if (!chains.length) { $("trResult").textContent = "that style has no lines"; return; }
   const odFt = t.od_in / 12.0;
-  const clrFt = (d) => {
-    for (const r of t.rules) if (d <= r.to_ft) return r.clr_in / 12.0;
-    return t.rules.length ? t.rules[t.rules.length - 1].clr_in / 12.0 : 0.5;
-  };
-  const N = 60;  // integration steps along each run
-  let dig = 0, bed = 0, runFt = 0;
+  if (!(odFt > 0)) { $("trResult").textContent = "pipe OD must be a positive number"; return; }
+  if (!isFinite(t.d0_ft) || !isFinite(t.d1_ft)) { $("trResult").textContent = "type both invert depths"; return; }
+  const rs = trNormRules(t.rules);
+  const N = 60;  // slices along each run, as before; rule-edge splits happen inside
+  let digRaw = 0, envRaw = 0, runFt = 0;
   for (const c of chains) {
     const L = chainLenPt(c) * ftPerPt;
     runFt += L;
-    for (let i = 0; i < N; i++) {
-      const x = (i + 0.5) / N;
-      const d = t.d0_ft + (t.d1_ft - t.d0_ft) * x;   // invert depth here
-      const w = odFt + 2 * clrFt(d);                  // trench width here
-      dig += w * Math.max(d, 0) * (L / N);            // dig surface->invert
-      bed += w * (odFt + 2 * clrFt(d)) * (L / N);     // envelope around pipe
-    }
+    const v = trRunVolumes(rs, odFt, L, t.d0_ft, t.d1_ft, N);
+    digRaw += v.dig; envRaw += v.env;
   }
   const pipeVol = Math.PI * (odFt / 2) ** 2 * runFt;
-  bed = Math.max(bed - pipeVol, 0);
-  const backfill = Math.max(dig - bed - pipeVol, 0);
-  const cy = (v) => Math.round(v / 27 * 10) / 10;
+  const { dig, bed, backfill } = trTotals(digRaw, envRaw, pipeVol);
   $("trResult").innerHTML =
-    `<b>dig ${cy(dig).toLocaleString()} CY</b> · <b>bedding ${cy(bed).toLocaleString()} CY</b>` +
-    ` · backfill ${cy(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
+    `<b>dig ${trCY(dig).toLocaleString()} CY</b> · <b>bedding ${trCY(bed).toLocaleString()} CY</b>` +
+    ` · backfill ${trCY(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
   const name = (state.labels.get(t.style_id) || "pipe").slice(0, 40);
-  // Replace only THIS system's four rows. The old filter removed every row
-  // starting Trench/Bedding/Backfill or ending (run), so calculating a second
-  // pipe system silently deleted the first - a job with sanitary + storm +
-  // water + force main could only ever hold one of the four. Matching the
-  // exact labels this calculation regenerates (the style's name is embedded
-  // in all four) scopes the replacement to one system. Label-based on
-  // purpose: calcSave strips rows to {label, qty, unit}, so a hidden style-id
-  // tag would not survive a session restore and restored rows would stop
-  // being replaced. Trade-off accepted: renaming a style between calculates
-  // leaves the old name's rows behind - visible and deletable, which beats
-  // the silent deletion this replaces.
-  const mine = new Set([`${name} (run)`, `Trench excavation (${name})`,
-                        `Bedding gravel (${name})`, `Backfill (${name})`]);
+  // Consent is per system: recalculating the SAME style while its rows are
+  // added refreshes them in place - consent was given for THIS calculation,
+  // and a superseded number left priced is its own silent lie (same rule as
+  // ewCalc). Switching styles starts the new system un-added; the previous
+  // system's consented rows stay, and the exact-label filter in
+  // trClearItems scopes every apply/remove to one system's four rows.
+  if (t.added && t.result && t.result.style_id !== t.style_id) t.added = false;
+  t.result = { style_id: t.style_id, name, runFt, dig, bed, backfill };
+  t.calc = { runFt, d0: t.d0_ft, d1: t.d1_ft };  // the band table reads THIS snapshot
+  // Audit item 5, the consent gate: Calculate only LOOKS. Rows reach
+  // state.extraItems - and through it the priced report - only via the
+  // "Add to takeoff" button (trAdd, below).
+  if (t.added) trApplyItems(t.result);
+  renderTrTake();
+  renderTrBands();
+  renderItemized();
+};
+
+// Replace only THIS system's four rows. A prefix filter here once removed
+// every row starting Trench/Bedding/Backfill or ending (run), so
+// calculating a second pipe system silently deleted the first - a job with
+// sanitary + storm + water + force main could only ever hold one of the
+// four. Matching the exact labels this calculation regenerates (the style's
+// name is embedded in all four) scopes the replacement to one system.
+// Label-based on purpose: calcSave strips rows to {label, qty, unit}, so a
+// hidden style-id tag would not survive a session restore and restored rows
+// would stop being replaced. Trade-off accepted: renaming a style between
+// calculates leaves the old name's rows behind - visible and deletable,
+// which beats the silent deletion this replaces.
+function trClearItems(res) {
+  const mine = new Set([`${res.name} (run)`, `Trench excavation (${res.name})`,
+                        `Bedding gravel (${res.name})`, `Backfill (${res.name})`]);
   state.extraItems = state.extraItems.filter(it => !mine.has(it.label));
+}
+
+function trApplyItems(res) {
+  trClearItems(res);
   // The FOOTAGE is the line item an excavator actually bids. Every utility
   // row on Beaumont's Estimate #853 is priced per LF - the perimeter drain
   // alone is 3,395 LF / $105,245 - while the CY volumes below are the
   // supporting math. Emit the run first so it leads the group.
-  if (runFt > 0) state.extraItems.push({ label: `${name} (run)`, qty: Math.round(runFt * 10) / 10, unit: "LF" });
-  if (dig > 0) state.extraItems.push({ label: `Trench excavation (${name})`, qty: cy(dig), unit: "CY" });
-  if (bed > 0) state.extraItems.push({ label: `Bedding gravel (${name})`, qty: cy(bed), unit: "CY" });
-  if (backfill > 0) state.extraItems.push({ label: `Backfill (${name})`, qty: cy(backfill), unit: "CY" });
+  if (res.runFt > 0) state.extraItems.push({ label: `${res.name} (run)`, qty: Math.round(res.runFt * 10) / 10, unit: "LF" });
+  if (res.dig > 0) state.extraItems.push({ label: `Trench excavation (${res.name})`, qty: trCY(res.dig), unit: "CY" });
+  if (res.bed > 0) state.extraItems.push({ label: `Bedding gravel (${res.name})`, qty: trCY(res.bed), unit: "CY" });
+  if (res.backfill > 0) state.extraItems.push({ label: `Backfill (${res.name})`, qty: trCY(res.backfill), unit: "CY" });
+}
+
+// Audit item 5: the same consent earthwork and structures already require.
+// Calculating is looking; this button is the decision.
+$("trAdd").onclick = () => {
+  if (!state.tr || !state.tr.result) return;
+  state.tr.added = !state.tr.added;
+  if (state.tr.added) trApplyItems(state.tr.result);
+  else trClearItems(state.tr.result);
+  renderTrTake();
   renderItemized();
+  setStatus(state.tr.added
+    ? "trench rows added to the takeoff — they will price, export and print like any other row"
+    : "trench rows removed from the takeoff");
 };
+
+function renderTrTake() {
+  const box = $("trTake"), btn = $("trAdd"), note = $("trTakeNote");
+  if (!box || !btn || !note) return;
+  const res = state.tr && state.tr.result;
+  box.classList.toggle("off", !res);
+  if (!res) return;
+  btn.textContent = state.tr.added ? "Remove from takeoff" : "Add to takeoff";
+  btn.classList.toggle("on", !!state.tr.added);
+  note.textContent = state.tr.added
+    ? `${res.name}: in the itemized takeoff. Recalculating this style refreshes its rows in place; other systems' rows are never touched.`
+    : "Not in the takeoff. Calculate only shows the numbers — press this to bid them.";
+}
+
+// The Pierce band table. Reads the snapshot taken at Calculate (state.tr
+// .calc), so its rows always describe the run and profile the volumes above
+// came from; editing d0/d1 after Calculate changes nothing here until the
+// next Calculate. The edge inputs re-render live - they re-slice the same
+// snapshot, which is safe because bands are read-only and never touch
+// state.extraItems.
+function renderTrBands() {
+  const box = $("trBandBox"), out = $("trBandRows");
+  if (!box || !out) return;
+  const c = state.tr && state.tr.calc;
+  box.classList.toggle("off", !c);
+  if (!c) return;
+  out.innerHTML = "";
+  const bt = trDepthBands(c.runFt, c.d0, c.d1,
+                          parseFloat($("trBandEdge").value),
+                          parseFloat($("trBandStep").value), 64);
+  if (!bt) {
+    out.innerHTML = '<div class="tr-bands-note">first edge and step must be positive numbers</div>';
+    return;
+  }
+  const fmtE = (v) => (Math.round(v * 100) / 100).toLocaleString();
+  for (const b of bt.rows) {
+    const row = document.createElement("div");
+    row.className = "tr-band-row";
+    const lab = document.createElement("span");
+    lab.textContent = `${fmtE(b.lo)}–${fmtE(b.hi)} ft deep`;
+    const q = document.createElement("b");
+    q.textContent = `${Math.round(b.lf).toLocaleString()} LF`;
+    row.append(lab, q);
+    out.appendChild(row);
+  }
+  if (bt.truncated) {
+    const d = document.createElement("div");
+    d.className = "tr-bands-note";
+    d.textContent = "stopped at 64 bands — widen the step to cover the full depth";
+    out.appendChild(d);
+  }
+}
+$("trBandEdge").oninput = renderTrBands;
+$("trBandStep").oninput = renderTrBands;
 
 // ---------- symbol counter ----------
 $("symClose").onclick = () => { $("symPanel").hidden = true; state.symMarks = null; draw(); };
