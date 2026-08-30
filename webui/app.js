@@ -5610,6 +5610,7 @@ $("ewBtn").onclick = async () => {
   const panel = $("ewPanel");
   if (!panel.hidden) { panel.hidden = true; ewDisarmPick(); return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   // a page switch nulls state.tool without touching this button's class
   $("ewAddRow").classList.remove("active");
   $("ewBoundPick").classList.remove("active");
@@ -5669,6 +5670,11 @@ $("ewBtn").onclick = async () => {
   renderEwSpots();
   renderEwArea();
   renderEwTake();
+  // Re-anchor AFTER the async suggest + renders: the CHECK FIRST banner
+  // above this panel grows when the datum note lands, which shoved the
+  // panel head 58px above the fold on C3.1 (measured) - the smooth scroll
+  // that ran at open had already finished aiming at the old layout.
+  panel.scrollIntoView({ block: "start" });
 };
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
@@ -6595,6 +6601,7 @@ $("trBtn").onclick = () => {
   const panel = $("trPanel");
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   if (!state.tr) {
     state.tr = {
       style_id: null, od_in: 6, d0_ft: 2, d1_ft: 8,
@@ -7395,6 +7402,7 @@ $("coBtn").onclick = async () => {
   const panel = $("coPanel");
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   if (!state.co) {
     $("coRows").innerHTML = '<div class="ew-hint">reading callouts… (first run OCRs the sheet, ~10-30s)</div>';
     const r = await fetch(`/api/job/${state.job}/page/${state.page}/callouts`);
@@ -9541,6 +9549,7 @@ $("stBtn").onclick = () => {
     return;
   }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   renderSt(); draw();
 };
 $("stClose").onclick = () => {
