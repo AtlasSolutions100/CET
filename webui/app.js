@@ -4159,8 +4159,13 @@ function calcStatePayload() {
       areaSf: calcNum(state.ew.areaSf),
       added: !!state.ew.added,
     };
+    // The SEED chain, not the stitched ring: geometry is re-derived from
+    // the live detection on restore, so a re-detect that renumbers or
+    // improves the family re-stitches instead of replaying stale points.
     const m = state.ewBound && /^chain (\d+)$/.exec(state.ewBound.src || "");
-    out.ew_bound = m ? { chain_id: +m[1] } : null;
+    const seed = state.ewBound && typeof state.ewBound.seed === "number"
+      ? state.ewBound.seed : (m ? +m[1] : null);
+    out.ew_bound = seed !== null ? { chain_id: seed } : null;
   } else {
     // panel never opened this session: the earlier record stands untouched
     if (saved.ew) out.ew = saved.ew;
@@ -4331,7 +4336,13 @@ function ewApplySaved() {
   const bd = saved.ew_bound;
   if (bd && typeof bd.chain_id === "number" && !state.ewBound) {
     const ch = chains.get(bd.chain_id);
-    if (ch && ewBoundSet(ch.points, "chain " + ch.chain_id)) applied++;
+    const st = ch ? ewBoundStitch(ch) : null;
+    if (st && ewBoundSet(st.pts, st.n > 1
+          ? `${st.n} lines stitched (${(ch.layer || "style " + ch.style_id).split("|").pop()})`
+          : "chain " + ch.chain_id)) {
+      state.ewBound.seed = ch.chain_id;
+      applied++;
+    }
     else dropped++;
   }
   calcNotePut("ewHint", dropped ? calcDropText(dropped) : "");
@@ -5703,6 +5714,73 @@ function ewBoundSet(pts, src) {
   calcStateDirty();
   return true;
 }
+// A limit-of-work line is almost never ONE chain. Measured on Barn C3.0
+// (the audit's own example): the BG-Limit of disturbance layer is 10 open
+// chains across three styles - dash runs broken at labels and corners -
+// and picking the longest one alone gave 4,730 SF against the estimator's
+// own 224,058 SF Clear & Grub, a 47x under-read returned as a success.
+// Stitching the layer family end-to-end reads 312,044 SF, the right order
+// of magnitude, with every join on the record.
+//
+// Joins are tiered from the same measurement: real label/dash breaks on
+// C3.0 run 0-124 pt, the two genuine long bridges are 368 and 125 pt, and
+// nothing legitimate exceeded that - so joins up to EW_STITCH_MAX = 500 pt
+// are taken but every join >= 12 pt is REPORTED (count + the largest, in
+// feet when the scale is known), the closure gap is reported the same way,
+// and family chains further than the cap are left out LOUDLY. The operator
+// sees the ring and its SF on the panel and judges; nothing is silent.
+const EW_STITCH_MAX = 500;  // pt; > the largest genuine bridge measured (368)
+function ewBoundStitch(start) {
+  const fam = (start.layer
+    ? state.result.chains.filter(c => c.layer === start.layer)
+    : state.result.chains.filter(c => c.style_id === start.style_id))
+    .filter(c => !state.excluded.has(c.chain_id));
+  const own = Math.hypot(
+    start.points[0][0] - start.points[start.points.length-1][0],
+    start.points[0][1] - start.points[start.points.length-1][1]);
+  // already a ring, or nothing to stitch with: the chain speaks for itself
+  if (own < 2 || fam.length < 2)
+    return { pts: start.points.slice(), n: 1, joins: [], leftover: 0 };
+  const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+  const used = new Set([start.chain_id]);
+  let poly = start.points.slice();
+  const joins = [];
+  for (;;) {
+    let best = null;
+    for (const endIdx of [0, 1]) {
+      const e = endIdx === 0 ? poly[poly.length-1] : poly[0];
+      for (const c of fam) {
+        if (used.has(c.chain_id)) continue;
+        const q = c.points;
+        for (const rev of [false, true]) {
+          const d = dist(e, rev ? q[q.length-1] : q[0]);
+          if (!best || d < best.d) best = { d, c, rev, endIdx };
+        }
+      }
+    }
+    if (!best || best.d > EW_STITCH_MAX) break;
+    let q = best.c.points.slice();
+    if (best.rev) q.reverse();
+    if (best.endIdx === 0) poly = poly.concat(q);
+    else poly = q.slice().reverse().concat(poly);
+    used.add(best.c.chain_id);
+    joins.push(best.d);
+  }
+  return { pts: poly, n: used.size, joins,
+           leftover: fam.length - used.size };
+}
+// One message covering what the stitcher did, in the operator's units.
+function ewStitchStatus(st) {
+  const ftPerPt = (state.result && state.result.scale
+    && state.result.scale.ft_per_paper_inch)
+    ? state.result.scale.ft_per_paper_inch / 72 : null;
+  const fmt = pt => ftPerPt ? Math.round(pt * ftPerPt) + " ft" : Math.round(pt) + " pt";
+  const big = st.joins.filter(j => j >= 12);
+  let m = st.n > 1 ? `limit of work stitched from ${st.n} lines` : "limit of work set";
+  if (big.length) m += ` ${'—'} ${big.length} gap${big.length>1?"s":""} bridged, largest ${fmt(Math.max(...big))}`;
+  if (st.leftover) m += ` ${'—'} ${st.leftover} line${st.leftover>1?"s":""} of this layer left OUT (further than ${fmt(EW_STITCH_MAX)})`;
+  return m + ` ${'—'} recalculate to apply`;
+}
 function ewBoundClear() {
   state.ewBound = null;
   renderEwBound();
@@ -5765,9 +5843,16 @@ $("ewBoundPick").onclick = () => {
   if (state.tool === "ew-bound") { ewDisarmBound("limit of work cancelled"); return; }
   if (state.selected !== null) {
     const ch = chainById(state.selected);
-    if (ch && ewBoundSet(ch.points, "chain " + ch.chain_id)) {
-      setStatus("limit of work set from the selected line");
-      return;
+    if (ch) {
+      const st = ewBoundStitch(ch);
+      if (ewBoundSet(st.pts, st.n > 1
+            ? `${st.n} lines stitched (${(ch.layer || "style " + ch.style_id).split("|").pop()})`
+            : "chain " + ch.chain_id)) {
+        state.ewBound.seed = ch.chain_id;
+        calcStateDirty();
+        setStatus(ewStitchStatus(st));
+        return;
+      }
     }
   }
   state.tool = "ew-bound";
@@ -5796,8 +5881,14 @@ function ewBoundAt(px, py) {
   if (!best)
     return setStatus("no line there " + '—' + " click closer to the grading-limit line, or Esc", "err");
   ewDisarmBound(undefined);
-  if (ewBoundSet(best.points, "chain " + best.chain_id))
-    setStatus("limit of work set " + '—' + " recalculate to apply it");
+  const st = ewBoundStitch(best);
+  if (ewBoundSet(st.pts, st.n > 1
+        ? `${st.n} lines stitched (${(best.layer || "style " + best.style_id).split("|").pop()})`
+        : "chain " + best.chain_id)) {
+    state.ewBound.seed = best.chain_id;
+    calcStateDirty();
+    setStatus(ewStitchStatus(st));
+  }
 }
 const _ewBoundClickBefore = handleCanvasClick;
 handleCanvasClick = function (e) {
