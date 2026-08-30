@@ -925,3 +925,17 @@ families (Oncor's EX-SS/EX-W/OHE). To read Kayden's:
   misreads must abstain (an invented 8"W on a sewer main prices the wrong
   trench). Estimated M-L. It unlocks BOTH the Kayden legend matching
   (line identity = weight + token there) and the pipe-size split item.
+
+### Fresh-sheet crawls at close (03:30-04:00)
+
+* ellis p42 (structural S1.02): exposed the worker-death-masking pair,
+  fixed + verified (fea150a); sheet-no reader's third document family.
+* BelleFarms Road p0 (heavy topo): NO new defect. The LIDAR EG family's
+  three-way split is CORRECT ink (index contours 0.7 grey vs intermediate
+  0.8); tally honest (254.0k ft, 1.2% welded); multi-scale banner refuses
+  to guess among the sheet's 3 printed scales; drops disclosed. One
+  measured tuning candidate: the sparse-pickup kinship ratio tolerance
+  (0.15) misses style 4's 4.385 - widening it is a corpus study, not an
+  overnight edit (chain.py section-6 discipline).
+
+### Overnight total: 25 commits, 83864a1 -> HEAD, all dev-only, all gated.
