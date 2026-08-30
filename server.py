@@ -2037,8 +2037,21 @@ def report_pdf(job_id: str):
         items = exp.get("items", [])
         tp = out.new_page(width=612, height=792)
         y = 60
-        tp.insert_text((50, y), f"Page {pno + 1} - Itemized takeoff",
-                       fontsize=16)
+        # Head the table with the PRINTED sheet number when detection read
+        # one off the title block ("Sheet C3.1 (page 4)"): the client names
+        # sheets by that number, not by PDF position. The index stays in
+        # print because the two disagree on purpose (CLAUDE.md - page
+        # numbering is ambiguous). Falls back to the old header untouched.
+        _sn = None
+        _rf = jd / f"p{pno}_result.json"
+        if _rf.exists():
+            try:
+                _sn = json.loads(_rf.read_text()).get("sheet_no")
+            except (OSError, ValueError):
+                _sn = None
+        _hdr = (f"Sheet {_sn} (page {pno + 1}) - Itemized takeoff" if _sn
+                else f"Page {pno + 1} - Itemized takeoff")
+        tp.insert_text((50, y), _hdr, fontsize=16)
         y += 17
         # Every number in the table below is this multiplication. When a
         # person overrode the engine's reading, the printed takeoff says so

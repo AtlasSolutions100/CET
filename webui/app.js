@@ -1037,7 +1037,15 @@ function renderSheetHead() {
     s.textContent = txt;
     return s;
   };
-  meta.append(chip(`Sheet ${state.page + 1} / ${state.kinds.length}`));
+  // The printed sheet number when the engine read one off the title block
+  // ("C3.1"), with the 1-based page position kept beside it: the client's
+  // drawings are named by the printed number, but every filename and API
+  // call in this tool is indexed - showing only one of the two is how
+  // "page 4" has already meant two different sheets (CLAUDE.md §5).
+  const sheetNo = state.result && state.result.sheet_no;
+  meta.append(chip(sheetNo
+    ? `${sheetNo} (page ${state.page + 1} of ${state.kinds.length})`
+    : `Sheet ${state.page + 1} / ${state.kinds.length}`));
   const kind = state.kinds[state.page];
   if (kind && kind !== "unknown") meta.append(chip(kind));
   // Scale, with its second opinion. A wrong scale is this engine's most

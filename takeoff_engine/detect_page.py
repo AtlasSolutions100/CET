@@ -18,6 +18,8 @@ across the process boundary) and re-raises.
 """
 
 import json
+import math
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -36,6 +38,114 @@ def result_path(job_dir: str, page: int) -> Path:
 
 def error_path(job_dir: str, page: int) -> Path:
     return Path(job_dir) / f"p{page}_error.txt"
+
+
+# Sheet-number tokens as title blocks actually print them, measured on three
+# document families (2026-08-30): discipline letter(s), optional dash, short
+# number, optional decimal - "C1.0" (Beaumont Barn, 20.4pt spans), "C-04"
+# (Oncor, 26.2pt), "C5.1" (Kayden Springs, 40.2pt). Digits are capped at 3 so
+# sheet series like C-101 pass while title-block job numbers (24105,
+# 2024.15 - 4+ digits, no letter) never can. Digits-only tokens are accepted
+# ONLY with a decimal point ("3.1"-style series): a bare integer in the
+# title-block corner is far more often a revision number, a detail bubble or
+# a date fragment than a sheet number, and a wrong sheet id on an estimate
+# is worse than none.
+_SHEET_TOKEN = re.compile(r"^[A-Z]{1,3}-?\d{1,3}(\.\d{1,2})?[A-Z]?$")
+_SHEET_TOKEN_NUM = re.compile(r"^\d{1,2}\.\d{1,2}$")
+# Cross-references to OTHER sheets print small: measured 5.6pt ("CF3.0"
+# plumbing refs) and 9.1pt ("C2.0" callout) on Barn C4.3, 10.1pt ("EOS-1")
+# on Oncor C-05, vs 20.4-40.2pt for every real sheet number seen. The floor
+# sits under the real ones with margin; the largest-wins rule handles pages
+# that print both.
+_SHEET_MIN_PT = 8.0
+
+
+def read_sheet_number(page) -> "str | None":
+    """The sheet number this page's title block PRINTS, or None.
+
+    'Sheet 4' meaning engine index 3 has already caused confusion (CLAUDE.md
+    Section 5: page numbering is ambiguous); the printed number - "C3.1" - is
+    the only name the client's own drawings use. It sits in a title-block
+    cell in the bottom-right of the sheet in DISPLAY space, and it is the
+    largest sheet-number-shaped text there (the sheet NAME can be larger,
+    but "FOUNDATION DRAIN PLAN" is not number-shaped).
+
+    Method: text spans from get_text("dict") mapped to display space
+    (get_text reports UNROTATED coordinates - same trap extract.page_words
+    documents; page.rect is already display space), kept only inside the
+    bottom-right corner (both x and y past 70% of the sheet), matched
+    against the token shapes above, largest font size wins, nearest to the
+    corner on a tie. Lettered tokens outrank digits-only ones.
+
+    ABSTAINS (returns None) when nothing qualifies: raster/scanned pages
+    have no text spans there, and a guessed sheet id is worse than an index.
+    Measured 2026-08-30: 15/15 on Beaumont Barn civil (C1.0-C5.1, incl.
+    C4.3 whose name row is a foundation plan), 9/9 on Oncor (C-01..C-09),
+    43/48 on Kayden Springs u2 - the 5 abstains (idx 0/6/16/30/37) are
+    section pages whose bottom-right corner was render-verified to hold
+    border ink and no text at all. tests/test_sheet_no.py asserts all of it.
+    """
+    rect = page.rect  # rotation-aware: this IS display space
+    W, H = rect.width, rect.height
+    if W <= 0 or H <= 0:
+        return None
+    rot = page.rotation_matrix if page.rotation else None
+    try:
+        blocks = page.get_text("dict").get("blocks", [])
+    except Exception:
+        return None
+
+    def display_center(bbox):
+        x0, y0, x1, y1 = bbox
+        if rot is not None:
+            a = pymupdf.Point(x0, y0) * rot
+            b = pymupdf.Point(x1, y1) * rot
+            x0, x1 = sorted((a.x, b.x))
+            y0, y1 = sorted((a.y, b.y))
+        return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+    cands = []  # (lettered, size_pt, -corner_dist, token)
+
+    def consider(text, size, bbox):
+        t = "".join(text.split()).upper()
+        if not t or len(t) > 10 or size < _SHEET_MIN_PT:
+            return
+        lettered = bool(_SHEET_TOKEN.match(t))
+        if not lettered and not _SHEET_TOKEN_NUM.match(t):
+            return
+        cx, cy = display_center(bbox)
+        if cx < 0.70 * W or cy < 0.70 * H:
+            return
+        d = math.hypot((W - cx) / W, (H - cy) / H)
+        cands.append((lettered, size, -d, t))
+
+    for b in blocks:
+        if b.get("type") != 0:
+            continue
+        for ln in b.get("lines", []):
+            spans = ln.get("spans", [])
+            for sp in spans:
+                consider(sp.get("text", ""), sp.get("size", 0.0),
+                         sp.get("bbox", (0, 0, 0, 0)))
+            if len(spans) > 1:
+                # exploded text: "C" and "4.3" can arrive as separate spans
+                # of one PDF line - consider the joined line too
+                joined = "".join(sp.get("text", "") for sp in spans)
+                bb = [min(sp["bbox"][0] for sp in spans),
+                      min(sp["bbox"][1] for sp in spans),
+                      max(sp["bbox"][2] for sp in spans),
+                      max(sp["bbox"][3] for sp in spans)]
+                consider(joined, max(sp.get("size", 0.0) for sp in spans), bb)
+
+    if not cands:
+        return None
+    lettered = [c for c in cands if c[0]]
+    pool = lettered or cands
+    best = max(c[1] for c in pool)
+    # 0.5pt: same-cell text repeats at identical size; distinct cells differ
+    # by whole points (20.4 vs 9.1 on Barn C4.3)
+    top = [c for c in pool if c[1] >= best - 0.5]
+    return max(top, key=lambda c: c[2])[3]
 
 
 # The modules whose code decides what a stored result contains. A result is
@@ -116,6 +226,12 @@ def detect_page(pdf_path: str, page: int) -> dict:
     doc = pymupdf.open(pdf_path)
     pg = doc[page]
     pc = classify_page(pg)
+    # printed sheet number, read up front: a reader crash must never cost
+    # the detection, so it degrades to the abstain value
+    try:
+        sheet_no = read_sheet_number(pg)
+    except Exception:
+        sheet_no = None
     if pc.kind == "raster":
         from .raster import extract_raster_units
 
@@ -289,6 +405,7 @@ def detect_page(pdf_path: str, page: int) -> dict:
         # Disclosed, per the pattern `areas` already sets: a cap or a filter
         # that reports nothing reads downstream as full coverage.
         "drops": _drops,
+        "sheet_no": sheet_no,
         "scale": scale,
         "legend": legend["entries"],
         "styles": style_list,
