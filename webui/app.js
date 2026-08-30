@@ -7833,7 +7833,13 @@ function ewFactor(id) {
 // sheet gave us no contour label to anchor them against
 function ewActiveSpots() {
   if (!state.ew || !state.ew.spots) return [];
-  const base = state.ew.spotDatum;
+  // Number.isFinite, NEVER bare isFinite: isFinite(null) is TRUE in JS
+  // (null coerces to 0), so the fresh-open default spotDatum: null acted
+  // as a TYPED DATUM OF ZERO and every truncated spot served raw 29-49 ft
+  // values - resolved 7,7xx elevations destroyed until the operator
+  // touched the box. The "0.0 is not None" trap (CLAUDE.md section 5),
+  // JavaScript edition. Caught live 2026-08-30 during the joint UI pass.
+  const base = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : NaN;
   return state.ew.spots
     .filter(g => state.ew.spotOn[g.tag])
     .map(g => {
@@ -7845,10 +7851,10 @@ function ewActiveSpots() {
       // > consensus band. Values printed in full (>= 1000) keep their
       // printed elevation - the datum is the hundreds the sheet OMITTED,
       // and nothing was omitted from those.
-      if (isFinite(base) && g.value < 100.0)
+      if (Number.isFinite(base) && g.value < 100.0)
         return { ...g, z: base + g.value };
       if (g.resolved && isFinite(g.z)) return g;
-      if (!isFinite(base)) return null;
+      if (!Number.isFinite(base)) return null;
       return { ...g, z: base + g.value };   // datum = the hundreds the sheet omitted
     })
     .filter(g => g && isFinite(g.z));
@@ -7913,7 +7919,7 @@ function renderEwSpots() {
     d.appendChild(msg);
     const i = document.createElement("input");
     i.type = "number"; i.step = "100"; i.placeholder = String(chose);
-    i.value = isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.value = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
     i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
     d.appendChild(i);
     box.appendChild(d);
@@ -7923,7 +7929,7 @@ function renderEwSpots() {
     d.append(document.createTextNode("No contour label on this sheet to anchor them. Datum:"));
     const i = document.createElement("input");
     i.type = "number"; i.step = "100"; i.placeholder = "7700";
-    i.value = isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.value = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
     i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
     d.appendChild(i);
     box.appendChild(d);
