@@ -939,3 +939,27 @@ families (Oncor's EX-SS/EX-W/OHE). To read Kayden's:
   overnight edit (chain.py section-6 discipline).
 
 ### Overnight total: 24 commits, 83864a1 -> HEAD, all dev-only, all gated.
+
+## 22. Kreo-parity wave (2026-08-30 morning) - five builders integrated
+
+Koby asked "what about the kreo implements?" - answer: built. Five
+parallel workflow agents, integrated serially, every landing gated +
+tested + live-verified with annotated captures, dev :8128 only.
+
+| commit | Kreo capability | headline |
+|---|---|---|
+| 2fcb4f9 | Plan Zones -> WORK AREA quantity mask | one drag removes 28.9-31.4k LF of title-block/legend/detail junk from every number on Kayden C5.1; whole-sheet box = bitwise no-op (proven); disclosure everywhere; caught+fixed a page-switch zone leak live |
+| 4451878 | confidence review queue "CHECK THESE (N)" | Barn C3.1: 209 rows -> 12 doubts led by the datum conflict; C3.0: 280 -> 5; Kayden: 0 (clean reads clean); clicks GO to the thing |
+| 163ab26 | bid-schedule view | 93 takeoff rows -> 10 bid buckets reconciling to the tally exactly; UNASSIGNED stays honest amber |
+| 462badc | sheet triage | ellis: 54 mixed sheets -> the 4 civils glow, 50 dim (never hidden); evidence in every tooltip; fixed a gen-token bug that discarded every triage reply |
+| 78dd1ab | set-level decisions | hand tick carries across sheets on the collision-free styleFp; builder MEASURED the spec's key at 25x over the honesty ceiling and narrowed accordingly; page always outranks set |
+
+Still open from the Kreo lists, and why:
+* Compare Pages (revision diff) - real engine work, own session.
+* Assemblies/Items cost DB - Koby's pricing-memory roadmap item; schema
+  decisions are his.
+* The sales side-by-side (our engine vs Kreo on Thielen p5) - needs ten
+  joint minutes; Kreo login is live in the browser.
+
+Closing battery on the combined tree: 12 suites green + regress --check
+GATE PASSED.
