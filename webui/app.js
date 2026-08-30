@@ -76,6 +76,12 @@ const state = window.state = {
   seedLabels: new Map(),    // style_id -> the default we seeded (AI may replace)
   aiAuto: false,            // this page's verdicts were auto-applied
   aiUndo: null,             // snapshot taken before applying AI focus
+  workZones: [],            // WORK AREA quantity mask: [[x0,y0,x1,y1],...] in
+                            // page pt. Chains COUNT only by their length
+                            // inside the union; detection itself is untouched
+  wzDrag: null,             // in-progress work-area drag {a:[x,y], b:[x,y]}
+  wzRev: 0,                 // bumped on any zone or geometry change so the
+                            // per-chain inside-fraction memo invalidates
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -85,12 +91,18 @@ const state = window.state = {
 // tool; every tool in this set has the same problem, so they all get it.
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
-  "ew-bound", "ew-pick", "st-pick", "st-draw",
+  "ew-bound", "ew-pick", "st-pick", "st-draw", "wz-draw",
 ]);
 
 function syncCursor() {
   const cv = document.getElementById("view");
   if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
+  // The work-area button's lit state rides the same chokepoint as the
+  // cursor: ~20 places assign state.tool, and any of them can take the
+  // tool away (arming measure, a page switch). Hooked here so the button
+  // can never stay lit for a tool that is no longer armed.
+  const wb = document.getElementById("wzBtn");
+  if (wb) wb.classList.toggle("active", state.tool === "wz-draw");
 }
 
 // Hooked to ASSIGNMENT, not to each of the ~20 places that arm or clear a
@@ -462,6 +474,13 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
+  // The WORK AREA belongs to ONE sheet. loadResult also clears it, but
+  // loadResult only runs when the new page HAS a loadable result - an
+  // undetected page skipped it and kept the PREVIOUS sheet's boxes armed
+  // (caught live on Kayden 38->39: detect would then have silently masked
+  // the wrong sheet). Page switch is the reliable chokepoint; the new
+  // page's own saved boxes come back via wzApplySaved in calcStateLoad.
+  state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
@@ -647,6 +666,9 @@ async function loadResult(gen = state.gen) {
   // a different polygon, and carrying this one over would clip the new
   // sheet's volumes to an outline drawn somewhere else
   state.ewBound = null;
+  // the WORK AREA is per sheet for the same reason; this page's own boxes
+  // come back from the calcstate sidecar below (wzApplySaved)
+  state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.conf = null; state.confKey = null; state.confErr = false;
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
@@ -2926,9 +2948,14 @@ function splitItems() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
+    // work-area mask: a detail block the operator boxed out no longer
+    // counts, so it must not raise a "counted twice" chip either - the
+    // chip's claim is about footage that is IN the numbers
+    const cPt = chainCountedPt(ch);
+    if (wzActive() && !(cPt > 0)) continue;
     let e = chains.get(ch.style_id);
     if (!e) chains.set(ch.style_id, e = { n: 0, pt: 0, bb: null });
-    e.n++; e.pt += chainLenPt(ch);
+    e.n++; e.pt += cPt;
     for (const p of ch.points) {
       if (!e.bb) e.bb = [p[0], p[1], p[0], p[1]];
       else {
@@ -3098,6 +3125,17 @@ function renderStyles() {
     const meta = document.createElement("div");
     meta.className = "style-meta";
     meta.textContent = `${fmtQty(styleLenPt(s))} · ${styleLiveCount(s.style_id)} lines · ${s.signature}`;
+    // work-area disclosure, per row: a row that lost footage to the mask
+    // says how much, on its own line, compactly
+    {
+      const wOut = styleLiveOut(s.style_id);
+      if (wOut > 0.05) {
+        meta.textContent += ` · ${fmtQty(wOut)} outside work area`;
+        meta.title = `${fmtQty(wOut)} of this style lies outside the drawn `
+          + `work area and is not counted anywhere below. Clear the work `
+          + `area to count it again.`;
+      }
+    }
     main.append(lab, meta);
 
     const badge = document.createElement("span");
@@ -4200,6 +4238,14 @@ function calcStatePayload() {
       layback_ft: st.layback_ft, footing_ft: st.footing_ft,
     };
   } else if (saved.st) out.st = saved.st;
+  // WORK AREA boxes (additive key "zones"): plain page-pt rects, keyed to
+  // no chain or style id, so a re-detect can never orphan them - restore
+  // re-applies them against whatever the live detection holds. Unlike the
+  // panels above there is no "never opened" case: wzApplySaved() runs on
+  // every load before the first snapshot, so state.workZones IS the truth
+  // and an empty list correctly writes no key (= zones cleared).
+  if (state.workZones && state.workZones.length)
+    out.zones = state.workZones.map(z => [z[0], z[1], z[2], z[3]]);
   return out;
 }
 
@@ -4268,6 +4314,10 @@ async function calcStateLoad(gen) {
   }
   state.calcSaved = (j && typeof j === "object" && !Array.isArray(j)) ? j : {};
   state.calcSavedLoaded = true;
+  // zones BEFORE the snapshot below: they restore straight into state (no
+  // panel to wait for), and a snapshot taken without them would make the
+  // first unrelated edit's save look like a change to them
+  wzApplySaved();
   // what the server holds right now, so a no-op save is never sent
   calcStateSent = JSON.stringify(calcStatePayload());
   stApplySaved();
@@ -4723,13 +4773,19 @@ function unionStats(chains) {
   let sumPt = 0;
   for (let ci = 0; ci < chains.length; ci++) {
     const ch = chains[ci];
-    sumPt += chainLenPt(ch);
+    // work-area mask: the sum this function discloses against is the same
+    // zone-clipped sum every other reader shows, and each LEG is clipped
+    // the same way, so union <= sum still holds with zones on
+    sumPt += chainCountedPt(ch);
     const p = ch.points;
     if (!p || p.length < 2) continue;
     const _r = axisRatio();
     for (let i = 1; i < p.length; i++) {
-      const d = Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * _r);
+      let d = Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * _r);
       if (d < 0.05) continue;   // same skip as tools/containment.py leg_index
+      if (wzActive())
+        d *= wzSegT(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1], state.workZones);
+      if (!(d > 0)) continue;   // leg entirely outside the work area
       const key = legKey(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]);
       const e = legs.get(key);
       if (e === undefined) legs.set(key, [1, d, ci]);
@@ -4793,6 +4849,178 @@ function chainLenPt(ch) {
   return ch.length_pt * (axis / plain);
 }
 
+// ==================== WORK AREA - quantity mask ==========================
+// The operator drags one or more rectangles; a chain COUNTS only by its
+// length inside the union. Detection is untouched - this masks what is
+// COUNTED, never what was found. Exact segment/rect clipping (Liang-Barsky
+// parameter intervals, merged across rectangles), not midpoint voting: a
+// contour that clips a corner of the legend box counts exactly the piece
+// that is inside, to float precision.
+//
+// tests/test_workzone_math.js evals ONLY the block between the WZ-MATH
+// markers - keep it pure (no DOM, no state.*), like the TRENCH-MATH block.
+// WZ-MATH-BEGIN
+
+// [[x0,y0,x1,y1],...] -> normalized rects; junk rows dropped, corners sorted
+function wzNorm(zones) {
+  const out = [];
+  for (const z of Array.isArray(zones) ? zones : []) {
+    if (!Array.isArray(z) || z.length < 4) continue;
+    const v = [+z[0], +z[1], +z[2], +z[3]];
+    if (!v.every(Number.isFinite)) continue;
+    const x0 = Math.min(v[0], v[2]), x1 = Math.max(v[0], v[2]);
+    const y0 = Math.min(v[1], v[3]), y1 = Math.max(v[1], v[3]);
+    if (x1 - x0 <= 0 || y1 - y0 <= 0) continue;   // a line is not an area
+    out.push([x0, y0, x1, y1]);
+  }
+  return out;
+}
+
+// boundary-inclusive: ink drawn exactly on the box edge counts
+function wzPtIn(x, y, zones) {
+  for (const z of zones)
+    if (x >= z[0] && x <= z[2] && y >= z[1] && y <= z[3]) return true;
+  return false;
+}
+
+// Fraction of segment a->b inside the UNION of rects, as summed merged
+// t-intervals in [0,1]. Per-rect clipping is the axis-aligned slab test
+// (exact); overlapping rects cannot double-count because the intervals are
+// MERGED before summing. A zero-length segment is scored by point-in-union.
+function wzSegT(ax, ay, bx, by, zones) {
+  const dx = bx - ax, dy = by - ay;
+  if (dx === 0 && dy === 0) return wzPtIn(ax, ay, zones) ? 1 : 0;
+  const iv = [];
+  for (const z of zones) {
+    let t0 = 0, t1 = 1;
+    if (dx === 0) {
+      if (ax < z[0] || ax > z[2]) continue;
+    } else {
+      let ta = (z[0] - ax) / dx, tb = (z[2] - ax) / dx;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+    }
+    if (dy === 0) {
+      if (ay < z[1] || ay > z[3]) continue;
+    } else {
+      let ta = (z[1] - ay) / dy, tb = (z[3] - ay) / dy;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+    }
+    if (t1 > t0) iv.push([t0, t1]);
+  }
+  if (!iv.length) return 0;
+  iv.sort((p, q) => p[0] - q[0]);
+  let total = 0, s = iv[0][0], e = iv[0][1];
+  for (let i = 1; i < iv.length; i++) {
+    if (iv[i][0] <= e) { if (iv[i][1] > e) e = iv[i][1]; }
+    else { total += e - s; s = iv[i][0]; e = iv[i][1]; }
+  }
+  total += e - s;
+  return total;
+}
+
+// Inside vs total length of a polyline against the union. yScale carries
+// the vertical-scale ratio (axisRatio) so a profile sheet's mask uses the
+// same axis weighting as every other length in the app: the inside PORTION
+// is decided in true page space (t-intervals), the LENGTH it contributes is
+// axis-weighted, segment by segment.
+function wzPolyInsideLen(points, zones, yScale) {
+  const r = (Number.isFinite(yScale) && yScale > 0) ? yScale : 1;
+  let inside = 0, total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const ax = points[i - 1][0], ay = points[i - 1][1];
+    const bx = points[i][0], by = points[i][1];
+    const L = Math.hypot(bx - ax, (by - ay) * r);
+    if (!(L > 0)) continue;
+    total += L;
+    const t = wzSegT(ax, ay, bx, by, zones);
+    if (t > 0) inside += t * L;
+  }
+  return { inside, total };
+}
+
+// Disjoint rects covering [0,w]x[0,h] MINUS the union - for the canvas
+// wash over everything outside the work area. x-slab sweep: within one
+// vertical slab the union is a set of y-intervals; the complement of those
+// intervals is emitted as rects. Disjoint by construction, so the wash can
+// never double-paint (which would read as "more excluded" where two boxes
+// overlap).
+function wzComplementRects(zones, w, h) {
+  const zs = zones.filter(z => z[0] < w && z[2] > 0 && z[1] < h && z[3] > 0);
+  if (!zs.length) return [[0, 0, w, h]];
+  const xs = [0, w];
+  for (const z of zs) {
+    if (z[0] > 0 && z[0] < w) xs.push(z[0]);
+    if (z[2] > 0 && z[2] < w) xs.push(z[2]);
+  }
+  xs.sort((a, b) => a - b);
+  const out = [];
+  for (let i = 1; i < xs.length; i++) {
+    const xa = xs[i - 1], xb = xs[i];
+    if (!(xb > xa)) continue;
+    // y-intervals of zones covering this whole slab, merged
+    const iv = [];
+    for (const z of zs)
+      if (z[0] <= xa && z[2] >= xb)
+        iv.push([Math.max(0, z[1]), Math.min(h, z[3])]);
+    iv.sort((p, q) => p[0] - q[0]);
+    let y = 0;
+    for (const [a, b] of iv) {
+      if (a > y) out.push([xa, y, xb, a]);
+      if (b > y) y = b;
+    }
+    if (y < h) out.push([xa, y, xb, h]);
+  }
+  return out;
+}
+// WZ-MATH-END
+
+function wzActive() {
+  return !!(state.workZones && state.workZones.length);
+}
+
+// Per-chain inside fraction, memoised: renderStyles + renderItemized walk
+// every chain on the sheet on every repaint, and a heavy topo sheet carries
+// six figures of segments. Keyed on page generation, zone revision and the
+// axis ratio; afterEdit() bumps wzRev so a moved point or a merge cannot
+// serve a stale fraction.
+let _wzFrac = null, _wzFracKey = "";
+function wzChainFrac(ch) {
+  if (!wzActive()) return 1;
+  const key = state.gen + ":" + state.wzRev + ":" + axisRatio();
+  if (_wzFracKey !== key) { _wzFrac = new Map(); _wzFracKey = key; }
+  let f = _wzFrac.get(ch.chain_id);
+  if (f === undefined) {
+    const p = ch.points;
+    if (!p || !p.length) f = 0;
+    else if (p.length === 1) f = wzPtIn(p[0][0], p[0][1], state.workZones) ? 1 : 0;
+    else {
+      const m = wzPolyInsideLen(p, state.workZones, axisRatio());
+      f = m.total > 0 ? m.inside / m.total
+        : (wzPtIn(p[0][0], p[0][1], state.workZones) ? 1 : 0);
+    }
+    _wzFrac.set(ch.chain_id, f);
+  }
+  return f;
+}
+
+// What a chain CONTRIBUTES to any quantity: its engine length scaled by the
+// measured inside fraction of its polyline. SCALES chainLenPt rather than
+// summing clipped legs directly, for the same reason chainLenPt scales
+// length_pt: the engine length includes welded pickup gaps that are not
+// polyline legs, so a whole-sheet zone must return chainLenPt EXACTLY
+// (fraction 1 -> same number, bit for bit), never a re-measured one. The
+// welded gap is apportioned by the inside fraction - disclosed in the tally
+// tooltip, not hidden.
+function chainCountedPt(ch) {
+  const f = wzChainFrac(ch);
+  return f === 1 ? chainLenPt(ch) : chainLenPt(ch) * f;
+}
+// ================== end WORK AREA quantity mask ==========================
+
 // A STYLE's total, axis-aware. state.result.styles carries a length the engine
 // summed at detect time, which knows nothing about a second scale, so it has to
 // be re-summed from that style's chains. Memoised on (ratio, generation): the
@@ -4820,16 +5048,25 @@ let _styleLen = null, _styleLenKey = null;
 // difference 0.05 pt - about 0.035 ft at 1"=50', i.e. a rounding boundary in
 // fmtQty. The new figure is the more accurate one; the stored total is the
 // engine's rounded copy.
-let _liveLen = null, _liveN = null, _liveKey = "";
+let _liveLen = null, _liveN = null, _liveOut = null, _liveKey = "";
 
 function _liveStyleTotals() {
-  const key = state.gen + ":" + state.excluded.size + ":" + axisRatio();
+  const key = state.gen + ":" + state.excluded.size + ":" + axisRatio()
+    + ":" + state.wzRev;
   if (_liveKey !== key) {
-    _liveLen = new Map(); _liveN = new Map();
+    _liveLen = new Map(); _liveN = new Map(); _liveOut = new Map();
     for (const ch of (state.result ? state.result.chains : [])) {
       if (state.excluded.has(ch.chain_id)) continue;
-      _liveLen.set(ch.style_id, (_liveLen.get(ch.style_id) || 0) + chainLenPt(ch));
-      _liveN.set(ch.style_id, (_liveN.get(ch.style_id) || 0) + 1);
+      // work-area mask: the row shows what COUNTS; what fell outside is
+      // tracked per style so the row can disclose its own loss
+      const full = chainLenPt(ch);
+      const counted = chainCountedPt(ch);
+      _liveLen.set(ch.style_id, (_liveLen.get(ch.style_id) || 0) + counted);
+      if (counted > 0 || !wzActive())
+        _liveN.set(ch.style_id, (_liveN.get(ch.style_id) || 0) + 1);
+      if (full - counted > 0)
+        _liveOut.set(ch.style_id,
+                     (_liveOut.get(ch.style_id) || 0) + (full - counted));
     }
     _liveKey = key;
   }
@@ -4848,6 +5085,15 @@ function styleLiveCount(sid) {
   if (!state.result) return 0;
   _liveStyleTotals();
   return _liveN.get(sid) || 0;
+}
+
+// Footage this style LOST to the work-area mask (0 when no zones, or when
+// every chain of the style is inside). The style row prints it compactly so
+// a row that shrank says why on its own line.
+function styleLiveOut(sid) {
+  if (!state.result || !wzActive()) return 0;
+  _liveStyleTotals();
+  return _liveOut.get(sid) || 0;
 }
 
 function styleLenPt(st) {
@@ -4883,9 +5129,14 @@ function sheetOverCapture() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
-    len += ch.length_pt;
-    gap += ch.gap_pt || 0;
-    pick += ch.pickup_pt || 0;
+    // work-area mask: the welded-gap ratio describes the footage that is
+    // COUNTED, so numerator and denominator are scaled by the same inside
+    // fraction (fr = 1 whenever no zones are drawn)
+    const fr = wzChainFrac(ch);
+    if (!(fr > 0)) continue;
+    len += ch.length_pt * fr;
+    gap += (ch.gap_pt || 0) * fr;
+    pick += (ch.pickup_pt || 0) * fr;
   }
   return len > 0 ? { len, gap, pick } : null;
 }
@@ -4899,11 +5150,18 @@ function computeTakeoffRows() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
+    // WORK AREA quantity mask: a chain counts by its length INSIDE the
+    // drawn boxes. Fully outside = contributes nothing, not to footage and
+    // not to a count - the mask exists to keep the legend block and the
+    // NTS details out of these exact rows. Partially inside counts the
+    // exact clipped length and stays one line in the count.
+    const counted = chainCountedPt(ch);
+    if (wzActive() && !(counted > 0)) continue;
     const label = state.chainLabels.get(ch.chain_id) ||
       state.labels.get(ch.style_id) || "unlabeled";
     const t = totals.get(label) ||
       { count: 0, pt: 0, objects: 0, objSids: new Set(), chains: [] };
-    t.count += 1; t.pt += chainLenPt(ch); t.chains.push(ch);
+    t.count += 1; t.pt += counted; t.chains.push(ch);
     sheetChains.push(ch);
     if (state.measureMode.get(ch.style_id) === "object")
       t.objSids.add(ch.style_id);
@@ -5256,12 +5514,18 @@ function renderItemized() {
       if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
     }
   }
-  // always-visible tally: sum of INCLUDED footage + priced total
-  let inkPt = 0;
+  // always-visible tally: sum of INCLUDED footage + priced total.
+  // With a work area drawn, inkPt is what COUNTS and wzOutPt is what the
+  // mask set aside - both are printed, per the disclosure rule: a cap or
+  // mask states what it removed, never silently.
+  let inkPt = 0, wzOutPt = 0;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
-    inkPt += chainLenPt(ch);
+    const full = chainLenPt(ch);
+    const counted = chainCountedPt(ch);
+    inkPt += counted;
+    wzOutPt += full - counted;
   }
   // What the sheet is BILLING, which is not always what the detector measured.
   // The tally used to print the raw chain sum beside a dollar figure that came
@@ -5285,8 +5549,18 @@ function renderItemized() {
   const uf = ftPerIn ? sheet.unionPt / 72 * ftPerIn : null;
   const tb = $("tallyBar");
   const abbrQ = (v) => (v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)) + " " + u;
+  // pt->display for the two work-area figures, in the sheet's own unit
+  const wzFmt = (ptv) => {
+    if (ftPerIn === null) return fmtLen(ptv);
+    const ftv = ptv / 72 * ftPerIn;
+    return (ftv >= 1000 ? (ftv / 1000).toFixed(1) + "k" : ftv.toFixed(0)) + " ft";
+  };
   tb.textContent =
-    (ovRowN
+    (wzActive()
+      ? "work area: " + wzFmt(inkPt) + " counted \u00b7 "
+        + wzFmt(wzOutPt) + " outside excluded"
+        + (ovRowN ? " \u00b7 " + abbrQ(billedQ) + " billed" : "")
+      : ovRowN
       ? abbrQ(billedQ) + " billed \u00b7 " + abbrQ(autoQ) + " measured"
       : (tf !== null
           ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
@@ -5307,12 +5581,22 @@ function renderItemized() {
         return ` · ${(100 * oc.gap / oc.len).toFixed(1)}% welded`;
       })()
     + (grand ? ` · $${grand.toFixed(0)}` : "");
+  const wzPrefix = wzActive()
+    ? `WORK AREA: ${state.workZones.length} box(es) drawn on the sheet. `
+      + `Every list here - the style rows, these itemized rows, the CSV and `
+      + `the approve export - counts only length inside the boxes; a line `
+      + `crossing an edge counts exactly its inside piece. Nothing is `
+      + `deleted: clear the work area and every number returns. Welded-gap `
+      + `footage inside a chain is apportioned by that chain's inside `
+      + `fraction. The earthwork and trench calculators keep their own `
+      + `boundary (the limit of work) and are NOT masked by the work area.\n\n`
+    : "";
   const ovPrefix = ovRowN
     ? `${ovRowN} row(s) on this sheet carry a quantity YOU typed, so "billed" `
       + `is your figure and "measured" is the detector's. The dollar total `
       + `follows the billed figure.\n\n`
     : "";
-  tb.title = ovPrefix + (sheet.excessPt > 0.05
+  tb.title = wzPrefix + ovPrefix + (sheet.excessPt > 0.05
     ? `Sum adds every included chain's length. Union counts each polyline ` +
       `segment once: ${sheet.sharedLegs} segment(s) across ` +
       `${sheet.nChains} included chains are carried by two or more chains, ` +
@@ -5581,6 +5865,23 @@ function takeoffCsv() {
   rows.push(["SHEET TOTAL (every included line)", "", "",
              uq(sheet.sumPt).toFixed(1), "", "",
              uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1)]);
+  // Disclosure travels WITH the numbers: a CSV opened next week must say
+  // that a mask was on and what it removed, or the clipped figures above
+  // read as the whole sheet. Two rows, same unit column as everything else.
+  if (wzActive()) {
+    let cIn = 0, cOut = 0;
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      if (!state.include.get(ch.style_id)) continue;
+      const full = chainLenPt(ch), counted = chainCountedPt(ch);
+      cIn += counted; cOut += full - counted;
+    }
+    rows.push([`WORK AREA counted (${state.workZones.length} box(es) drawn; `
+               + `quantities above count only length inside them)`,
+               "", "", uq(cIn).toFixed(1), "", "", "", ""]);
+    rows.push(["WORK AREA excluded (outside the boxes; not in any figure above)",
+               "", "", uq(cOut).toFixed(1), "", "", "", ""]);
+  }
   return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
 }
 $("csvBtn").onclick = () => {
@@ -8064,6 +8365,12 @@ $("approveBtn").onclick = async () => {
           !state.excluded.has(id) && state.include.get(sid.get(id)));
       })()),
       quantity_overrides: ovRows,
+      // The work-area quantity mask, so the export's per-label footage is
+      // computed the same zone-clipped way the panel shows it. The server
+      // clips with the same segment/rect math (mirrored in _wz_frac) and
+      // states counted/excluded in the export - a mask the tally respects
+      // but the export ignores would be a silent wrong number.
+      work_zones: wzActive() ? state.workZones.map(z => z.slice()) : null,
       extra_items: state.extraItems.map(it => ({
         ...it,
         unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
@@ -8407,6 +8714,37 @@ function draw() {
       ctx.setLineDash([]);
     }
   }
+  // WORK AREA quantity mask: everything OUTSIDE the union of drawn boxes
+  // washes toward paper - same treatment the sheet raster already gets so
+  // detected ink pops - and the boxes themselves draw as faint outlines.
+  // Painted AFTER the linework so outside-zone lines read dimmed the way
+  // texture/annotation styles do; nothing is removed from the canvas, only
+  // muted, because the mask changes what COUNTS, not what was detected.
+  if (state.result && (wzActive() || state.wzDrag)) {
+    const fz = IMG_DPI / 72;
+    if (wzActive()) {
+      const zonesPx = state.workZones.map(
+        z => [z[0] * fz, z[1] * fz, z[2] * fz, z[3] * fz]);
+      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      for (const rc of wzComplementRects(zonesPx, state.img.width, state.img.height))
+        ctx.fillRect(rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1]);
+      ctx.strokeStyle = "rgba(14,138,95,0.85)";
+      ctx.lineWidth = 1.6 / k;
+      ctx.setLineDash([7 / k, 5 / k]);
+      for (const z of zonesPx)
+        ctx.strokeRect(z[0], z[1], z[2] - z[0], z[3] - z[1]);
+      ctx.setLineDash([]);
+    }
+    if (state.wzDrag) {
+      const a = state.wzDrag.a, b = state.wzDrag.b;
+      ctx.strokeStyle = "#0e8a5f";
+      ctx.lineWidth = 1.8 / k;
+      ctx.setLineDash([5 / k, 4 / k]);
+      ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
+                     Math.abs(b[0] - a[0]) * fz, Math.abs(b[1] - a[1]) * fz);
+      ctx.setLineDash([]);
+    }
+  }
   // cut-span first anchor
   if (state.tool === "cutspan" && state.cutA) {
     const f2 = IMG_DPI / 72;
@@ -8525,6 +8863,13 @@ function cssColor(c, w) {
 let panning = null;
 let downAt = null;
 cv.addEventListener("mousedown", (e) => {
+  // work-area tool: mousedown STARTS a box, it never pans - the whole
+  // gesture is the drag, so the generic pan below must not see it
+  if (state.tool === "wz-draw" && state.result) {
+    const p = ptFromEvent(e);
+    state.wzDrag = { a: p, b: p.slice() };
+    return;
+  }
   // while a click-tool is armed, clicks land IN the tool - a click on a
   // vertex dot is a cut/draw/measure anchor, never a point-drag
   const v = state.tool ? null : vertexAt(e);
@@ -8540,6 +8885,11 @@ cv.addEventListener("mousedown", (e) => {
   cv.classList.add("panning");
 });
 addEventListener("mousemove", (e) => {
+  if (state.wzDrag) {
+    state.wzDrag.b = ptFromEvent(e);
+    draw();
+    return;
+  }
   if (state.dragPt) {
     const ch = chainById(state.selected);
     if (ch && state.selPt !== null) {
@@ -8561,6 +8911,23 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 addEventListener("mouseup", (e) => {
+  if (state.wzDrag) {
+    const d = state.wzDrag;
+    state.wzDrag = null;
+    const x0 = Math.min(d.a[0], d.b[0]), x1 = Math.max(d.a[0], d.b[0]);
+    const y0 = Math.min(d.a[1], d.b[1]), y1 = Math.max(d.a[1], d.b[1]);
+    // a click is not a box: 2 pt is ~1/36 inch of paper, below any
+    // plausible intended work area and above any mouse jitter
+    if (x1 - x0 < 2 || y1 - y0 < 2) {
+      setStatus("work area: DRAG a box (that was a click) — Esc exits the tool", "busy");
+      draw();
+      return;
+    }
+    state.workZones.push([x0, y0, x1, y1]);
+    wzChanged();
+    wzStatusAfterBox();
+    return;
+  }
   if (state.dragPt) {
     state.dragPt = false;
     const ch = chainById(state.selected);
@@ -8840,6 +9207,10 @@ function materialize(ch) {
 }
 function afterEdit(msg) {
   $("restoreBtn").hidden = false;
+  // an edit can move a chain's geometry without changing its id (point
+  // drag, extend), so the work-area inside-fraction memo must not survive
+  // it; wzRev is part of that memo's key
+  state.wzRev++;
   setStatus(msg);
   renderItemized();
   draw();
@@ -9202,7 +9573,14 @@ function updateSelBar(ch) {
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
   const el = z !== undefined ? ` · EL ${z}` : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${pt}${el}`;
+  // the length here is the line's GEOMETRY; when a work area is drawn and
+  // this line crosses its edge, say what part of it actually counts
+  const wf = wzChainFrac(ch);
+  const wz = (wzActive() && wf < 1)
+    ? (wf > 0 ? ` · ${fmtQty(chainCountedPt(ch))} in work area`
+              : " · outside work area (counts 0)")
+    : "";
+  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}${el}`;
 }
 
 function deleteVertex() {
@@ -9237,9 +9615,13 @@ function refreshStyleRows() {
     const s = byId.get(row.dataset.sid);
     if (!s) continue;
     const meta = row.querySelector(".style-meta");
-    if (meta)
+    if (meta) {
       meta.textContent = `${fmtQty(styleLenPt(s))} · `
         + `${styleLiveCount(s.style_id)} lines · ${s.signature}`;
+      const wOut = styleLiveOut(s.style_id);
+      if (wOut > 0.05)
+        meta.textContent += ` · ${fmtQty(wOut)} outside work area`;
+    }
     const chip = row.querySelector(".item-split .is-txt");
     const sp = splits.get(s.style_id);
     if (chip && sp)
@@ -9889,5 +10271,122 @@ function drawStructural(ctx, k) {
     }
   }
 }
+
+// ================= WORK AREA - operator controls ==========================
+// The arming/drag/disarm shape follows st-draw; the mask math lives beside
+// chainLenPt (WZ-MATH block above). Consent pattern: drawing a box is an
+// explicit operator action with a visible state (dimmed outside, dashed
+// outlines, tally disclosure), and CLEAR restores everything - detection
+// results are never touched, so there is nothing to recompute.
+
+function wzSyncUi() {
+  // the button's lit state is handled by syncCursor (the state.tool hook);
+  // this keeps the clear affordance in step with whether zones exist
+  const cb = $("wzClearBtn");
+  if (cb) cb.hidden = !wzActive();
+}
+
+// every reader of a length repaints; the sidecar records the change
+function wzChanged() {
+  state.wzRev++;
+  wzSyncUi();
+  calcStateDirty();
+  renderStyles(); renderChips(); renderItemized(); renderMiniLegend();
+  draw();
+}
+
+// after each box: say what now counts and what is out, in sheet units
+function wzStatusAfterBox() {
+  let cIn = 0, cOut = 0;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    const full = chainLenPt(ch), counted = chainCountedPt(ch);
+    cIn += counted; cOut += full - counted;
+  }
+  const n = state.workZones.length;
+  setStatus(`work area: ${n} box${n === 1 ? "" : "es"} — ${fmtQty(cIn)} counted, `
+    + `${fmtQty(cOut)} outside excluded. Drag to add another box; Esc finishes.`,
+    "busy");
+}
+
+$("wzBtn").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "wz-draw") {
+    state.tool = null; state.wzDrag = null;
+    setStatus(wzActive()
+      ? `work area set: ${state.workZones.length} box(es) govern the takeoff lists`
+      : "work area tool off — no boxes drawn, everything counts");
+    draw();
+    return;
+  }
+  // release whatever click-tool was armed so its button does not stay lit
+  // (same block stArm uses)
+  if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "measure") $("measureBtn").click();
+  else if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "merge") cancelMerge();
+  else if (state.tool === "reclass") $("reclassBtn").onclick();
+  else if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
+  state.tool = "wz-draw";
+  setStatus("work area: drag a box around the part of the sheet that should "
+    + "count — the takeoff lists then count only length inside your boxes. "
+    + "Drag more boxes to add; Esc finishes. (Earthwork and trench keep "
+    + "their own limit-of-work boundary.)", "busy");
+};
+
+$("wzClearBtn").onclick = () => {
+  if (!wzActive()) return;
+  const n = state.workZones.length;
+  // measure what the clear puts BACK before dropping the zones, so the
+  // status line can state the restoration instead of just "cleared"
+  let backPt = 0;
+  if (state.result)
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      if (!state.include.get(ch.style_id)) continue;
+      backPt += chainLenPt(ch) - chainCountedPt(ch);
+    }
+  state.workZones = [];
+  state.wzDrag = null;
+  if (state.tool === "wz-draw") state.tool = null;
+  wzChanged();
+  setStatus(`work area cleared — ${n} box${n === 1 ? "" : "es"} removed, `
+    + `${fmtQty(backPt)} back in the count`);
+};
+
+// restore this page's boxes from the calcstate sidecar (additive key
+// "zones"). Rects are page geometry, not chain references, so they apply
+// to whatever the live detection holds - nothing can be orphaned by a
+// re-detect, and the counted lengths recompute from the current chains.
+function wzApplySaved() {
+  const saved = state.calcSaved || {};
+  state.workZones = wzNorm(saved.zones);
+  state.wzDrag = null;
+  state.wzRev++;
+  wzSyncUi();
+}
+
+// Esc while the tool is armed: abandon an in-progress drag first, then the
+// tool itself (boxes already drawn stay). Capture phase so the generic Esc
+// (clear selection / isolate) never fires underneath, same as st-draw.
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "wz-draw" && !state.wzDrag) return;
+  if (e.key !== "Escape") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (state.wzDrag) {
+    state.wzDrag = null;
+    setStatus("box abandoned — drag again, or Esc to finish", "busy");
+    draw();
+    return;
+  }
+  state.tool = null;
+  setStatus(wzActive()
+    ? `work area set: ${state.workZones.length} box(es) govern the takeoff lists`
+    : "work area: no boxes drawn, everything counts");
+  draw();
+}, true);
+// =============== end WORK AREA operator controls ==========================
 
 resize();

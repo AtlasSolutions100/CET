@@ -111,6 +111,105 @@ def _axis_len_pt(points, ratio: float, length_pt: float) -> float:
     return length_pt * (axis / plain)
 
 
+def _wz_norm(zones) -> list:
+    """Work-area rectangles off the wire: junk rows dropped, corners
+    sorted, zero-area boxes refused. Mirrors wzNorm() in webui/app.js."""
+    out = []
+    for z in zones or []:
+        try:
+            x0, y0, x1, y1 = float(z[0]), float(z[1]), float(z[2]), float(z[3])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+            continue
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            continue
+        out.append((x0, y0, x1, y1))
+    return out
+
+
+def _wz_pt_in(x, y, zones) -> bool:
+    return any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in zones)
+
+
+def _wz_seg_t(ax, ay, bx, by, zones) -> float:
+    """Fraction of segment a->b inside the UNION of rects, as merged
+    t-intervals in [0,1]. Mirrors wzSegT() in webui/app.js exactly: the
+    export must clip precisely as the panel the operator approved from,
+    or the approved number and the exported number silently diverge.
+    Exact axis-aligned slab clipping - never midpoint voting."""
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return 1.0 if _wz_pt_in(ax, ay, zones) else 0.0
+    iv = []
+    for z in zones:
+        t0, t1 = 0.0, 1.0
+        if dx == 0:
+            if ax < z[0] or ax > z[2]:
+                continue
+        else:
+            ta, tb = (z[0] - ax) / dx, (z[2] - ax) / dx
+            if ta > tb:
+                ta, tb = tb, ta
+            t0, t1 = max(t0, ta), min(t1, tb)
+        if dy == 0:
+            if ay < z[1] or ay > z[3]:
+                continue
+        else:
+            ta, tb = (z[1] - ay) / dy, (z[3] - ay) / dy
+            if ta > tb:
+                ta, tb = tb, ta
+            t0, t1 = max(t0, ta), min(t1, tb)
+        if t1 > t0:
+            iv.append((t0, t1))
+    if not iv:
+        return 0.0
+    iv.sort()
+    total, (s, e) = 0.0, iv[0]
+    for a2, b2 in iv[1:]:
+        if a2 <= e:
+            e = max(e, b2)
+        else:
+            total += e - s
+            s, e = a2, b2
+    total += e - s
+    return total
+
+
+def _wz_frac(points, zones, ratio: float = 1.0) -> float:
+    """Fraction of a chain's (axis-weighted) polyline inside the work-area
+    union. Mirrors wzChainFrac()/wzPolyInsideLen() in webui/app.js: the
+    inside PORTION is decided in true page space, the LENGTH each piece
+    contributes is axis-weighted, and the exported quantity is the engine
+    length scaled by this fraction - welded pickup gaps are apportioned,
+    never re-measured, so a zone covering the whole sheet returns the
+    engine's own number exactly."""
+    if not zones:
+        return 1.0
+    if not points:
+        return 0.0
+    if len(points) < 2:
+        return 1.0 if _wz_pt_in(points[0][0], points[0][1], zones) else 0.0
+    inside = total = 0.0
+    for i in range(1, len(points)):
+        ax, ay = points[i - 1][0], points[i - 1][1]
+        bx, by = points[i][0], points[i][1]
+        seg = math.hypot(bx - ax, (by - ay) * ratio)
+        if seg <= 0:
+            continue
+        total += seg
+        t = _wz_seg_t(ax, ay, bx, by, zones)
+        if t > 0:
+            inside += t * seg
+    if total <= 0:
+        return 1.0 if _wz_pt_in(points[0][0], points[0][1], zones) else 0.0
+    return inside / total
+
+
 def _client_pdf(raw: str) -> Path:
     """Validate a client-supplied PDF path or raise the right HTTP error."""
     if HOSTED:
@@ -1688,6 +1787,13 @@ class ApproveBody(BaseModel):
     # the scale the reviewer had on screen. Omitted = keep whatever this page
     # already decided (a stored pick, else the engine's). See _page_scale.
     scale: ApproveScale | None = None
+    # WORK AREA quantity mask, [[x0,y0,x1,y1],...] in page pt: per-label
+    # footage counts only length inside the union of these boxes, clipped
+    # with the same segment/rect math the review panel used (_wz_frac).
+    # None or empty = no mask, and the export is byte-for-byte what it was.
+    # Elements always keep full geometry - the mask changes what COUNTS,
+    # never what was detected.
+    work_zones: list[list[float]] | None = None
     # label -> the quantity the operator typed over the computed one, for
     # EVERY row kind the itemized panel shows: footage, EA object count,
     # symbol count, calculator CY/SF/LF. Built from computeTakeoffRows(), the
@@ -1714,6 +1820,8 @@ def approve(job_id: str, page: int, body: ApproveBody):
         if _fx > 0 and _fy > 0:
             _v_ratio = _fy / _fx
 
+    _wz = _wz_norm(body.work_zones)
+    _wz_fr: list = []   # per-element inside fraction, parallel to `elements`
     elements = []
     excluded = set(body.excluded_chain_ids)
     for ch in list(res["chains"]) + list(body.added_chains):
@@ -1721,6 +1829,8 @@ def approve(job_id: str, page: int, body: ApproveBody):
             or body.labels.get(ch["style_id"])
         if label is None or ch["chain_id"] in excluded:
             continue
+        wf = _wz_frac(ch["points"], _wz, _v_ratio) if _wz else 1.0
+        _wz_fr.append(wf)
         color = ch.get("color")
         hexcol = "#%02x%02x%02x" % tuple(int(c * 255) for c in color) if color else "#333333"
         elements.append({
@@ -1738,6 +1848,10 @@ def approve(job_id: str, page: int, body: ApproveBody):
             **({"lengthPtAxis": _axis_len_pt(ch["points"], _v_ratio,
                                              ch["length_pt"])}
                if _v_ratio != 1.0 else {}),
+            # geometry stays FULL under a work-area mask; the fraction is
+            # written beside it so a reader can reconcile clipped items to
+            # elements without re-deriving the clip
+            **({"workAreaFrac": round(wf, 6)} if _wz else {}),
         })
     export = {
         "source": Path(JOBS[job_id]["path"]).name if job_id in JOBS else "",
@@ -1769,10 +1883,15 @@ def approve(job_id: str, page: int, body: ApproveBody):
     # itemization: per-label count + footage (when scale known) + pricing
     ft_per_in = det["ft_per_paper_inch"] if det else None
     totals: dict = {}
-    for el in elements:
+    for el, _f in zip(elements, _wz_fr) if _wz else ((el, 1.0) for el in elements):
+        # work-area mask: a chain fully outside counts nothing - not
+        # footage and not a line count - exactly as computeTakeoffRows()
+        # skips it in the panel the operator approved from
+        if _wz and _f <= 0:
+            continue
         t = totals.setdefault(el["label"], {"count": 0, "length_pt": 0.0})
         t["count"] += 1
-        t["length_pt"] += el.get("lengthPtAxis", el["lengthPt"])
+        t["length_pt"] += el.get("lengthPtAxis", el["lengthPt"]) * _f
     # `qty <= 0` is "no override" here because it is "no override" in the box:
     # computeTakeoffRows applies one only `if (!isNaN(ov) && ov > 0)`.
     ov_ft: dict = {}
@@ -1895,6 +2014,28 @@ def approve(job_id: str, page: int, body: ApproveBody):
     # lines); capped so no caller can paper over the table with prose
     export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
                        if str(x).strip()]
+    if _wz:
+        # Disclosure travels with the record (CLAUDE.md: a mask states what
+        # it removed, never silently): the zones, and counted vs excluded
+        # footage, in the export AND as a note the report PDF prints.
+        _in_pt = sum(el.get("lengthPtAxis", el["lengthPt"]) * f
+                     for el, f in zip(elements, _wz_fr))
+        _all_pt = sum(el.get("lengthPtAxis", el["lengthPt"]) for el in elements)
+        wa = {"zones": [list(z) for z in _wz],
+              "counted_pt": round(_in_pt, 1),
+              "excluded_pt": round(_all_pt - _in_pt, 1)}
+        if ft_per_in:
+            wa["counted_ft"] = round(_in_pt / 72.0 * ft_per_in, 1)
+            wa["excluded_ft"] = round((_all_pt - _in_pt) / 72.0 * ft_per_in, 1)
+        export["work_area"] = wa
+        _u = "ft" if ft_per_in else "pt"
+        export["notes"].append(
+            f"Work area: {len(_wz)} box(es) drawn by the reviewer. Every "
+            f"quantity in this export counts only length inside them - "
+            f"{wa.get('counted_ft', wa['counted_pt']):,} {_u} counted, "
+            f"{wa.get('excluded_ft', wa['excluded_pt']):,} {_u} outside "
+            f"excluded. Element geometry is complete; each element's "
+            f"workAreaFrac says how much of it counted.")
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
     return JSONResponse({"exported": len(elements), "file": str(out),
