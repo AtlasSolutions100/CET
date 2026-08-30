@@ -826,9 +826,19 @@ next attempt:
   circle never co-located; 1 of 3 hydrants verified).
 * A point-symbol legend row legitimately holds a pipe stub - open ink is a
   RANKER between claimant rows, never a veto.
-* THE ROUTE THAT SHOULD WORK: raster template matching seeded from the
-  legend-strip render. marks.build_family + find_tags already do exactly
-  this for scanned mark bubbles; render the vector sheet at 300 dpi, seed
-  the family from the strip crop, count matches. Size/block mismatch
-  disappears because the template IS the legend's own picture. Estimated
-  M; needs the usual corpus A/B before shipping.
+* The raster-template route was TRIED the same night (masked matching,
+  per-unit templates, ink veto): killed by its own eyeball check. The
+  strip render shows the truth the vectors hid - the SSMH "symbol" is a
+  FILLED DOT sitting ON the sewer line, and the big unit I was anchoring
+  on is the flow ARROWHEAD (out/verify/2026-08-30/symbol-raster/). Two
+  raster traps for the record: extract_strokes output is ALREADY display
+  space (mapping through rotation_matrix again lands crops at negative
+  y), and TM_CCOEFF_NORMED scores an exact 1.0 all down the sheet border.
+* THE DESIGN THAT FITS THE DATA (no raster needed): a utility structure
+  is a dot/small glyph ON its line family. Count closed units of the
+  dot's size whose center lies ON (within ~2 pt of) a chain of the
+  MATCHED line style - "PROPOSED SANITARY SEWER MAIN" chains are already
+  detected and legend-named, so manholes = dots riding those chains, and
+  the MANHOLE legend row supplies the label. Same shape for valves on
+  water mains. Bounded, vector-only, style-scoped so text dots and other
+  families cannot leak in. Estimated S-M; needs the usual corpus A/B.
