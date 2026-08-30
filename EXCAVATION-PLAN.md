@@ -589,3 +589,152 @@ achievable without the two-surface work.**
 
 Items 1-5 are all things a paying client explicitly asked for, and none require
 the volume architecture. Fastest route to "this software does my job."
+
+---
+
+## 15. Independent excavation audit — 13 agents, adversarially refuted
+
+Run 2026-08-28. Six diagnoses, each attacked by a refuter. **Five of the six
+were refuted in some material way; one survived intact.** Every number below
+was re-verified on disk by the refuters. Read this before building anything.
+
+### The ranked list
+
+| # | item | effort | self-evident? |
+|---|---|---|---|
+| 1 | **Repaint the stale-volume warning when the scale changes.** `renderEwStale()` has ONE call site (`app.js:5852`, inside Calculate). Every scale change goes through `scaleRepaint()` (`:1657`), which never calls it — so Calculate → fix the scale → the stale CY re-render as priced rows **with no banner at all**. | 1 line | yes |
+| 2 | **Stop a second pipe run deleting the first.** `app.js:6239` filters `state.extraItems` by label prefix with **no style check**, so a job with sanitary + storm + water + force main holds one of four at a time. Estimate #853's nine per-LF utility lines total **$224,200**. | 1 line | yes |
+| 3 | **The datum abstain rule.** See §8 A1. **BUILD THIS FIRST.** | M | yes |
+| 4 | **Make `cut_fill` disclose, and refuse crossing contours.** Accepting ONE engine-suggested row that is actually a 10-inch water main moves cut/fill **+$81,438 (+41.9%)**. One contour label off by an index step: **+$132,767 (+68.4%)**. 20% of the counted area sits more than 50 ft from any data point; the biggest triangle spans 412.8 ft of ground as one flat plane. A crossing-contour check costs 0.16–0.56 s and fires **0 times** on clean data. | M | yes |
+| 5 | **Give the trench tool a consent gate.** Earthwork and structures both require an explicit Add; trench writes priced rows the moment you press Calculate. The app's own comment states the rule it breaks. | hours | yes |
+| 6 | **Two trench arithmetic guards.** 100 LF at 1.0 ft deep returns dig 5.6 CY and **bedding 7.6 CY** — 137% of the hole it is supposed to sit inside. And 4.00 ft → 4.01 ft moves excavation **+40.3%**, because the bedding-width table is a step function on instantaneous depth. | hours | yes |
+| 7 | **Let the volume routes READ a typed scale without writing it.** Honest incidence: **0 of 114 pages have a scale sidecar and 0 of 16 approvals produced one** — this is insurance, not a live wound. | S | yes |
+| 8 | **Calculators above the style list, and scroll to the panel you opened.** 12,220 style rows across 114 results (median 73, p90 212, **max 462**). There are exactly two `scrollIntoView` calls in 8,999 lines and neither is a panel handler. **LIVE** | M | yes |
+| 9 | **Make the limit of work a real boundary.** Barn C3.0's own `BG-Limit of disturbance` layer is **10 chains, none of them closed**; the longest is 361 ft with its two ends **342.9 ft apart**. The picker takes exactly one chain and joins its ends silently, giving 4,730 SF against this estimator's own `Clear & Grub 224,058 SF`. A **20–100× under-read**, returned as a normal success. **LIVE** | M | yes |
+| 10 | **Un-weld the topsoil strip from cut/fill.** `server.py:2924` raises HTTP 400 the moment `cut_fill` errors, so a clearing or erosion-control sheet with no proposed contours yields **0 CY** for an item that is pure area × depth. #853's topsoil family is **$88,815**. | M | thickness needs Beaumont |
+| 11 | **Persist what was typed into a calculator.** `state.ew`, `ewBound`, `tr`, `st` and `excluded` are all nulled in `loadResult`, so the takeoff still says "Site Cut 13,677 CY" while the panel behind it is empty. Nothing reaches the server, so a second seat sees none of it. | M | yes |
+| 12 | **Read the sheet number off the title block.** `app.js:1040`, `app.js:536` and `server.py:2033` all print index+1, and grep finds zero occurrences of `sheet_number` anywhere in the engine. On this plan set the number is the largest glyph in a fixed cell (36.7 pt) and resolves cleanly on all 15 pages. Roughly six lines. | ~1 day | yes |
+| 13 | **Cross-page cut/fill.** Barn's existing contours are on engine index 9 = printed **C4.0**; the proposed surface is on index 2 = **C3.0**. Unblocks **$500,833 (26.2% of #853)**. **C3.0 is 1"=30 ft and C4.0 is 1"=10 ft — 3× linear becomes 9× on cubic yards.** Any cross-sheet surface must print both scales and both page indices on the row. | L | HIGH RISK |
+| 14 | **Map drafter vocabulary to bid lines, and total across sheets.** #853's single `Perimeter Drain 3,395 LF @ $31` is drawn as 2,733.5 LF on C4.3 alone — 80.5% of the bid quantity from one of four sheets — split across **11 styles under two spellings, including the drafter's own typo `FOTER`**. The plans say FOUNDATION DRAIN; the bid says Perimeter Drain. On C4.0, 38.8% of the footage has **no name at all**. | L | yes |
+
+### DO NOT BUILD — this list saves more time than the build order
+
+* **Feeding the drawn boundary polygon into the topsoil strip area.** It makes
+  the only quantity with ground truth *worse*: 12,180 CY against #853's 5,730
+  (2.13×), versus today's 2.05×.
+* **Contour-elevation recovery on C3.0.** The premise ("0 of 225 labelled") is
+  false — the proposed surface builds today from 7 labelled chains.
+* **Trench depth derived from INV/RIM — until item 3 lands.** 664 of 811 spot
+  grades (81.9%) come back with the hundreds unresolved, and `read_spot_datum`
+  returns 7600 on some sheets and 7700 on others *within the same set*. Wiring
+  invert depth now means differencing truncated elevations into a priced
+  quantity. **This is the hardest sequencing constraint in the whole set.**
+* **Over-excavation rows into `material_balance` as scoped.** The proposed
+  labels fail `EW_ITEM_RE`, which is used as a *remove* filter immediately
+  before re-pushing — so every Calculate **appends another copy** and the bid
+  quantity multiplies. Worth $188,700 (9.9%) of #853; it deserves a real
+  design.
+* **Inverting the scope filter to hide "unknown" rows by default.** The repo
+  already records 138.8k ft — 78% of a sheet — vanishing through that filter's
+  own put-back path, found only by driving the live app.
+* **"Fixing" the `/structure` mixed exponent.** Not a defect: footprint area
+  scales with the square of the scale and perimeter scales linearly, because
+  that is what those shapes are.
+* **Vertical scale for profile sheets.** Already built, measured and withdrawn
+  in `0c01c80`. Leave it.
+
+### Cannot be verified without a live UI pass — must stay serial
+
+Items **8, 9, the UI half of 3, the banner behaviour in 1 and 7, and any
+drawn-boundary work in 10.**
+
+One dev service on :8128 and one job store: two agents driving the same page
+overwrite each other's state, and items 3, 9 and 10 each change a stored
+quantity, so each needs its own before/after run on the same page.
+
+**None of the six diagnoses did a live pass.** All are source plus cached
+results. Per §9, none of them is "verified" yet.
+
+### What the audit could not see
+
+* Every corpus scan quoted is **text-layer only** — which is all the engine can
+  see either. A datum note that is rastered or exploded to vector strokes is
+  invisible to both. Counts are floors, not censuses.
+* **113 of the 114 cached results came from superseded engine builds** (four
+  distinct `engine_sig` values plus 50 carrying none).
+* **There is no ground truth for any Barn civil sheet.** The 8,224.9 CY /
+  9,366.5 CY baseline is a stable reference point for measuring deltas, **not**
+  an accuracy claim.
+* **No cubic yard in the audit came from a live `cut_fill` run.** The
+  phantom-volume figures are geometric upper bounds.
+* **Estimate #853 is one job** — a sample, not a rate.
+
+---
+
+## 16. Where the audit and the client feedback disagree
+
+The audit ran **without** the client feedback CSV. One of its DO-NOT-BUILD
+entries is now partly answered:
+
+> *"Trench depth bands with edges you pick — there is no source for a band
+> edge, not on a sheet, not in a legend, not in #853, not in the transcripts.
+> The 0-6/6-10 split in circulation came from a prompt."*
+
+**That was correct when written, and it is now resolved.** There is a source,
+and it is the buyer:
+
+> jpierce@piercesitework.com, 2026-08-27: *"it needs to be put into 2 ft depth
+> increments. For example 6-8 ft deep, 8-10 ft deep, etc."*
+
+He specified the edges in writing. **Build the band table with 2 ft edges,
+configurable.** Griffin Furlong's 0-6 / 6-8 brackets are a second source, for
+manholes specifically; where the two conflict, Pierce wins — he is the one
+paying.
+
+**The audit's sequencing constraint still binds absolutely:** do not derive
+depth from INV/RIM until item 3 has landed. Knowing the band edges does not
+make truncated elevations safe to difference.
+
+Merged instruction: **build the band table now against typed depths; wire it to
+profile-derived depths only after item 3.**
+
+---
+
+## 17. FINAL merged order
+
+```
+0.  ROTATE the xAI and Groq keys, move .env out of OneDrive   (not a feature)
+
+1.  Audit items 1 and 2            two one-line fixes, first hour of day one
+2.  AUDIT ITEM 3 - datum abstain   the one thing, if only one thing
+3.  Scale, the client-blocked half:
+      - calibrate from a line of known length      (jeff, BLOCKED)
+      - derive scale from station numbers          (klayton, BLOCKED)
+      - A2  the 1:100 misparse                     (under the gate)
+      - A5 / audit 7  volume routes read a typed scale
+4.  Audit items 5, 6               trench consent gate + arithmetic guards
+5.  Audit item 12                  sheet number off the title block
+6.  Audit items 8, 9               SERIAL, live pass required
+7.  Trench depth bands             2 ft edges from Pierce, typed depths only
+8.  Profile reading, rim/invert    ONLY after item 3
+9.  Structures from legend symbol  (jpierce, the missed manhole)
+10. Pipe by size                   inline labels plus nearby text
+11. Audit items 4, 10, 11, 14
+12. Audit item 13                  cross-page cut/fill, HIGH RISK, 9x on CY
+```
+
+**The one thing, if only one thing: the datum abstain rule.**
+
+It is the only defect on the list that fires with **no operator action** — open
+the earthwork panel on Barn C3.3 and 51 spot points that are 100 ft too low are
+already ticked on. It is the only one where the app asserts the wrong number is
+the drafter's own statement, in a green banner, and then *hides* the override
+box precisely because everything falsely resolved. It is completely
+self-evident from the sheet, which prints its own contours at 7720-7735 beside
+spot grades at 7605-7635. It was the only diagnosis of six to survive
+adversarial review with root cause, mechanism, blast radius and fix intact. And
+it cannot regress detection: `earthwork.py` is absent from `_ENGINE_FILES`, so
+`engine_sig` does not move and no cached page invalidates.
+
+The trade is **173 confidently-wrong elevations for 173 honestly-blank ones** —
+the direction this codebase already chose the last time it faced the question.
