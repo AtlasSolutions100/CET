@@ -938,4 +938,4 @@ families (Oncor's EX-SS/EX-W/OHE). To read Kayden's:
   (0.15) misses style 4's 4.385 - widening it is a corpus study, not an
   overnight edit (chain.py section-6 discipline).
 
-### Overnight total: 25 commits, 83864a1 -> HEAD, all dev-only, all gated.
+### Overnight total: 24 commits, 83864a1 -> HEAD, all dev-only, all gated.
