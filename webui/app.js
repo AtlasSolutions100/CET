@@ -36,6 +36,9 @@ const state = window.state = {
   triage: null,             // /triage reply: per-page excavation tiers
   img: null, result: null,
   include: new Map(), labels: new Map(), isolate: null, hot: null,
+  inheritedInc: new Map(),  // style_id -> tick that came from ANOTHER sheet's
+                            // hand decision (set-level inherit); drives the
+                            // one-line disclosure in renderStyles()
   selected: null, excluded: new Set(),
   chainLabels: new Map(),   // chain_id -> label override (separate-from-group)
   nextChainId: 1,           // ids for chains created by edits
@@ -3755,6 +3758,19 @@ function renderStyles() {
       + "nothing the drafter wrote to check them against.";
     box.appendChild(note);
   }
+  // Set-level disclosure. Ticks this page INHERITED from hand decisions on
+  // other sheets are announced, never a side effect: one line, with a count,
+  // and the way out stated. memApply() counts them; setInclude() removes a
+  // row from the count the moment the operator overrides it here.
+  const nInh = state.inheritedInc ? state.inheritedInc.size : 0;
+  if (nInh) {
+    const note = document.createElement("div");
+    note.className = "layer-none-note";
+    note.textContent = nInh + (nInh === 1 ? " choice" : " choices")
+      + " carried over from other sheets of this set — page-level changes "
+      + "override.";
+    box.appendChild(note);
+  }
   const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
   const CLASS_NAME = { solid: "Solid lines", dash1: "Dashed",
     dash2: "Dash-dot", dash3: "Compound (dash-dot-dot)",
@@ -3806,12 +3822,18 @@ function renderStyles() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
+    if (state.inheritedInc && state.inheritedInc.has(s.style_id))
+      cb.title = "Carried over from another sheet of this set — change it "
+        + "here to override for this page.";
     cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
       // Ticking a row the scope filter set aside IS the put-back: record it,
       // or scopeApply() would untick it again on the next repaint and the
       // operator would watch their own click undo itself.
       if (sv.v === "out" && cb.checked) { scopeKeepRow(s, true); return; }
       if (sv.v === "kept" && !cb.checked) { scopeKeepRow(s, false); return; }
+      // A hand tick on the row itself - and only that - also speaks for the
+      // set (scope put-backs returned above; bulk buttons never come here).
+      setIncludeSetWide(s, cb.checked);
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -5232,6 +5254,10 @@ function docKey() {
 function sigKey() {
   return (state.result && state.result.engine_sig) || "nosig";
 }
+// SET-DECISIONS-BEGIN
+// Everything from here to SET-DECISIONS-END is kept pure (no DOM, no
+// state.*, no store.*) so tests/test_set_decisions.js can eval the block
+// alone - the same technique as the TRENCH-MATH block.
 // chain._weight_class (chain.py:3310), ported verbatim: hairline / light /
 // medium / heavy / extra. Kept as a five-line duplicate rather than a new
 // server field because the fix is then one file and no engine_sig moves;
@@ -5310,6 +5336,69 @@ function styleFp(st) {
   return [st.class, "w" + weightClass(st.width || 0), rawColor(st.color),
           st.signature, "L=" + (st.layer || "")].join("|");
 }
+// ---------- set-level decisions (EXCAVATION-PLAN §7 item 5) ----------
+// An include/exclude the operator makes BY HAND on one style row is also
+// recorded against the whole document, so excluding the title-block style
+// on sheet 1 holds on sheets 2-48. Three rules, ranked:
+//   1. the page's own record (includeKey) ALWAYS outranks the set-level
+//      one - the page-level override the operator sees is just the same
+//      checkbox, and it keeps winning on that page forever;
+//   2. only styles with a CAD layer participate (setDecEligible). The
+//      styleFp comment above documents the residue: rows with NO layer on
+//      DIFFERENT pages are indistinguishable under every key this file can
+//      build, and a label that travels wrongly is a visible typo while an
+//      EXCLUSION that travels wrongly is silently deleted footage. So
+//      no-layer rows abstain and keep their per-page seeds - 529/2,664
+//      rows (19.9%) on Barn, 103/1,059 (9.7%) on Kayden, 22/22 on the
+//      ellis sheet, where the whole feature therefore stays inert;
+//   3. only the row's own checkbox writes the set-level record. Bulk
+//      gestures (all / none / color chips / AI apply / scope filter) stay
+//      page-scoped: "none" on sheet 1 must not empty sheets 2-48.
+//
+// MEASURED 2026-08-30, before building, offline detect_page on this tree:
+// Barn 15 pages / 2,664 style rows, Kayden 12-page spread / 1,059 rows,
+// plus cached Kayden p38-39 (327) and ellis p42 (22). A candidate key of
+// (layer LEAF, class, signature rounded to 1 pt) fuses rows the engine
+// split ON THE SAME PAGE - different-looking styles by construction - for
+// 714/2,664 rows (26.8%) on Barn and 262/1,059 (24.7%) on Kayden, worst
+// group 14 rows, and 7 Kayden groups put 54,985 pt of real linework under
+// an annotation row's key: an exclusion there deletes footage silently,
+// so leaf-keyed inheritance is dead on arrival. styleFp collides on
+// 0/2,664, 0/1,059, 0/327 and 0/22 (the theorem above, re-measured
+// anyway). Coverage under styleFp with this eligibility rule: 948/2,067
+// eligible later-page rows (45.9%) already have a key on an earlier page
+// on Barn, 495/956 (51.8%) on Kayden - the misses are mostly dash-cadence
+// jitter (of 6,581 Barn cross-page pairs matched on layer+class+weight+
+// colour, 3,328 = 50.6% agree on cadence too), which fails SAFE: the row
+// keeps its seed and its checkbox. The headline case holds: excluding
+// C3.0's four G-ANNO-TTLB title-block styles reaches every TTLB row on
+// all 14 other Barn sheets (40/40). A rounded-signature styleFp variant
+// also measured 0 collisions and would add +84/+18 covered rows, but its
+// zero is a corpus fact, not a construction (Kayden p38 carries
+// 'd8.8 g4.5' and 'd9.1 g4.5' as two rows, kept apart only by the XREF
+// prefix in the full layer), and the label record travels on the exact
+// signature - one identity for both records, so exact it stays.
+function setDecEligible(st) {
+  return !!(st && (st.layer || "").trim());
+}
+// The record's identity = styleFp, the SAME fingerprint the label record
+// travels on: if the name typed on sheet 1 follows a row to sheet 40, the
+// exclusion clicked next to that name follows the same row - one identity
+// for both records, never two that can disagree.
+function setDecKey(docKeyStr, st) {
+  return docKeyStr + "::setinc::" + styleFp(st);
+}
+// Precedence, pure so the test can pin it. Records are the stored strings
+// ("1" / "0"), null or undefined = no record. Returns null (no decision -
+// the per-page seed stands) or {on, inherited}.
+function setDecResolve(pageRec, docRec, eligible) {
+  if (pageRec === "1" || pageRec === "0")
+    return { on: pageRec === "1", inherited: false };
+  if (eligible && (docRec === "1" || docRec === "0"))
+    return { on: docRec === "1", inherited: true };
+  return null;
+}
+// SET-DECISIONS-END
 // The label / EA record: keyed on the line type, doc-wide, so it travels
 // across pages. That is the capability; do not scope this one to a page.
 function labelKey(st) {
@@ -5344,10 +5433,25 @@ function includeKey(st) {
 // second half of the same bug - see includeKey.)
 function setInclude(sid, on) {
   state.include.set(sid, !!on);
+  // any page-level write supersedes an inherited tick for this row, so the
+  // disclosure line stops counting it the moment the operator overrides it
+  state.inheritedInc.delete(sid);
   const st = state.result && state.result.styles.find(x => x.style_id === sid);
   if (!st) return;                       // nothing to key the record on
   try { store.setItem(includeKey(st), on ? "1" : "0"); }
   catch (e) { /* private mode: the session still honours the click */ }
+}
+
+// The set-level twin of setInclude's record: called ONLY from the row's own
+// checkbox (rule 3 above), AFTER setInclude has kept the page record, and
+// never from bulk gestures or the scope filter's put-back branches. Writing
+// it is what makes the same hand decision hold on the sheets the operator
+// has not visited yet; their visited sheets keep their own page records,
+// which outrank this one.
+function setIncludeSetWide(st, on) {
+  if (!st || !setDecEligible(st)) return;
+  try { store.setItem(setDecKey(docKey(), st), on ? "1" : "0"); }
+  catch (e) { /* private mode: the page record already failed the same way */ }
 }
 
 // The scope filter's twin of setInclude, and the difference is the whole
@@ -5392,9 +5496,18 @@ function memSave(st, touchedMeasure) {
 }
 function memApply() {
   if (!state.result) return;
+  state.inheritedInc = new Map();
   for (const st of state.result.styles) {
-    const inc = store.getItem(includeKey(st));
-    if (inc !== null) state.include.set(st.style_id, inc === "1");
+    // page record first, set-level record second, seed otherwise - the
+    // ranking lives in setDecResolve so the test can pin it. Inherited
+    // applications are counted and DISCLOSED (renderStyles), never silent.
+    const dec = setDecResolve(store.getItem(includeKey(st)),
+                              store.getItem(setDecKey(docKey(), st)),
+                              setDecEligible(st));
+    if (dec) {
+      state.include.set(st.style_id, dec.on);
+      if (dec.inherited) state.inheritedInc.set(st.style_id, dec.on);
+    }
     // three states, not two: EA / explicitly-LF / never decided. The record
     // stores measure:"" for "the operator put this back to LF", and reading
     // that as "no opinion" let the label-level default below overrule it -
