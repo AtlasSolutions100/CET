@@ -3177,6 +3177,18 @@ def _chain_closed(c) -> bool:
 # 43 names were lost.
 _INLINE_CODE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
 
+# Utility size-tokens: 8"SS, E8"W, 12"SD, 6"FM. The letter-first rule above
+# rejects them twice over (leading digit, inch tick), yet on the Kayden
+# family they are the ONLY thing that separates the proposed sewer main
+# from every other heavy solid - the legend itself prints the token inside
+# the sample line, and the layer table is one flattened xref. Optional
+# E/EX- prefix (existing), 1-2 size digits, an inch mark (double prime,
+# typographic or straight), then a 1-2 letter utility code. The code list
+# is closed on purpose: W, SS, SD, FM, G, WL, SL are the codes the corpus
+# prints; an open [A-Z]{1,2} would admit dimension text like 8"X.
+_INLINE_SIZE = re.compile(
+    r"^(?:EX?-?)?\d{1,2}[\"″”]?(?:W|SS|SD|FM|G|WL|SL)$")
+
 
 def _attach_inline_labels(chains: list, words: list, radius: float = 15.0) -> None:
     """Record the drafter's inline codes on the chain each one sits on."""
@@ -3185,9 +3197,11 @@ def _attach_inline_labels(chains: list, words: list, radius: float = 15.0) -> No
     cand = []
     for w in words:
         t = str(w[4]).strip().upper()
-        # a CODE, not prose and not a number: short, starts with a letter, and
-        # no lowercase survived the upper() comparison below
-        if not (1 <= len(t) <= 8) or not _INLINE_CODE.match(t):
+        # a CODE, not prose and not a number: short, and either the
+        # letter-first shape or a utility size-token; no lowercase
+        # survived the upper() comparison below
+        if not (1 <= len(t) <= 8) or not (_INLINE_CODE.match(t)
+                                          or _INLINE_SIZE.match(t)):
             continue
         if t != str(w[4]).strip():      # it was lowercase/mixed: prose, not a code
             continue
