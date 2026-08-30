@@ -963,3 +963,27 @@ Still open from the Kreo lists, and why:
 
 Closing battery on the combined tree: 12 suites green + regress --check
 GATE PASSED.
+
+## 23. The how-to video series (2026-08-30 morning)
+
+Four captioned, edited mp4s delivered to Koby, all recorded by driving the
+LIVE dev app through its own UI (Playwright + injected cursor/captions;
+rig committed at tools/howto/, takes under out/howto/):
+
+* V1 A Regular Takeoff (Belle Farms Structural, 1:32)
+* V2 Cut & Fill Corrected (Stice Coral Mountain, 2:12) - THE demo: the
+  sheet's own printed table (cut 2,236,137 / fill 1,631,080) as the
+  scoreboard; naive run reproduces the meeting's 2.13M/2.70M on camera;
+  operator recipe (3 rows out, strays cleared, tract-ring limit of work)
+  lands 1.69M/1.16M; the ~25% surface-fidelity residual is CAPTIONED,
+  not hidden. Recipe + iteration log: out/verify/2026-08-30/stice-recipe/.
+* V3 Counting Windows & Doors (Aqua Vista scan, 1:05) - W1R exact vs
+  Bill's tally, W1L shows its honest CHECK chip.
+* V4 The Full Takeoff (Barn, 2:15) - queue, datum, work area, bid view,
+  stitched limit of work, trench bands, approve.
+
+Engine fixes the video work surfaced, both landed: the fresh-open datum
+was a typed zero (isFinite(null), 7ccae92) and PE pad elevations were
+invisible + 3-digit sites could never print in full (5ffe5b2; Stice goes
+0 -> 191 resolved pad grades). Surface-fidelity (~25% under-read inside
+the ring on Stice) is the next measured engineering target.
