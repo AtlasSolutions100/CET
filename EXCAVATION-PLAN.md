@@ -842,3 +842,11 @@ next attempt:
   the MANHOLE legend row supplies the label. Same shape for valves on
   water mains. Bounded, vector-only, style-scoped so text dots and other
   families cannot leak in. Estimated S-M; needs the usual corpus A/B.
+* Measured blocker for dot-on-line (same night): on Kayden p38 the
+  "PROPOSED SANITARY SEWER MAIN" legend row matches style 79 = 2 chains /
+  235 pt - the legend's own sample, not the plan network - and "EXISTING
+  SANITARY SEWER MAIN" matches nothing. The Kayden document family has
+  never had the legend-matching tuning the Barn family got (the sheet has
+  71 round-dot candidates waiting). So the structure counter's real
+  prerequisite is a Kayden-corpus legend tuning session, then dots-on-
+  chains is a small addition on top.
