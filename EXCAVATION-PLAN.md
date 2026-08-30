@@ -882,3 +882,28 @@ calculator):
    tighten the joint test before offering it to a client seat.
 
 Estimated M. Depends on nothing above; collides with nothing tonight.
+
+## 21. End-of-night integration smoke (2026-08-30 ~05:00)
+
+Full battery green on ONE tree: gate 15/15, datum 7/7, scale-parse 19/19,
+sheet-no OK, calcstate 7/7, trench 33/33, regress --check PASSED.
+
+Live smoke on :8128, Barn C3.1 re-detected under sig adc16fb036da5c3e
+(marks.py IS in _ENGINE_FILES - the B3 commit text wrongly said the sig
+would not move; it moved and every cache honestly invalidated, correction
+recorded here): chip "C3.1 (page 4 of 15)"; scale chip with drawn-bar
+cross-check; datum-conflict banner + amber box; trench panel opens at
+112 px / earthwork at 200 px from a deep style-list scroll; 6 material
+presets; v111 served.
+
+### What is NOT done, and why (for the morning read)
+* Cross-page cut/fill: HIGH RISK by its own audit line; needs the joint
+  session Koby asked for. Not touched.
+* Engineer's-Excel ingest + 3% rule: blocked on a real sample file
+  (chasing Sal's exports / Pierce's engineer sheets beats inventing a
+  schema).
+* Structures counter: measured prerequisite is Kayden-family legend
+  tuning (section 19-20 records the three withdrawn attempts and the
+  dot-on-line design that fits the data).
+* NO PROD PUSH - everything above is dev :8128 only, per the standing
+  instruction; joint verification first.
