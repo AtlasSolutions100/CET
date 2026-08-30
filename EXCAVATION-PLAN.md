@@ -907,3 +907,21 @@ presets; v111 served.
   dot-on-line design that fits the data).
 * NO PROD PUSH - everything above is dev :8128 only, per the standing
   instruction; joint verification first.
+
+### Kayden token route, sized (2026-08-30 05:30, not built)
+
+Kayden's 8"SS / 8"W / WS line tokens are EXPLODED STROKE GLYPHS - the
+text layer prints exactly one word containing "SS" on p38 (the prose word
+CROSSING). The regex extension (4f08363) therefore feeds only text-token
+families (Oncor's EX-SS/EX-W/OHE). To read Kayden's:
+
+* the machinery exists at chain.py:1039 - _glyph_blobs clusters exploded
+  glyph strokes, _mark_glyph_text_chains already classifies dash-text
+  lines by blobs riding their gaps (same layer/colour/weight rule);
+* what is missing: blob clusters -> render crop -> tesseract single-line
+  read -> token -> inline_labels. The codebase carries an explicit
+  DECIDED-NOT-TO-DO: "we cannot OCR an exploded glyph reliably" - so this
+  ships ONLY behind a measured corpus A/B of token read accuracy, and
+  misreads must abstain (an invented 8"W on a sewer main prices the wrong
+  trench). Estimated M-L. It unlocks BOTH the Kayden legend matching
+  (line identity = weight + token there) and the pipe-size split item.
