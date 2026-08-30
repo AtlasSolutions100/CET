@@ -90,6 +90,15 @@ _FT = r"""(?:['’′]|(?:feet|ft)\.?(?![a-z]))"""
 # candidate-set change from this line, that page, that value.
 _NUM = r"""(?:1[ \t-]1/2|\d+/\d+|\d+)"""
 
+# The ground term's integer. A bare `\d+` stops at a thousands separator,
+# so "1:8,010" read feet=8 - and once the ratio form below is understood at
+# all, that is a 1,001x error on every length. The thousands alternative
+# must come FIRST in the alternation or `\d+` wins and still stops at the
+# comma; the post-comma groups are exactly three digits, so a list like
+# "4,5" or "1,23" stays two separate numbers. add() strips the commas
+# before parsing.
+_FEET_NUM = r"""(?:\d{1,3}(?:,\d{3})+|\d+)"""
+
 # OCR does not always give the inch mark back as an inch mark. Tesseract
 # reads Beaumont's structural title blocks - SCALE: 1/4"=1'-0" - as
 # `1/4�=1'-0"`, mangling the double prime into U+FFFD. The pattern then
@@ -110,7 +119,7 @@ _NOISE = r"""(?P<noise>[^\w\s=:\-])?"""
 _PAT = re.compile(
     rf"""(?P<paper>{_NUM})\s*{_IN}\s*
         (?:[=:\-]\s*){{1,2}}          # OCR sometimes doubles the separator
-        (?P<feet>\d+)\s*{_FT}
+        (?P<feet>{_FEET_NUM})\s*{_FT}
         (?:\s*-\s*(?P<inches>\d+)\s*{_IN})?""",
     re.X | re.I,
 )
@@ -128,7 +137,7 @@ _PAT_KEYWORD = re.compile(
         (?P<paper>{_NUM})?\s*(?P<inmark>{_IN})?\s*   # OCR may eat the 1"
         {_NOISE}\s*                                        # ... or mangle it
         (?P<sep>(?:[=:\-]\s*){{0,2}})                      # ... or the separator
-        (?P<feet>\d+)\s*(?P<ftmark>{_FT})?
+        (?P<feet>{_FEET_NUM})\s*(?P<ftmark>{_FT})?
         (?:\s*-\s*(?P<inches>\d+)\s*{_IN}?)?""",
     re.X,
 )
@@ -143,7 +152,7 @@ _PAT_KEYWORD = re.compile(
 _PAT_KEYWORD_PRE = re.compile(
     rf"""(?i)(?P<paper>{_NUM})\s*{_IN}
         (?P<sep>\s*(?:[=:\-]\s*){{0,2}})
-        (?P<feet>\d+)\s*(?P<gmark>{_FT}|[°º])?\s*
+        (?P<feet>{_FEET_NUM})\s*(?P<gmark>{_FT}|[°º])?\s*
         (?:-\s*(?P<inches>\d+)\s*{_IN}?\s*)?
         scale\b""",
     re.X,
@@ -152,6 +161,23 @@ _PAT_KEYWORD_PRE = re.compile(
 # An '=' or ':' actually relating the two sides of a match. Used to gate the
 # feet-and-inches ground form, which is otherwise a dimension callout.
 _REL = re.compile(r"[=:]")
+
+# Any REAL unit mark inside a match - inch or foot, tick or spelled out.
+# Tells "SCALE 1:100" (no unit anywhere: a dimensionless ratio, see add())
+# from `1" : 100'` (units declared: 100 ft to the paper inch). Searched over
+# the whole matched text, not the named groups, because _PAT_KEYWORD_PRE's
+# inch mark is required but not captured in a group of its own.
+_UNIT_MARK = re.compile(rf"{_IN}|{_FT}", re.I)
+
+# Upper bound for the RATIO form, in ft per paper inch. The feet form keeps
+# its 400 cap (1" = 400', above every corpus caption), but a unit-free
+# ratio is also how small-scale location/vicinity maps are captioned and
+# those legitimately pass it - 1:8,010 is 667.5 ft/in. Rather than invent a
+# second researched number, mirror the app's own refusal band: server.py
+# SCALE_FT_MIN/SCALE_FT_MAX accept up to 1000.0 ft/in (webui/app.js repeats
+# the same pair at its SCALE_FT_MAX), so _scan never emits a ratio
+# candidate the rest of the app would refuse anyway.
+_RATIO_FPI_MAX = 1000.0
 
 
 @dataclass
@@ -268,10 +294,30 @@ def _scan(text: str) -> list[ScaleCandidate]:
         paper = _frac(m.group("paper") or "1")
         if paper <= 0 or paper > 12:
             return
-        feet = float(m.group("feet")) + (float(m.group("inches") or 0)) / 12.0
+        feet = (float(m.group("feet").replace(",", ""))
+                + (float(m.group("inches") or 0)) / 12.0)
         if feet <= 0:
             return
-        fpi = feet / paper
+        # A colon relating the sides, with NO unit anywhere in the match, is
+        # the dimensionless RATIO form: "SCALE 1:100" means 1 unit of paper
+        # = 100 of the SAME unit on the ground (standard ratio practice on
+        # metric and mapping sheets), so ft per paper inch = 100 paper
+        # inches of ground / 12 = 8.333. Read as paper=1", ground=100' it
+        # was 100.0 - and the UI's own hand-typed parser (webui/app.js
+        # parseScale, its "1:200" arm) already reads a bare ratio this way,
+        # so the engine disagreed with its own UI 12x on identical text
+        # (audit A2). Any declared unit keeps the feet reading: `1" : 100'`
+        # stays 100 ft/in, "SCALE 1:100 FT" stays 100, a feet-and-inches
+        # suffix (1:1'-6") is compound rather than a ratio, and the <noise>
+        # group - a stand-in for an OCR-mangled inch mark - counts as the
+        # inch mark it stands where. <kwsep>, the keyword's own colon in
+        # "SCALE:", is captured outside <sep> and never triggers this.
+        gd = m.groupdict()
+        ratio = (":" in (gd.get("sep") or "")
+                 and not gd.get("noise")
+                 and not gd.get("inches")
+                 and not _UNIT_MARK.search(m.group(0)))
+        fpi = (feet / paper) / 12.0 if ratio else feet / paper
         # Plausible drawing scales: 1/8"=1' (8) up to 1"=200'.
         #
         # The 0.5 floor was discarding a real and frequently printed scale.
@@ -300,7 +346,7 @@ def _scan(text: str) -> list[ScaleCandidate]:
         # tick-to-tick 36.00 / 72.00 / 108.00 pt for 2" / 4" / 6", which is
         # 18.000 pt per real inch on all three - exactly 3" = 1'-0".
         floor = 0.33 if _REL.search(m.group(0)) else 0.5
-        if not (floor <= fpi <= 400):
+        if not (floor <= fpi <= (_RATIO_FPI_MAX if ratio else 400)):
             return
         key = (round(fpi, 4), near)
         if key in found:
@@ -332,7 +378,8 @@ def _scan(text: str) -> list[ScaleCandidate]:
         sep = m.group("sep") or ""
         if _REL.search(sep):
             return False
-        return not (int(m.group("feet")) == 1 and int(m.group("inches")) == 0)
+        return not (int(m.group("feet").replace(",", "")) == 1
+                    and int(m.group("inches")) == 0)
 
     for m in _PAT.finditer(text):
         ctx = text[max(0, m.start() - 30): m.start()]
