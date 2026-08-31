@@ -61,6 +61,16 @@ const state = window.state = {
   multiSel: new Set(),      // marquee multi-select: chain_ids boxed by
                             // Shift+drag; bulk delete / bulk reclass act on it
   marquee: null,            // in-progress Shift+drag box {a:[x,y], b:[x,y]} pt
+  drawSnaps: [],            // parallel to drawPts: the snap each point took
+                            // (null where the point was placed in free space)
+  snapHit: null,            // the live snap under the cursor while draw /
+                            // extend / join is armed - what the click WILL use
+  snapMsg: "",              // last hint printed for it, so hovering does not
+                            // rewrite the status line on every mousemove
+  extendAnchor: null,       // spur anchor picked on the selected line's own
+                            // body: {chain_id, segIndex, point, isVertex}
+  drawPend: null,           // a finished draw waiting for its family pick
+                            // {pts, head, tail} - nothing is committed yet
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
   conf: null,               // /confidence payload for the current page:
@@ -519,6 +529,8 @@ async function selectPage(p) {
   // "restore" chains onto a page they never belonged to. Same rule as the
   // work area below - page switch is the reliable chokepoint.
   state.multiSel = new Set(); state.marquee = null;
+  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.extendAnchor = null; state.drawPend = null; drawFamClose();
   undoClear(undoStack);
   // The WORK AREA belongs to ONE sheet. loadResult also clears it, but
   // loadResult only runs when the new page HAS a loadable result - an
@@ -812,6 +824,8 @@ async function loadResult(gen = state.gen) {
   // a fresh result invalidates every snapshot on the undo stack ("Reset
   // edits" reloads through here, and re-detect replaces every chain object)
   state.multiSel = new Set(); state.marquee = null;
+  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.extendAnchor = null; state.drawPend = null; drawFamClose();
   undoClear(undoStack);
   state.tool = null; state.measurePts = []; state.vScale = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
@@ -10850,6 +10864,49 @@ function draw() {
       ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_SELECT; ctx.stroke();
     }
   }
+  // THE SNAP RING: where the next click will actually land. A hollow ring on
+  // a mid-segment snap, a filled dot on a VERTEX - the operator can see which
+  // of the two they are about to get before committing to it. Colour is the
+  // existing "under the cursor" yellow, so it reads as the same idea the
+  // vertex handles already use.
+  if (state.snapHit && SNAP_TOOLS.has(state.tool)) {
+    const fSn = IMG_DPI / 72;
+    const q = state.snapHit.point;
+    ctx.beginPath();
+    ctx.arc(q[0] * fSn, q[1] * fSn, 7 / k, 0, Math.PI * 2);
+    ctx.lineWidth = 2 / k;
+    ctx.strokeStyle = CV_VERTEX_ON;
+    ctx.stroke();
+    // The two states must be told apart AT A GLANCE, so they differ by
+    // presence, not by a 0.6 px stroke weight: a VERTEX snap fills the ring's
+    // centre, a mid-segment snap leaves it empty. (First cut drew a tiny
+    // stroked dot for "mid" and the two were indistinguishable at 400%.)
+    if (state.snapHit.isVertex) {
+      ctx.beginPath();
+      ctx.arc(q[0] * fSn, q[1] * fSn, 3.2 / k, 0, Math.PI * 2);
+      ctx.fillStyle = CV_VERTEX_ON; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_VERTEX_ON_RG; ctx.stroke();
+    }
+  }
+  // the spur anchor, once picked: the tee the branch will grow from
+  if (state.extendAnchor && state.tool === "extend") {
+    const fSa = IMG_DPI / 72;
+    const a = state.extendAnchor.point;
+    ctx.beginPath();
+    ctx.arc(a[0] * fSa, a[1] * fSa, 5 / k, 0, Math.PI * 2);
+    ctx.fillStyle = CV_SELECT; ctx.fill();
+    ctx.lineWidth = 1.4 / k; ctx.strokeStyle = CV_VERTEX; ctx.stroke();
+    if (state.snapHit) {
+      ctx.beginPath();
+      ctx.moveTo(a[0] * fSa, a[1] * fSa);
+      ctx.lineTo(state.snapHit.point[0] * fSa, state.snapHit.point[1] * fSa);
+      ctx.lineWidth = 2 / k;
+      ctx.setLineDash([6 / k, 4 / k]);
+      ctx.strokeStyle = CV_SELECT;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
   // symbol-instance markers from the Count panel
   if (state.symMarks && state.symMarks.length) {
     const f3 = IMG_DPI / 72;
@@ -11007,8 +11064,10 @@ addEventListener("mousemove", (e) => {
     }
     return;
   }
-  if (state.tool === "drawline" && state.drawPts.length && !panning) {
-    state.hoverPt = ptFromEvent(e);
+  if (SNAP_TOOLS.has(state.tool) && !panning) {
+    const p = ptFromEvent(e);
+    if (state.tool === "drawline") state.hoverPt = p;
+    snapHover(p[0], p[1]);
     draw();
     return;
   }
@@ -11059,7 +11118,8 @@ addEventListener("mouseup", (e) => {
     const y0 = Math.min(mq.a[1], mq.b[1]), y1 = Math.max(mq.a[1], mq.b[1]);
     // a click is not a box - same 2 pt rule as the work-area tool
     if (x1 - x0 < 2 && y1 - y0 < 2) {
-      setStatus("multi-select: hold Shift and DRAG a box around whole lines", "busy");
+      setStatus("multi-select: hold Shift and DRAG a box across the lines "
+        + "you want (that was a click)", "busy");
       draw();
       return;
     }
@@ -11068,7 +11128,8 @@ addEventListener("mouseup", (e) => {
       if (!state.multiSel.has(ch.chain_id)) { state.multiSel.add(ch.chain_id); added++; }
     renderMultiBar();
     if (!state.multiSel.size)
-      setStatus("no whole line inside that box — a line joins only when it is FULLY inside", "err");
+      setStatus("nothing crossed that box — a line joins as soon as the box "
+        + "touches any part of it", "err");
     else
       setStatus(`${added} line(s) added — ${state.multiSel.size} selected `
         + "(Shift+drag adds more, Esc clears)");
@@ -11128,24 +11189,40 @@ function vertexAt(e) {
 // 205 ft of pipe, not 200 - the run continues under the label. Concatenating
 // without the gap would quietly under-measure every merge, so the span is
 // added and the status line says how much, every time.
+// JOIN AT THE CLICKED POINT. The operator's report: "if i did press join
+// right now our software will connect it to a beginning or end point not the
+// one we intended it to connect to." It now connects WHERE THE CLICK LANDED.
+//
+// Two outcomes, and the click - not a guess - picks between them:
+//
+//   * the snap lands on (or clamps past) an END of the target -> the click
+//     means end-to-end, and that is EXACTLY today's merge: two chains become
+//     one, the bridged span counts, the cross-family refusal still stands.
+//   * the snap lands mid-body -> a TEE. A polyline cannot fork, so this is a
+//     CONNECTION, not a merge: the two lines stay two lines, the selected
+//     one grows a connector to the clicked point, and the target gains a
+//     vertex there. Nothing moves between families, so this one is allowed
+//     across families (a lateral teeing into a main of a different family is
+//     an ordinary thing on a sheet) and the status line names both.
+//
+// The pick radius is the OLD merge radius (24 px), so a loose click still
+// finds the run it is aimed at; what changed is where it connects, not how
+// hard it is to hit.
 function mergeClick(px, py) {
-  const fR = IMG_DPI / 72;
-  const tolR = 6 / state.view.k / fR * 4 + 1.5;
-  let tgt = null, tgtD = tolR;
-  for (const ch of state.result.chains) {
-    if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
-    for (let i = 1; i < ch.points.length; i++) {
-      const d = distToSeg(px, py, ch.points[i - 1], ch.points[i]);
-      if (d < tgtD) { tgtD = d; tgt = ch; }
-    }
-  }
   const sel = chainById(state.selected);
-  if (!tgt || !sel) {
-    setStatus("merge: click the other half of the run", "err");
+  if (!sel) { cancelMerge(); return; }
+  const hit = snapToChain(px, py, state.selected);
+  const tgt = hit && chainById(hit.chain_id);
+  if (!tgt) {
+    setStatus("join: click the line you want to connect to", "err");
     return;
   }
+  if (!hit.isEnd) { connectToPoint(sel, hit); return; }
+  mergeEnds(sel, tgt);
+}
+
+// end-to-end, unchanged from the tool that shipped
+function mergeEnds(sel, tgt) {
   // Refuse across families rather than silently picking a winner: a merge
   // that moved footage from one priced item to another without saying so is
   // the kind of quiet wrong number this project keeps having to hunt down.
@@ -11206,8 +11283,54 @@ function mergeClick(px, py) {
   renderStyles(); renderChips(); renderMiniLegend();
 }
 
+// A TEE. Decision, stated because the brief asked for one: the selected
+// line's nearer end does NOT move to the clicked point - a CONNECTOR is
+// added instead. Moving the end would silently delete whatever line lay
+// between the old end and the tee; appending a connector keeps every foot
+// the operator drew and adds exactly the bridge, which is the same rule
+// mergeEnds already follows for its bridged span ("THE BRIDGED SPAN
+// COUNTS", above). The delta is printed and one Ctrl+Z reverses it.
+function connectToPoint(sel, hit) {
+  const tgt = chainById(hit.chain_id);
+  const A = sel.points;
+  const dFirst = Math.hypot(hit.point[0] - A[0][0], hit.point[1] - A[0][1]);
+  const dLast = Math.hypot(hit.point[0] - A[A.length-1][0],
+                           hit.point[1] - A[A.length-1][1]);
+  const add = Math.min(dFirst, dLast);
+  // same "is this a mis-click?" gate the end-to-end merge uses, same reason
+  if (add > 20 && add > 0.2 * (sel.length_pt || 0)) {
+    if (!confirm(`The nearer end of this line is ${fmtLen(add)} from the point `
+      + `you clicked.\n\nConnecting adds that span to the measured length, `
+      + `because the line has to reach the connection. If that is not where `
+      + `you meant to tee in, cancel.\n\nConnect anyway?`)) {
+      setStatus("connection cancelled");
+      return;
+    }
+  }
+  const cross = tgt.style_id !== sel.style_id;
+  const famS = snapFam(sel);
+  captureUndo(`connect to a line \u2014 ${fmtQty(add)}`,
+    [sel.chain_id, tgt.chain_id]);
+  const c = materialize(sel);
+  if (add >= SNAP_EPS) {
+    if (dFirst < dLast) c.points.unshift(hit.point.slice());
+    else c.points.push(hit.point.slice());
+    c.length_pt += add;
+  }
+  const w = snapWeld(hit);
+  cancelMerge();
+  state.selected = c.chain_id;
+  state.selPt = null;
+  updateSelBar(c);
+  afterEdit(`chain ${c.chain_id} +${fmtQty(add)} to reach the connection \u2014 `
+    + `connected to${w.note}`
+    + (cross ? ` \u2014 the footage stays in ${famS}` : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
 function cancelMerge() {
   state.tool = null;
+  state.snapHit = null; state.snapMsg = "";
   $("mergeBtn").classList.remove("active");
 }
 
@@ -11218,7 +11341,9 @@ $("mergeBtn").onclick = () => {
   }
   state.tool = "merge";
   $("mergeBtn").classList.add("active");
-  setStatus("merge: click the other half of this run (Esc cancels)", "busy");
+  setStatus("join: click the other half of this run to merge end-to-end, or "
+    + "click anywhere on another line to tee into it (Esc cancels)", "busy");
+  draw();
 };
 
 function handleCanvasClick(e) {
@@ -11232,7 +11357,7 @@ function handleCanvasClick(e) {
     return;
   }
   if (state.tool === "extend" && state.selected !== null) {
-    extendTo(px, py);
+    extendClick(px, py);
     return;
   }
   if (state.tool === "cutspan" && state.selected !== null) {
@@ -11273,28 +11398,23 @@ function handleCanvasClick(e) {
     return;
   }
   if (state.tool === "drawline") {
-    // clicking an existing line endpoint SNAPS there - and if the draw is
-    // already underway, it FINISHES the line at that point (the drawn run
-    // then fuses with the touched family line in finishDraw)
-    const fSnap = IMG_DPI / 72;
-    const tolSnap = 7 / state.view.k / fSnap + 1.5;
-    let snap = null;
-    for (const ch of state.result.chains) {
-      if (state.excluded.has(ch.chain_id)) continue;
-      if (state.isolate !== null ? ch.style_id !== state.isolate
-                                 : !state.include.get(ch.style_id)) continue;
-      for (const q of [ch.points[0], ch.points[ch.points.length - 1]]) {
-        const d = Math.hypot(px - q[0], py - q[1]);
-        if (snap === null || d < snap.d) snap = { d, q };
-      }
-    }
-    const pt = (snap && snap.d <= tolSnap) ? [snap.q[0], snap.q[1]] : [px, py];
+    // A click SNAPS to the nearest point on any visible line - ANYWHERE on
+    // it, not only its ends. Ends-only was the old rule and it is what made
+    // a tee impossible to draw. The drawn point takes the snapped coordinate
+    // exactly; finishDraw then either FUSES (a same-family end) or WELDS
+    // (anywhere else), so the two lines genuinely meet.
+    const hit = snapToChain(px, py, null);
+    const pt = hit ? hit.point.slice() : [px, py];
     state.drawPts.push(pt);
-    if (snap && snap.d <= tolSnap && state.drawPts.length >= 2) {
+    state.drawSnaps.push(hit || null);
+    // an END of a line still FINISHES the run there, exactly as before
+    if (hit && hit.isEnd && state.drawPts.length >= 2) {
       finishDraw();
       return;
     }
-    setStatus(`draw: ${state.drawPts.length} point(s) — click a line end to finish there, or double-click/Enter`, "busy");
+    setStatus(`draw: ${state.drawPts.length} point(s)`
+      + (hit ? ` \u2014 last point sits on chain ${hit.chain_id}` : "")
+      + " \u2014 click a line end to finish there, or double-click/Enter", "busy");
     draw();
     return;
   }
@@ -11324,6 +11444,297 @@ function handleCanvasClick(e) {
   state.clickPt = state.selected !== null ? [px, py] : null;
   updateSelBar(best && state.selected !== null ? best : null);
   draw();
+}
+
+// ============== SNAP TO ANYWHERE ON A LINE (draw / extend / join) ==========
+// ONE helper behind all three tools: the nearest point ON any visible chain,
+// which is what makes a tee possible at all. Before this, every pick tool
+// reached for an ENDPOINT, so "join here" meant "join to whichever end of
+// that line happens to be nearest" - the operator's own report.
+//
+// Three rules the geometry has to keep straight:
+//
+//   * A VERTEX inside the (tighter) vertex tolerance beats the perpendicular
+//     foot, and then the returned point is that vertex EXACTLY. Corners are
+//     what an operator aims at, and a foot 0.3 pt off a corner leaves a
+//     hair-length stub nobody can see, select, or delete.
+//   * Inserting the snapped point into the target NEVER changes its measured
+//     length. The point is already on the target's polyline, so the split is
+//     length-neutral in exact arithmetic - and length_pt is NOT
+//     polyLen(points) (a chain that picks up across a gap carries that gap in
+//     its length; see chainLenPt), so recomputing it here would silently
+//     delete every one of those gaps. length_pt is left alone ON PURPOSE.
+//   * The CROSSING marquee and the WORK AREA mask must agree, to the ulp,
+//     about what "this segment meets this rectangle" means. snapTouchesRect
+//     therefore takes wzSegT / wzPtIn - the shipped exact Liang-Barsky slab
+//     clip from the WZ-MATH block - rather than carrying a second copy of it.
+//
+// tests/test_snap_geom.js evals ONLY the block between the SNAP-PURE markers
+// (plus WZ-MATH, for the functions above) - keep it pure: no DOM, no state.*,
+// like WZ-MATH, TRENCH-MATH and UNDO-CORE.
+// SNAP-PURE-BEGIN
+
+// two points are "the same point" below this. Well under a hairline's width
+// at any zoom, so it can only ever collapse a true duplicate.
+const SNAP_EPS = 1e-6;
+
+function snapPolyLen(ps) {
+  let L = 0;
+  for (let i = 1; i < ps.length; i++)
+    L += Math.hypot(ps[i][0] - ps[i - 1][0], ps[i][1] - ps[i - 1][1]);
+  return L;
+}
+
+// perpendicular foot of (px,py) on segment a->b, clamped to the segment
+function snapProject(px, py, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const L2 = dx * dx + dy * dy;
+  let t = L2 ? ((px - a[0]) * dx + (py - a[1]) * dy) / L2 : 0;
+  if (!(t > 0)) t = 0; else if (t > 1) t = 1;
+  const q = [a[0] + t * dx, a[1] + t * dy];
+  return { t, q, dist: Math.hypot(px - q[0], py - q[1]) };
+}
+
+// Nearest point ON one polyline.
+//   -> { segIndex, point, isVertex, vertexIndex, isEnd, t, dist } | null
+// segIndex is 1-based in the sense used by projectOnChain and every splice
+// site here: the point lies on points[segIndex-1] .. points[segIndex].
+// vtol > 0 lets a vertex win when the click is within vtol of it.
+function snapOnPolyline(px, py, points, vtol) {
+  const P = points;
+  if (!P || !P.length) return null;
+  if (P.length === 1)
+    return { segIndex: 1, point: P[0].slice(), isVertex: true, vertexIndex: 0,
+             isEnd: true, t: 0,
+             dist: Math.hypot(px - P[0][0], py - P[0][1]) };
+  // the vertex pass runs FIRST and wins outright inside vtol: aiming at a
+  // corner must land on the corner even when a shallow-angle leg passes
+  // marginally closer to the cursor
+  if (vtol > 0) {
+    let vi = -1, vd = vtol;
+    for (let i = 0; i < P.length; i++) {
+      const d = Math.hypot(px - P[i][0], py - P[i][1]);
+      if (d < vd) { vd = d; vi = i; }
+    }
+    if (vi >= 0)
+      return { segIndex: Math.max(1, vi), point: P[vi].slice(), isVertex: true,
+               vertexIndex: vi, isEnd: vi === 0 || vi === P.length - 1,
+               t: vi === 0 ? 0 : 1, dist: vd };
+  }
+  let best = null;
+  for (let i = 1; i < P.length; i++) {
+    const r = snapProject(px, py, P[i - 1], P[i]);
+    if (best === null || r.dist < best.dist)
+      best = { segIndex: i, point: r.q, isVertex: false, vertexIndex: -1,
+               isEnd: false, t: r.t, dist: r.dist };
+  }
+  // a foot that clamped onto a corner IS that corner - the click was past
+  // the end of the run, which is exactly what "join to the end" means
+  if (best.t <= 0) { best.isVertex = true; best.vertexIndex = best.segIndex - 1; }
+  else if (best.t >= 1) { best.isVertex = true; best.vertexIndex = best.segIndex; }
+  best.isEnd = best.isVertex &&
+    (best.vertexIndex === 0 || best.vertexIndex === P.length - 1);
+  return best;
+}
+
+// Best snap across many chains. `chains` is [{chain_id, points}] ALREADY
+// filtered by the caller's visibility rules - this helper knows nothing
+// about excluded / isolate / include, so every caller filters exactly the
+// way it filters for a plain click.
+function snapPickBest(px, py, chains, tol, vtol) {
+  let best = null;
+  for (const ch of chains) {
+    const r = snapOnPolyline(px, py, ch.points, vtol);
+    if (!r || !(r.dist <= tol)) continue;
+    if (best === null || r.dist < best.dist) { r.chain_id = ch.chain_id; best = r; }
+  }
+  return best;
+}
+
+// Insert `point` into `points` on segment segIndex, unless a vertex is
+// already there. IDEMPOTENT: a second call with the same point returns the
+// same list and inserted === false. Returns a NEW array; the caller owns it.
+function snapInsertVertex(points, segIndex, point, eps) {
+  const e = (eps > 0) ? eps : SNAP_EPS;
+  const P = points.map(p => p.slice());
+  for (let i = 0; i < P.length; i++)
+    if (Math.hypot(P[i][0] - point[0], P[i][1] - point[1]) <= e)
+      return { points: P, index: i, inserted: false };
+  const at = Math.min(Math.max(segIndex, 1), Math.max(P.length - 1, 1));
+  P.splice(at, 0, [point[0], point[1]]);
+  return { points: P, index: at, inserted: true };
+}
+
+// px of screen -> pt of page at zoom k. The +1.5 pt floor is the same one
+// every other pick in this file carries: zoomed right in, a snap still needs
+// a small absolute grab or it becomes unhittable. dpi is IMG_DPI, the raster
+// the canvas draws at; pt = px / k / (dpi/72).
+function snapTolFrom(px, k, dpi) {
+  return px / k / (dpi / 72) + 1.5;
+}
+
+// Does this polyline TOUCH the rect - any segment meeting it, or any vertex
+// inside it? THE CROSSING RULE, replacing the old fully-inside one. segT and
+// ptIn are wzSegT / wzPtIn; see the note above about why they are injected
+// rather than re-implemented.
+function snapTouchesRect(points, rect, segT, ptIn) {
+  const P = points;
+  if (!P || !P.length) return false;
+  const zs = [rect];
+  if (P.length === 1) return ptIn(P[0][0], P[0][1], zs);
+  for (let i = 1; i < P.length; i++)
+    if (segT(P[i - 1][0], P[i - 1][1], P[i][0], P[i][1], zs) > 0) return true;
+  // every segment degenerate (a repeated vertex) - segT scores those by
+  // point-in-rect already, but a 1-point run never reaches the loop above
+  return ptIn(P[0][0], P[0][1], zs);
+}
+// SNAP-PURE-END
+
+// ---- the app-side wrapper: visibility, zoom, and the on-screen budget ----
+
+// Screen-space tolerances, in PIXELS, converted to page pt at the live zoom.
+// draw/extend use a tight 9 px so a snap is deliberate. JOIN keeps the old
+// merge pick's generous reach (6/k/f*4 = 24 px) so a loose click still finds
+// the run it is aimed at - the difference is that it now connects WHERE the
+// click landed instead of at the nearest end.
+const SNAP_PX = 9;
+const SNAP_VERTEX_PX = 5;
+const SNAP_RADII = {              // tool -> [pick px, vertex px]
+  drawline: [SNAP_PX, SNAP_VERTEX_PX],
+  extend:   [SNAP_PX, SNAP_VERTEX_PX],
+  merge:    [24, 7],
+};
+const SNAP_TOOLS = new Set(Object.keys(SNAP_RADII));
+
+function snapTolPt(px) { return snapTolFrom(px, state.view.k, IMG_DPI); }
+
+// THE shared pick. Same visibility rules as a plain canvas click: excluded,
+// hidden and isolated-away lines cannot be snapped to. `skip` drops one
+// chain (normally the one being edited). Radii default to the armed tool's.
+function snapToChain(px, py, skip, pickPx, vtxPx) {
+  if (!state.result) return null;
+  const r = SNAP_RADII[state.tool] || [SNAP_PX, SNAP_VERTEX_PX];
+  const tol = snapTolPt(pickPx || r[0]);
+  const vtol = snapTolPt(vtxPx || r[1]);
+  const cands = [];
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (skip !== null && skip !== undefined && ch.chain_id === skip) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    if (!ch.points || !ch.points.length) continue;
+    cands.push(ch);
+  }
+  return snapPickBest(px, py, cands, tol, vtol);
+}
+
+// the family a chain belongs to, by the same familyName() rule the selection
+// bar and every picker in this file use
+function snapFam(ch) {
+  if (!ch || !state.result) return "that family";
+  return familyName(state.result.styles.find(s => s.style_id === ch.style_id))
+    || "that family";
+}
+
+// Give a snapped target a REAL vertex at the connection, so the two lines
+// genuinely meet instead of overlapping. Length-neutral by construction (see
+// the SNAP-PURE note): length_pt is not touched. The caller must have
+// captureUndo()'d hit.chain_id already - this materializes, which is an edit.
+//   -> { chain, note, added }
+function snapWeld(hit) {
+  const tgt = hit && chainById(hit.chain_id);
+  if (!tgt) return { chain: null, note: "", added: false };
+  const fam = snapFam(tgt);
+  if (hit.isVertex) {
+    // already a point on that line: nothing to insert, nothing to disclose
+    return { chain: tgt, note: ` chain ${tgt.chain_id} (${fam}) at its own point`,
+             added: false };
+  }
+  const m = materialize(tgt);
+  const r = snapInsertVertex(m.points, hit.segIndex, hit.point, SNAP_EPS);
+  if (r.inserted) {
+    m.points = r.points;
+    delete m.seg_counts; delete m._scOK;
+  }
+  return { chain: m, added: r.inserted,
+           note: ` chain ${m.chain_id} (${fam})`
+             + (r.inserted ? " \u2014 a point was added to it, its length unchanged"
+                           : " at its own point") };
+}
+
+// THE INDICATOR. "The operator must see the outcome before committing - this
+// is the difference between a tool and a trap." So while draw / extend / join
+// is armed, every mousemove resolves the SAME snap the click will use, parks
+// it on state.snapHit for the canvas ring, and names the outcome (with the
+// footage it will cost) in the status line. The hint is rewritten only when
+// its TEXT changes, so hovering does not thrash the status bar.
+function snapHover(px, py) {
+  const sel = state.selected !== null ? chainById(state.selected) : null;
+  // Each branch resolves the snap with EXACTLY the skip rule the click it
+  // previews will commit with - a ring the click would not honour is the
+  // trap this indicator exists to prevent.
+  let hit = null;
+  let msg = "";
+  if (state.tool === "drawline") {
+    hit = snapToChain(px, py, null);
+    if (hit)
+      msg = hit.isEnd
+        ? `snap: finish on the end of chain ${hit.chain_id} (${snapFam(chainById(hit.chain_id))})`
+        // a corner is already a point on that line - "a point is added" there
+        // would be a promise the weld does not keep (it is idempotent)
+        : hit.isVertex
+        ? `snap: connect to chain ${hit.chain_id} at its own corner \u2014 `
+          + `nothing is added to it`
+        : `snap: connect to chain ${hit.chain_id} here \u2014 `
+          + `a point is added to it, its length unchanged`;
+  } else if (state.tool === "extend" && sel) {
+    hit = snapToChain(px, py, sel.chain_id);
+    if (state.extendAnchor === null) {
+      const own = snapOnPolyline(px, py, sel.points, snapTolPt(SNAP_VERTEX_PX));
+      if (own && own.dist <= snapTolPt(SNAP_PX) && !own.isEnd) {
+        hit = Object.assign({}, own, { chain_id: sel.chain_id });
+        msg = `spur from chain ${sel.chain_id} here \u2014 a NEW line in the `
+            + `same family (${snapFam(sel)})`;
+      } else if (own && own.dist <= snapTolPt(SNAP_PX) && own.isEnd) {
+        hit = Object.assign({}, own, { chain_id: sel.chain_id });
+        msg = "that is this line's own end \u2014 click its middle for a spur";
+      } else {
+        const add = snapExtendAdd(sel, hit ? hit.point : [px, py]);
+        msg = hit
+          ? `extend to chain ${hit.chain_id} here \u2014 chain ${sel.chain_id} `
+            + `+${fmtQty(add)} to reach the connection`
+          : `extend \u2014 chain ${sel.chain_id} +${fmtQty(add)}`;
+      }
+    } else {
+      const anc = state.extendAnchor;
+      const dest = hit ? hit.point : [px, py];
+      const add = Math.hypot(dest[0] - anc.point[0], dest[1] - anc.point[1]);
+      msg = `spur \u2014 a new ${fmtQty(add)} line off chain ${anc.chain_id}`
+        + (hit ? `, joined to chain ${hit.chain_id} here` : "");
+    }
+  } else if (state.tool === "merge" && sel) {
+    hit = snapToChain(px, py, sel.chain_id);
+    if (hit) {
+      const add = snapExtendAdd(sel, hit.point);
+      msg = hit.isEnd
+        ? `join end-to-end with chain ${hit.chain_id} \u2014 the `
+          + `${fmtQty(add)} between them is added and the two become one line`
+        : `connect to chain ${hit.chain_id} here \u2014 chain ${sel.chain_id} `
+          + `+${fmtQty(add)} to reach the connection (they stay two lines)`;
+    }
+  }
+  state.snapHit = hit || null;
+  if (msg !== state.snapMsg) {
+    state.snapMsg = msg;
+    if (msg) setStatus(msg, "busy");
+  }
+}
+// how much the selected line grows to reach `dest` from its NEARER end -
+// the same arithmetic extendTo and connectToPoint commit
+function snapExtendAdd(sel, dest) {
+  const P = sel.points;
+  return Math.min(Math.hypot(dest[0] - P[0][0], dest[1] - P[0][1]),
+                  Math.hypot(dest[0] - P[P.length-1][0], dest[1] - P[P.length-1][1]));
 }
 
 // ---------- line toolkit: split / extend / separate / measure ----------
@@ -11412,20 +11823,121 @@ $("splitBtn").onclick = splitSelected;
 $("extendBtn").onclick = () => {
   if (state.selected === null) return;
   state.tool = "extend";
-  setStatus("click where the line should extend to (Esc cancels)", "busy");
+  state.extendAnchor = null;
+  setStatus("extend: click where the line should reach \u2014 or click a point "
+    + "on this line's own body to start a spur (Esc cancels)", "busy");
+  draw();
 };
-function extendTo(px, py) {
-  captureUndo("extend", [state.selected]);
-  const ch = materialize(chainById(state.selected));
-  const pts = ch.points;
-  const dFirst = Math.hypot(px - pts[0][0], py - pts[0][1]);
-  const dLast = Math.hypot(px - pts[pts.length-1][0], py - pts[pts.length-1][1]);
-  if (dFirst < dLast) pts.unshift([px, py]); else pts.push([px, py]);
-  ch.length_pt += Math.min(dFirst, dLast);
-  state.selected = ch.chain_id;
+function cancelExtend() {
   state.tool = null;
+  state.extendAnchor = null;
+  state.snapHit = null; state.snapMsg = "";
+}
+
+// EXTEND has two meanings now, and the click decides which:
+//
+//   * click anywhere OFF the selected line  -> today's extend. The NEARER
+//     END grows to the click, exactly as before; the only change is that a
+//     destination inside snap range lands on the target EXACTLY and welds.
+//   * click a point on the selected line's own BODY -> a SPUR anchor.
+//
+// THE SPUR MODEL, stated plainly because it is a modelling decision and not
+// a detail: a polyline cannot fork. One chain is one ordered list of points,
+// so a branch off the middle of a run CANNOT be the same chain. The spur is
+// therefore a NEW chain in the SAME family, starting exactly at the anchor,
+// and the parent gets a vertex inserted at the anchor so the two genuinely
+// meet. That is the honest way to represent a tee here, and the status line
+// says so at the moment it happens.
+function extendClick(px, py) {
+  const sel = chainById(state.selected);
+  if (!sel) { cancelExtend(); return; }
+  if (state.extendAnchor === null) {
+    const own = snapOnPolyline(px, py, sel.points, snapTolPt(SNAP_VERTEX_PX));
+    if (own && own.dist <= snapTolPt(SNAP_PX)) {
+      if (own.isEnd) {
+        setStatus("that is this line's own end \u2014 click where it should "
+          + "reach, or click its middle to start a spur", "err");
+        return;
+      }
+      state.extendAnchor = { chain_id: sel.chain_id, segIndex: own.segIndex,
+                             point: own.point.slice(), isVertex: own.isVertex };
+      state.snapHit = null; state.snapMsg = "";
+      setStatus(`spur from chain ${sel.chain_id} \u2014 a new line in the same `
+        + `family (${snapFam(sel)}). Click where the spur goes (Esc cancels)`,
+        "busy");
+      draw();
+      return;
+    }
+    extendTo(px, py);
+    return;
+  }
+  spurTo(px, py);
+}
+
+function extendTo(px, py) {
+  const hit = snapToChain(px, py, state.selected);
+  const dest = hit ? hit.point.slice() : [px, py];
+  const ch0 = chainById(state.selected);
+  const p0 = ch0.points;
+  const dFirst = Math.hypot(dest[0] - p0[0][0], dest[1] - p0[0][1]);
+  const dLast = Math.hypot(dest[0] - p0[p0.length-1][0], dest[1] - p0[p0.length-1][1]);
+  const add = Math.min(dFirst, dLast);
+  captureUndo(`extend \u2014 ${fmtQty(add)}`,
+    [state.selected, hit ? hit.chain_id : null]);
+  const ch = materialize(ch0);
+  const pts = ch.points;
+  if (dFirst < dLast) pts.unshift(dest); else pts.push(dest);
+  ch.length_pt += add;
+  const w = hit ? snapWeld(hit) : null;
+  state.selected = ch.chain_id;
+  cancelExtend();
   updateSelBar(ch);
-  afterEdit(`extended by ${fmtLen(Math.min(dFirst, dLast))}`);
+  afterEdit(w
+    ? `chain ${ch.chain_id} +${fmtQty(add)} to reach the connection \u2014 `
+      + `connected to${w.note}`
+    : `chain ${ch.chain_id} +${fmtQty(add)} \u2014 now ${fmtQty(chainLenPt(ch))}`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// second click of a spur: the branch runs from the anchor to here
+function spurTo(px, py) {
+  const anc = state.extendAnchor;
+  const parent0 = chainById(anc.chain_id);
+  if (!parent0) { cancelExtend(); draw(); return; }
+  const hit = snapToChain(px, py, anc.chain_id);
+  const dest = hit ? hit.point.slice() : [px, py];
+  const add = Math.hypot(dest[0] - anc.point[0], dest[1] - anc.point[1]);
+  if (add < 0.5) {
+    setStatus("the spur has no length \u2014 click further from the anchor", "err");
+    return;
+  }
+  captureUndo(`spur off a line \u2014 ${fmtQty(add)}`,
+    [anc.chain_id, hit ? hit.chain_id : null]);
+  // 1. the parent gains a real vertex at the tee (length-neutral)
+  const pw = snapWeld({ chain_id: anc.chain_id, segIndex: anc.segIndex,
+                        point: anc.point, isVertex: anc.isVertex });
+  const parent = pw.chain || parent0;
+  // 2. the branch itself: a NEW chain, same family, styled off the parent.
+  //    It does NOT inherit the parent's separate-row label - a spur is new
+  //    footage and would otherwise land silently in someone else's priced
+  //    row; it joins the family's own row, where the operator can see it.
+  const c = JSON.parse(JSON.stringify(parent));
+  c.chain_id = state.nextChainId++;
+  c.custom = true;
+  delete c.seg_counts; delete c._scOK;
+  c.points = [anc.point.slice(), dest];
+  c.length_pt = add;
+  state.result.chains.push(c);
+  state.chainLabels.delete(c.chain_id);
+  // 3. the far end welds too, when it landed on another line
+  const dw = hit ? snapWeld(hit) : null;
+  state.selected = c.chain_id; state.selPt = null;
+  cancelExtend();
+  updateSelBar(c);
+  afterEdit(`spur from chain ${parent.chain_id} \u2014 new chain `
+    + `${c.chain_id}, +${fmtQty(add)} in ${snapFam(c)}`
+    + (dw ? `, joined to${dw.note}` : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
 }
 
 // nearest on-path position on a chain; snaps onto a vertex ("the dots")
@@ -11512,38 +12024,202 @@ function cutSpanClick(px, py) {
   afterEdit(`cut ${fmtLen(removed)} out — ${sides.length} piece(s) remain`);
 }
 
+// DRAW ANYTIME. "users should be able to draw a line at any time" - so the
+// button no longer refuses without a selection. Two paths, and the fast one
+// is untouched:
+//
+//   * a line IS selected -> exactly today's behaviour. drawSrc is that line,
+//     the drawn run inherits its family, and finishing commits immediately.
+//   * nothing selected  -> drawSrc stays null and finishDraw ASKS where the
+//     footage goes before committing anything. A drawn line must never land
+//     in a family the operator did not pick, so there is no default, and
+//     cancelling throws the drawn geometry away rather than guessing.
 $("drawBtn").onclick = () => {
+  if (!state.result) return setStatus("detect lines first", "err");
+  if (state.tool === "drawline") {
+    cancelDraw(); setStatus("draw cancelled"); draw(); return;
+  }
   const ch = state.selected !== null && chainById(state.selected);
-  if (!ch)
-    return setStatus("select a line of the family to draw into, then hit draw", "err");
-  state.tool = "drawline"; state.drawPts = []; state.drawSrc = ch.chain_id;
-  state.hoverPt = null;
+  state.tool = "drawline"; state.drawPts = []; state.drawSnaps = [];
+  state.drawSrc = ch ? ch.chain_id : null;
+  state.hoverPt = null; state.snapHit = null; state.snapMsg = "";
   $("drawBtn").classList.add("active");
-  setStatus("draw: click points — double-click or Enter finishes, Esc backs up", "busy");
+  setStatus(ch
+    ? `draw into ${snapFam(ch)}: click points \u2014 double-click or Enter `
+      + "finishes, Esc backs up"
+    : "draw: click points \u2014 double-click or Enter finishes, then pick the "
+      + "family it belongs to (Esc backs up)", "busy");
+  draw();
 };
 function cancelDraw() {
-  state.tool = null; state.drawPts = []; state.drawSrc = null; state.hoverPt = null;
+  state.tool = null; state.drawPts = []; state.drawSnaps = [];
+  state.drawSrc = null; state.hoverPt = null;
+  state.snapHit = null; state.snapMsg = "";
   $("drawBtn").classList.remove("active");
 }
 function finishDraw() {
-  const src = chainById(state.drawSrc);
-  const pts = [];
-  for (const q of state.drawPts)
+  // dedupe points AND their snaps together, so head/tail keep their snap
+  const pts = [], sn = [];
+  for (let i = 0; i < state.drawPts.length; i++) {
+    const q = state.drawPts[i];
     if (!pts.length ||
-        Math.hypot(q[0]-pts[pts.length-1][0], q[1]-pts[pts.length-1][1]) > 0.5)
-      pts.push(q);
-  if (!src || pts.length < 2) {
-    cancelDraw(); draw();
-    return setStatus("draw cancelled — a line needs at least two points", "err");
+        Math.hypot(q[0]-pts[pts.length-1][0], q[1]-pts[pts.length-1][1]) > 0.5) {
+      pts.push(q); sn.push(state.drawSnaps[i] || null);
+    }
   }
-  // when an end of the drawn run lands on an endpoint of a same-family
-  // line, this is an EXTENSION: fuse into one line (either end works,
-  // and both ends can bridge two lines into one)
+  if (pts.length < 2) {
+    cancelDraw(); draw();
+    return setStatus("draw cancelled \u2014 a line needs at least two points", "err");
+  }
+  const pend = { pts, head: sn[0] || null, tail: sn[sn.length - 1] || null };
+  const src0 = state.drawSrc !== null ? chainById(state.drawSrc) : null;
+  if (src0) { commitDraw(pend, src0.style_id, src0); return; }
+  // Nothing selected: hold the geometry and ASK. Nothing is committed, no
+  // family is guessed, and cancelling discards the drawn run.
+  state.drawPend = pend;
+  const len = snapPolyLen(pts);
+  cancelDraw();
+  draw();
+  drawFamAsk(len);
+}
+
+// The family picker for a draw that started with nothing selected. Families
+// that EXIST on this page, sorted by live footage, labelled by familyName() -
+// the same rule the selection bar and every other picker in this file use.
+// There is deliberately no "(new family)" row: creating a style belongs to
+// another builder and nothing in this app creates one today (see
+// familySelect's note). If that action lands, defining window.drawNewFamily
+// (a function taking a callback that receives the new style_id) surfaces it
+// here without a second implementation of it.
+function drawFamAsk(lenPt) {
+  drawFamClose();
+  const wrap = document.createElement("div");
+  wrap.id = "drawFamModal";
+  wrap.className = "fp-modal";
+  const card = document.createElement("div");
+  card.className = "fp-card";
+  const h = document.createElement("h2");
+  h.textContent = "Where does this line go?";
+  const sub = document.createElement("p");
+  sub.className = "fp-sub";
+  sub.textContent = `${fmtQty(lenPt)} drawn. Pick the family it belongs to \u2014 `
+    + "nothing is added to the takeoff until you do.";
+  card.appendChild(h); card.appendChild(sub);
+  const list = document.createElement("div");
+  list.className = "fp-list";
+  const styles = [...state.result.styles]
+    .sort((a, b) => styleLenPt(b) - styleLenPt(a));
+  // Two families CAN carry the same familyName - a legend row that names
+  // several detected styles does exactly that (Oncor C-04 has three called
+  // "EXISTING CONTOUR (legend)"). Two identical rows in a picker whose whole
+  // job is "never land in a family the operator did not pick" is a trap, so
+  // where a name repeats, the pattern signature that distinguishes them is
+  // shown underneath it. Names that are already unique stay clean.
+  const nameCount = new Map();
+  for (const s of styles) {
+    const nm = familyName(s);
+    nameCount.set(nm, (nameCount.get(nm) || 0) + 1);
+  }
+  for (const s of styles) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fp-row";
+    b.dataset.sid = String(s.style_id);
+    const n = document.createElement("span");
+    n.className = "fp-name";
+    const nm = familyName(s);
+    n.textContent = nm;
+    if (nameCount.get(nm) > 1) {
+      const w = document.createElement("span");
+      w.className = "fp-sig";
+      w.textContent = `${s.class} · ${s.signature}`;
+      n.appendChild(w);
+    }
+    const q = document.createElement("span");
+    q.className = "fp-qty";
+    q.textContent = fmtQty(styleLenPt(s));
+    b.appendChild(n); b.appendChild(q);
+    b.onclick = () => { drawFamClose(); drawFamPick(s.style_id); };
+    list.appendChild(b);
+  }
+  if (typeof window.drawNewFamily === "function") {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fp-row fp-new";
+    b.dataset.sid = "new";
+    b.textContent = "New family";
+    b.onclick = () => {
+      drawFamClose();
+      window.drawNewFamily((sid) => drawFamPick(sid));
+    };
+    list.appendChild(b);
+  }
+  card.appendChild(list);
+  const acts = document.createElement("div");
+  acts.className = "fp-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "mini";
+  cancel.id = "drawFamCancel";
+  cancel.textContent = "Discard the line";
+  cancel.onclick = () => drawFamCancel();
+  acts.appendChild(cancel);
+  card.appendChild(acts);
+  wrap.appendChild(card);
+  // clicking the scrim does NOT discard: the drawn run is real work and a
+  // stray click must not throw it away. Esc and the button are the two ways.
+  document.body.appendChild(wrap);
+  const first = list.querySelector("button");
+  if (first) first.focus();
+  setStatus(`${fmtQty(lenPt)} drawn \u2014 pick the family it belongs to`, "busy");
+}
+function drawFamClose() {
+  const m = document.getElementById("drawFamModal");
+  if (m) m.remove();
+}
+function drawFamCancel() {
+  drawFamClose();
+  state.drawPend = null;
+  setStatus("drawn line discarded \u2014 nothing was added");
+}
+function drawFamPick(sid) {
+  const pend = state.drawPend;
+  state.drawPend = null;
+  if (!pend) return;
+  const donor = drawDonor(sid);
+  if (!donor) {
+    setStatus("that family has no line to copy a pattern from \u2014 the drawn "
+      + "line was discarded", "err");
+    return;
+  }
+  commitDraw(pend, sid, donor);
+}
+// a chain of that family to inherit class / colour / width / pattern from:
+// a live one first, an excluded one only as a fallback
+function drawDonor(sid) {
+  let dead = null;
+  for (const c of state.result.chains) {
+    if (c.style_id !== sid) continue;
+    if (!state.excluded.has(c.chain_id)) return c;
+    if (!dead) dead = c;
+  }
+  return dead;
+}
+
+// The commit. `sid` is the family the footage lands in - the selected line's
+// (fast path) or the one the operator just picked. Never inferred.
+function commitDraw(pend, sid, donorIn) {
+  const pts = pend.pts;
+  const src = donorIn || drawDonor(sid);
+  if (!src) {
+    cancelDraw(); draw();
+    return setStatus("draw cancelled \u2014 no line of that family to copy", "err");
+  }
   const fT = IMG_DPI / 72;
   const tolT = 7 / state.view.k / fT + 1.5;
   const endMatch = (pt, skip) => {
     for (const ch of state.result.chains) {
-      if (state.excluded.has(ch.chain_id) || ch.style_id !== src.style_id) continue;
+      if (state.excluded.has(ch.chain_id) || ch.style_id !== sid) continue;
       if (skip && ch.chain_id === skip) continue;
       const P = ch.points;
       if (Math.hypot(pt[0] - P[0][0], pt[1] - P[0][1]) <= tolT)
@@ -11555,10 +12231,27 @@ function finishDraw() {
   };
   const head = endMatch(pts[0], null);
   let tail = endMatch(pts[pts.length - 1], head ? head.ch.chain_id : null);
+  // A drawn end that SNAPPED onto a line but did NOT fuse with it (it landed
+  // mid-body, or on an end of another family) is a CONNECTION: the drawn
+  // point already sits on the target exactly, and the target gets a vertex
+  // there so the two genuinely meet rather than overlap. Both chains ride in
+  // the one undo entry below, so one Ctrl+Z reverses the whole thing.
+  const fusedIds = new Set(
+    [head && head.ch.chain_id, tail && tail.ch.chain_id].filter(x => x != null));
+  const weldOf = (snap, fused) => {
+    if (!snap || fused) return null;
+    // a chain about to be consumed by the fuse cannot also be welded to
+    if (fusedIds.has(snap.chain_id)) return null;
+    if (state.excluded.has(snap.chain_id)) return null;
+    return chainById(snap.chain_id) ? snap : null;
+  };
+  const wHead = weldOf(pend.head, head);
+  const wTail = weldOf(pend.tail, tail);
   // BEFORE consume() excludes the fused ends; a plain draw touches no
   // existing chain and snapshots nothing but the id counter
-  captureUndo("drawn line",
-    [head ? head.ch.chain_id : null, tail ? tail.ch.chain_id : null]);
+  captureUndo(`drawn line \u2014 ${fmtQty(snapPolyLen(pts))}`,
+    [head ? head.ch.chain_id : null, tail ? tail.ch.chain_id : null,
+     wHead ? wHead.chain_id : null, wTail ? wTail.chain_id : null]);
   let merged = pts, label = null, fused = 0;
   const consume = (m) => {
     if (!m.ch.custom) state.excluded.add(m.ch.chain_id);
@@ -11579,17 +12272,28 @@ function finishDraw() {
   const c = JSON.parse(JSON.stringify(src));  // inherits the family's style/pattern
   c.chain_id = state.nextChainId++;
   c.custom = true;
+  c.style_id = sid;      // the picked family, never the donor's by accident
   delete c.seg_counts; delete c._scOK;
   c.points = merged;
   c.length_pt = polyLen(merged);
   if (label) state.chainLabels.set(c.chain_id, label);
   state.result.chains.push(c);
+  // weld AFTER the drawn chain exists, so undoing this one entry takes the
+  // inserted vertices with it
+  const notes = [];
+  for (const w of [wHead, wTail]) {
+    if (!w || state.excluded.has(w.chain_id)) continue;
+    const r = snapWeld(w);
+    if (r.chain) notes.push(r.note.trim());
+  }
   state.selected = c.chain_id; state.selPt = null;
   cancelDraw();
   updateSelBar(c);
-  afterEdit(fused
-    ? `extended the line — now ${fmtLen(c.length_pt)}`
-    : `drew ${fmtLen(c.length_pt)} into the family`);
+  const joinTxt = notes.length ? ` \u2014 connected to ${notes.join(" and ")}` : "";
+  afterEdit((fused
+    ? `extended the line \u2014 now ${fmtQty(chainLenPt(c))}`
+    : `drew ${fmtQty(chainLenPt(c))} into ${snapFam(c)}`) + joinTxt);
+  renderStyles(); renderChips(); renderMiniLegend();
 }
 
 $("reclassBtn").onclick = () => {
@@ -11717,8 +12421,12 @@ async function ensureElev() {
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
 function updateSelBar(ch) {
-  for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn", "drawBtn"])
+  for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
+  // DRAW is no longer a selection-only tool ("users should be able to draw a
+  // line at any time"). It needs a detected sheet, nothing more; with nothing
+  // selected, finishDraw asks which family the footage joins.
+  $("drawBtn").disabled = !state.result;
   $("removeBtn").disabled = !ch;
   if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
@@ -11990,7 +12698,11 @@ function undoDisarmTools() {
   else if (state.tool === "reclass") {
     state.tool = null;
     $("reclassBtn").classList.remove("active");
-  } else if (state.tool === "extend") state.tool = null;
+  } else if (state.tool === "extend") cancelExtend();
+  // a pending family question holds geometry that is NOT in the document;
+  // an undo that walked past it would leave the modal describing a line
+  // nobody can commit any more
+  if (state.drawPend) { drawFamCancel(); }
 }
 
 function undoRedo(dir) {
@@ -12114,23 +12826,34 @@ function familySwitch(sid) {
 }
 
 // ================== marquee multi-select + bulk actions ===================
-// chains FULLY INSIDE the box (every vertex), same visibility rules as a
-// plain canvas click: excluded/hidden/isolated-away lines cannot join
+// CROSSING SELECTION. The operator's report: "the drag and select isnt
+// detecting unless it has the whole line selected we need to make it where I
+// can just drag across a certain area and select the entire lines even if I
+// just grabbed the middle of those lines". So a line joins when the box
+// TOUCHES it - any segment meeting the box, or any vertex inside it - not
+// only when every vertex is inside.
+//
+// The per-segment test is wzSegT, the shipped exact Liang-Barsky slab clip
+// the WORK AREA mask already counts with, reached through snapTouchesRect.
+// One clip, two features: "this line crosses the box" and "this much of it
+// is inside the box" can never disagree.
+//
+// NOTE for the record: CAD's window-vs-crossing convention (drag left-to-
+// right = fully inside, right-to-left = touching) exists and is what an
+// AutoCAD user's hands expect. It is NOT shipped here. The owner asked for
+// touching, so touching is what BOTH directions do; adding the direction
+// rule would silently make half of today's drags behave differently, which
+// is a bigger change than it looks and belongs to its own decision.
+//
+// Same visibility rules as a plain canvas click: excluded / hidden /
+// isolated-away lines cannot join.
 function marqueePick(rect) {
   const out = [];
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (state.isolate !== null ? ch.style_id !== state.isolate
                                : !state.include.get(ch.style_id)) continue;
-    const P = ch.points;
-    if (!P || !P.length) continue;
-    let inside = true;
-    for (const q of P)
-      if (q[0] < rect[0] || q[0] > rect[2] || q[1] < rect[1] || q[1] > rect[3]) {
-        inside = false;
-        break;
-      }
-    if (inside) out.push(ch);
+    if (snapTouchesRect(ch.points, rect, wzSegT, wzPtIn)) out.push(ch);
   }
   return out;
 }
@@ -12262,11 +12985,12 @@ addEventListener("keydown", (e) => {
       renderMiniLegend();
       return;
     }
+    // D no longer needs a selection - it is the "draw at any time" tool
+    if (state.result && k === "d") { e.preventDefault(); $("drawBtn").click(); return; }
     if (state.result && state.selected !== null) {
       if (k === "s") { e.preventDefault(); $("splitBtn").click(); return; }
       if (k === "x") { e.preventDefault(); $("cutSpanBtn").click(); return; }
       if (k === "e") { e.preventDefault(); $("extendBtn").click(); return; }
-      if (k === "d") { e.preventDefault(); $("drawBtn").click(); return; }
       if (k === "i") {
         e.preventDefault();
         const ch = chainById(state.selected);
@@ -12301,6 +13025,9 @@ addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     if (!$("kbdHelp").hidden) { $("kbdHelp").hidden = true; return; }
+    // the family question outranks everything: nothing is committed while
+    // it is up, and Esc is the same answer as "Discard the line"
+    if (document.getElementById("drawFamModal")) { drawFamCancel(); return; }
     if (state.marquee) {   // a box mid-drag dies without selecting anything
       state.marquee = null;
       setStatus("multi-select cancelled");
@@ -12326,7 +13053,12 @@ addEventListener("keydown", (e) => {
     }
     if (state.tool === "drawline") {
       if (state.drawPts.length) {
+        // drawSnaps is PARALLEL to drawPts - popping one without the other
+        // would hand finishDraw the wrong point's snap and weld the drawn
+        // end onto a chain the operator never touched
         state.drawPts.pop();
+        state.drawSnaps.pop();
+        state.snapHit = null; state.snapMsg = "";
         setStatus(state.drawPts.length
           ? `draw: ${state.drawPts.length} point(s) — Esc again removes another`
           : "all points removed — Esc again exits draw", "busy");
@@ -12343,7 +13075,16 @@ addEventListener("keydown", (e) => {
       $("measureInfo").hidden = true;
       setStatus("");
     } else if (state.tool === "extend") {
-      state.tool = null;
+      // one Esc drops the spur anchor and leaves extend armed; the next
+      // disarms the tool - the same back-up-one-step grammar as draw
+      if (state.extendAnchor) {
+        state.extendAnchor = null;
+        state.snapHit = null; state.snapMsg = "";
+        setStatus("spur anchor dropped — nothing changed", "busy");
+        draw();
+        return;
+      }
+      cancelExtend();
       setStatus("");
     }
     // the marquee set clears one layer before the single selection - same

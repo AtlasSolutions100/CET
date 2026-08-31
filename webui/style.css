@@ -2167,3 +2167,41 @@ header #pageSel { flex: none; max-width: 220px; }
    not: "uploading…" and "could not reopen" are reported from those views. */
 main.pv-open ~ .status-bar .sb-facts,
 main.sv-open ~ .status-bar .sb-facts { display: none; }
+
+/* --- "Where does this line go?" ------------------------------------------
+   The family question a draw asks when it started with nothing selected.
+   Same overlay grammar as the grading-zone modal (centred card, scrim,
+   --t-el-3), built in app.js rather than markup because it only exists for
+   the seconds between finishing a line and committing it. Rows are sorted
+   by live footage, so the family the operator means is usually the first. */
+.fp-modal { position: fixed; inset: 0; z-index: 90;
+  background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+  justify-content: center; }
+.fp-card { width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--t-r-3); padding: var(--t-sp-4);
+  box-shadow: var(--t-el-3); }
+.fp-card h2 { margin: 0; font-size: var(--t-fs-md); }
+.fp-sub { margin: var(--t-sp-2) 0 var(--t-sp-3); font-size: var(--t-fs-xs);
+  color: var(--dim); line-height: var(--t-lh-body); }
+.fp-list { display: flex; flex-direction: column; gap: var(--t-sp-1);
+  overflow-y: auto; }
+.fp-row { display: flex; align-items: center; gap: var(--t-sp-2);
+  width: 100%; text-align: left; padding: var(--t-sp-2) var(--t-sp-3);
+  background: var(--t-surface-1); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--t-r-2);
+  font-size: var(--t-fs-sm); cursor: pointer; }
+.fp-row:hover, .fp-row:focus-visible { border-color: var(--accent);
+  background: var(--t-surface-2); }
+.fp-row:focus-visible { outline: none; box-shadow: var(--t-focus); }
+.fp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+/* only present where two families share a name - the tie-breaker */
+.fp-sig { display: block; font-family: var(--mono);
+  font-size: var(--t-fs-xs); color: var(--t-text-faint); }
+.fp-qty { font-family: var(--mono); font-size: var(--t-fs-xs);
+  color: var(--dim); font-variant-numeric: var(--t-numeric); }
+.fp-row.fp-new { border-style: dashed; color: var(--dim); }
+.fp-actions { display: flex; justify-content: flex-end;
+  margin-top: var(--t-sp-3); }
