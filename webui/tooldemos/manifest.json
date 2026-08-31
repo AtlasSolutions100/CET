@@ -1,0 +1,52 @@
+{
+  "measureBtn": {
+    "file": "measure.webm",
+    "caption": "Measuring between geothermal wells on Barn C3.0",
+    "key": "M"
+  },
+  "splitBtn": {
+    "file": "split.webm",
+    "caption": "Splitting an existing contour in two on Barn C3.0",
+    "key": "S"
+  },
+  "extendBtn": {
+    "file": "extend.webm",
+    "caption": "Extending a contour to where it should reach on Barn C3.0",
+    "key": "E"
+  },
+  "cutSpanBtn": {
+    "file": "cutspan.webm",
+    "caption": "Cutting a span out of an index contour on Barn C3.0",
+    "key": "X"
+  },
+  "drawBtn": {
+    "file": "drawline.webm",
+    "caption": "Drawing a new run into the selected family on Barn C3.0",
+    "key": "D"
+  },
+  "reclassBtn": {
+    "file": "reclass.webm",
+    "caption": "Moving a contour into the 7900-interval family on Barn C3.0",
+    "key": "R"
+  },
+  "mergeBtn": {
+    "file": "merge.webm",
+    "caption": "Merging a label-broken run — the gap is bridged and counted",
+    "key": "J"
+  },
+  "sepBtn": {
+    "file": "separate.webm",
+    "caption": "Naming one well loop so it gets its own itemized row",
+    "key": null
+  },
+  "removeBtn": {
+    "file": "delete.webm",
+    "caption": "Deleting a picked point, then a whole line — Ctrl+Z restores",
+    "key": "Del"
+  },
+  "wzBtn": {
+    "file": "workarea.webm",
+    "caption": "Dragging a work-area box — only what is inside counts",
+    "key": null
+  }
+}

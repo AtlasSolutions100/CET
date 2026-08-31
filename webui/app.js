@@ -14234,3 +14234,149 @@ addEventListener("keydown", (e) => {
     e.stopImmediatePropagation();
 }, true);
 // =============== end PRICING SETTINGS ======================================
+
+// =============== toolkit rich hover demos (TIPVID) =========================
+// The Photoshop rich-tooltip pattern on the toolkit rail: rest the pointer
+// on a tool button for 600ms and a small popover opens beside the rail with
+// a short SILENT looping clip of that tool doing its real work (recorded
+// live on Barn C3.0 - files and captions in webui/tooldemos/manifest.json),
+// the button's own title text verbatim, and the shortcut key. It is a HINT,
+// never a control: pointer-events:none, instant close on leave/click/Esc,
+// and it never opens while a canvas tool is armed - an operator brushing
+// the rail mid-gesture must not get a video in the face. Native title
+// attributes are untouched: they stay the accessible description and the
+// whole story for buttons without a clip (faithful toggle, help, clear).
+// Zero video bytes load up front: the manifest is fetched on the first
+// hover ever, and a clip's src is set only when its popover first opens.
+
+// TIPVID-PURE-BEGIN
+// Pure lookup + placement math (no DOM, no state.*) so
+// tests/test_tooldemo_tips.js can eval just this block.
+const TIPVID_HOVER_DELAY_MS = 600;
+
+// manifest row for a button, or null (no clip -> native title only)
+function tipvidEntry(manifest, btnId) {
+  if (!manifest || typeof manifest !== "object") return null;
+  const e = Object.prototype.hasOwnProperty.call(manifest, btnId)
+    ? manifest[btnId] : null;
+  return e && typeof e.file === "string" ? e : null;
+}
+
+// Place the popover just right of the rail button, vertically centred on
+// it, clamped inside the viewport; when the right side cannot fit (tiny
+// window) it flips to the left of the rail rather than covering it.
+function tipvidPos(btn, pop, vw, vh, gap) {
+  let x = btn.right + gap;
+  if (x + pop.w > vw - 4) x = Math.max(4, btn.left - gap - pop.w);
+  let y = btn.top + btn.height / 2 - pop.h / 2;
+  y = Math.min(y, vh - pop.h - 4);
+  y = Math.max(4, y);
+  return { x, y };
+}
+// TIPVID-PURE-END
+
+(() => {
+  const rail = document.querySelectorAll(".toolkit .tk");
+  if (!rail.length) return;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+  let manifest;            // undefined until the first hover fetches it
+  let manifestReq = null;
+  let pop = null, vid = null, tTitle = null, tCap = null, tKey = null;
+  let timer = null;
+
+  function withManifest(fn) {
+    if (manifest !== undefined) { fn(); return; }
+    if (!manifestReq)
+      manifestReq = fetch("tooldemos/manifest.json")
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((m) => { manifest = m; });
+    manifestReq.then(fn);
+  }
+
+  function build() {
+    if (pop) return;
+    pop = document.createElement("div");
+    pop.id = "tipvid";
+    pop.hidden = true;
+    pop.setAttribute("aria-hidden", "true");   // the title attr already reads
+    vid = document.createElement("video");
+    // muted looping inline autoplay; preload=none so no bytes move until a
+    // popover actually opens and sets src
+    vid.muted = true;
+    vid.loop = true;
+    vid.autoplay = true;
+    vid.playsInline = true;
+    vid.setAttribute("playsinline", "");
+    vid.preload = "none";
+    tTitle = document.createElement("div");
+    tTitle.className = "tv-title";
+    tKey = document.createElement("kbd");
+    tCap = document.createElement("div");
+    tCap.className = "tv-cap";
+    pop.append(vid, tTitle, tCap);
+    document.body.appendChild(pop);
+  }
+
+  function closeTip() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (pop && !pop.hidden) {
+      pop.hidden = true;
+      try { vid.pause(); } catch (e) { /* not loaded yet */ }
+    }
+  }
+
+  function openTip(btn) {
+    // a drawing/measuring/box gesture owns the canvas - no video in the face
+    if (state.tool) return;
+    const ent = tipvidEntry(manifest, btn.id);
+    if (!ent) return;                    // no clip: native title only
+    build();
+    tTitle.textContent = btn.getAttribute("title") || "";
+    tCap.textContent = ent.caption || "";
+    tKey.remove();
+    if (ent.key) { tKey.textContent = ent.key; tCap.append(" ", tKey); }
+    const src = "tooldemos/" + ent.file;
+    if (vid.getAttribute("src") !== src) vid.setAttribute("src", src);
+    if (reduced.matches) {
+      // reduced motion: the first frame, paused - a poster, not a loop
+      const still = () => { vid.pause(); try { vid.currentTime = 0; } catch (e) {} };
+      if (vid.readyState >= 2) still();
+      else { vid.addEventListener("loadeddata", still, { once: true }); vid.load(); }
+    } else {
+      const pr = vid.play();
+      if (pr && pr.catch) pr.catch(() => {});
+    }
+    // measure hidden, then place beside the rail, clamped to the viewport
+    pop.style.visibility = "hidden";
+    pop.hidden = false;
+    const b = btn.getBoundingClientRect();
+    const p = tipvidPos(
+      { left: b.left, right: b.right, top: b.top, height: b.height },
+      { w: pop.offsetWidth, h: pop.offsetHeight },
+      innerWidth, innerHeight, 10);
+    pop.style.left = p.x + "px";
+    pop.style.top = p.y + "px";
+    pop.style.visibility = "";
+  }
+
+  for (const btn of rail) {
+    btn.addEventListener("pointerenter", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        withManifest(() => { if (btn.matches(":hover")) openTip(btn); });
+      }, TIPVID_HOVER_DELAY_MS);
+    });
+    btn.addEventListener("pointerleave", closeTip);
+    // a click means USE the tool, not watch it - and no re-open until the
+    // pointer leaves and comes back (pointerenter will not refire in place)
+    btn.addEventListener("pointerdown", closeTip);
+  }
+  // capture phase: the app's own Esc cascade stops propagation downstream,
+  // and a hint must die on Esc no matter which panel handled the key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTip();
+  }, true);
+})();
+// =============== end toolkit rich hover demos ==============================

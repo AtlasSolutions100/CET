@@ -1351,3 +1351,23 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 .gz-m-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px;
   flex-wrap: wrap; }
 #gzMSave { background: var(--accent-deep); border-color: var(--accent); }
+
+/* Rich hover demo popover beside the toolkit rail (TIPVID, end of app.js).
+   A hint, never a click target: pointer-events none, closed on leave/Esc/
+   click. Width fits the 460x300 demo clips scaled to 300px; the video's
+   aspect-ratio reserves its box before any bytes load, so the popover
+   never jumps when the clip arrives. */
+#tipvid { position: fixed; z-index: 60; width: 316px; pointer-events: none;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 8px 9px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+#tipvid video { display: block; width: 300px; aspect-ratio: 46 / 30;
+  border-radius: 6px; background: #0d1014; border: 1px solid var(--line); }
+#tipvid .tv-title { margin-top: 7px; font-size: 12px; line-height: 1.45;
+  color: var(--text); }
+#tipvid .tv-cap { margin-top: 5px; font-size: 10px; line-height: 1.5;
+  color: var(--dim); font-family: var(--mono); letter-spacing: .04em; }
+#tipvid kbd { font-family: var(--mono); font-size: 10px;
+  background: var(--chip); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px;
+  margin-left: 4px; color: var(--text); }
