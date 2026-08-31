@@ -939,6 +939,12 @@ async function loadResult(gen = state.gen) {
   scopeApply();   // verdicts before the first paint; see scopeApply()
   renderSheetHead();
   renderScopeBar();
+  // Toolkit gating is computed in updateSelBar, which until now only ran on a
+  // SELECTION change - so DRAW (whose gate is a detected sheet, not a
+  // selection, since "users should be able to draw a line at any time") stayed
+  // disabled from its markup until the operator happened to click a line.
+  // A tool the operator cannot reach is the same as a tool that does not exist.
+  updateSelBar(null);
   renderStyles(); renderChips(); renderLegend(); renderAreas(); renderMultiBar();
   // arApplyItems, not renderItemized: calcRestore brought back WHICH areas the
   // operator ticked, and the priced rows are DERIVED from that selection at

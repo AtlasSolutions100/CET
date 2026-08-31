@@ -596,3 +596,21 @@ if (failures) {
   process.exit(1);
 }
 console.log("\nall snap-geometry tests passed");
+
+// ---- draw-anytime reachability (found live: the gate was right, nothing ran it)
+// updateSelBar computes the toolkit's disabled states, and DRAW's gate is
+// `!state.result` - a detected sheet, not a selection. But updateSelBar only ran
+// on a selection change, so on a freshly loaded sheet the button kept the
+// `disabled` attribute it carries in the markup and the operator could not draw
+// until they happened to click a line first. loadResult must refresh the gating.
+{
+  const fs = require("fs"), path = require("path");
+  const src = fs.readFileSync(path.join(__dirname, "..", "webui", "app.js"), "utf8");
+  const gate = /\$\("drawBtn"\)\.disabled = !state\.result;/.test(src);
+  console.log((gate ? "ok" : "FAIL") + ": drawBtn's gate is the result, not a selection");
+  const body = src.slice(src.indexOf("async function loadResult"),
+                         src.indexOf("async function loadResult") + 12000);
+  const hooked = /updateSelBar\(null\);/.test(body);
+  console.log((hooked ? "ok" : "FAIL") + ": loadResult refreshes the toolkit gating");
+  if (!gate || !hooked) process.exit(1);
+}
