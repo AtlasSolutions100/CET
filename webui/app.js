@@ -4970,6 +4970,7 @@ function calcStatePayload() {
         existing: state.ew.layers.existing.map(l => Object.assign({}, l)),
         proposed: state.ew.layers.proposed.map(l => Object.assign({}, l)),
       },
+      removed: (state.ew.removed || []).slice(),
       spotOn: Object.assign({}, state.ew.spotOn),
       spotSide: state.ew.spotSide,
       spotDatum: calcNum(state.ew.spotDatum),
@@ -5179,6 +5180,17 @@ function ewApplySaved() {
           surface: surf, manual: !!r.manual });
         applied++;
       } else dropped++;
+    }
+    if (Array.isArray(sv.removed) && sv.removed.length) {
+      // deletions the operator saved: drop what the fresh suggest re-seeded,
+      // except chains the saved rows themselves still carry (add > delete)
+      const savedIds = new Set((Array.isArray(sv.rows) ? sv.rows : [])
+        .filter(r => r && typeof r.chain_id === "number").map(r => r.chain_id));
+      const rm = new Set(sv.removed.filter(id => !savedIds.has(id)));
+      const n0 = state.ew.rows.length;
+      state.ew.rows = state.ew.rows.filter(r => !rm.has(r.chain_id));
+      state.ew.removed = sv.removed.slice();
+      applied += n0 - state.ew.rows.length;
     }
     if (sv.layers && Array.isArray(sv.layers.existing) && Array.isArray(sv.layers.proposed)) {
       const lay = (l, ex) => Object.assign(
@@ -7382,6 +7394,9 @@ async function ewEnsure() {
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
       })),
       result: null,
+      // suggest-seeded rows the operator deleted, BY chain id - persisted
+      // so a fresh suggest on the next visit cannot resurrect them
+      removed: [],
       // layer stacks (Beaumont workflow): what comes OFF the existing
       // ground before cut/fill starts (topsoil strip, old asphalt, road
       // base) and what gets BUILT on the proposed side (base, paving).
@@ -7722,6 +7737,7 @@ function ewAppendRow(cid) {
   }
   state.ew.rows.push({ chain_id: cid, z: NaN, width: ch.width || 0, dist: null,
                        surface: null, manual: true });
+  if (state.ew.removed) state.ew.removed = state.ew.removed.filter(id => id !== cid);
   state.hotChain = cid;
   renderEw();
   draw();
@@ -8167,7 +8183,7 @@ function renderEw() {
       b.textContent = lab;
       if (row.surface === key) b.className = key === "existing" ? "on-ex" : key === "proposed" ? "on-pr" : "";
       if (row.surface === key && key === null) b.style.opacity = "1";
-      b.onclick = () => { row.surface = key; renderEw(); };
+      b.onclick = () => { row.surface = key; renderEw(); calcStateDirty(); };
       seg.appendChild(b);
     }
     const x = document.createElement("button");
@@ -8175,9 +8191,13 @@ function renderEw() {
     x.title = "remove this contour from the calculation";
     x.onclick = () => {
       state.ew.rows = state.ew.rows.filter(r => r !== row);
+      // remember the deletion: restore merges saved rows into a FRESH
+      // suggest, and without this list the suggest re-seeds deleted rows
+      (state.ew.removed = state.ew.removed || []).push(row.chain_id);
       if (state.hotChain === row.chain_id) state.hotChain = null;
       renderEw();
       draw();
+      calcStateDirty();
     };
     div.append(z, meta, seg, x);
     div.onmouseenter = () => { state.hotChain = row.chain_id; draw(); };
