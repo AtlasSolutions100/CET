@@ -1220,14 +1220,20 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 /* UNASSIGNED is a finding, not a bid line: amber, the register the app
    already uses for "look at this" (.ew-stale, .sp-conflict). */
 .bid-unassigned .bid-b-name { color: var(--t-warn); }
-.bid-member { display: flex; align-items: center; gap: 6px;
+.bid-member { display: flex; align-items: flex-start; gap: 6px;
   padding: 2px 0 2px 15px; font-size: var(--t-fs-xs); cursor: pointer; }
 .bid-member:hover .bm-label { color: var(--accent); }
 .bid-member.nogeom { cursor: default; }
 .bid-member.nogeom:hover .bm-label { color: inherit; }
 .bid-member.bid-iso .bm-label { color: var(--accent); font-weight: 600; }
-.bm-label { flex: 1; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+/* The bid view is where an estimator reads WHAT is being priced, so a family
+   name is not decoration. Measured 2026-09-01 on Oncor C-04: all 29 member
+   rows truncated, the worst losing 51% ("ADJACENT PROPERTY LINE (legend)" ->
+   half a name). The full text was only reachable by hovering for a tooltip.
+   They wrap now; the row's other columns are flex:none, so the label is the
+   only thing that grows and nothing else moves. */
+.bm-label { flex: 1; min-width: 0;
+  white-space: normal; overflow-wrap: anywhere; }
 .bm-size { flex: none; font-size: var(--t-fs-xs); line-height: 1.4; padding: 0 3px;
   border: 1px solid var(--line); border-radius: 3px; color: var(--dim); }
 .bm-qty { flex: none; font-family: var(--mono); font-size: var(--t-fs-xs);
@@ -1801,8 +1807,16 @@ body { --w1-warn: #d79b3a; }
   color: var(--t-text-faint, var(--dim));
   border: 1px dashed var(--t-border-strong, var(--line));
   border-radius: var(--t-r-1, 4px); padding: 3px 9px; }
+/* Card names wrap to two lines rather than ellipsising at one. Measured on
+   this box: 54 of the cards truncated, the worst losing 44% - and plan sets
+   routinely share a long prefix ("SHERIDAN WASHINGTON STREET WATER MAIN..."),
+   so the cut fell exactly where the names differ. The clamp keeps the grid
+   even; the full name stays in the card's title. */
 .pv-name { font-size: var(--t-fs-sm, 13px); font-weight: 600;
-  padding: var(--t-sp-3, 12px) var(--t-sp-3, 12px) 2px; line-height: 1.35; }
+  padding: var(--t-sp-3, 12px) var(--t-sp-3, 12px) 2px; line-height: 1.35;
+  white-space: normal; overflow-wrap: anywhere; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  min-height: calc(2 * 1.35em); }
 .pv-meta { font-size: var(--t-fs-xs, 12px); padding: 0 var(--t-sp-3, 12px);
   font-family: var(--t-font-data, var(--mono));
   font-variant-numeric: var(--t-numeric, tabular-nums);
@@ -1916,8 +1930,8 @@ body { --w1-warn: #d79b3a; }
 .sv-book-table .sv-grp-empty td, .sv-book-table .sv-grp-empty:hover td {
   color: var(--t-text-faint, var(--dim)); font-size: var(--t-fs-xs, 12px);
   font-style: italic; background: transparent; }
-.sv-book-table td.sv-lab { font-weight: 500; max-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
+.sv-book-table td.sv-lab { font-weight: 500; max-width: 0;
+  white-space: normal; overflow-wrap: anywhere; }
 .sv-book-table td.sv-unit { width: 56px;
   font-family: var(--t-font-data, var(--mono));
   font-size: var(--t-fs-xs, 12px); color: var(--t-text-dim, var(--dim)); }
@@ -2014,7 +2028,14 @@ body { --w1-warn: #d79b3a; }
 .tools-menu button:hover .tm-ico, .tools-menu button:focus-visible .tm-ico {
   color: var(--t-text, var(--text)); }
 .tools-menu button.t-on .tm-ico { color: var(--t-accent, var(--accent)); }
-.tm-txt { min-width: 0; display: block; }
+/* Buttons inherit `white-space: nowrap` from the global button rule, which
+   silently defeated the wrap this menu was written for: 7 of the 9 rows were
+   cut mid-word (Analyze needed 562px in a 296px column). The name and the
+   description both wrap here; `anywhere` so one long unbroken token cannot
+   push the menu wider instead. Measured 2026-09-01 on Oncor C-04. */
+.tm-txt { min-width: 0; display: block;
+  white-space: normal; overflow-wrap: anywhere; }
+.tm-nm, .tm-ds { white-space: normal; }
 .tm-nm { display: block; font-family: var(--t-font-ui, inherit);
   font-size: var(--t-fs-sm, 13px); font-weight: 600;
   text-transform: none; letter-spacing: normal;
