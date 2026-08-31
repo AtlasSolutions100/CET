@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=50">
+<link rel="stylesheet" href="style.css?v=51">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
@@ -166,6 +166,30 @@
         clear &amp; grub (<b>1.42&times;</b>). One job is a sample, not a rate;
         treat every figure below as an order-of-magnitude check that a person
         still has to replace.
+      </div>
+      <!-- GRADING ZONES. For sheets that do not draw a full proposed
+           surface (the Stice case, EXCAVATION-PLAN.md section 25): the
+           estimator picks a region and DECLARES the design - pad / plane /
+           balance / strip - and the engine computes declared-design vs
+           detected-existing inside that polygon only. Zones persist via the
+           calcstate sidecar (additive key "gzones"); results always
+           recompute through the endpoint, never restore from storage. -->
+      <div class="ew-bound" id="gzSection">
+        <div class="ew-bound-row">
+          <span class="ew-bound-lab">Grading zones</span>
+          <span id="gzState" class="ew-bound-state">none</span>
+        </div>
+        <div class="ew-bound-row">
+          <button id="gzDraw" class="mini" title="Click the corners of the region, Enter or double-click closes, Esc backs up one corner then cancels. Then declare the design for that region.">+ grading zone (draw)</button>
+          <button id="gzBox" class="mini" title="Drag a rectangle over the region, then declare the design for it.">+ grading zone (box)</button>
+        </div>
+        <div id="gzRows" class="gz-rows"></div>
+        <div id="gzTotals" class="gz-totals" hidden></div>
+        <div class="gz-hint">For a design the sheet does not draw: outline a
+          region and declare it &mdash; a pad elevation, a sloping plane, a
+          balanced pad, or a strip. Volumes are the declared design against
+          the detected existing ground inside the zone, and reach the takeoff
+          only via each zone's own Add button.</div>
       </div>
       <!-- Limit of work. Without one the volume is integrated over the
            intersection of the two surfaces' CONVEX HULLS, which bulges wherever
@@ -492,8 +516,58 @@
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
+<!-- THE ZONE MODAL. Opened when a grading-zone outline closes (or a zone
+     badge / edit button is clicked). The result block is LIVE - it calls
+     the zone endpoint, debounced, on every input - but seeing a number is
+     not consenting to it: nothing reaches the takeoff until the zone's own
+     "Add to takeoff" button in the panel list. Esc always cancels. -->
+<div id="gzModal" class="gz-modal" hidden>
+  <div class="gz-m-card">
+    <div class="gz-m-head">
+      <h2 id="gzMTitle">Zone</h2>
+      <button id="gzMClose" class="mini" title="Close without saving (Esc)">&#10005;</button>
+    </div>
+    <div class="gz-m-exist" id="gzMExist"></div>
+    <div class="gz-m-design">
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="pad" checked>
+        <span>Pad at</span>
+        <input id="gzPadElev" type="number" step="0.1" class="gz-num">
+        <span>ft</span></label>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="plane">
+        <span>Plane:</span>
+        <input id="gzPlElev" type="number" step="0.1" class="gz-num">
+        <span>ft at the zone centre, falling</span>
+        <input id="gzPlSlope" type="number" step="0.1" min="0" value="1.0" class="gz-num gz-sm">
+        <span>% toward</span>
+        <input id="gzPlAz" type="number" step="1" value="0" class="gz-num gz-sm">
+        <span>&deg;</span></label>
+      <div class="gz-m-note">Azimuth is measured clockwise from the top of the
+        sheet (0&deg; = up, 90&deg; = right). Reading the top of the sheet as
+        north is general drafting practice, not this sheet's own statement
+        &mdash; check its north arrow.</div>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="balance">
+        <span>Balance &mdash; solve the pad elevation where cut equals fill</span></label>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="strip_only">
+        <span>Strip only &mdash; no design surface, just the strip volume</span></label>
+    </div>
+    <div class="gz-m-strip">
+      <label for="gzStrip">Topsoil strip</label>
+      <input id="gzStrip" type="number" min="0" step="1" class="gz-num gz-sm">
+      <span>in</span>
+      <span class="gz-m-note" id="gzStripWhy"></span>
+    </div>
+    <div class="gz-m-live" id="gzMLive"></div>
+    <div class="gz-m-actions">
+      <button id="gzMSave">Save zone</button>
+      <button id="gzMCancel" class="mini">Cancel</button>
+      <span class="gz-m-note">Saving keeps the zone on this sheet; it reaches
+        the priced takeoff only via its own &ldquo;Add to takeoff&rdquo; in the
+        panel list.</span>
+    </div>
+  </div>
+</div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=124"></script>
+<script src="app.js?v=125"></script>
 </body>
 </html>

@@ -495,6 +495,242 @@ def render_cut_fill_map(grid: dict) -> tuple[bytes, dict]:
     return buf.getvalue(), meta
 
 
+# --- grading zones: declared design vs detected existing ------------------
+#
+# The estimator's workflow when the sheet does NOT draw a full proposed
+# surface (measured on the Stice case, EXCAVATION-PLAN.md section 25):
+# pick a region and DECLARE the design - "pad at 2716.0", "1.5% plane
+# falling north", "balance it", "strip 8 inches" - then compute exact
+# volumes of that declared design against the detected existing ground.
+# Reference UX is the AGTEK-style region workflow.
+
+def _zone_centroid(poly: np.ndarray) -> tuple:
+    """Area centroid of a simple polygon (shoelace); falls back to the
+    vertex mean when the area is ~zero (degenerate ring)."""
+    x, y = poly[:, 0], poly[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    a = cross.sum() / 2.0
+    if abs(a) < 1e-9:
+        return float(x.mean()), float(y.mean())
+    cx = ((x + xn) * cross).sum() / (6.0 * a)
+    cy = ((y + yn) * cross).sum() / (6.0 * a)
+    return float(cx), float(cy)
+
+
+def zone_cut_fill(existing: Surface, polygon, ft_per_pt: float,
+                  design: dict, cell_ft: float = 2.0,
+                  strip_in: float = 0.0, label_target: int = 120) -> dict:
+    """Volumes of a DECLARED design surface against the detected existing
+    ground, inside one polygon (page pt).
+
+    design is one of:
+      {mode:"pad", elev_ft}                 constant elevation
+      {mode:"plane", elev_ft, slope_pct, azimuth_deg, anchor:[x,y]}
+          elev_ft at the anchor (default: polygon centroid), falling
+          slope_pct per 100 ft ALONG the azimuth. Azimuth is compass-style
+          on the sheet: 0 = up the page, 90 = right, measured clockwise.
+          That reads the top of the sheet as north - general drafting
+          practice, an INFERENCE, not something any one sheet declares;
+          the UI says so next to the input.
+      {mode:"balance"}                      bisect a pad elevation until
+          |cut - fill| < 0.5 CY; reports the solved elevation and its
+          offset from the existing mean.
+      {mode:"strip_only"}                   no design surface: cut/fill are
+          zero and only the strip term computes.
+
+    strip_in > 0 lowers the EXISTING surface by that many inches before
+    differencing (same convention as cut_fill's existing_offset_ft:
+    stripped ground starts lower, so the design's fill includes replacing
+    that depth) and reports the stripped volume as strip_yd3 = area x
+    depth. In strip_only mode nothing is differenced, so strip_yd3 is the
+    only volume.
+
+    Returns volumes + a "grid" dict (render_cut_fill_map shape) + coarse
+    cell_labels [{x, y, dz}] (<= label_target of them) for the per-cell
+    numbers display. {"error": reason} on any refusal - never silent.
+    """
+    poly = np.asarray(polygon, dtype=float)
+    if poly.ndim != 2 or poly.shape[0] < 3 or poly.shape[1] != 2:
+        return {"error": "the zone polygon needs at least 3 corners, "
+                         "each [x, y] in page points"}
+    x, y = poly[:, 0], poly[:, 1]
+    area_pt2 = abs(float((x * np.roll(y, -1) - np.roll(x, -1) * y).sum())) / 2.0
+    zone_area_sf = area_pt2 * ft_per_pt * ft_per_pt
+    if zone_area_sf < 1.0:
+        return {"error": f"that zone is degenerate - its corners enclose "
+                         f"{zone_area_sf:.3f} SF of ground. Draw a region, "
+                         f"not a line."}
+    mode = str((design or {}).get("mode") or "")
+    if mode not in ("pad", "plane", "balance", "strip_only"):
+        return {"error": f"unknown design mode {mode!r} - expected pad, "
+                         "plane, balance or strip_only"}
+    fe, _pe = existing.interpolator()
+    if fe is None:
+        return {"error": "the existing surface needs at least 3 sample "
+                         "points - assign labelled contours and/or spot "
+                         "grades to EXISTING first"}
+
+    cell_ft = float(cell_ft or 2.0)
+    if cell_ft <= 0:
+        cell_ft = 2.0
+    cell_pt = cell_ft / ft_per_pt
+    lo = poly.min(axis=0)
+    hi = poly.max(axis=0)
+    nx = max(int((hi[0] - lo[0]) / cell_pt), 1)
+    ny = max(int((hi[1] - lo[1]) / cell_pt), 1)
+    # same stall guard as cut_fill: widen cells rather than hang the service
+    while nx * ny > 4_000_000:
+        cell_pt *= 1.5
+        cell_ft *= 1.5
+        nx = max(int((hi[0] - lo[0]) / cell_pt), 1)
+        ny = max(int((hi[1] - lo[1]) / cell_pt), 1)
+    gx = lo[0] + (np.arange(nx) + 0.5) * cell_pt
+    gy = lo[1] + (np.arange(ny) + 0.5) * cell_pt
+    GX, GY = np.meshgrid(gx, gy)
+    inside = _points_in_poly(GX, GY, poly)
+    if not inside.any():
+        return {"error": "the zone is smaller than one grid cell at "
+                         f"{cell_ft:g} ft cells - draw it larger"}
+    ze = fe(GX, GY)
+    ok = inside & ~np.isnan(ze)
+    if not ok.any():
+        return {"error": "the existing surface does not reach this zone - "
+                         "the TIN built from the assigned contours and spot "
+                         "grades is undefined everywhere inside it. Assign "
+                         "elevations nearer the zone, or move it."}
+    existing_mean = float(ze[ok].mean())
+    try:
+        strip_ft = max(float(strip_in or 0.0), 0.0) / 12.0
+    except (TypeError, ValueError):
+        strip_ft = 0.0
+    zs = ze - strip_ft          # existing AFTER the strip comes off
+    cell_area_ft2 = cell_ft * cell_ft
+
+    def _vols(dz_arr):
+        d = dz_arr[ok]
+        fill3 = float(d[d > 0].sum() * cell_area_ft2)
+        cut3 = float(-d[d < 0].sum() * cell_area_ft2)
+        return cut3, fill3
+
+    balance_elev = None
+    if mode == "pad":
+        try:
+            elev = float(design["elev_ft"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "pad mode needs elev_ft, the pad's finish "
+                             "elevation in feet"}
+        zp = np.full_like(ze, elev)
+        dz = zp - zs
+    elif mode == "plane":
+        try:
+            elev = float(design["elev_ft"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "plane mode needs elev_ft, the elevation at "
+                             "the anchor point in feet"}
+        try:
+            slope = float(design.get("slope_pct") or 0.0)
+        except (TypeError, ValueError):
+            slope = 0.0
+        try:
+            az = float(design.get("azimuth_deg") or 0.0)
+        except (TypeError, ValueError):
+            az = 0.0
+        anc = design.get("anchor")
+        if (isinstance(anc, (list, tuple)) and len(anc) == 2):
+            ax, ay = float(anc[0]), float(anc[1])
+        else:
+            ax, ay = _zone_centroid(poly)
+        rad = np.radians(az)
+        # page y grows DOWN, so "up the page" (az 0) is -y
+        ux, uy = float(np.sin(rad)), -float(np.cos(rad))
+        d_ft = ((GX - ax) * ux + (GY - ay) * uy) * ft_per_pt
+        zp = elev - (slope / 100.0) * d_ft
+        dz = zp - zs
+    elif mode == "balance":
+        # net = fill - cut is strictly increasing in the pad elevation, so
+        # bisection cannot miss; 0.5 CY is the requested tolerance
+        lo_e = float(zs[ok].min()) - 1.0
+        hi_e = float(zs[ok].max()) + 1.0
+        mid = (lo_e + hi_e) / 2.0
+        for _ in range(80):
+            mid = (lo_e + hi_e) / 2.0
+            cut3, fill3 = _vols(np.full_like(ze, mid) - zs)
+            if abs(cut3 - fill3) / 27.0 < 0.5:
+                break
+            if fill3 > cut3:
+                hi_e = mid
+            else:
+                lo_e = mid
+        balance_elev = mid
+        dz = np.full_like(ze, mid) - zs
+    else:  # strip_only: no design surface, volumes only from the strip term
+        dz = np.zeros_like(ze)
+
+    cut_ft3, fill_ft3 = _vols(dz)
+    d = dz[ok]
+    area_sf = float(ok.sum()) * cell_area_ft2
+    strip_yd3 = area_sf * strip_ft / 27.0
+    coverage = float(ok.sum()) / float(inside.sum())
+
+    # coarse labels: aggregate the fine grid into <= label_target blocks,
+    # each labelled with the MEAN dz of its defined cells and positioned at
+    # their centroid (so a label on the zone's edge still sits inside it)
+    k = 1
+    if nx * ny > label_target:
+        k = int(np.ceil(np.sqrt(nx * ny / float(label_target))))
+        while ((nx + k - 1) // k) * ((ny + k - 1) // k) > label_target:
+            k += 1
+    labels = []
+    dz_ok = np.where(ok, dz, np.nan)
+    for bi in range(0, ny, k):
+        for bj in range(0, nx, k):
+            blk = dz_ok[bi:bi + k, bj:bj + k]
+            m = ~np.isnan(blk)
+            if not m.any():
+                continue
+            sub_ok = ok[bi:bi + k, bj:bj + k]
+            xs = GX[bi:bi + k, bj:bj + k][sub_ok]
+            ys = GY[bi:bi + k, bj:bj + k][sub_ok]
+            labels.append({"x": round(float(xs.mean()), 1),
+                           "y": round(float(ys.mean()), 1),
+                           "dz": round(float(blk[m].mean()), 1)})
+
+    out = {
+        "mode": mode,
+        "cut_yd3": round(cut_ft3 / 27.0, 1),
+        "fill_yd3": round(fill_ft3 / 27.0, 1),
+        "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),
+        "area_sf": round(area_sf, 0),
+        "zone_area_sf": round(zone_area_sf, 0),
+        # < 1.0 whenever the existing TIN stops short of the polygon: the
+        # volumes cover only the defined share, and the caller must say so
+        "coverage": round(coverage, 3),
+        "max_cut_ft": round(float(-d[d < 0].min()) if (d < 0).any() else 0.0, 2),
+        "max_fill_ft": round(float(d[d > 0].max()) if (d > 0).any() else 0.0, 2),
+        "existing_mean_ft": round(existing_mean, 2),
+        "existing_n_contours": len(existing.contours),
+        "existing_n_spots": len(existing.points),
+        "strip_in": round(strip_ft * 12.0, 2),
+        "strip_yd3": round(strip_yd3, 1),
+        "cell_ft": round(cell_ft, 2),
+        "cell_labels": labels,
+        "grid": {
+            "dz": dz_ok,
+            "ok": ok,
+            "x0_pt": float(lo[0]), "y0_pt": float(lo[1]),
+            "cell_pt": float(cell_pt), "nx": int(nx), "ny": int(ny),
+            "bbox_pt": [float(lo[0]), float(lo[1]),
+                        float(lo[0] + nx * cell_pt),
+                        float(lo[1] + ny * cell_pt)],
+        },
+    }
+    if balance_elev is not None:
+        out["balance_elev_ft"] = round(balance_elev, 2)
+        out["balance_delta_ft"] = round(balance_elev - existing_mean, 2)
+    return out
+
+
 def suggest_elevations(chains: list, words: list,
                        max_d_pt: float = 16.0,
                        gap_z: dict | None = None) -> list:

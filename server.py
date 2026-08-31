@@ -3787,6 +3787,89 @@ def earthwork_map_cached(job_id: str, page: int, meta: int = 0):
                     headers=_ewmap_headers(m))
 
 
+class GradingZoneBody(BaseModel):
+    """One grading zone: a polygon plus a DECLARED design.
+
+    The zone workflow exists because a sheet often does not draw a full
+    proposed surface (measured on the Stice case, EXCAVATION-PLAN.md
+    section 25): the estimator picks a region and declares the design -
+    pad / plane / balance / strip - and the engine computes exact volumes
+    of that declared design against the detected existing ground.
+    """
+    # the zone outline, [[x, y], ...] in page points
+    polygon: list[list[float]]
+    # {mode:"pad", elev_ft} | {mode:"plane", elev_ft, slope_pct,
+    #  azimuth_deg, anchor:[x,y]} | {mode:"balance"} | {mode:"strip_only"}
+    design: dict = {}
+    # topsoil strip in inches over the zone; 0 = none. Lowers the existing
+    # surface before differencing (cut_fill's existing_offset convention)
+    # and reports its own strip_yd3 = area x depth.
+    strip_in: float = 0.0
+    # existing ground, same shapes the /earthwork route takes:
+    # rows [{chain_id, z}] and spot points [{x, y, z}]
+    existing_rows: list[dict] = []
+    existing_points: list[dict] = []
+    cell_ft: float | None = None
+
+
+@app.post("/api/job/{job_id}/page/{page}/earthwork/zone")
+def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
+    """Volumes of a declared design surface vs the detected existing
+    ground inside one polygon. Same honesty rules as _earthwork_run:
+    the scale comes from _page_scale (a typed scale is honoured), every
+    refusal carries its reason, and `coverage` says how much of the zone
+    the existing TIN actually reaches - never silently less."""
+    import base64
+
+    import numpy as _np
+
+    from takeoff_engine.earthwork import (Surface, render_cut_fill_map,
+                                          zone_cut_fill)
+
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    res = json.loads(rf.read_text())
+    # _page_scale, NOT res["scale"] - same rule as _earthwork_run: the
+    # reviewer's typed scale governs, or these volumes silently belong to
+    # a scale nobody is using any more.
+    det = _page_scale(job_id, page, res)
+    if not det:
+        raise HTTPException(400, "no scale on this page - type one into the "
+                                 "scale box in the sheet header first; "
+                                 "volumes need real-world units")
+    ft_per_pt = det["ft_per_paper_inch"] / 72.0
+    pts_by_id = {c["chain_id"]: _np.asarray(c["points"], float)
+                 for c in res["chains"]}
+    surf = Surface("existing")
+    for r in body.existing_rows:
+        try:
+            cid, z = int(r["chain_id"]), float(r["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if cid in pts_by_id:
+            surf.contours.append((pts_by_id[cid], z))
+    for q in body.existing_points:
+        try:
+            surf.points.append((float(q["x"]), float(q["y"]), float(q["z"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    out = zone_cut_fill(surf, body.polygon, ft_per_pt, body.design,
+                        cell_ft=body.cell_ft or 2.0,
+                        strip_in=body.strip_in)
+    if "error" in out:
+        raise HTTPException(400, out["error"])
+    # dz map clipped to the zone's grid, same palette as the whole-sheet
+    # cut/fill map (cut blue / fill yellow-orange - the client's own
+    # convention), base64 so one JSON reply carries numbers + picture.
+    png, meta = render_cut_fill_map(out.pop("grid"))
+    out["map_png_base64"] = base64.b64encode(png).decode("ascii")
+    out["bbox"] = meta["bbox_pt"]
+    out["ref_dz"] = meta["ref_dz_ft"]
+    out["ft_per_paper_inch"] = det["ft_per_paper_inch"]
+    return JSONResponse(out)
+
+
 @app.get("/api/job/{job_id}/page/{page}/callouts")
 def callouts(job_id: str, page: int):
     """The sheet's own callouts as data: every detected leader paired with

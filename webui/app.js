@@ -96,6 +96,15 @@ const state = window.state = {
   wzDrag: null,             // in-progress work-area drag {a:[x,y], b:[x,y]}
   wzRev: 0,                 // bumped on any zone or geometry change so the
                             // per-chain inside-fraction memo invalidates
+  gzones: [],               // GRADING ZONES: declared-design regions
+                            // [{id, name, polygon, design, strip_in, added,
+                            //   showNums, labels, result, img, err}].
+                            // result/img are recomputed via the zone
+                            // endpoint, never restored from storage.
+  gzDraft: [],              // corners of an in-progress hand-drawn zone
+  gzHover: null,            // cursor position for the zone draft preview
+  gzDrag: null,             // in-progress zone box drag {a:[x,y], b:[x,y]}
+  gzSeq: 1,                 // next default zone number ("Zone 3")
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -106,6 +115,7 @@ const state = window.state = {
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
   "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
+  "gz-draw", "gz-box",
 ]);
 
 function syncCursor() {
@@ -506,6 +516,9 @@ async function selectPage(p) {
   // page's own saved boxes come back via wzApplySaved in calcStateLoad.
   state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.ewBoundDraft = []; state.ewBoundHover = null;
+  // grading zones belong to ONE sheet, drafts included; this page's own
+  // saved zones come back via gzApplySaved in calcStateLoad
+  gzPageReset();
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
@@ -799,6 +812,8 @@ async function loadResult(gen = state.gen) {
   // come back from the calcstate sidecar below (wzApplySaved)
   state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.ewBoundDraft = []; state.ewBoundHover = null;
+  // grading zones too - restored by gzApplySaved once the sidecar answers
+  gzPageReset();
   state.conf = null; state.confKey = null; state.confErr = false;
   // review queue: check-offs belong to a page and a detection; reseeded
   // from the calcstate sidecar once it loads (renderCheckQueue)
@@ -5006,6 +5021,21 @@ function calcStatePayload() {
   // and an empty list correctly writes no key (= zones cleared).
   if (state.workZones && state.workZones.length)
     out.zones = state.workZones.map(z => [z[0], z[1], z[2], z[3]]);
+  // GRADING ZONES (additive key "gzones"): the operator's INPUTS only -
+  // polygon, declared design, strip, name, added flag. Results are
+  // recomputed through the zone endpoint on restore, never staged from
+  // storage (the rule every calculator here follows). Like the work-area
+  // boxes there is no "never opened" carry case: gzApplySaved runs on
+  // every load before the first snapshot, so state.gzones IS the truth
+  // and an empty list correctly writes no key (= zones cleared).
+  if (state.gzones && state.gzones.length)
+    out.gzones = state.gzones.map(z => ({
+      id: z.id, name: z.name,
+      polygon: z.polygon.map(q => [Math.round(q[0] * 10) / 10,
+                                   Math.round(q[1] * 10) / 10]),
+      design: z.design, strip_in: z.strip_in,
+      added: !!z.added, show_nums: !!z.showNums,
+    }));
   // Review-queue check-offs (additive key, same carry-forward rule as the
   // panels above: until the queue has seeded from the sidecar, the earlier
   // record stands untouched). Ids only - a check-off is the operator saying
@@ -5084,9 +5114,14 @@ async function calcStateLoad(gen) {
   // panel to wait for), and a snapshot taken without them would make the
   // first unrelated edit's save look like a change to them
   wzApplySaved();
+  // grading zones restore straight into state too (their geometry and
+  // design are page facts, tied to no chain); their RESULTS recompute
+  // asynchronously through the endpoint after the snapshot below
+  gzApplySaved();
   // what the server holds right now, so a no-op save is never sent
   calcStateSent = JSON.stringify(calcStatePayload());
   stApplySaved();
+  gzRestoreCompute();
 }
 
 // The count-of-dropped sentence, in the panel where the loss happened.
@@ -7303,9 +7338,37 @@ $("ewBtn").onclick = async () => {
   renderEwBound();
   if (!state.ew) {
     $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
-    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
-    if (!r.ok) { $("ewRows").textContent = "run Detect first"; return; }
+    if (!await ewEnsure()) { $("ewRows").textContent = "run Detect first"; return; }
+  }
+  renderEw();
+  renderEwLayers();
+  renderEwSpots();
+  renderEwArea();
+  renderEwTake();
+  renderGz();
+  // Re-anchor AFTER the async suggest + renders: the CHECK FIRST banner
+  // above this panel grows when the datum note lands, which shoved the
+  // panel head 58px above the fold on C3.1 (measured) - the smooth scroll
+  // that ran at open had already finished aiming at the old layout.
+  panel.scrollIntoView({ block: "start" });
+  // the suggest payload carries the datum + spot facts the review queue
+  // reports (items 3 and 5), and ewApplySaved just settled the drop count
+  renderCheckQueue();
+};
+
+// Build state.ew from /earthwork/suggest. Extracted from the EARTHWORK
+// button so the grading-zone restore path can load the same rows without
+// the panel being open - a restored zone recomputes through the endpoint
+// and the endpoint takes the suggest-derived existing surface as input.
+// Returns false when the suggest fetch fails or the page changed under it.
+async function ewEnsure() {
+  if (state.ew) return true;
+  const gen = state.gen;
+  const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
+  if (!r.ok || gen !== state.gen) return false;
+  {
     const j = await r.json();
+    if (gen !== state.gen || state.ew) return false;
     const ws = j.suggestions.map(s => s.width || 0).sort((a, b) => a - b);
     const wmed = ws.length ? ws[Math.floor(ws.length / 2)] : 0;
     state.ew = {
@@ -7351,20 +7414,8 @@ $("ewBtn").onclick = async () => {
     else if (state.calcSaveBroken)
       calcNotePut("ewHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
-  renderEw();
-  renderEwLayers();
-  renderEwSpots();
-  renderEwArea();
-  renderEwTake();
-  // Re-anchor AFTER the async suggest + renders: the CHECK FIRST banner
-  // above this panel grows when the datum note lands, which shoved the
-  // panel head 58px above the fold on C3.1 (measured) - the smooth scroll
-  // that ran at open had already finished aiming at the old layout.
-  panel.scrollIntoView({ block: "start" });
-  // the suggest payload carries the datum + spot facts the review queue
-  // reports (items 3 and 5), and ewApplySaved just settled the drop count
-  renderCheckQueue();
-};
+  return true;
+}
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
 // The estimator clicks a contour line and types the elevation they read
@@ -10021,6 +10072,29 @@ function draw() {
     ctx.drawImage(state.ew.map.img, bx0 * fm, by0 * fm, (bx1 - bx0) * fm, (by1 - by0) * fm);
     ctx.globalAlpha = 1.0;
   }
+  // GRADING ZONES: each saved zone's dz map, clipped to its own polygon so
+  // the tint reads as the zone, not the zone's bounding box. Same result
+  // gate as the ew map above: a stale zone image must not survive a page
+  // switch (gzPageReset clears them at both chokepoints anyway).
+  if (state.result && state.gzones.length) {
+    const fg = IMG_DPI / 72;
+    for (const z of state.gzones) {
+      if (!z.img || !z.result || !z.result.bbox) continue;
+      const [zx0, zy0, zx1, zy1] = z.result.bbox;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(z.polygon[0][0] * fg, z.polygon[0][1] * fg);
+      for (let i = 1; i < z.polygon.length; i++)
+        ctx.lineTo(z.polygon[i][0] * fg, z.polygon[i][1] * fg);
+      ctx.closePath();
+      ctx.clip();
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(z.img, zx0 * fg, zy0 * fg,
+                    (zx1 - zx0) * fg, (zy1 - zy0) * fg);
+      ctx.restore();
+      ctx.globalAlpha = 1.0;
+    }
+  }
   if (state.result) {
     const f = IMG_DPI / 72; // pt -> image px
     for (const ch of state.result.chains) {
@@ -10247,6 +10321,107 @@ function draw() {
     }
     ctx.restore();
   }
+  // grading zone: in-progress hand-drawn outline (same grammar as the
+  // limit of work above, purple so the two drafts cannot be confused)
+  if (state.tool === "gz-draw" && state.gzDraft.length) {
+    const fz = IMG_DPI / 72;
+    ctx.save();
+    ctx.strokeStyle = "rgba(142,36,170,.95)";
+    ctx.lineWidth = 2 / k;
+    ctx.setLineDash([8 / k, 5 / k]);
+    ctx.beginPath();
+    ctx.moveTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
+    for (let i = 1; i < state.gzDraft.length; i++)
+      ctx.lineTo(state.gzDraft[i][0] * fz, state.gzDraft[i][1] * fz);
+    if (state.gzHover && !panning)
+      ctx.lineTo(state.gzHover[0] * fz, state.gzHover[1] * fz);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of state.gzDraft) {
+      ctx.beginPath();
+      ctx.arc(q[0] * fz, q[1] * fz, 4 / k, 0, Math.PI * 2);
+      ctx.fillStyle = "#8e24aa";
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // grading zone: in-progress box drag
+  if (state.gzDrag) {
+    const fz = IMG_DPI / 72;
+    const a = state.gzDrag.a, b = state.gzDrag.b;
+    ctx.strokeStyle = "#8e24aa";
+    ctx.lineWidth = 1.8 / k;
+    ctx.setLineDash([5 / k, 4 / k]);
+    ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
+                   Math.abs(b[0] - a[0]) * fz, Math.abs(b[1] - a[1]) * fz);
+    ctx.setLineDash([]);
+  }
+  // saved grading zones: outline + centroid badge (+ per-cell dz numbers
+  // when the zone's "123" toggle is on). The badge rect is recorded on the
+  // zone in page pt so a plain canvas click can reopen its modal.
+  if (state.result && state.gzones.length) {
+    const fz = IMG_DPI / 72;
+    for (const z of state.gzones) {
+      const poly = z.polygon;
+      ctx.save();
+      ctx.strokeStyle = "rgba(142,36,170,.9)";
+      ctx.lineWidth = 2 / k;
+      ctx.setLineDash([9 / k, 5 / k]);
+      ctx.beginPath();
+      ctx.moveTo(poly[0][0] * fz, poly[0][1] * fz);
+      for (let i = 1; i < poly.length; i++)
+        ctx.lineTo(poly[i][0] * fz, poly[i][1] * fz);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // per-cell dz labels, styled like a grading plan: red = cut
+      // (negative), blue = fill (positive). NOTE this is the opposite hue
+      // for cut than the tint underneath (the client's map convention is
+      // cut BLUE) - the reference aerial's label convention, kept as
+      // specified; the panel row's title says which is which.
+      if (z.showNums && z.result && z.result.cell_labels
+          && z.result.cell_labels.length) {
+        const aPt2 = Math.abs(polyAreaPt(poly));
+        const bPt = Math.sqrt(aPt2 / z.result.cell_labels.length);
+        const fontPx = Math.max(bPt * fz * 0.30, 7 / k);
+        ctx.font = `600 ${fontPx}px "IBM Plex Sans", -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = fontPx / 5;
+        ctx.strokeStyle = "rgba(255,255,255,.85)";
+        for (const c of z.result.cell_labels) {
+          const dzv = c.dz === 0 ? 0 : c.dz;   // -0.0 reads as a cut of nothing
+          const t = (dzv > 0 ? "+" : "") + dzv.toFixed(1);
+          ctx.fillStyle = dzv < 0 ? "#c62828" : dzv > 0 ? "#1565c0" : "#5f6a63";
+          ctx.strokeText(t, c.x * fz, c.y * fz);
+          ctx.fillText(t, c.x * fz, c.y * fz);
+        }
+      }
+      // centroid badge: name + the two volumes an estimator scans for
+      const [cx, cy] = gzCentroid(poly);
+      const j = z.result;
+      const txt = z.err ? `${z.name} · ${z.err}`
+        : j ? `${z.name} · cut ${gzK(j.cut_yd3)} / fill ${gzK(j.fill_yd3)} CY`
+        : `${z.name} · computing…`;
+      const fpx = 12 / k;
+      ctx.font = `600 ${fpx}px "IBM Plex Sans", -apple-system, sans-serif`;
+      const w = ctx.measureText(txt).width + 12 / k;
+      const h = fpx + 10 / k;
+      const bx = cx * fz - w / 2, by = cy * fz - h / 2;
+      ctx.fillStyle = z.err ? "rgba(122,74,10,.9)" : "rgba(20,24,20,.85)";
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, w, h, 4 / k);
+      else ctx.rect(bx, by, w, h);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(txt, cx * fz, cy * fz);
+      // pt-space hit box for the click-to-reopen
+      z._badge = [bx / fz, by / fz, (bx + w) / fz, (by + h) / fz];
+      ctx.restore();
+    }
+  }
   if (state.tool === "drawline" && state.drawPts.length) {
     const f2 = IMG_DPI / 72;
     ctx.beginPath();
@@ -10364,9 +10539,15 @@ cv.addEventListener("mousedown", (e) => {
     state.wzDrag = { a: p, b: p.slice() };
     return;
   }
+  // grading-zone box: same drag grammar as the work area
+  if (state.tool === "gz-box" && state.result) {
+    const p = ptFromEvent(e);
+    state.gzDrag = { a: p, b: p.slice() };
+    return;
+  }
   // marquee multi-select: Shift+drag boxes whole lines into a selection
   // set. Shift was free (pan never read it), and the gesture only arms when
-  // NO tool owns the canvas, so wz-draw/st-draw/measure keep their drags.
+  // NO tool owns the canvas, so wz-draw/st-draw/gz-box/measure keep their drags.
   if (e.shiftKey && !state.tool && state.result && state.img) {
     const p = ptFromEvent(e);
     state.marquee = { a: p, b: p.slice() };
@@ -10390,6 +10571,11 @@ cv.addEventListener("mousedown", (e) => {
 addEventListener("mousemove", (e) => {
   if (state.wzDrag) {
     state.wzDrag.b = ptFromEvent(e);
+    draw();
+    return;
+  }
+  if (state.gzDrag) {
+    state.gzDrag.b = ptFromEvent(e);
     draw();
     return;
   }
@@ -10423,6 +10609,23 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 addEventListener("mouseup", (e) => {
+  if (state.gzDrag) {
+    const d = state.gzDrag;
+    state.gzDrag = null;
+    const x0 = Math.min(d.a[0], d.b[0]), x1 = Math.max(d.a[0], d.b[0]);
+    const y0 = Math.min(d.a[1], d.b[1]), y1 = Math.max(d.a[1], d.b[1]);
+    // a click is not a zone: same 2 pt floor as the work-area box
+    if (x1 - x0 < 2 || y1 - y0 < 2) {
+      setStatus("grading zone: DRAG a box (that was a click) — Esc exits the tool", "busy");
+      draw();
+      return;
+    }
+    state.tool = null;
+    syncCursor();
+    draw();
+    gzModalOpen(null, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+    return;
+  }
   if (state.wzDrag) {
     const d = state.wzDrag;
     state.wzDrag = null;
@@ -12437,6 +12640,712 @@ document.addEventListener("click", (e) => {
   if (kh.contains(e.target) || (e.target.closest && e.target.closest("#kbdBtn"))) return;
   kh.hidden = true;
 });
+// ====================== GRADING ZONES ======================================
+// Declared-design regions (F: EXCAVATION-PLAN.md section 25, the Stice
+// case): the sheet does not draw a full proposed surface, so the estimator
+// outlines a region and DECLARES its design - "pad at 2716.0", "1.5% plane
+// toward 90 deg", "balance it", "strip 8 inches" - and the engine computes
+// that declared design against the detected existing ground inside the
+// polygon only (POST /earthwork/zone). Reference UX: the AGTEK-style
+// region workflow - a per-cell dz aerial with a perimeter summary card.
+//
+// Consent is the app's standard one: the modal's live numbers are LOOKING;
+// a zone's rows reach the priced takeoff only through its own "Add to
+// takeoff" button (exact-label replacement, the trench pattern). Zones
+// persist through the calcstate sidecar (additive key "gzones") as INPUTS
+// only; every restore recomputes through the endpoint.
+
+// GZ-GEOM-BEGIN
+// Pure geometry (no DOM, no state.*) so tests/test_grading_zone_geom.js can
+// eval just this block - same discipline as WZ-MATH / TRENCH-MATH.
+
+// even-odd ray cast, the same rule the server's _points_in_poly applies -
+// the modal's "N contours + M spots in zone" line and the server's grid
+// must agree on what "inside" means
+function gzPtInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y)) {
+      const dy = (yj - yi) || 1e-12;
+      const xc = (xj - xi) * (y - yi) / dy + xi;
+      if (x < xc) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// area centroid (shoelace); vertex mean when the ring is degenerate.
+// Mirrors the server's _zone_centroid, which anchors the plane mode.
+function gzCentroid(poly) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const cross = poly[j][0] * poly[i][1] - poly[i][0] * poly[j][1];
+    a += cross;
+    cx += (poly[j][0] + poly[i][0]) * cross;
+    cy += (poly[j][1] + poly[i][1]) * cross;
+  }
+  if (Math.abs(a) < 1e-9) {
+    let sx = 0, sy = 0;
+    for (const q of poly) { sx += q[0]; sy += q[1]; }
+    return [sx / poly.length, sy / poly.length];
+  }
+  return [cx / (3 * a), cy / (3 * a)];
+}
+
+// does any vertex of this polyline fall inside the polygon? Vertex test on
+// purpose: the summary line counts which assigned contours contribute
+// inside the zone, and a contour clipping a corner between two vertices is
+// a display nicety, not a volume input (the server samples the TIN, not
+// this list).
+function gzChainTouches(points, poly) {
+  for (const p of points) if (gzPtInPoly(p[0], p[1], poly)) return true;
+  return false;
+}
+// GZ-GEOM-END
+
+// 5,800 -> "5.8k": the badge has one line of room on the canvas
+function gzK(v) {
+  v = Math.round(Number(v) || 0);
+  if (Math.abs(v) >= 1000) {
+    const s = (v / 1000).toFixed(1).replace(/\.0$/, "");
+    return s + "k";
+  }
+  return v.toLocaleString();
+}
+
+var gzModalZone = null;   // the zone being edited, or null for a new one
+var gzModalPoly = null;   // the polygon under the modal
+var gzModalTimer = null;  // 400 ms debounce for the live result block
+var gzModalSeq = 0;       // drops stale live responses
+
+// both page-switch chokepoints call this (selectPage AND loadResult), like
+// ewBoundDraft: drafts, saved zones and the open modal all belong to ONE
+// sheet. The new page's own zones come back via gzApplySaved.
+function gzPageReset() {
+  state.gzones = [];
+  state.gzDraft = []; state.gzHover = null; state.gzDrag = null;
+  state.gzSeq = 1;
+  const m = $("gzModal");
+  if (m) m.hidden = true;
+  gzModalZone = null; gzModalPoly = null;
+  if (gzModalTimer) { clearTimeout(gzModalTimer); gzModalTimer = null; }
+  gzModalSeq++;
+  for (const id of ["gzDraw", "gzBox"]) {
+    const b = $(id);
+    if (b) b.classList.remove("active");
+  }
+  renderGz();
+}
+
+// the existing ground a zone computes against: exactly what the panel has
+// assigned to EXISTING (rows with a finite elevation), plus the active
+// spot grades when the panel sends those to the existing side - the same
+// split ewBody uses, so the zone and the whole-sheet calculator can never
+// disagree about what "existing" means
+function gzExistingRows() {
+  if (!state.ew) return [];
+  return state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z));
+}
+function gzExistingPoints() {
+  if (!state.ew || state.ew.spotSide !== "existing") return [];
+  return ewActiveSpots().map(g => ({ x: g.x, y: g.y, z: g.z }));
+}
+
+// client-side count for the modal header line: which of the assigned
+// existing rows/spots actually sit inside this polygon
+function gzZoneSummary(poly) {
+  let nC = 0, nS = 0;
+  const zs = [];
+  const chains = state.result
+    ? new Map(state.result.chains.map(c => [c.chain_id, c])) : new Map();
+  for (const r of gzExistingRows()) {
+    const ch = chains.get(r.chain_id);
+    if (ch && gzChainTouches(ch.points, poly)) { nC++; zs.push(r.z); }
+  }
+  for (const g of gzExistingPoints())
+    if (gzPtInPoly(g.x, g.y, poly)) { nS++; zs.push(g.z); }
+  const mean = zs.length ? zs.reduce((a, b) => a + b, 0) / zs.length : null;
+  return { nContours: nC, nSpots: nS, mean };
+}
+
+function gzBody(polygon, design, strip_in) {
+  return {
+    polygon: polygon.map(q => [q[0], q[1]]),
+    design: design,
+    strip_in: isFinite(strip_in) && strip_in > 0 ? strip_in : 0,
+    existing_rows: gzExistingRows().map(r => ({ chain_id: r.chain_id, z: r.z })),
+    existing_points: gzExistingPoints(),
+  };
+}
+
+// ---- compute (shared by save, edit and restore) --------------------------
+async function gzCompute(z, gen) {
+  if (gen == null) gen = state.gen;
+  z.err = null; z.result = null; z.img = null;
+  renderGz(); draw();
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/zone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gzBody(z.polygon, z.design, z.strip_in)),
+    });
+    if (gen !== state.gen) return;
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      if (gen !== state.gen) return;
+      z.err = e.detail || ("failed (" + r.status + ")");
+    } else {
+      const j = await r.json();
+      if (gen !== state.gen) return;
+      z.result = j;
+      const img = new Image();
+      img.onload = () => { if (gen === state.gen) { z.img = img; draw(); } };
+      img.src = "data:image/png;base64," + j.map_png_base64;
+      // consent already given for THIS zone: refresh its rows in place so a
+      // superseded number never stays priced (same rule as ewCalc)
+      if (z.added) { gzApplyItems(z); renderItemized(); }
+    }
+  } catch (err) {
+    if (gen !== state.gen) return;
+    z.err = "server unreachable";
+  }
+  renderGz(); draw();
+}
+
+// ---- restore from the calcstate sidecar ----------------------------------
+// Synchronous half: zones into state BEFORE the first snapshot, so the
+// payload round-trips. Results stay null here - they are never staged.
+function gzApplySaved() {
+  const saved = state.calcSaved || {};
+  state.gzones = [];
+  let seq = 1;
+  for (const s of (Array.isArray(saved.gzones) ? saved.gzones : [])) {
+    if (!s || !Array.isArray(s.polygon) || s.polygon.length < 3) continue;
+    const poly = s.polygon.filter(q => Array.isArray(q) && q.length >= 2)
+                          .map(q => [+q[0], +q[1]]);
+    if (poly.length < 3) continue;
+    state.gzones.push({
+      id: String(s.id || ("z" + seq)),
+      name: String(s.name || ("Zone " + seq)).slice(0, 40),
+      polygon: poly,
+      design: (s.design && typeof s.design === "object") ? s.design : { mode: "pad" },
+      strip_in: isFinite(+s.strip_in) ? Math.max(+s.strip_in, 0) : 0,
+      added: !!s.added, showNums: !!s.show_nums,
+      result: null, img: null, err: null,
+    });
+    seq++;
+  }
+  state.gzSeq = state.gzones.length + 1;
+  renderGz();
+}
+
+// Async half, AFTER the snapshot: every restored zone recomputes through
+// the endpoint. The endpoint takes the panel's existing rows as input, so
+// the suggest data loads first (ewEnsure) even when the panel is closed.
+async function gzRestoreCompute() {
+  if (!state.gzones.length) return;
+  const gen = state.gen;
+  if (!await ewEnsure()) {
+    if (gen !== state.gen) return;
+    for (const z of state.gzones) z.err = "run Detect first";
+    renderGz();
+    return;
+  }
+  if (gen !== state.gen) return;
+  for (const z of state.gzones) {
+    if (gen !== state.gen) return;
+    await gzCompute(z, gen);
+  }
+}
+
+// ---- takeoff rows (consent + exact-label replacement) ---------------------
+// Three rows per zone, named by the zone so several zones coexist: the
+// trench calculator's exact-label pattern, for the same reason (a prefix
+// filter once silently deleted another system's rows).
+function gzRowLabels(z) {
+  return [`${z.name} cut`, `${z.name} fill`, `${z.name} topsoil strip`];
+}
+function gzClearItems(z) {
+  const mine = new Set((z.labels && z.labels.length) ? z.labels : gzRowLabels(z));
+  state.extraItems = state.extraItems.filter(it => !mine.has(it.label));
+}
+function gzApplyItems(z) {
+  gzClearItems(z);
+  const j = z.result;
+  if (!j) return;
+  z.labels = gzRowLabels(z);
+  const rows = [];
+  if (j.cut_yd3 > 0) rows.push({ label: z.labels[0], qty: ewR(j.cut_yd3), unit: "CY" });
+  if (j.fill_yd3 > 0) rows.push({ label: z.labels[1], qty: ewR(j.fill_yd3), unit: "CY" });
+  if (j.strip_yd3 > 0) rows.push({ label: z.labels[2], qty: ewR(j.strip_yd3), unit: "CY" });
+  for (const r of rows) {
+    state.extraItems.push(r);
+    // tradeFor() would file "Zone 1 cut" under General; seed the trade the
+    // way the balance rows do - session default only, the reviewer's pick wins
+    if (!store.getItem(tradeKey(r.label)))
+      store.setSession(tradeKey(r.label), "Earthwork & Grading");
+  }
+}
+
+// ---- the panel list -------------------------------------------------------
+function renderGz() {
+  const box = $("gzRows"), tot = $("gzTotals"), st = $("gzState");
+  if (!box) return;
+  const zs = state.gzones || [];
+  if (st) st.textContent = zs.length
+    ? `${zs.length} zone${zs.length === 1 ? "" : "s"}` : "none";
+  const sec = $("gzSection");
+  if (sec) sec.classList.toggle("on", zs.length > 0);
+  box.innerHTML = "";
+  for (const z of zs) {
+    const row = document.createElement("div");
+    row.className = "gz-row" + (z.added ? " added" : "");
+    const name = document.createElement("input");
+    name.className = "gz-name";
+    name.value = z.name;
+    name.title = "zone name - its takeoff rows are named after it";
+    name.onchange = () => {
+      const v = name.value.trim().slice(0, 40) || z.name;
+      if (v === z.name) { name.value = z.name; return; }
+      // the old name's rows are cleared by their recorded labels, then the
+      // new name reapplies - rename can never leave orphan rows behind
+      if (z.added) gzClearItems(z);
+      z.name = v; z.labels = null;
+      if (z.added && z.result) gzApplyItems(z);
+      calcStateDirty(); renderGz(); renderItemized(); draw();
+    };
+    const sum = document.createElement("span");
+    sum.className = "gz-sum";
+    sum.textContent = gzDesignSummary(z);
+    const cyf = document.createElement("span");
+    cyf.className = "gz-cyf";
+    if (z.err) { cyf.innerHTML = `<span class="gz-err">${z.err}</span>`; }
+    else if (z.result) {
+      cyf.innerHTML = `cut <b>${ewCY(z.result.cut_yd3 > 0 ? z.result.cut_yd3 : 0)}</b>`
+        + ` · fill <b>${ewCY(z.result.fill_yd3 > 0 ? z.result.fill_yd3 : 0)}</b> CY`
+        + (z.result.strip_yd3 > 0 ? ` · strip ${ewCY(z.result.strip_yd3)} CY` : "");
+    } else cyf.textContent = "computing…";
+    const nums = document.createElement("button");
+    nums.className = "mini" + (z.showNums ? " on" : "");
+    nums.textContent = "123";
+    nums.title = "show the per-cell elevation change on the sheet "
+      + "(red = cut, blue = fill - note the tint underneath uses the map "
+      + "palette, cut blue / fill orange)";
+    nums.onclick = () => { z.showNums = !z.showNums; calcStateDirty(); renderGz(); draw(); };
+    const edit = document.createElement("button");
+    edit.className = "mini";
+    edit.textContent = "edit";
+    edit.title = "reopen this zone's design (clicking its badge on the sheet does the same)";
+    edit.onclick = () => gzModalOpen(z);
+    const add = document.createElement("button");
+    add.className = "mini" + (z.added ? " on" : "");
+    add.textContent = z.added ? "Remove from takeoff" : "Add to takeoff";
+    add.title = z.added
+      ? "remove this zone's rows from the itemized takeoff"
+      : "put this zone's cut / fill / strip rows in the itemized takeoff - "
+        + "nothing prices until this is pressed";
+    add.onclick = () => {
+      if (!z.added && !z.result) {
+        setStatus(z.err ? `${z.name}: ${z.err}` : `${z.name} is still computing — try again in a moment`, "err");
+        return;
+      }
+      z.added = !z.added;
+      if (z.added) gzApplyItems(z);
+      else gzClearItems(z);
+      calcStateDirty(); renderGz(); renderItemized();
+      setStatus(z.added
+        ? `${z.name} added to the takeoff — its rows price, export and print like any other`
+        : `${z.name} removed from the takeoff`);
+    };
+    const del = document.createElement("button");
+    del.className = "mini x";
+    del.textContent = "×";
+    del.title = "delete this zone" + (z.added ? " (its takeoff rows go with it)" : "");
+    del.onclick = () => {
+      const wasAdded = z.added;
+      if (wasAdded) gzClearItems(z);
+      state.gzones = state.gzones.filter(q => q !== z);
+      calcStateDirty(); renderGz(); renderItemized(); draw();
+      setStatus(wasAdded
+        ? `${z.name} deleted — its takeoff rows were removed with it`
+        : `${z.name} deleted`);
+    };
+    row.append(name, sum, cyf, nums, edit, add, del);
+    box.appendChild(row);
+  }
+  if (tot) {
+    const done = zs.filter(z => z.result);
+    if (done.length < 2) tot.hidden = true;
+    else {
+      tot.hidden = false;
+      const cut = done.reduce((a, z) => a + Math.max(z.result.cut_yd3, 0), 0);
+      const fill = done.reduce((a, z) => a + Math.max(z.result.fill_yd3, 0), 0);
+      const strip = done.reduce((a, z) => a + Math.max(z.result.strip_yd3, 0), 0);
+      tot.innerHTML = `<span>all zones:</span> <b>cut ${ewCY(cut)}</b>`
+        + ` · <b>fill ${ewCY(fill)}</b>`
+        + (strip > 0 ? ` · strip ${ewCY(strip)}` : "") + ` CY`
+        + (done.length < zs.length
+            ? ` <span class="gz-err">(${zs.length - done.length} zone${zs.length - done.length === 1 ? "" : "s"} not computed - not in these totals)</span>`
+            : "");
+    }
+  }
+}
+
+function gzDesignSummary(z) {
+  const d = z.design || {};
+  let s;
+  if (d.mode === "pad") s = `pad @ ${d.elev_ft}`;
+  else if (d.mode === "plane")
+    s = `plane ${d.slope_pct || 0}% @ ${d.azimuth_deg || 0}°, ${d.elev_ft} @ centre`;
+  else if (d.mode === "balance")
+    s = (z.result && z.result.balance_elev_ft !== undefined)
+      ? `balance @ ${z.result.balance_elev_ft}` : "balance";
+  else s = "strip only";
+  if (z.strip_in > 0) s += ` · strip ${z.strip_in}"`;
+  return s;
+}
+
+// ---- the two arming buttons ------------------------------------------------
+$("gzDraw").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (state.tool === "gz-draw") { gzDrawCancel("grading zone: drawing cancelled"); return; }
+  state.tool = "gz-draw";
+  state.gzDraft = [];
+  $("gzDraw").classList.add("active");
+  syncCursor();
+  setStatus("grading zone: click the corners of the region "
+    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+};
+$("gzBox").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (state.tool === "gz-box") {
+    state.tool = null; state.gzDrag = null;
+    $("gzBox").classList.remove("active");
+    syncCursor(); draw();
+    setStatus("grading zone: box cancelled");
+    return;
+  }
+  state.tool = "gz-box";
+  $("gzBox").classList.add("active");
+  syncCursor();
+  setStatus("grading zone: drag a box over the region " + '—' + " Esc cancels", "busy");
+};
+
+function gzDrawClick(px, py) {
+  const d = state.gzDraft;
+  const last = d[d.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return; // dblclick echo
+  d.push([px, py]);
+  const fpi = arFpi();
+  let live = "";
+  if (d.length >= 3 && fpi !== null) {
+    const sf = Math.abs(polyAreaPt(d)) * (fpi / 72) * (fpi / 72);
+    live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
+  }
+  setStatus(`grading zone: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  draw();
+}
+function gzDrawFinish() {
+  const pts = [];
+  for (const q of state.gzDraft)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length - 1][0], q[1] - pts[pts.length - 1][1]) > 0.5)
+      pts.push(q);
+  if (pts.length < 3) {
+    return gzDrawCancel("grading zone: a region needs at least 3 corners "
+      + '—' + " drawing cancelled");
+  }
+  state.tool = null;
+  state.gzDraft = []; state.gzHover = null;
+  $("gzDraw").classList.remove("active");
+  syncCursor();
+  draw();
+  gzModalOpen(null, pts);
+}
+function gzDrawCancel(msg) {
+  state.tool = null;
+  state.gzDraft = []; state.gzHover = null;
+  $("gzDraw").classList.remove("active");
+  syncCursor();
+  if (msg) setStatus(msg);
+  draw();
+}
+
+// clicks land in the zone tools while armed; a badge click (no tool armed)
+// reopens that zone's modal
+const _gzClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "gz-draw") {
+    const [px, py] = ptFromEvent(e);
+    return gzDrawClick(px, py);
+  }
+  if (!state.tool && state.gzones && state.gzones.length) {
+    const [px, py] = ptFromEvent(e);
+    for (const z of state.gzones) {
+      const b = z._badge;
+      if (b && px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
+        return gzModalOpen(z);
+    }
+  }
+  return _gzClickBefore(e);
+};
+cv.addEventListener("dblclick", () => { if (state.tool === "gz-draw") gzDrawFinish(); });
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "gz-draw" || panning || !state.gzDraft.length) return;
+  state.gzHover = ptFromEvent(e);
+  draw();
+});
+// capture phase, same Esc semantics as the limit-of-work draw: back up one
+// corner, then cancel; Enter closes
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "gz-draw") return;
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    gzDrawFinish();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (state.gzDraft.length) {
+      state.gzDraft.pop();
+      setStatus(state.gzDraft.length
+        ? `grading zone: ${state.gzDraft.length} corner(s) ` + '—' + " Esc again removes another"
+        : "all corners removed " + '—' + " Esc again exits", "busy");
+      draw();
+    } else {
+      gzDrawCancel("grading zone: drawing cancelled");
+    }
+  }
+}, true);
+// Esc for the box tool: abandon an in-progress drag first, then the tool
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "gz-box" && !state.gzDrag) return;
+  if (e.key !== "Escape") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (state.gzDrag) {
+    state.gzDrag = null;
+    setStatus("box abandoned — drag again, or Esc to cancel the tool", "busy");
+    draw();
+    return;
+  }
+  state.tool = null;
+  $("gzBox").classList.remove("active");
+  syncCursor();
+  setStatus("grading zone: box cancelled");
+  draw();
+}, true);
+
+// ---- THE ZONE MODAL --------------------------------------------------------
+function gzModalOpen(zone, polygon) {
+  if (!state.ew) return setStatus("open the EARTHWORK panel first", "err");
+  gzModalZone = zone || null;
+  gzModalPoly = zone ? zone.polygon : polygon;
+  if (!gzModalPoly || gzModalPoly.length < 3) return;
+  $("gzBox").classList.remove("active");
+  const fpi = arFpi();
+  const sf = fpi === null ? null
+    : Math.abs(polyAreaPt(gzModalPoly)) * (fpi / 72) * (fpi / 72);
+  const name = zone ? zone.name : "Zone " + state.gzSeq;
+  $("gzMTitle").textContent = name + (sf !== null
+    ? ` — ${Math.round(sf).toLocaleString()} SF` : " — no scale set");
+  const s = gzZoneSummary(gzModalPoly);
+  $("gzMExist").innerHTML = (s.nContours + s.nSpots) > 0
+    ? `existing from the sheet: ${s.mean !== null ? `mean ${s.mean.toFixed(1)} ft, ` : ""}`
+      + `${s.nContours} contour${s.nContours === 1 ? "" : "s"} + `
+      + `${s.nSpots} spot${s.nSpots === 1 ? "" : "s"} in zone `
+      + `(rows the panel assigns to EXISTING)`
+    : `<span class="gz-warn">no EXISTING contour or spot inside this zone — `
+      + `the surface interpolates from the nearest assigned elevations `
+      + `outside it, or refuses if it cannot reach</span>`;
+  const d = (zone && zone.design) || {};
+  const mode = d.mode || "pad";
+  for (const r of document.querySelectorAll('input[name="gzMode"]'))
+    r.checked = r.value === mode;
+  // Number.isFinite, NEVER bare isFinite: isFinite(null) is TRUE in JS
+  // (the spotDatum defect, CLAUDE.md section 5 / ewActiveSpots)
+  const meanTxt = s.mean !== null ? String(Math.round(s.mean * 10) / 10) : "";
+  $("gzPadElev").value = (mode === "pad" && Number.isFinite(d.elev_ft)) ? d.elev_ft : meanTxt;
+  $("gzPlElev").value = (mode === "plane" && Number.isFinite(d.elev_ft)) ? d.elev_ft : meanTxt;
+  $("gzPlSlope").value = Number.isFinite(d.slope_pct) ? d.slope_pct : 1.0;
+  $("gzPlAz").value = Number.isFinite(d.azimuth_deg) ? d.azimuth_deg : 0;
+  // strip default from the researched table, citation on its face - the
+  // operator sees the number AND where it came from before it computes
+  const sd = (typeof EW_RESEARCH !== "undefined") ? EW_RESEARCH.strip_depth_in : null;
+  $("gzStrip").value = zone ? (Number.isFinite(zone.strip_in) ? zone.strip_in : 0)
+                            : (sd ? sd.value : 0);
+  $("gzStripWhy").textContent = sd
+    ? `default ${sd.value}" — ${sd.local}; national band ${sd.national[0]}–${sd.national[1]} in. `
+      + `Set 0 for no strip.`
+    : "";
+  gzModalSyncMode();
+  $("gzModal").hidden = false;
+  gzModalCalc();
+}
+
+function gzModalClose(msg) {
+  $("gzModal").hidden = true;
+  gzModalZone = null; gzModalPoly = null;
+  if (gzModalTimer) { clearTimeout(gzModalTimer); gzModalTimer = null; }
+  gzModalSeq++;
+  if (msg) setStatus(msg);
+}
+
+// enable only the inputs the picked mode reads, so a number in a greyed
+// box can never be silently part of the calculation
+function gzModalSyncMode() {
+  const mode = (document.querySelector('input[name="gzMode"]:checked') || {}).value || "pad";
+  $("gzPadElev").disabled = mode !== "pad";
+  $("gzPlElev").disabled = mode !== "plane";
+  $("gzPlSlope").disabled = mode !== "plane";
+  $("gzPlAz").disabled = mode !== "plane";
+}
+
+function gzModalCollect() {
+  const mode = (document.querySelector('input[name="gzMode"]:checked') || {}).value || "pad";
+  const sv = parseFloat($("gzStrip").value);
+  const strip_in = isFinite(sv) && sv > 0 ? sv : 0;
+  if (mode === "pad") {
+    const e = parseFloat($("gzPadElev").value);
+    if (!isFinite(e)) return { err: "type the pad elevation" };
+    return { design: { mode: "pad", elev_ft: e }, strip_in };
+  }
+  if (mode === "plane") {
+    const e = parseFloat($("gzPlElev").value);
+    if (!isFinite(e)) return { err: "type the plane's elevation at the zone centre" };
+    const sl = parseFloat($("gzPlSlope").value);
+    const az = parseFloat($("gzPlAz").value);
+    return { design: { mode: "plane", elev_ft: e,
+                       slope_pct: isFinite(sl) ? sl : 0,
+                       azimuth_deg: isFinite(az) ? az : 0 }, strip_in };
+  }
+  return { design: { mode }, strip_in };
+}
+
+function gzModalDirty() {
+  if ($("gzModal").hidden) return;
+  gzModalSyncMode();
+  if (gzModalTimer) clearTimeout(gzModalTimer);
+  gzModalTimer = setTimeout(gzModalCalc, 400);
+}
+
+async function gzModalCalc() {
+  if ($("gzModal").hidden || !gzModalPoly) return;
+  const live = $("gzMLive");
+  const c = gzModalCollect();
+  if (c.err) { live.innerHTML = `<span class="gz-warn">${c.err}</span>`; return; }
+  const seq = ++gzModalSeq;
+  const gen = state.gen;
+  live.innerHTML = '<span class="gz-meta">calculating…</span>';
+  let r;
+  try {
+    r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/zone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gzBody(gzModalPoly, c.design, c.strip_in)),
+    });
+  } catch (err) {
+    if (seq === gzModalSeq) live.innerHTML = '<span class="gz-warn">server unreachable</span>';
+    return;
+  }
+  if (seq !== gzModalSeq || gen !== state.gen) return;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    if (seq !== gzModalSeq) return;
+    live.innerHTML = `<span class="gz-warn">${e.detail || ("failed (" + r.status + ")")}</span>`;
+    return;
+  }
+  const j = await r.json();
+  if (seq !== gzModalSeq || gen !== state.gen) return;
+  const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
+  let h = `<span class="gz-big">cut ${ewCY(cutQ)} CY · fill ${ewCY(fillQ)} CY</span>`
+    + ` · net ${ewCY(j.net_yd3)} CY`;
+  h += `<span class="gz-meta">over ${Number(j.area_sf).toLocaleString()} SF`
+    + (j.coverage < 0.999
+        ? ` <span class="gz-warn">— the existing surface reaches only `
+          + `${Math.round(j.coverage * 100)}% of this `
+          + `${Number(j.zone_area_sf).toLocaleString()} SF zone; the volumes `
+          + `cover that share only</span>`
+        : ` (the whole zone)`)
+    + `</span>`;
+  if (j.balance_elev_ft !== undefined) {
+    const bd = j.balance_delta_ft;
+    h += `<span class="gz-meta"><b>balances at ${j.balance_elev_ft.toFixed(2)} ft</b>`
+      + ` (${Math.abs(bd).toFixed(2)} ft ${bd < 0 ? "below" : "above"} the`
+      + ` existing mean ${j.existing_mean_ft.toFixed(2)} ft`
+      + (j.strip_in > 0 ? "; the strip is part of the balance" : "") + `)</span>`;
+  }
+  if (j.strip_yd3 > 0)
+    h += `<span class="gz-meta">topsoil strip ${j.strip_in}&Prime; over `
+      + `${Number(j.area_sf).toLocaleString()} SF = <b>${ewCY(j.strip_yd3)} CY</b>`
+      + (j.mode !== "strip_only"
+          ? " — the fill above already includes replacing that depth" : "")
+      + `</span>`;
+  h += `<span class="gz-meta">existing inside the zone: mean `
+    + `${j.existing_mean_ft.toFixed(2)} ft, sampled from the surface built on `
+    + `${j.existing_n_contours} contour row${j.existing_n_contours === 1 ? "" : "s"}`
+    + ` + ${j.existing_n_spots} spot grade${j.existing_n_spots === 1 ? "" : "s"}`
+    + ` (whole sheet)</span>`;
+  if (j.max_cut_ft || j.max_fill_ft)
+    h += `<span class="gz-meta">deepest cut ${j.max_cut_ft} ft · deepest fill `
+      + `${j.max_fill_ft} ft — eyeball these against the contours</span>`;
+  h += `<img class="gz-map" alt="zone cut/fill map" `
+    + `src="data:image/png;base64,${j.map_png_base64}">`;
+  h += `<span class="gz-meta">cut blue · fill orange — full colour = `
+    + `±${j.ref_dz} ft (the sheet map's own palette)</span>`;
+  live.innerHTML = h;
+}
+
+$("gzMSave").onclick = () => {
+  if (!gzModalPoly) return;
+  const c = gzModalCollect();
+  if (c.err) { setStatus("zone not saved — " + c.err, "err"); return; }
+  let z = gzModalZone;
+  if (!z) {
+    z = {
+      id: "z" + Math.random().toString(36).slice(2, 9),
+      name: "Zone " + state.gzSeq++,
+      polygon: gzModalPoly.map(q => [q[0], q[1]]),
+      design: c.design, strip_in: c.strip_in,
+      added: false, showNums: false,
+      result: null, img: null, err: null,
+    };
+    state.gzones.push(z);
+  } else {
+    z.design = c.design;
+    z.strip_in = c.strip_in;
+  }
+  const name = z.name;
+  gzModalClose();
+  calcStateDirty();
+  renderGz();
+  draw();
+  gzCompute(z);   // async; refreshes the zone's priced rows if it was added
+  setStatus(`${name} saved — computing its volumes; press its "Add to takeoff" to price them`);
+};
+$("gzMCancel").onclick = () => gzModalClose("zone not saved");
+$("gzMClose").onclick = () => gzModalClose("zone not saved");
+// Esc ALWAYS cancels the modal, typing or not - registered capture-phase so
+// nothing underneath sees the key while the modal is up
+addEventListener("keydown", (e) => {
+  const m = $("gzModal");
+  if (!m || m.hidden) return;
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    gzModalClose("zone not saved");
+  }
+}, true);
+(function gzWireModalInputs() {
+  for (const id of ["gzPadElev", "gzPlElev", "gzPlSlope", "gzPlAz", "gzStrip"]) {
+    const el = $(id);
+    if (el) el.addEventListener("input", gzModalDirty);
+  }
+  for (const r of document.querySelectorAll('input[name="gzMode"]'))
+    r.addEventListener("change", gzModalDirty);
+})();
+// =============== end GRADING ZONES ========================================
 
 resize();
 

@@ -1242,3 +1242,57 @@ main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
 .multi-bar .mini.danger { color: #ff9a90; }
 .multi-bar .mini.danger:hover { background: #b3362c; color: #fff;
   border-color: #b3362c; }
+/* --- grading zones -------------------------------------------------------
+   Declared-design regions (pad / plane / balance / strip) computed against
+   the detected existing ground. Panel rows live inside the earthwork panel;
+   the modal is a plain centered overlay, app-styled, no library. */
+.gz-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+.gz-rows { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.gz-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+.gz-row.added { border-color: var(--accent); }
+.gz-row input.gz-name { width: 84px; font-size: 11px; padding: 1px 4px;
+  background: transparent; border: 1px solid transparent; color: var(--text); }
+.gz-row input.gz-name:hover, .gz-row input.gz-name:focus {
+  border-color: var(--line); }
+.gz-row .gz-sum { font-size: 10px; color: var(--dim); font-family: var(--mono); }
+.gz-row .gz-cyf { font-size: 11px; margin-left: auto; white-space: nowrap; }
+.gz-row .gz-err { color: #d08a3c; font-size: 10px; }
+:root[data-theme="light"] .gz-row .gz-err { color: #8a5a06; }
+.gz-row .mini.on { border-color: var(--accent); color: var(--accent); }
+.gz-totals { margin-top: 6px; font-size: 11px; display: flex; gap: 12px;
+  font-family: var(--mono); color: var(--text); }
+.gz-totals b { font-weight: 600; }
+
+.gz-modal { position: fixed; inset: 0; z-index: 80;
+  background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+  justify-content: center; }
+.gz-m-card { width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.gz-m-head { display: flex; align-items: center; gap: 8px; }
+.gz-m-head h2 { margin: 0; font-size: 14px; flex: 1; }
+.gz-m-exist { font-size: 11px; color: var(--dim); margin: 6px 0 10px; }
+.gz-m-design { display: flex; flex-direction: column; gap: 6px; }
+.gz-m-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; }
+.gz-num { width: 84px; font-size: 12px; padding: 2px 4px; }
+.gz-num.gz-sm { width: 56px; }
+.gz-m-note { font-size: 10px; color: var(--dim); }
+.gz-m-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 10px 0; font-size: 12px; }
+.gz-m-live { border: 1px solid var(--line); border-radius: 8px;
+  background: var(--sunk); padding: 8px 10px; min-height: 40px;
+  font-size: 12px; }
+.gz-m-live .gz-big { font-size: 15px; font-weight: 600; }
+.gz-m-live .gz-meta { font-size: 10px; color: var(--dim); display: block;
+  margin-top: 3px; }
+.gz-m-live .gz-warn { color: #d08a3c; }
+:root[data-theme="light"] .gz-m-live .gz-warn { color: #8a5a06; }
+.gz-m-live img.gz-map { display: block; max-width: 100%; margin-top: 8px;
+  image-rendering: pixelated; border: 1px solid var(--line);
+  border-radius: 4px; background: #fff; }
+.gz-m-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  flex-wrap: wrap; }
+#gzMSave { background: var(--accent-deep); border-color: var(--accent); }
