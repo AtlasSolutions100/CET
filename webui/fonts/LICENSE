@@ -1,0 +1,48 @@
+IBM Plex — SIL Open Font License, Version 1.1
+=============================================
+
+The font files in this directory are subsets of IBM Plex, redistributed
+under the SIL Open Font License 1.1. They are bundled so CORE Takeoff
+renders identically on a field-office machine with no internet access.
+
+Files
+-----
+  ibm-plex-sans-latin.woff2      IBM Plex Sans, latin subset, VARIABLE
+                                 (wght axis; serves the 400/500/600 the UI
+                                 asks for from one file)
+  ibm-plex-mono-latin-400.woff2  IBM Plex Mono Regular, latin subset
+  ibm-plex-mono-latin-500.woff2  IBM Plex Mono Medium, latin subset
+
+Provenance
+----------
+  Retrieved 2026-08-31 from Google Fonts' own `latin` subset builds
+  (fonts.gstatic.com/s/ibmplexsans/v23/, .../ibmplexmono/v20/), the same
+  files the redesign mocks loaded over the network. Unchanged bytes; only
+  the `latin` unicode-range was kept (no cyrillic / greek / vietnamese /
+  latin-ext), which is why the three files total 75,308 bytes.
+
+  Copyright 2017 IBM Corp. All rights reserved.
+  Upstream project: https://github.com/IBM/plex
+  Reserved Font Name: none declared by IBM for Plex.
+
+License text
+------------
+The full SIL Open Font License 1.1 governs these files. It is reproduced
+verbatim upstream at:
+
+  https://github.com/IBM/plex/blob/master/LICENSE.txt
+  https://openfontlicense.org/
+
+Summary of the obligations that apply to this repository, in plain terms
+(the license text above is what actually binds, not this summary):
+
+  - The fonts may be used, studied, modified and redistributed freely,
+    including bundled with software, and including commercially.
+  - They may not be sold on their own.
+  - This notice and the license must travel with the font files.
+  - Modified versions may not use the "IBM Plex" name without permission.
+
+Nothing in this directory is loaded from a third-party host at runtime.
+webui/tokens.css declares the @font-face rules against these local paths
+and ends every stack in a system fallback (Segoe UI / Consolas), so a
+blocked or missing file degrades rather than breaks.

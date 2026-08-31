@@ -3,41 +3,93 @@
 <head>
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
+<link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico?v=1" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=42">
+<link rel="stylesheet" href="tokens.css?v=1">
+<link rel="stylesheet" href="style.css?v=66">
 </head>
 <body>
-<div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
+<!-- THE MASTHEAD, after CRITIQUE fix 4.
+     It used to hold seventeen things: the brand, a sample-plan picker, a
+     path box, Open, a recents picker, Upload, the document name, the page
+     picker, Detect, Tools, the BETA chip, Feedback, Feedback CSV, Terms,
+     Privacy, the saved-work button, the theme toggle - AND the status line,
+     which is a different kind of thing entirely. At 1920px it wrapped to
+     three rows (147px tall, 234px while a long status string was up, and
+     every one of those pixels came out of the sheet).
+     It now carries only IDENTITY and DOCUMENT CONTEXT: brand (with its
+     Projects / Settings links) · document name · sheet picker · Detect ·
+     Tools, then the BETA chip and the theme toggle on the right.
+     NOTHING WAS DELETED. Every id below moved to the view that is actually
+     about it, with its handler, its title and its `hidden` bookkeeping
+     untouched:
+       sampleSel / pathInput / openBtn / recentSel / uploadBtn / fileInput
+                              -> the "Open a plan" strip on #projectsView,
+                                 and then (2026-08-31) that strip was retired
+                                 in favour of the tabbed plan library. Where
+                                 each of the five went is written out at the
+                                 head of #projectsView below: uploadBtn and
+                                 fileInput stayed as "+ New project",
+                                 sampleSel/pathInput/openBtn went on to
+                                 Settings -> This machine, and recentSel was
+                                 retired (the cards are the recents).
+       status / docRemoveBtn / fbBtn / fbExportBtn / memBtn / Terms / Privacy
+                              -> the #statusBar below <main>
+       whoami / signOutBtn    -> the #statusBar, and then (2026-09-01) on to
+                                 the Account section of #settingsView
+     A node's position in the DOM is the only thing that changed. -->
 <header>
-  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span></div>
-  <select id="sampleSel"><option value="">Open sample plan…</option></select>
-  <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
-  <button id="openBtn">Open</button>
-  <select id="recentSel" title="Plan sets already on this server. Reopening one is instant and keeps whatever has already been detected."><option value="">Recent plans…</option></select>
-  <button id="uploadBtn" title="Choose a PDF from this computer. You can also just drag one onto the window.">Upload plans</button>
-  <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+  <div class="brand"><span class="brand-mark">C<span class="brand-o">O</span>RE</span><span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#settings" title="Company name on the report PDF, theme, your standing trade default, the unit price book, and your account">Settings</a></div>
   <div id="docName" class="doc-name"></div>
-  <button id="docRemoveBtn" class="danger" hidden>Remove from server</button>
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
-  <div id="status" class="status"></div>
-  <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
-  <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
-  <span id="whoami" class="whoami" hidden></span>
-  <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
-  <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
-  <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
-  <button id="aiBtn" hidden>Analyze</button>
-  <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
-  <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
-  <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
-  <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
-  <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes">Across sheets</button>
-  <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
-  <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
-  <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
-  <button id="memBtn" class="mem-btn" hidden></button>
-  <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
+  <!-- TOOLS. One entry point for the nine calculators/readers that used to
+       sit here as ten equal-weight buttons. The buttons themselves MOVED in
+       unchanged - same ids, same handlers, same hidden bookkeeping by
+       loadResult() - so a hidden button is simply an absent menu row.
+       DETECT LINES stays outside: it is the workflow, not a tool. -->
+  <div class="tools-wrap" id="toolsWrap">
+    <button id="toolsBtn" aria-haspopup="true" aria-expanded="false" title="Calculators and document readers. Everything in here opens a panel you drive; nothing runs on its own.">Tools &#9662;</button>
+    <!-- Menu ROWS, not bare verbs (CRITIQUE fix 9). Each button now carries
+         a 20px stroke icon (currentColor, same geometry language as the
+         toolkit rail), its name, and the one-line description that was
+         ALREADY in its title attribute and that nobody could see. The
+         description span is filled by toolsMenuSync() from the button's own
+         title, read verbatim - the title stays the single source of truth
+         and the accessible description, so nothing that keys off titles
+         breaks. The .tm-dot span is the open-panel dot the ::before
+         pseudo-element used to draw; .t-on still toggles it.
+         The three group headers are PRESENTATIONAL ONLY - the nine buttons
+         keep their ids, their handlers, their titles and their `hidden`
+         bookkeeping, and a hidden button is still simply an absent row.
+         #aiBtn had NO title (the only one); the line below is newly written
+         from what runAnalyze() actually does - it POSTs the sheet, the model
+         returns keep/drop/rename suggestions, and state.aiAuto is hard-set
+         false so nothing is ever applied without the operator accepting it. -->
+    <div id="toolsMenu" class="tools-menu" hidden>
+      <div class="tm-group" aria-hidden="true">Calculators</div>
+      <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16c4-3 6 1 10-2s5-6 8-7"/><path d="M3 20h18"/></svg><span class="tm-txt"><span class="tm-nm">Earthwork</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v10l4 4M20 5v10l-4 4M8 19h8"/><path d="M9 9h6" stroke-dasharray="2 2"/></svg><span class="tm-txt"><span class="tm-nm">Trench</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="9" width="14" height="10"/><path d="M3 9 12 3l9 6M9 19v-5h6v5"/></svg><span class="tm-txt"><span class="tm-nm">Structure</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <div class="tm-sep" aria-hidden="true"></div>
+      <div class="tm-group" aria-hidden="true">Counts</div>
+      <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3.4"/><circle cx="16" cy="16" r="3.4"/><path d="M16 4.6v6.8M12.6 8h6.8"/></svg><span class="tm-txt"><span class="tm-nm">Count</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="10" rx="1"/><rect x="13" y="8" width="8" height="10" rx="1"/><path d="M5 18v2h10"/></svg><span class="tm-txt"><span class="tm-nm">Whole job</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="7" height="9" rx="1"/><rect x="14" y="10" width="7" height="9" rx="1"/><path d="M10 9h4M14 15h-4"/></svg><span class="tm-txt"><span class="tm-nm">Across sheets</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <div class="tm-sep" aria-hidden="true"></div>
+      <div class="tm-group" aria-hidden="true">Document</div>
+      <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19 14 9M14 9h-4M14 9v4"/><rect x="14" y="4" width="7" height="5" rx="1"/></svg><span class="tm-txt"><span class="tm-nm">Callouts</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h3M13 9h3M8 13h3M13 13h3" stroke-dasharray="2 1.6"/></svg><span class="tm-txt"><span class="tm-nm">Legend sheet</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="aiBtn" hidden title="A model reads the sheet and flags styles it would keep or drop — suggestions only, never applied by itself"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2 4.5L18.5 9 14 11l-2 4.5L10 11 5.5 9 10 7.5z"/><path d="M18 15l1 2.2L21 18l-2 .9-1 2.1-1-2.1-2-.9 2.1-.8z"/></svg><span class="tm-txt"><span class="tm-nm">Analyze</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <div class="tools-note" id="toolsNote">Sheet tools appear once a page has detected lines.</div>
+    </div>
+  </div>
+  <div class="hdr-right">
+    <span id="betaBanner" class="beta-chip" tabindex="0" role="note" title="BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.">BETA &mdash; verify every quantity</span>
+    <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
+  </div>
   <input id="legendPath" type="hidden">
 </header>
 <div id="aiBanner" class="ai-banner" hidden></div>
@@ -55,46 +107,329 @@
   <div class="up-pct" id="upPct">0%</div>
 </div>
 <main>
+  <!-- MY PROJECTS: the landing page. Shown in place of the workbench when no
+       document is open, and reachable any time from the "Projects" link on
+       the brand. A pure view toggle - the class main.pv-open hides the three
+       workbench columns via CSS, so no subsystem's own `hidden` writes are
+       fought over and the workbench keeps its full state while out of sight.
+       Built by loadProjects()/renderProjects() in app.js from /api/projects. -->
+  <div id="projectsView" class="projects-view" hidden>
+    <!-- THE FRONT DOOR. What stood here was an "Open a plan" strip carrying
+         five controls: a sample-plan dropdown, a path box, Open, a recents
+         dropdown and Upload. Four of the five were laptop plumbing sitting
+         above the product, and the fifth duplicated the cards below it -
+         the grid IS the recents list, sorted by last activity.
+         WHERE EACH ONE WENT (nothing was silently dropped):
+           #uploadBtn   stays right here, REPURPOSED as the one primary
+                        action: "+ New project". Same id, same handler
+                        (click -> #fileInput), same hidden #fileInput, so
+                        uploadPdf() and the drag-and-drop path are untouched.
+           #sampleSel / #pathInput / #openBtn
+                        MOVED to Settings -> "This machine", which is what
+                        they are: filesystem affordances a hosted box refuses
+                        outright (server.py open_path 403s when HOSTED).
+                        Same ids, same handlers, same option list.
+           #recentSel   RETIRED. It listed the newest 60 jobs in a <select>;
+                        these cards list them as cards, with the page count,
+                        how much is detected and a thumbnail. loadRecent()
+                        REMAINS - it is what fills RECENT_META, which the
+                        header's Remove-from-server button reads - and now
+                        tolerates the <select> being absent.
+         Dropping a PDF anywhere on the window still works from both views:
+         that listener is on `window`, not on anything here. -->
+    <div class="pv-head">
+      <h1>Projects</h1>
+      <span id="pvCount" class="pv-count"></span>
+      <button id="uploadBtn" class="pv-new" title="Upload a PDF from this computer and start a takeoff on it. You can also drag a PDF anywhere onto this window.">+ New project</button>
+      <button id="pvBack" class="mini" hidden>Back to the sheet</button>
+      <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+    </div>
+    <!-- THE TWO TABS. One grid, two populations, and they come from two
+         DIFFERENT routes because they are two different things.
+           Demo plans   = /api/demo-plans, which answers from demo-plans.json
+                          alone. Exactly the plans we ship, one card each,
+                          whether this box holds zero jobs for them or sixty-
+                          three. Opening one is always FRESH - the card posts
+                          to /api/demo/{name}/open, which sweeps the previous
+                          run so the visitor presses Detect and watches it.
+           Your projects = /api/projects rows the server did NOT flag
+                          demo:true (a row is demo when it is SHARED - owner
+                          None, the visibility rule this app has always had -
+                          and its name is in the manifest). A client's own
+                          upload of a demo filename is theirs and stays here.
+         Search, sort and the #pvReach honesty line all act WITHIN the active
+         tab. The counts on the tabs are live and are the same numbers the
+         reach line quotes; on the demo tab that line also carries the rule
+         that demo plans open undetected. -->
+    <div class="pv-tabs" role="tablist" aria-label="Which projects to show">
+      <button id="pvTabDemo" class="pv-tab" role="tab" aria-selected="false"
+              aria-controls="pvGrid"
+              title="Plans of ours you can open right now to see what the engine does. Every one opens undetected, so you watch it run. Nothing here is a client's drawing.">Demo plans<span id="pvTabDemoN" class="pv-tabn"></span></button>
+      <button id="pvTabMine" class="pv-tab" role="tab" aria-selected="true"
+              aria-controls="pvGrid"
+              title="Everything you have uploaded or opened on this server.">Your projects<span id="pvTabMineN" class="pv-tabn"></span></button>
+    </div>
+    <!-- Search + sort. BOTH act on the rows the server actually sent, which
+         /api/projects caps at 200 of however many exist. That cap is the
+         reason #pvReach spells out what search can and cannot reach: a
+         filter box that silently searches 200 of 420 plans is worse than no
+         filter box, because "no match" then reads as "not on this server".
+         Neither control refetches - filtering and sorting are pure passes
+         over the cached rows in pvRows. -->
+    <div class="pv-controls">
+      <span class="pv-search">
+        <svg class="pv-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="pvSearch" type="search" placeholder="Search plans by name…" spellcheck="false" autocomplete="off">
+      </span>
+      <label class="pv-sort" for="pvSort">Sort
+        <select id="pvSort">
+          <option value="when">Last activity</option>
+          <option value="name">Name A&ndash;Z</option>
+          <option value="pages">Pages</option>
+          <option value="detected">Detected</option>
+        </select>
+      </label>
+    </div>
+    <div id="pvReach" class="pv-reach"></div>
+    <!-- THE SELECTION BAR. Empty and hidden until a card is picked with
+         Ctrl/Cmd+click; built by pvRenderSelBar() in app.js. It sits in the
+         flow above the grid rather than floating over it, so it can never
+         cover the cards it is describing. Demo cards are not selectable, so
+         this bar cannot appear over the demo corpus at all. -->
+    <div id="pvSelBar" class="pv-selbar" role="status" aria-live="polite" hidden></div>
+    <div id="pvGrid" class="pv-grid"></div>
+    <div id="pvEmpty" class="pv-empty" hidden></div>
+  </div>
+  <!-- SETTINGS: the second page in the same shell as MY PROJECTS.
+       Same pure view toggle - main.sv-open hides the three workbench columns
+       via CSS and nothing else changes, so the sheet keeps its full state
+       while out of sight. The two views are exclusive: opening one closes
+       the other. Built by renderSettings() in app.js from the SAME price
+       store the itemized panel writes (priceKey/"price:<label>") plus the
+       EW_RESEARCH table in ew_defaults.js.
+
+       This page started life as the price book alone and the price book is
+       now ONE of its five groups. Nothing about the pricing markup below
+       changed: same section elements, same ids, same handlers. What is new
+       is the four sibling groups (Company, Appearance, Scope, Account) and
+       the .sv-grouptitle headings that name all five.
+
+       WHERE EACH SETTING IS STORED - stated on the page itself, not only
+       here, because "did that save for everyone or just me?" is the whole
+       question an operator has about a settings page:
+         Company    THE SERVER (branding.json, per account). It is the only
+                    one that must reach a file the server generates.
+         Appearance this browser (localStorage core-theme, the SAME key
+                    #themeBtn in the masthead writes - one store, two
+                    controls, never a fork).
+         Scope      this browser (localStorage core-scope-default). It is a
+                    STANDING DEFAULT that seeds a document with no
+                    declaration of its own; the per-document declaration in
+                    the sheet's own scope panel always outranks it.
+         Pricing    this browser (the tk1:: saved-work record), unchanged.
+         Account    the server's session; nothing is stored here at all.
+
+       ACCOUNT: #whoami and #signOutBtn are the SAME NODES that were in the
+       status bar - moved, not rebuilt. loadWhoami() still owns them, still
+       sets their text and their `hidden`, and still wires the sign-out
+       POST. -->
+  <div id="settingsView" class="settings-view" hidden>
+    <div class="sv-head">
+      <h1>Settings</h1>
+      <button id="svBack" class="mini" hidden>Back to the sheet</button>
+    </div>
+    <nav class="sv-nav" id="svNav" aria-label="Settings sections">
+      <a href="#company">Company</a>
+      <a href="#appearance">Appearance</a>
+      <a href="#scope">Scope</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#account">Account</a>
+      <a href="#machine" id="svNavMachine">This machine</a>
+    </nav>
+
+    <h2 class="sv-grouptitle" id="svGroupCompany">Company</h2>
+    <section class="sv-section">
+      <h2>Name on the takeoff PDF</h2>
+      <div class="sv-note" id="svBrandNote">Loading…</div>
+      <div class="sv-form">
+        <label class="sv-fld"><span>Company name</span>
+          <input id="svBrandCompany" type="text" maxlength="80" spellcheck="false"
+                 placeholder="e.g. Ryno Construction LLC"></label>
+        <label class="sv-fld"><span>Contact line <em>(optional)</em></span>
+          <input id="svBrandContact" type="text" maxlength="120" spellcheck="false"
+                 placeholder="e.g. 512-555-0134 · estimating@example.com"></label>
+      </div>
+      <div class="sv-addrow">
+        <button id="svBrandSave" class="mini">Save</button>
+        <span class="sv-note" id="svBrandState"></span>
+      </div>
+      <div class="sv-note sv-note-b">Both lines are printed verbatim, at the
+        top of every itemized-takeoff page and of the summary page of
+        <b>Report PDF</b>. They are not printed over the sheet-overlay pages
+        (those are your client&rsquo;s own drawing) and they never displace
+        the beta notice, which is stamped last, on every page. This is the
+        only thing on the report that is not a measurement, so it carries no
+        caveat &mdash; and it cannot add one: nothing here changes a
+        quantity, a price or a total.</div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupAppearance">Appearance</h2>
+    <section class="sv-section">
+      <h2>Theme</h2>
+      <div class="sv-note">Dark is the working theme; paper matches what a
+        printed sheet looks like. This is the same setting as the
+        &#9680; button in the masthead &mdash; one stored value, two
+        controls, so they can never disagree.</div>
+      <div class="sv-choice" id="svThemeChoice"></div>
+      <div class="sv-note sv-note-b">Stored in this browser only
+        (<code>core-theme</code> in localStorage). It does not follow you to
+        another machine and it is not sent to the server.</div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupScope">Scope</h2>
+    <section class="sv-section">
+      <h2>Your standing trade default</h2>
+      <div class="sv-note">What work do you do? Picking trades here does
+        <b>not</b> filter anything by itself. It is the value a
+        <b>new</b> document starts with, so you stop re-declaring the same
+        trades on every job.</div>
+      <div class="sv-chips" id="svScopeChips"></div>
+      <div class="sv-note sv-note-b" id="svScopeNote"></div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupPricing">Pricing</h2>
+    <section class="sv-section">
+      <h2>Unit price book</h2>
+      <div class="sv-note" id="svBookNote"></div>
+      <div id="svBookTable" class="sv-book"></div>
+      <div class="sv-addrow">
+        <input id="svAddLabel" type="text" placeholder="line-item label" spellcheck="false">
+        <input id="svAddPrice" type="number" min="0" step="0.01" placeholder="$ / unit">
+        <button id="svAddBtn" class="mini">Add line item</button>
+        <span class="sv-note">pre-price a label before it appears on any sheet</span>
+      </div>
+    </section>
+    <!-- LINE COLOUR CONVENTIONS. "fiber = red, existing contour = light
+         yellow, on and on" is a COMPANY convention, not a per-job whim, so it
+         lives on the page that already owns the book of standing decisions
+         beside the unit prices - same store, same browser-saved-work rules,
+         same CSV backup story. Per-job and per-family colours still beat it;
+         renderSvColors() states the precedence on the page. -->
+    <section class="sv-section">
+      <h2>Line colour conventions</h2>
+      <div class="sv-note" id="svColorNote"></div>
+      <div id="svColorBox" class="sv-book"></div>
+      <div class="sv-addrow">
+        <input id="svColorLabel" type="text" placeholder="line-item label (FIBER OPTIC)" spellcheck="false">
+        <input id="svColorPick" type="color" value="#e03131" aria-label="colour for this label">
+        <button id="svColorAdd" class="mini">Add convention</button>
+        <span class="sv-note">the colour this name comes up in on every job</span>
+      </div>
+      <div id="svColorWarn" class="sv-preview" hidden></div>
+    </section>
+    <section class="sv-section">
+      <h2>Material defaults</h2>
+      <div class="sv-note">Researched, cited, overridable — the table below is
+        webui/ew_defaults.js verbatim. Nothing here applies silently: factors
+        stay 1.0 until an operator picks a preset in the Earthwork panel, and
+        the override always wins.</div>
+      <div id="svMatBox"></div>
+    </section>
+    <section class="sv-section">
+      <h2>Import / export</h2>
+      <div class="sv-io">
+        <button id="svExportBtn" class="mini">Export CSV</button>
+        <button id="svImportBtn" class="mini">Import CSV</button>
+        <input id="svImportFile" type="file" accept=".csv,text/csv" hidden>
+      </div>
+      <div id="svImportPreview" class="sv-preview" hidden></div>
+    </section>
+    <div class="sv-foot" id="svFoot"></div>
+
+    <h2 class="sv-grouptitle" id="svGroupAccount">Account</h2>
+    <section class="sv-section">
+      <h2>Signed in</h2>
+      <div class="sv-note" id="svAccountNote">Asking the server who you are…</div>
+      <div class="sv-addrow" id="svAccountRow">
+        <!-- MOVED, not rebuilt: these two nodes were in #statusBar's utility
+             strip. loadWhoami() still writes #whoami's text and unhides both,
+             and still attaches the /api/logout handler to #signOutBtn. -->
+        <span id="whoami" class="whoami" hidden></span>
+        <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
+      </div>
+      <div class="sv-note sv-note-b" id="svAccountFoot"></div>
+    </section>
+
+    <!-- THIS MACHINE. The three filesystem controls that used to open the
+         Projects page. They are a LAPTOP affordance, not a product feature:
+         POST /api/open-path takes a path from the client, which a hosted box
+         refuses outright (403, server.py open_path), and GET /api/samples
+         returns [] there. So they belong on a settings page that says what
+         they are, not above the plan library on every visitor's first screen.
+         MOVED, not rebuilt - #sampleSel, #pathInput and #openBtn keep their
+         ids, their handlers and the option list /api/samples fills, and the
+         hosted branch of /api/config still hides them (it now hides this
+         whole section and its nav link, because an empty group titled "This
+         machine" is worse than no group). -->
+    <h2 class="sv-grouptitle" id="svGroupMachine">This machine</h2>
+    <section class="sv-section" id="svMachineSection">
+      <h2>Open a plan by path</h2>
+      <div class="sv-note">For working on this laptop: open a PDF that is
+        already on this computer&rsquo;s disk, without uploading a copy.
+        <b>A hosted server refuses this</b> &mdash; taking a filesystem path
+        from a browser would let one tenant read another&rsquo;s files &mdash;
+        so on <code>core.workoptional.studio</code> this section is not shown
+        at all and <b>+ New project</b> is the only way in.</div>
+      <div class="sv-machine">
+        <select id="sampleSel"><option value="">Open sample plan…</option></select>
+        <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
+        <button id="openBtn">Open</button>
+      </div>
+      <div class="sv-note sv-note-b">The dropdown lists the PDFs under this
+        server&rsquo;s configured plan roots (<code>TAKEOFF_PLAN_ROOTS</code>).
+        Opening one registers it exactly as an upload does, so it appears on
+        the Projects page as a card the moment it is open.</div>
+    </section>
+  </div>
   <nav id="pageStrip" class="page-strip" hidden>
     <div class="strip-head">
       <button id="stripToggle" class="mini strip-toggle" title="Collapse the page strip">&#10094;</button>
       <span class="strip-title">Pages</span>
       <button id="detectAllBtn" class="mini" title="Detect lines on every page, one after another">Detect all</button>
     </div>
+    <!-- Sheet triage: "N of M look like excavation" + the highlight toggle.
+         Attention only - dims, never hides; renderTriageBar() in app.js. -->
+    <div id="triageBar" class="triage-bar" hidden></div>
     <div id="thumbList" class="thumb-list"></div>
   </nav>
   <aside id="sidebar">
-    <div id="sheetHead" class="sheet-head" hidden></div>
-    <!-- What to doubt on this sheet, in the operator's language, before any
-         number below it is priced. Built by renderConfidence() in app.js. -->
-    <div id="confBanner" class="conf" hidden></div>
-    <div class="side-head" id="legendHead" hidden><h2>Sheet legend</h2></div>
-    <div id="legendBox" class="legend-box" hidden></div>
-    <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet</h2>
-      <div class="side-actions">
-        <button id="arAllBtn" class="mini">all</button>
-        <button id="arNoneBtn" class="mini">none</button>
-      </div>
-    </div>
-    <div id="arScale" class="ar-scale" hidden></div>
-    <div id="arList" class="ar-list" hidden></div>
-    <div id="arUnmatched" class="ar-unmatched" hidden></div>
-    <div class="side-head" id="stylesHead">
-      <h2>Line styles</h2>
-      <div class="side-actions">
-        <button id="allBtn" class="mini">all</button>
-        <button id="noneBtn" class="mini">none</button>
-      </div>
-    </div>
-    <div id="colorChips" class="color-chips"></div>
-    <!-- Whose scope is this? The operator's own declaration of trade, per
-         document. It filters what is SHOWN and what is TICKED and never
-         touches a measured quantity; built by renderScopeBar() in app.js. -->
-    <div id="scopeBar" class="scope-bar" hidden></div>
-    <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
-    <div id="styleList" class="style-list"></div>
-    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
-    <div id="itemized" class="itemized"></div>
+    <!-- CARD ARCHITECTURE (CRITIQUE fix 5). The column used to be one
+         infinite scroll: sheet head, CHECK THESE, 65 style rows, 30
+         itemized rows and ten tool panels stacked in a single 330px
+         scrollport 12,468 px tall with the earthwork panel open. It is now
+         a fixed-width, RESIZABLE frame (.side-body) whose middle is the
+         only thing that scrolls (#sideScroll), holding one card per
+         section, with the approve footer and the links bar outside the
+         scroll where they cannot be scrolled away from.
+
+         Nothing here changes who owns a panel. Every id, every class hook
+         and every hidden contract below is the element that was already
+         there, moved. -->
+    <div class="side-body">
+      <div id="sideScroll" class="side-scroll">
+        <!-- TOOL DOCK. An opened tool panel is the thing the operator just
+             asked for, so it renders FIRST in the column instead of after
+             the style list. This is markup order only: each panel is still
+             shown and hidden by its own button and its own close handler,
+             and a hidden panel contributes no height, so an empty dock is
+             invisible. -->
+        <div id="toolDock" class="tool-dock">
+    <!-- Tool panels dock at the TOP of the column (audit item 8, finished by
+         CRITIQUE fix 5). They used to sit above the style list, which on a
+         209-style sheet still left them 22,000 px down; now they are the
+         first thing in the scrollport, so pressing EARTHWORK or TRENCH puts
+         the panel where the operator is already looking. The buttons also
+         scrollIntoView on open, which now lands at the top of #sideScroll. -->
     <div id="ewPanel" class="ew-panel" hidden>
       <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
         <button id="ewClose" class="mini">close</button></div>
@@ -131,6 +466,30 @@
         treat every figure below as an order-of-magnitude check that a person
         still has to replace.
       </div>
+      <!-- GRADING ZONES. For sheets that do not draw a full proposed
+           surface (the Stice case, EXCAVATION-PLAN.md section 25): the
+           estimator picks a region and DECLARES the design - pad / plane /
+           balance / strip - and the engine computes declared-design vs
+           detected-existing inside that polygon only. Zones persist via the
+           calcstate sidecar (additive key "gzones"); results always
+           recompute through the endpoint, never restore from storage. -->
+      <div class="ew-bound" id="gzSection">
+        <div class="ew-bound-row">
+          <span class="ew-bound-lab">Grading zones</span>
+          <span id="gzState" class="ew-bound-state">none</span>
+        </div>
+        <div class="ew-bound-row">
+          <button id="gzDraw" class="mini" title="Click the corners of the region, Enter or double-click closes, Esc backs up one corner then cancels. Then declare the design for that region.">+ grading zone (draw)</button>
+          <button id="gzBox" class="mini" title="Drag a rectangle over the region, then declare the design for it.">+ grading zone (box)</button>
+        </div>
+        <div id="gzRows" class="gz-rows"></div>
+        <div id="gzTotals" class="gz-totals" hidden></div>
+        <div class="gz-hint">For a design the sheet does not draw: outline a
+          region and declare it &mdash; a pad elevation, a sloping plane, a
+          balanced pad, or a strip. Volumes are the declared design against
+          the detected existing ground inside the zone, and reach the takeoff
+          only via each zone's own Add button.</div>
+      </div>
       <!-- Limit of work. Without one the volume is integrated over the
            intersection of the two surfaces' CONVEX HULLS, which bulges wherever
            the graded area is concave - the single biggest source of over-read
@@ -142,10 +501,11 @@
         </div>
         <div class="ew-bound-row">
           <button id="ewBoundPick" class="mini" title="Click the grading-limit line on the sheet. Most grading plans draw one - a dashed outline around the disturbed area - and using the sheet's own line beats any boundary we could invent.">use a line on the sheet</button>
+          <button id="ewBoundDraw" class="mini" title="Draw the limit by hand - click corners around the graded area, Enter or double-click closes, Esc backs up. For sheets whose limit line is broken, missing, or shaped with cuts a picked chain cannot follow.">draw it</button>
           <button id="ewBoundClear" class="mini" hidden title="Go back to the whole overlap of the two surfaces">clear</button>
         </div>
       </div>
-      <div class="ew-rows-head"><span>Contours</span>
+      <div class="ew-rows-head"><span>Contours <span class="card-n" id="ewRowsCount"></span></span>
         <button id="ewAddRow" class="mini" title="Sheet prints no elevation on a contour? Click the line yourself and type the value (from the overview sheet)">+ Add contour</button></div>
       <div id="ewRows" class="ew-rows"></div>
       <div id="ewSpots" class="ew-spots" hidden></div>
@@ -169,10 +529,26 @@
            the client, so a scale change after Calculate leaves them stale.
            This says so and offers the redo. -->
       <div id="ewStale" class="ew-stale" hidden></div>
+      <!-- Surface model. Between its contours a linear TIN is a flat plane,
+           which terraces a sheet whose labels are far apart in elevation;
+           the smooth model restores that relief but is clipped to the local
+           contour bracket so it cannot invent an elevation. Auto measures
+           the sheet's own label sparsity and picks. Whichever runs, the
+           basis line below the result names it. -->
+      <div class="ew-model" id="ewModel">
+        <label for="ewModelSel">Surface between contours</label>
+        <select id="ewModelSel">
+          <option value="auto">Auto (measure this sheet)</option>
+          <option value="linear">Linear TIN</option>
+          <option value="clamped_ct">Smooth, clamped</option>
+        </select>
+        <span class="ew-model-note" id="ewModelNote"></span>
+      </div>
       <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
         <span id="ewResult" class="ew-result"></span>
         <label class="ew-map-toggle" title="Paint where the dirt moves: cut blue, fill yellow; deeper = stronger"><input type="checkbox" id="ewMap"> Show cut/fill map</label>
+        <span id="ewMapLegend" class="ew-map-legend" hidden><span class="eml-bar"></span><span class="eml-txt"></span></span>
       </div>
       <!-- What the number rests on, printed beside the number, from the
            fields the response already carries (existing_contours /
@@ -193,6 +569,7 @@
         <div class="ew-bal-factors">
           <span>Multiply export volumes by</span><input id="ewFacExp" type="number" min="0" step="0.05" value="1">
           <span>Multiply import volumes by</span><input id="ewFacImp" type="number" min="0" step="0.05" value="1">
+          <span>Material preset</span><select id="ewMatPreset"><option value="">— none (per #853, no factor) —</option></select>
         </div>
         <div class="ew-bal-note" id="ewBalNote"></div>
       </div>
@@ -204,13 +581,40 @@
         bedding rules to the spec. Depth interpolates start&rarr;end along each line; trench width =
         pipe OD + clearance each side, growing with depth per the rules.</div>
       <div id="trBody" class="tr-body"></div>
+      <!-- Pierce's per-foot depth bands, read-only. Rendered by
+           renderTrBands() only after Calculate has run. Class .off, not the
+           hidden attribute: the trHead collapse handler writes el.hidden on
+           every id it owns and would un-hide an empty table on expand.
+           TYPED d0/d1 depths only - profile-DERIVED depths are forbidden
+           until the datum work (commit 5390b3f) is wired into profiles;
+           EXCAVATION-PLAN.md section 16. -->
+      <div id="trBandBox" class="tr-bands off">
+        <div class="tr-bands-head" title="Rick, Pierce Site Work (transcript 2026-08-27): &quot;we price by the foot to install pipe... it's a two-ft interval. So within 8-in sewer main we need to know how much of it is 0 to six feet deep, how much is 6 to 8, how much is 8 to 10, and so on. Sometimes we're up to 24 feet deep.&quot; The 6-ft first edge and 2-ft step are his convention; both are editable.">Depth bands (LF per band)</div>
+        <div class="tr-bands-cfg">
+          <label for="trBandEdge">first band to</label>
+          <input id="trBandEdge" type="number" min="0.5" step="0.5" value="6">
+          <span>ft, then every</span>
+          <input id="trBandStep" type="number" min="0.5" step="0.5" value="2">
+          <span>ft</span>
+        </div>
+        <div id="trBandRows"></div>
+        <div class="tr-bands-note">From the typed start/end depths, interpolated linearly along the run
+          as of the last Calculate. Depths read off profile sheets are not wired in yet.</div>
+      </div>
       <div class="ew-actions" id="trActions">
         <button id="trCalc">Calculate trench</button>
         <span id="trResult" class="ew-result"></span>
       </div>
+      <!-- Consent, same rule as earthwork above: Calculate is looking;
+           nothing reaches the itemized takeoff (or the priced report)
+           until this is pressed. -->
+      <div class="ew-take off" id="trTake">
+        <button id="trAdd">Add to takeoff</button>
+        <span class="ew-take-note" id="trTakeNote"></span>
+      </div>
     </div>
     <div id="coPanel" class="ew-panel" hidden>
-      <div class="side-head" id="coHead"><h2>Sheet callouts</h2>
+      <div class="side-head" id="coHead"><h2>Sheet callouts <span class="card-n" id="coCount"></span></h2>
         <button id="coClose" class="mini">close</button></div>
       <div class="ew-hint" id="coHint">Every leader on the sheet, paired with the note at its tail
         and the line it points at. Click a row to jump there. Callouts never count in the takeoff.</div>
@@ -249,7 +653,7 @@
       <div id="xsTotal" class="sym-total" hidden></div>
     </div>
     <div id="symPanel" class="ew-panel" hidden>
-      <div class="side-head" id="symHead"><h2>Count symbols</h2>
+      <div class="side-head" id="symHead"><h2>Count symbols <span class="card-n" id="symCount"></span></h2>
         <button id="symClose" class="mini">close</button></div>
       <div class="ew-hint" id="symHint">Every repeated shape found on the sheet. Hover a row to see
         every instance marked; name it and Add to put "&times; N EA" in the takeoff. The count comes
@@ -275,6 +679,109 @@
         <span id="stResult" class="ew-result"></span>
       </div>
     </div>
+        </div>
+        <section class="card" id="cardSheet">
+    <div id="sheetHead" class="sheet-head" hidden></div>
+        </section>
+        <!-- AUTO-DETECTED: ONE card for everything the ENGINE concluded about
+             this sheet - what it corroborated (confBanner) and what it doubts
+             most (ckPanel). These were two separate cards; an operator reads
+             them as a single question - "what did the machine work out, and
+             where is it unsure?" - so they answer it in one place. The two
+             blocks keep their own sub-heads, their own fold, and their own
+             renderers; only the framing is shared. syncAutoCard() in app.js
+             hides the whole card when neither block has anything to say. -->
+        <section class="card" id="cardCheck">
+    <div class="side-head" id="autoHead" hidden><h2>Auto-detected</h2></div>
+    <div id="autoBody" hidden>
+    <!-- What to doubt on this sheet, in the operator's language, before any
+         number below it is priced. Built by renderConfidence() in app.js. -->
+    <div id="confBanner" class="conf" hidden></div>
+    <!-- The confidence-ranked review queue (EXCAVATION-PLAN.md section 7
+         item 2). The banner above says what to doubt about the SHEET; this
+         lists the specific THINGS the engine is least sure about, most
+         consequential first, each with a click that goes there. Derived
+         entirely from data the app already holds - it never fetches, and it
+         says which checks could not run yet. Built by renderCheckQueue()
+         in app.js. -->
+    <div id="ckPanel" class="ew-panel ck-panel" hidden>
+      <div class="side-head" id="ckHead"><h2 id="ckTitle">Check these</h2>
+        <button id="ckToggle" class="mini">hide</button></div>
+      <div id="ckBody">
+        <div class="ew-hint" id="ckHint">What the engine is least sure about on
+          this sheet, most consequential first. Click a row to go to the thing
+          &mdash; that marks it checked. Everything not listed came through the
+          checks that have run without a doubt to report.</div>
+        <div id="ckRows" class="ck-rows"></div>
+        <button id="ckMore" class="ck-more" hidden></button>
+        <div id="ckPending" class="ck-pending" hidden></div>
+      </div>
+    </div>
+    </div><!-- /#autoBody -->
+        </section>
+        <section class="card" id="cardLegend">
+    <div class="side-head" id="legendHead" hidden><h2>Sheet legend <span class="card-n" id="legendCount"></span></h2></div>
+    <div id="legendBox" class="legend-box" hidden></div>
+        </section>
+        <section class="card" id="cardAreas">
+    <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet <span class="card-n" id="areasCount"></span></h2>
+      <div class="side-actions">
+        <button id="arAllBtn" class="mini">all</button>
+        <button id="arNoneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="arScale" class="ar-scale" hidden></div>
+    <div id="arList" class="ar-list" hidden></div>
+    <div id="arUnmatched" class="ar-unmatched" hidden></div>
+        </section>
+        <section class="card" id="cardBid">
+    <!-- BID VIEW (EXCAVATION-PLAN.md section 7 item 1): the itemized takeoff
+         regrouped into the handful of line families an excavator actually
+         bids, above the style drill-down. Grouping is a deterministic
+         keyword rule table (BIDVIEW-RULES in app.js) over the names already
+         on the rows; it moves no quantity - every bucket figure is the sum
+         of the measured rows beneath it, read from the SAME
+         computeTakeoffRows() pass as the itemized takeoff and the tally, so
+         the three cannot disagree. Rows no rule names land in UNASSIGNED,
+         counted and footaged, never silently. Built by renderBidView(). -->
+    <div class="side-head bid-head" id="bidHead" hidden>
+      <h2>Bid view <span class="card-n" id="bidCount"></span></h2>
+      <span class="bid-honesty">grouped by name rules &mdash; every number is the sum of the measured rows below it</span>
+    </div>
+    <div id="bidBox" class="bid-view" hidden></div>
+        </section>
+        <section class="card" id="cardStyles">
+    <!-- The header carries the Ctrl+click affordance, because a modified
+         click is invisible: nothing on a row can show it, and the operator
+         who needs it most is the one looking at five rows he believes are
+         one item. Same sentence as the keyboard map's Ctrl+click row. -->
+    <div class="side-head" id="stylesHead"
+         title="Ctrl+click (Cmd+click on a Mac) a row to add that whole family to a multi-selection — several families at once, then name them as ONE item, move them into one family, recolour or delete them from the multi-handle toolkit on the left rail. Ctrl+click again takes a family back out; Esc clears.">
+      <h2>Line styles <span class="card-n" id="stylesCount"></span></h2>
+      <div class="side-actions">
+        <!-- The reopen control for "Whose scope is this?" below. Always
+             present so a closed panel can never become unreachable; it also
+             carries the declared-trade count while the panel is closed, so a
+             filter that is still narrowing the list is never silent.
+             renderScopeToggle() in app.js owns its text/title/state. -->
+        <button id="scopeToggle" class="mini" aria-expanded="true" hidden>scope</button>
+        <button id="allBtn" class="mini">all</button>
+        <button id="noneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="colorChips" class="color-chips"></div>
+    <!-- Whose scope is this? The operator's own declaration of trade, per
+         document. It filters what is SHOWN and what is TICKED and never
+         touches a measured quantity; built by renderScopeBar() in app.js. -->
+    <div id="scopeBar" class="scope-bar" hidden></div>
+    <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
+    <div id="styleList" class="style-list"></div>
+        </section>
+        <section class="card" id="cardTakeoff">
+    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff <span class="card-n" id="takeoffCount"></span></h2></div>
+    <div id="itemized" class="itemized"></div>
+        </section>
+      </div>
     <div class="approve-bar">
       <span id="tallyBar" class="tally"></span>
       <button id="csvBtn" class="mini" disabled title="Download the itemized takeoff as CSV (label, trade, count, feet, $/ft, ext $)">CSV</button>
@@ -284,6 +791,17 @@
       <a id="dlLink" hidden download>elements.json</a>
       <a id="reportLink" hidden>Report PDF (all approved pages)</a>
     </div>
+    </div>
+    <!-- The resize grip: the column's inner edge is draggable, and the
+         chevron folds the whole column away so the sheet gets the width.
+         Both remembered per browser (core-sidebar-w / core-sidebar-fold)
+         beside the page strip and mini-legend prefs. -->
+    <div id="sideGrip" class="side-grip" role="separator" aria-orientation="vertical"
+         tabindex="0" aria-label="Panel width"
+         title="Drag to set the panel width. Double-click resets it, arrow keys nudge it 16px.">
+      <button id="sideFold" class="side-fold" aria-label="Hide the panel"
+        title="Hide the panel and give the sheet the width (click again to bring it back)">&#10094;</button>
+    </div>
   </aside>
   <section id="stage">
     <canvas id="view"></canvas>
@@ -291,47 +809,237 @@
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>
     </div>
+    <!-- KBD-MAP-BEGIN (tests/test_kbd_overlay.js extracts this block)
+         Every row corresponds to a binding audited in webui/app.js at
+         provenance-and-gate 9737204 (2026-08-30); each group cites its
+         handler lines AT THAT REVISION. Single letters are held off while
+         a field has focus (typing(), app.js:11122) and the review handler
+         additionally ignores them with Ctrl/Cmd/Alt held (app.js:11129).
+         Undo (Ctrl+Z) and marquee (Shift+drag) landed in the same wave;
+         their bindings live in the UNDO-CORE / marquee blocks of app.js. -->
     <div id="kbdHelp" class="kbd-help" hidden>
       <div class="kh-title">Keyboard shortcuts</div>
+      <!-- Navigation: wheel zoom app.js:11242; pan / vertex-drag on
+           mousedown app.js:10324/10335; the layered Esc app.js:11179-11235 -->
+      <div class="kh-group">Navigation</div>
       <div class="kh-grid">
-        <kbd>M</kbd><span>Measure between points</span>
-        <kbd>S</kbd><span>Split selected line at last click</span>
-        <kbd>X</kbd><span>Cut a span out of selected line</span>
-        <kbd>E</kbd><span>Extend selected line</span>
-        <kbd>D</kbd><span>Draw new line in selected family</span>
-        <kbd>R</kbd><span>Reclassify line into another family</span>
-        <kbd>I</kbd><span>Isolate selected line's type (again to clear)</span>
-        <kbd>F</kbd><span>Faithful pattern rendering on/off</span>
+        <kbd>Scroll</kbd><span>Zoom at the cursor</span>
+        <kbd>Drag</kbd><span>Pan the sheet (drag a vertex dot to move that point)</span>
+        <kbd>&#8679;+drag</kbd><span>Multi-select: drag across lines — the box only has to touch them (drag again adds; Delete removes all; Esc clears)</span>
+        <kbd>Ctrl+click</kbd><span>Multi-select one at a time: a line on the sheet, or a whole family by its row in LINE STYLES (click again to take it out). The left rail swaps to the multi-handle toolkit</span>
+        <kbd>Esc</kbd><span>Layered: exit the armed tool first, then clear the multi-selection, the picked point, the selection, then isolate off</span>
+      </div>
+      <!-- Tools: M app.js:11136 (measureBtn app.js:10929); Enter finishes
+           draw app.js:11174, limit-of-work app.js:11499, structure
+           app.js:11523 (double-click same: 11238/11488/11477); Esc backs up
+           a point app.js:11198/11504/11528, cancels pickers
+           app.js:11192/7708/7627, finishes the work area app.js:11875 -->
+      <div class="kh-group">Tools</div>
+      <div class="kh-grid">
+        <kbd>M</kbd><span>Measure between clicked points (type a known dimension in the readout to calibrate the scale)</span>
+        <kbd>Enter</kbd><span>Finish the outline being drawn &mdash; draw line, limit of work, structure (double-click does the same)</span>
+        <kbd>Esc</kbd><span>While drawing: remove the last point, again to exit. While picking a line or dragging work-area boxes: put the tool away</span>
+      </div>
+      <!-- Editing (a line must be selected): S/X/E/D app.js:11146-11149,
+           R app.js:11170, J app.js:11165, Delete/Backspace app.js:11161
+           (removeSelected app.js:11092 - picked point first, else the line,
+           no-op with nothing selected) -->
+      <div class="kh-group">Editing &mdash; with a line selected</div>
+      <div class="kh-grid">
+        <kbd>S</kbd><span>Split the line where you clicked it</span>
+        <kbd>X</kbd><span>Cut a span out of the line</span>
+        <kbd>E</kbd><span>Extend the line to where you click next</span>
+        <kbd>D</kbd><span>Draw a new line in the same family</span>
+        <kbd>R</kbd><span>Reclassify into another family (click the target family)</span>
+        <kbd>J</kbd><span>Merge with the other half of the same run</span>
+        <kbd>Del / &#9003;</kbd><span>Delete the picked point, the whole line, or every multi-selected line (Ctrl+Z restores)</span>
+        <kbd>Ctrl+Z</kbd><span>Undo the last edit (Ctrl+Shift+Z or Ctrl+Y redoes)</span>
+      </div>
+      <!-- Panels &amp; view: I app.js:11150, F app.js:11137 (faithfulBtn
+           app.js:10922), L app.js:11138, ? app.js:11131 (Esc closes this
+           overlay first, app.js:11180; the ? toolkit button and
+           click-outside-closes are wired at the end of app.js) -->
+      <div class="kh-group">Panels &amp; view</div>
+      <div class="kh-grid">
+        <kbd>I</kbd><span>Isolate the selected line's family (again or Esc to clear)</span>
+        <kbd>F</kbd><span>Faithful rendering on/off &mdash; true dash patterns vs bold uniform strokes</span>
         <kbd>L</kbd><span>On-sheet legend on/off</span>
-        <kbd>&#9003;</kbd><span>Delete picked point, or whole line</span>
-        <kbd>Esc</kbd><span>Cancel tool / clear selection</span>
         <kbd>?</kbd><span>This help</span>
       </div>
-      <div class="kh-dim">Esc or ? closes</div>
+      <div class="kh-dim">Esc, ?, or a click outside closes</div>
     </div>
-    <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
+    <!-- KBD-MAP-END -->
+    <!-- First-open hint. One element, text only; app.js hides the whole
+         thing the moment a sheet renders ($("hint").style.display). -->
+    <div id="hint" class="hint">
+      <div class="hint-lead">Open a plan to begin &mdash; scroll to zoom, drag to pan</div>
+      <div class="hint-how">
+        <div><b>1</b>&ensp;Open &mdash; pick a sample, paste a path, or drop a PDF anywhere on this window</div>
+        <div><b>2</b>&ensp;Detect lines &mdash; every line family on the sheet becomes a measured row on the left</div>
+        <div><b>3</b>&ensp;Check &mdash; the CHECK THESE queue lists what the engine doubts most, worst first</div>
+        <div><b>4</b>&ensp;Approve &amp; export &mdash; sign the sheet off and download the takeoff</div>
+      </div>
+    </div>
+    <!-- Toolkit groups, separated by .tk-sep: measure | edit geometry
+         (split/extend/cut/draw) | family ops (reclass/merge/separate) |
+         delete | work area | view toggles + help. Button DOM order is
+         untouched - only separators were inserted.
+
+         THE SWAP (2026-09-01, Ctrl+click multi-select). The middle of the
+         rail is two groups in one slot: #tkSingle - every tool that acts on
+         ONE picked line - and #tkMulti, the multi-handle toolkit. Exactly
+         one of them is on screen; msSyncToolkit() in app.js flips them on
+         the size of state.multiSel and nothing else. Button DOM order,
+         ids, titles and separators inside #tkSingle are untouched, and the
+         four tools that are NOT about one line - measure, work area,
+         faithful rendering, keyboard help - sit OUTSIDE both groups and
+         never leave the rail, so a multi-selection cannot make them
+         unreachable. Esc (or Clear selection) empties the set and #tkSingle
+         comes straight back. -->
     <div class="toolkit">
-      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (M; Esc to finish)">&#128207;</button>
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet to read the distance (M; Esc to finish). Know the true dimension? Type it in the readout to calibrate the sheet scale."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)">&#9986;</button>
-      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)">&#10230;</button>
-      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)">&#9988;</button>
-      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)">&#9998;</button>
-      <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)">&#8644;</button>
-      <button id="mergeBtn" class="tk" title="Merge the selected line with another — click the other half of the same run (J)">&#128279;</button>
-      <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
-      <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
+      <div id="tkSingle" class="tk-group">
+      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.6 20 19M8.2 16.4 20 5"/></svg></button>
+      <button id="extendBtn" class="tk" title="Extend the selected line — click where it should reach, or click a point on its own body to branch a spur off it (E)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h14M13 6l6 6-6 6"/></svg></button>
+      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h5M16 12h5"/><path d="M10.5 12h3" stroke-dasharray="2 2.4"/></svg></button>
+      <button id="drawBtn" class="tk" title="Draw a line at any time — click points, double-click or Enter to finish. Snaps onto any line you cross; with nothing selected you pick the family at the end (D)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c4-1 2.5-4.5 6-6s6-4 8-9"/><path d="M4 20h4"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (F toggles bold uniform strokes)">&#9781;</button>
+      <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13M14 3l4 4-4 4M20 17H7M10 13l-4 4 4 4"/></svg></button>
+      <button id="mergeBtn" class="tk" title="Join the selected line to another — click an end to merge them into one run, or click anywhere on a line to tee into that exact point (J)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12a4 4 0 0 1 4-4h3M15 12a4 4 0 0 1-4 4H8"/><path d="M3 12h4M17 12h4"/></svg></button>
+      <button id="sepBtn" class="tk" title="Separate — name the selected line and give it its own row in the itemized takeoff, priced apart from its family (no shortcut key)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="8" y="15" width="13" height="5" rx="1.5"/><path d="M3 17.5h2.5"/></svg></button>
+      <span class="tk-sep"></span>
+      <button id="removeBtn" class="tk danger" title="Delete the picked point, or the whole selected line if no point is picked (Delete or Backspace). Removed lines leave the count; Reset edits brings them back."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+      </div>
+      <!-- THE MULTI-HANDLE TOOLKIT. Shown only while a multi-selection
+           exists. Titles are rewritten with the live scope ("… all 1,240
+           selected lines in 5 families — 12.4k LF") by msSyncToolkit()
+           every time the set changes, so every action states what it will
+           touch BEFORE it is pressed. -->
+      <div id="tkMulti" class="tk-group" hidden>
+      <button id="msNameBtn" class="tk" title="Name these as one item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7M4 10h5M4 14h7M4 18h5"/><path d="M13 8h7M13 8v8h7"/><rect x="19" y="10.5" width="3" height="3" rx=".8"/></svg></button>
+      <button id="msFamBtn" class="tk" title="Move all to a family"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13M14 3l4 4-4 4M20 17H7M10 13l-4 4 4 4"/></svg></button>
+      <button id="msColorBtn" class="tk" title="Change colour"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c-4.5 0-8 3.4-8 7.7 0 4 3 6.8 6.4 6.8 1.3 0 1.9.7 1.9 1.6 0 1 .8 1.9 1.9 1.9 3.2 0 5.8-3.1 5.8-7.3C20 6.6 16.5 3 12 3z"/><circle cx="8.2" cy="9.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.2" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.8" cy="9.4" r="1.1" fill="currentColor" stroke="none"/></svg></button>
+      <button id="msDelBtn" class="tk danger" title="Delete all selected lines"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg></button>
+      <button id="msClearBtn" class="tk" title="Clear the selection"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="2.5" stroke-dasharray="3 2.6"/><path d="m9 9 6 6M15 9l-6 6"/></svg></button>
+      </div>
+      <span class="tk-sep"></span>
+      <button id="wzBtn" class="tk" title="Work area &mdash; drag one or more boxes around the part of the sheet that counts. The takeoff lists (style rows, itemized rows, CSV, approve export) count only length inside your boxes; detection is untouched and Clear restores everything. The earthwork and trench calculators keep their own limit-of-work boundary and are not masked."><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2.6"/></svg></button>
+      <button id="wzClearBtn" class="tk danger" hidden title="Clear the work area &mdash; every line counts in full again"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="12" height="12" rx="2" stroke-dasharray="3 2.6"/><path d="m14.6 14.6 6.4 6.4M21 14.6l-6.4 6.4"/></svg></button>
+      <span class="tk-sep"></span>
+      <button id="faithfulBtn" class="tk active" title="Line rendering (F): ON draws every line with its true dash pattern and printed weight; OFF draws bold uniform strokes that are easier to see. Display only — no count or length changes."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h6M12 8h3M18 8h3M3 16h18"/></svg></button>
+      <button id="kbdBtn" class="tk" title="Keyboard shortcuts — every key and gesture the app answers to (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.2-1.5 2.4"/><circle cx="12" cy="18" r=".9" fill="currentColor" stroke="none"/></svg></button>
     </div>
     <div class="canvas-status">
       <span id="selInfo" class="tk-info"></span>
+      <!-- marquee multi-select readout: "N lines selected" + the bulk
+           actions. Built by renderMultiBar() in app.js; hidden whenever the
+           selection set is empty. -->
+      <span id="multiBar" class="tk-info multi-bar" hidden></span>
       <span id="measureInfo" hidden></span>
     </div>
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
+<!-- THE STATUS BAR (CRITIQUE fix 4). Two different kinds of message shared
+     one slot in the masthead and overwrote each other:
+
+       PERSISTENT sheet facts - "589 lines in 65 styles · scale graphic bar
+       0-60 ft over 144.0pt (1" = 30', ticks) (graphic-bar)" - which say what
+       is on screen and, crucially, HOW the scale was obtained. loadResult()
+       pushed that sentence through setStatus(), so the next "opening…" wiped
+       the app's single most important disclosure off the screen.
+
+       TRANSIENT messages - "detecting…", "upload failed", "removed X".
+
+     They are separate elements now. #sbSheet holds the persistent sentence,
+     rendered VERBATIM (same words, same order, same red when the drawn bar
+     contradicts the text scale) by renderSheetFacts(); #status keeps its id,
+     its class contract and all 194 setStatus() call sites and only changed
+     where it lives. It clips instead of wrapping, so a long message can no
+     longer grow the chrome and shrink the sheet.
+
+     It sits BELOW <main> rather than inside #stage on purpose: uploads,
+     opens and their failures are reported from the Projects and Settings
+     views too, and #stage is display:none under main.pv-open / main.sv-open.
+     The sheet facts hide themselves in those views (they describe a sheet
+     nobody is looking at); the transient line never does.
+
+     The de-emphasised utilities live on the right: Feedback, Feedback CSV,
+     saved work, remove-from-server, the signed-in account, Sign out, Terms,
+     Privacy. Every one is a MOVED node - same id, same handler, same title,
+     same `hidden` bookkeeping - one visual rank down from the masthead but
+     on screen in every view, never behind a menu. -->
+<div id="statusBar" class="status-bar">
+  <div id="sheetFacts" class="sb-facts"><span id="sbSheet" class="sb-seg"></span><span id="sbZoom" class="sb-seg sb-zoom" hidden title="How big this sheet's page raster is drawn on screen. The page is rasterized at 130 dpi and 100% means one raster pixel per CSS pixel, so this is a view setting only - no counted quantity depends on it."></span></div>
+  <div id="status" class="status"></div>
+  <div class="sb-util">
+    <button id="docRemoveBtn" class="danger" hidden>Remove from server</button>
+    <button id="memBtn" class="mem-btn" hidden></button>
+    <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
+    <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
+    <!-- #whoami and #signOutBtn MOVED from here to the Account section of
+         #settingsView. Same nodes, same ids, same loadWhoami() owner - the
+         signed-in account and the way to stop being signed in belong on the
+         page that is about the account, and the strip was already the
+         busiest row on screen. The Settings link in the brand block is one
+         click from every view. -->
+    <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
+    <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
+  </div>
+</div>
+<!-- THE ZONE MODAL. Opened when a grading-zone outline closes (or a zone
+     badge / edit button is clicked). The result block is LIVE - it calls
+     the zone endpoint, debounced, on every input - but seeing a number is
+     not consenting to it: nothing reaches the takeoff until the zone's own
+     "Add to takeoff" button in the panel list. Esc always cancels. -->
+<div id="gzModal" class="gz-modal" hidden>
+  <div class="gz-m-card">
+    <div class="gz-m-head">
+      <h2 id="gzMTitle">Zone</h2>
+      <button id="gzMClose" class="mini" title="Close without saving (Esc)">&#10005;</button>
+    </div>
+    <div class="gz-m-exist" id="gzMExist"></div>
+    <div class="gz-m-design">
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="pad" checked>
+        <span>Pad at</span>
+        <input id="gzPadElev" type="number" step="0.1" class="gz-num">
+        <span>ft</span></label>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="plane">
+        <span>Plane:</span>
+        <input id="gzPlElev" type="number" step="0.1" class="gz-num">
+        <span>ft at the zone centre, falling</span>
+        <input id="gzPlSlope" type="number" step="0.1" min="0" value="1.0" class="gz-num gz-sm">
+        <span>% toward</span>
+        <input id="gzPlAz" type="number" step="1" value="0" class="gz-num gz-sm">
+        <span>&deg;</span></label>
+      <div class="gz-m-note">Azimuth is measured clockwise from the top of the
+        sheet (0&deg; = up, 90&deg; = right). Reading the top of the sheet as
+        north is general drafting practice, not this sheet's own statement
+        &mdash; check its north arrow.</div>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="balance">
+        <span>Balance &mdash; solve the pad elevation where cut equals fill</span></label>
+      <label class="gz-m-row"><input type="radio" name="gzMode" value="strip_only">
+        <span>Strip only &mdash; no design surface, just the strip volume</span></label>
+    </div>
+    <div class="gz-m-strip">
+      <label for="gzStrip">Topsoil strip</label>
+      <input id="gzStrip" type="number" min="0" step="1" class="gz-num gz-sm">
+      <span>in</span>
+      <span class="gz-m-note" id="gzStripWhy"></span>
+    </div>
+    <div class="gz-m-live" id="gzMLive"></div>
+    <div class="gz-m-actions">
+      <button id="gzMSave">Save zone</button>
+      <button id="gzMCancel" class="mini">Cancel</button>
+      <span class="gz-m-note">Saving keeps the zone on this sheet; it reaches
+        the priced takeoff only via its own &ldquo;Add to takeoff&rdquo; in the
+        panel list.</span>
+    </div>
+  </div>
+</div>
 <datalist id="legendVocab"></datalist>
-<script src="app.js?v=87"></script>
+<script src="ew_defaults.js?v=1"></script>
+<script src="app.js?v=143"></script>
 </body>
 </html>

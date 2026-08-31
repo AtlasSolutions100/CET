@@ -47,7 +47,23 @@ def _is_usable_label(t: str) -> bool:
     Two letters in a row is the whole test - it admits "PVC" and "4in" and
     rejects chevrons, arrowheads and dimension fragments.
     """
-    return bool(_WORDS.search(t or ""))
+    t = t or ""
+    # A trailing colon is a form-field caption or a section header
+    # ("Field Book No:", "FINAL GRADING NOTES:"), never the name of a thing
+    # that gets built. C9.0's title block matched "Field Book No:" to real
+    # linework through a table rule sitting in the strip.
+    if t.rstrip().endswith(":"):
+        return False
+    return bool(_WORDS.search(t))
+
+
+# "BOW = BOTTOM OF WALL", "C/O = CLEANOUT", "FFE = FINISHED FLOOR ELEVATION":
+# a short all-caps tag, an equals sign, then words. The shape of a definition
+# row in a spot-elevation or abbreviation table. A LINE-legend row is a drawn
+# sample beside a NAME ("SS SS PROPOSED SANITARY SEWER LINE"); it does not
+# need an equals sign, and the corpus's genuine inline "=" definitions
+# ("### = SHEAR WALL") arrive through the inline path with its own guards.
+_DEF_ROW = re.compile(r"^[A-Z][A-Z0-9]{0,3}(?:/[A-Z0-9]{1,3})?\s*=\s")
 
 
 def _assign_label(store: dict, sid, label: str) -> None:
@@ -120,6 +136,25 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 ws = ws[1:]
             if not ws:
                 continue
+            # The label is the word run NEAREST the sample strip. The row
+            # bucket spans the whole legend region's width, so a legend row
+            # and the title-block column at the same height glue into one
+            # string - C9.0 shipped "VALLEY GUTTER C COPYRIGHT 2025" that
+            # way. A column boundary is a gap no phrase contains: words
+            # within a run sit a few pt apart, columns sit tens of pt apart.
+            runs = [[ws[0]]]
+            for prev, w in zip(ws, ws[1:]):
+                if w[0] - prev[2] > 28.0:
+                    runs.append([])
+                runs[-1].append(w)
+            ws = runs[0]
+            # An index-contour row prints its NUMBER riding the sample bar,
+            # a bar-width gap before the words: "7900   EXISTING CONTOUR
+            # INTERVAL". A first run with no two letters in a row is not a
+            # name by itself - join the next run rather than orphan the row.
+            if len(runs) > 1 and not _is_usable_label(
+                    " ".join(str(w[4]).strip() for w in ws)):
+                ws = ws + runs[1]
             label = " ".join(str(w[4]).strip() for w in ws).strip()
             if not (3 <= len(label) <= 60):
                 continue
@@ -139,7 +174,21 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 alt = _sample_from_units(units, x0 - SAMPLE_W, x0 - 4.0, cy)
                 if alt and alt.get("swatch_template"):
                     sample["swatch_template"] = alt["swatch_template"]
-            entries.append({"label": label, "sample_box": _sbox, **sample})
+            # A row shaped "TAG = LONG NAME" is an ABBREVIATION DEFINITION -
+            # the vocabulary a spot-elevation or callout table teaches - not
+            # a line type. Its "sample" here is usually whatever plan
+            # linework happens to cross the strip left of the table: on Barn
+            # C3.0 the existing-contour family itself (grey d9.0 g4.5, 105
+            # chains, 87,441 pt) satisfied the 60%-containment test with a
+            # short near-horizontal fragment and was named "BOW = BOTTOM OF
+            # WALL", while the sheet's real "EXISTING CONTOUR" row went
+            # unmatched because BOW had already claimed the style. The flag
+            # keeps the row VISIBLE as vocabulary but bars it from labeling
+            # any style below. A definition with a genuinely dedicated
+            # swatch is the self-join shape, which is already handled.
+            entries.append({"label": label, "sample_box": _sbox,
+                            "definition": bool(_DEF_ROW.match(label)),
+                            **sample})
 
     # inline "SWATCH = NAME" definitions: sheets without a LEGEND box
     # define a symbol in place ("### = SHEAR WALL", Belle Structural p2).
@@ -243,6 +292,8 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
     for e in entries:
         if e.get("sample_style") is not None:
             continue
+        if e.get("definition"):
+            continue   # vocabulary row: never hunt a plan style for it
         best = None
         best_key = None
         for sid, r in reps.items():
@@ -396,6 +447,12 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
             curvy_cache[sid] = bool(ratios) and float(np.median(ratios)) >= 1.3
         return curvy_cache[sid]
     for e in entries:
+        if e.get("definition"):
+            # An abbreviation definition never labels linework, however
+            # plausible the strip sample looked. Honest unmatched beats
+            # 36,434 ft of existing contours named after a spot tag.
+            e["sample_style"] = None
+            continue
         distinctive = (
             e["klass"].startswith("dash")
             or (e["color"] and max(e["color"]) - min(e["color"]) > 0.15)
@@ -450,7 +507,121 @@ def read_legend(words: list, chains: list, units: list | None = None) -> dict:
                 if r.color and max(abs(a - b) for a, b in
                                    zip(base.color, r.color)) <= 0.2:
                     _assign_label(style_labels, sid, e["label"])
+    _extend_by_continuation(style_labels, chains)
     return {"entries": entries, "style_labels": style_labels}
+
+
+def _extend_by_continuation(style_labels: dict, chains: list) -> None:
+    """A labeled line that BREAKS mid-run keeps its name across the break.
+
+    The chainer sometimes reads one physical line as two styles: on Barn C3.0
+    the grey existing contours (d9.0 g4.5) continue end-to-end into a sibling
+    style reading d9.0 g44.3 - same 9pt dashes, gaps read one-dash-sparse -
+    11 chains / 14,343 pt (5,976 ft at 1"=30') of contour footage that would
+    otherwise sit unlabeled, invisible to the earthwork panel's contour
+    suggestions, under a machine name.
+
+    Evidence gates, all three required, measured against the smear cases:
+      * >= 2 joints - chain ends within 12 pt, outgoing tangents opposed
+        (dot < -0.6): geometric continuation, not proximity
+      * joints >= 0.25 x the target style's chain count - a 174-chain
+        generic-solid pool with 3 incidental joints must NOT inherit the
+        name (that is the Oncor masonry smear with extra steps); a small
+        fragment family with joints on a quarter of its chains is the same
+        physical line
+      * colors within 0.15 per channel, and never onto annotation class
+    Label-layer only: no geometry, class or quantity moves.
+    """
+    from scipy.spatial import cKDTree
+
+    labeled = set(style_labels)
+    if not labeled:
+        return
+    by_sid: dict = defaultdict(list)
+    for c in chains:
+        by_sid[c.style_id].append(c)
+
+    def _ends(c):
+        p = np.asarray(c.pts, float)
+        if len(p) < 2:
+            return []
+        out = []
+        for a, b in ((p[1], p[0]), (p[-2], p[-1])):
+            v = b - a
+            n = float(np.hypot(*v))
+            if n > 0:
+                out.append((b, v / n))
+        return out
+
+    src_pts, src_dirs = [], []
+    for sid in labeled:
+        for c in by_sid.get(sid, ()):
+            for pt, tv in _ends(c):
+                src_pts.append(pt)
+                src_dirs.append((sid, tv))
+    if not src_pts:
+        return
+    tree = cKDTree(np.asarray(src_pts))
+
+    joints: dict = defaultdict(int)
+    for sid, cs in by_sid.items():
+        if sid in labeled or not cs or cs[0].klass == "annotation":
+            continue
+        for c in cs:
+            # count per END, up to two per chain: a fragment whose BOTH ends
+            # continue into the labeled family is sandwiched inside the same
+            # physical line - the strongest evidence, not double counting
+            for pt, tv in _ends(c):
+                for k in tree.query_ball_point(pt, 12.0):
+                    ssid, stv = src_dirs[k]
+                    if float(tv @ stv) < -0.6:
+                        joints[(sid, ssid)] += 1
+                        break
+
+    import re as _re
+
+    def _dg(c):
+        m = _re.match(r"d([\d.]+) g([\d.]+)", c.dash_signature or "")
+        return (float(m.group(1)), float(m.group(2))) if m else None
+
+    def _sparse_kin(cs, ssid):
+        """Same physical linetype read one-dash-sparse by the chainer.
+
+        Barn C3.0: existing contours are d9.0 g4.5 (period 13.5); their broken
+        siblings read d9.0 g44.3 - the same 9pt dashes with the gap spanning
+        an integer number of periods minus one dash ((44.3+9.0)/13.5 = 3.95).
+        Demands: dash within 10%, color within 0.1, and gap+dash an integer
+        multiple (2..6) of the parent period within 15%. This is cadence
+        arithmetic, not proximity - a different linetype cannot satisfy it by
+        accident and a generic solid pool has no cadence at all.
+        """
+        a, b = (by_sid[ssid] or [None])[0], cs[0]
+        if a is None or not a.klass.startswith("dash")                 or not b.klass.startswith("dash"):
+            return False
+        da, db = _dg(a), _dg(b)
+        if not da or not db:
+            return False
+        if abs(da[0] - db[0]) > 0.10 * max(da[0], db[0]):
+            return False
+        if a.color and b.color and                 max(abs(x - y) for x, y in zip(a.color, b.color)) > 0.10:
+            return False
+        period = da[0] + da[1]
+        k = (db[1] + db[0]) / period
+        return 2.0 <= k <= 6.0 and abs(k - round(k)) <= 0.15
+
+    for (sid, ssid), n in sorted(joints.items(), key=lambda kv: -kv[1]):
+        if sid in style_labels:
+            continue
+        cs = by_sid[sid]
+        if n < 2:
+            continue
+        if n < 0.25 * len(cs) and not _sparse_kin(cs, ssid):
+            continue
+        a = cs[0].color
+        b = (by_sid[ssid] or [None])[0]
+        if a and b is not None and b.color and                 max(abs(x - y) for x, y in zip(a, b.color)) > 0.15:
+            continue
+        _assign_label(style_labels, sid, style_labels[ssid])
 
 
 def read_legend_sheet(words: list, chains: list) -> list:
@@ -587,11 +758,36 @@ def read_legend_sheet(words: list, chains: list) -> list:
 
 def _sample_from_units(units: list, x0: float, x1: float, cy: float):
     """Cadence of a legend swatch read straight from its raw marks."""
+    # A mark contributes only if it LIVES in the strip - >=95% of its points
+    # inside the (slightly widened) box - not merely if its centroid lands
+    # here. The old centroid test admitted plan strokes CROSSING the legend
+    # region: on Barn C3.0 the strips beside the spot-elevation table and the
+    # grading notes hold fragments of the grey existing-contour family, and
+    # their cadence read as a plausible dash swatch, which is how
+    # "DRAINAGE DIRECTION/SLOPE 2.0%" and a numbered note came to label
+    # 87,441 pt of contours. A drawn swatch mark is always fully local - it
+    # exists to sit beside its label.
+    def _local(u):
+        m = (u.pts[:, 0] >= x0 - 4.0) & (u.pts[:, 0] <= x1 + 4.0)             & (np.abs(u.pts[:, 1] - cy) <= SAMPLE_H + 4.0)
+        return float(m.mean()) >= 0.95
     strip = [u for u in units
              if x0 < float(u.pts[:, 0].mean()) < x1
              and abs(float(u.pts[:, 1].mean()) - cy) <= SAMPLE_H
-             and u.length >= 1.0 and not u.closed]
+             and u.length >= 1.0 and not u.closed and _local(u)]
     if len(strip) < 3:
+        return None
+    # A linetype swatch is a HANDFUL of bars - the corpus's genuine samples
+    # run 3-15 marks over a 30-110pt strip. A strip holding dozens of
+    # sub-2pt marks is a TEXTURE field: on Barn C3.0 the strips beside the
+    # notes column hold 300+ dots of SE-P-GRAVEL HATCH stipple at ~1.6pt
+    # each, and their "cadence" (avg 2.1) matched the grey contour family,
+    # which is how "DRAINAGE DIRECTION/SLOPE 2.0%" came to name 105 chains
+    # of existing contours. Texture is what the junk pruner exists to
+    # remove from chains; the raw-unit path needs the same refusal.
+    if len(strip) > 24:
+        return None
+    _lens0 = [float(u.length) for u in strip]
+    if len(strip) >= 12 and float(np.median(_lens0)) < 2.0:
         return None
     strip.sort(key=lambda u: float(u.pts[:, 0].min()))
     lens = [float(u.length) for u in strip]
@@ -692,9 +888,21 @@ def _sample_in_strip(chains: list, x0: float, x1: float, cy: float,
         # one chain = one x-span; the chain's own measured template IS the
         # swatch cadence (it is the swatch, drawn in paper space)
         tpl = list(rep.template)
+    # How much of the winning chain actually lives in the strip. A drawn
+    # swatch bar is FULLY contained (it exists to sit beside its label); a
+    # fragment of plan linework crossing the legend region clears the 60%
+    # gate above while its tail wanders off into the drawing. The caller
+    # uses this to refuse exact joins from passers-by.
+    _rp = np.asarray(rep.pts)
+    _rm = (_rp[:, 0] >= x0 - 4.0) & (_rp[:, 0] <= x1 + 4.0)         & (np.abs(_rp[:, 1] - cy) <= SAMPLE_H + 4.0)
+    if float(_rm.mean()) < 0.95:
+        # the winner is a passer-by, not a drawn swatch: no sample at all
+        # beats characterizing plan linework as a legend row's bar
+        return None
     return {
         "klass": rep_klass,
         "color": rep.color,
+        "contained": float(_rm.mean()),
         "weight": _weight_class(rep.width),
         "avg_dash": (rep.ink or rep.length) / max(rep.n_dashes, 1),
         "swatch_template": [round(v, 1) for v in tpl] if len(tpl) >= 2 else None,

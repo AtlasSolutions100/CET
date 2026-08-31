@@ -1405,7 +1405,22 @@ def detect_marks(pdf_path: str, page: int, vocab: list[str] | None = None,
     # repeated symbol, it just cannot be a mark from this schedule.
     need = CHAR_PX * (dpi / 300.0) * max(len(v) for v in vocab) + 8
     small = [f for f in fams if f[0] < need]
-    fams = [f for f in fams if f[0] >= need][:max_families]
+    big = [f for f in fams if f[0] >= need]
+    fams = big[:max_families]
+    # A silent cap reports as full coverage: the audit measured 44 marks at
+    # this default vs 49 with the cap raised, BOTH runs presenting as
+    # complete. The cap stays (each family costs a build + tag scan + up to
+    # MAX_GROUP_READS OCR reads), but what it cut is now on the record so
+    # an operator - or a raised max_families call - knows to look.
+    if len(big) > max_families:
+        cut = big[max_families:]
+        mp.notes.append(
+            f"{len(cut)} more repeated-symbol famil"
+            f"{'y' if len(cut) == 1 else 'ies'} big enough to hold a mark "
+            f"({', '.join(f'{f[0]}x{f[1]}px' for f in cut[:4])}) "
+            f"{'was' if len(cut) == 1 else 'were'} NOT checked against the "
+            f"schedule (family cap {max_families}) - their symbols are not "
+            f"in these counts")
     if small:
         mp.notes.append(
             f"{len(small)} smaller repeated symbol famil"

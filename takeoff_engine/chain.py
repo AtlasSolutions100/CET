@@ -16,6 +16,7 @@ Classes emitted:
 """
 
 import re
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -62,6 +63,33 @@ class LineChain:
     style_id: int = -1
     layer: str = ""
     ink: float = 0.0  # stroke length excluding gaps; 0 -> use length
+    # --- provenance of `length` -----------------------------------------
+    # `length` is not all measured ink, and until now nothing recorded which
+    # part was not. Three passes inflate it: _stitch_across_styles and the
+    # merge below weld members together and BILL THE GAPS BETWEEN THEM;
+    # _pickup_end_marks adds a mark that may already belong to another chain,
+    # plus its approach gap; _join_chain_ends adds the join gap. A chain that
+    # cannot say how much of itself is blank paper makes recall and ink
+    # capture ungateable, because both clamp at 1.0 and duplicated ink raises
+    # them - see takeoff_engine/regress.py _check().
+    #
+    #   measured ink  ==  length - gap_pt - pickup_pt
+    #
+    # gap_pt     blank paper inside `length`: stitch gaps, join gaps, and the
+    #            approach gap of a picked-up mark. Never real ink.
+    # pickup_pt  ink picked up from elsewhere on the sheet. Real ink, but it
+    #            may also be counted by the chain it came from, so it is the
+    #            double-count candidate.
+    gap_pt: float = 0.0
+    pickup_pt: float = 0.0
+    # The drafter's OWN name for this line: the short code CAD prints inside
+    # the gaps of the linework itself (OHE, EX-SS, EX-FO). Deliberately NOT
+    # label_texts - _mark_glyph_text_chains assigns that field unconditionally
+    # with synthetic blob ids (`c.label_texts = [top] * n_top`), so a real word
+    # placed there can be overwritten by a placeholder, the first-writer-wins
+    # shape CLAUDE.md section 5 warns about. Kept separate so neither clobbers
+    # the other.
+    inline_labels: list = field(default_factory=list)
     template: list = None  # one period as [dash, gap, dash, gap, ...] -
                            # the RENDERABLE truth. The signature compresses
                            # to length-classes (d9 d45 g9), which cannot say
@@ -90,6 +118,9 @@ class LineChain:
             "label_texts": self.label_texts,
             "style_id": self.style_id,
             "ink_pt": round(self.ink or self.length, 2),
+            "gap_pt": round(self.gap_pt, 2),
+            "pickup_pt": round(self.pickup_pt, 2),
+            "inline_labels": list(self.inline_labels),
             "template": [round(float(v), 2) for v in self.template]
             if self.template else None,
             "seg_counts": [int(n) for n in self.seg_counts]
@@ -691,12 +722,49 @@ def _leader_annotation_units(units: list) -> set:
     return leaders
 
 
+# What each stage threw away, and why. Filled by build_chains and read back
+# through last_drop_ledger(); detect_page puts it in the result JSON.
+#
+# Every one of these was an unconditional delete with no record. A sheet could
+# lose a real dashed line to the hatch pruner or a short run to a minimum-gate
+# and nothing anywhere counted it, so "the last 2%" had no denominator and no
+# decomposition - every claim about detection completeness was unfalsifiable.
+# Counting is not fixing, but nothing can be fixed while it is invisible.
+# THREAD-LOCAL, not a module global. server.py runs detection on worker
+# threads (the detect-scheduler at server.py:1008), so two pages can be inside
+# build_chains at once in one process; a shared dict would interleave their
+# ledgers and report both sheets' drops on whichever finished last.
+_DROP_TLS = threading.local()
+
+
+def _drops() -> dict:
+    d = getattr(_DROP_TLS, "d", None)
+    if d is None:
+        d = _DROP_TLS.d = {}
+    return d
+
+
+def _drop(reason: str, n: int, ink: float = 0.0) -> None:
+    if not n:
+        return
+    e = _drops().setdefault(reason, {"n": 0, "ink": 0.0})
+    e["n"] += int(n)
+    e["ink"] += float(ink)
+
+
+def last_drop_ledger() -> dict:
+    """Drop ledger for the most recent build_chains call ON THIS THREAD."""
+    return {k: {"n": v["n"], "ink": round(v["ink"], 2)}
+            for k, v in sorted(_drops().items())}
+
+
 def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[LineChain]:
     """Main entry: stroke units -> classified line chains.
 
     words: optional page text words as (x0, y0, x1, y1, text) tuples for
     dash-text-dash bridging.
     """
+    _drops().clear()
     units = list(units)  # local copy: X-mark repair appends synthetic units
     units = _merge_twin_strokes(units)
     units = _merge_collinear_overlaps(units)
@@ -734,9 +802,15 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
         dash_cand = [i for i in plain if units[i].length <= DASH_MAX_LEN and not units[i].closed]
         _glyphs, _blobs = _glyph_blobs(units, dash_cand)
         if _glyphs:
+            _drop("glyph_blob", sum(1 for i in dash_cand if i in _glyphs),
+                  sum(units[i].length for i in dash_cand if i in _glyphs))
             dash_cand = [i for i in dash_cand if i not in _glyphs]
             glyph_blobs.extend(_blobs)
+        _xn = len(dash_cand)
+        _xink = sum(units[i].length for i in dash_cand)
         dash_cand = _strip_x_marks(units, dash_cand)
+        _drop("x_mark", _xn - len(dash_cand),
+              _xink - sum(units[i].length for i in dash_cand))
         solid_cand = [i for i in plain if units[i].length > DASH_MAX_LEN or units[i].closed]
 
         # stipple textures: fields of thousands of dots (concrete/gravel
@@ -750,6 +824,8 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
             centers = np.array([(units[i].pts[0] + units[i].pts[-1]) / 2 for i in dots])
             counts = cKDTree(centers).query_ball_point(centers, 6.0, return_length=True)
             crowded = {i for i, cnt in zip(dots, counts) if cnt > 5}
+            _drop("crowded_dot", sum(1 for i in dash_cand if i in crowded),
+                  sum(units[i].length for i in dash_cand if i in crowded))
             dash_cand = [i for i in dash_cand if i not in crowded]
 
         # 2) chain the dash candidates. Search radius adapts to the group's
@@ -1003,6 +1079,8 @@ def build_chains(units: list[StrokeUnit], words: list | None = None) -> list[Lin
     if words:
         _demote_text_chains(chains, words)
 
+    if words:
+        _attach_inline_labels(chains, words)
     _assign_styles(chains)
     return chains
 
@@ -2383,6 +2461,9 @@ def _stitch_across_styles(chains: list) -> list:
         base.pts = pts
         base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
+        base.gap_pt = float(sum(gaps)) + float(
+            sum(cands[k].gap_pt for k, _ in seq))
+        base.pickup_pt = float(sum(cands[k].pickup_pt for k, _ in seq))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
         for k, _ in seq:
@@ -2582,6 +2663,9 @@ def _join_chain_ends(chains: list) -> list:
         base.pts = pts
         base.seg_counts = segs
         base.length = float(sum(member_lens) + sum(gaps))
+        base.gap_pt = float(sum(gaps)) + float(
+            sum(cands[k].gap_pt for k, _ in seq))
+        base.pickup_pt = float(sum(cands[k].pickup_pt for k, _ in seq))
         base.ink = float(sum((cands[k].ink or cands[k].length) for k, _ in seq))
         base.n_dashes = sum(cands[k].n_dashes for k, _ in seq)
         for k, _ in seq:
@@ -2860,6 +2944,8 @@ def _pickup_end_marks(group_chains: list, units: list, dash_cand: list,
                     if c.seg_counts is not None:
                         c.seg_counts = c.seg_counts + [len(seg)]
                 c.length += u.length + d
+                c.pickup_pt += u.length   # may belong to another chain too
+                c.gap_pt += d             # the approach, always blank paper
                 c.ink = (c.ink or 0.0) + u.length
                 c.n_dashes += 1
                 used.add(i)
@@ -3072,6 +3158,75 @@ def _chain_closed(c) -> bool:
     return float(np.hypot(*(pts[0] - pts[-1]))) <= max(2.0, 0.02 * c.length)
 
 
+# A short code the drafter printed along a line IS that line's name, and it
+# is the highest-authority name available - better than a legend guess and far
+# better than a machine signature like "dash1 d184.4 g25.6".
+#
+# _bridge_text already sees these words, but only as a MERGE trigger: it
+# records one when it welds two dashed chains across a label, which needs both
+# sides to exist as separate chains and to agree on colour, width and layer. A
+# label sitting mid-chain, or on a solid line, records nothing. Measured on
+# Oncor engine page index 3 = printed sheet C-04: the page prints 43 inline
+# utility codes (OHE x18, EX-FO x9, EX-W x9, EX-SS x6, EX-CABLE x1), ALL 43
+# lie within 15 pt of a detected chain vertex - 19 of them within 6 pt - and
+# _bridge_text captured real words on just 4 chains.
+#
+# So this is a separate, purely additive pass: it attaches, it never merges,
+# never reclassifies and never changes a length. Reading the name is a
+# different job from deciding the geometry, and conflating them is why 39 of
+# 43 names were lost.
+_INLINE_CODE = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$")
+
+# Utility size-tokens: 8"SS, E8"W, 12"SD, 6"FM. The letter-first rule above
+# rejects them twice over (leading digit, inch tick), yet on the Kayden
+# family they are the ONLY thing that separates the proposed sewer main
+# from every other heavy solid - the legend itself prints the token inside
+# the sample line, and the layer table is one flattened xref. Optional
+# E/EX- prefix (existing), 1-2 size digits, an inch mark (double prime,
+# typographic or straight), then a 1-2 letter utility code. The code list
+# is closed on purpose: W, SS, SD, FM, G, WL, SL are the codes the corpus
+# prints; an open [A-Z]{1,2} would admit dimension text like 8"X.
+_INLINE_SIZE = re.compile(
+    r"^(?:EX?-?)?\d{1,2}[\"″”]?(?:W|SS|SD|FM|G|WL|SL)$")
+
+
+def _attach_inline_labels(chains: list, words: list, radius: float = 15.0) -> None:
+    """Record the drafter's inline codes on the chain each one sits on."""
+    from scipy.spatial import cKDTree
+
+    cand = []
+    for w in words:
+        t = str(w[4]).strip().upper()
+        # a CODE, not prose and not a number: short, and either the
+        # letter-first shape or a utility size-token; no lowercase
+        # survived the upper() comparison below
+        if not (1 <= len(t) <= 8) or not (_INLINE_CODE.match(t)
+                                          or _INLINE_SIZE.match(t)):
+            continue
+        if t != str(w[4]).strip():      # it was lowercase/mixed: prose, not a code
+            continue
+        cand.append((t, (float(w[0]) + float(w[2])) / 2.0,
+                     (float(w[1]) + float(w[3])) / 2.0))
+    if not cand:
+        return
+
+    pts, owner = [], []
+    for c in chains:
+        if c.klass == "annotation":
+            continue
+        for q in c.pts:
+            pts.append((float(q[0]), float(q[1])))
+            owner.append(c)
+    if not pts:
+        return
+    tree = cKDTree(np.asarray(pts))
+    for t, x, y in cand:
+        d, i = tree.query([x, y], distance_upper_bound=radius)
+        if not np.isfinite(d):
+            continue
+        owner[int(i)].inline_labels.append(t)
+
+
 def _bridge_text(chains: list, words: list) -> list:
     """Merge dashed chains separated by an inline text label (e.g. - SD -).
 
@@ -3208,7 +3363,10 @@ def _merge_into(a, b, a_end, b_end, text):
     a.seg_counts = a_sc + b_sc if (a_sc is not None and b_sc is not None) \
         else None
     a.pts = np.vstack([a_pts, b_pts])
-    a.length += b.length + float(np.hypot(*(b_pts[0] - a_pts[-1])))
+    _join_gap = float(np.hypot(*(b_pts[0] - a_pts[-1])))
+    a.length += b.length + _join_gap
+    a.gap_pt += b.gap_pt + _join_gap
+    a.pickup_pt += b.pickup_pt
     a.ink = (a.ink or 0.0) + (b.ink or b.length)
     a.n_dashes += b.n_dashes
     if text:

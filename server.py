@@ -30,9 +30,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from takeoff_engine import branding as _branding
+from takeoff_engine import ledger
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
-from takeoff_engine.detect_page import error_path, result_path, run_detect
+from takeoff_engine.detect_page import (error_path, read_sheet_number,
+                                        result_path, run_detect)
 from takeoff_engine.extract import extract_strokes, page_words
 from takeoff_engine.marks import read_mark_schedule
 from takeoff_engine.scale_detect import detect_scale
@@ -83,6 +86,131 @@ def _under_roots(p: Path) -> bool:
         except ValueError:
             continue
     return False
+
+
+def _axis_len_pt(points, ratio: float, length_pt: float) -> float:
+    """`length_pt` re-measured as if the two axes carried different scales.
+
+    Mirrors chainLenPt() in webui/app.js exactly, including the reason it
+    SCALES rather than recomputes: length_pt is not the polyline length of
+    `points`. A chain that picks up across a gap adds that gap to its length
+    without adding a leg, and on Kayden Springs p39 that makes 515 of 682
+    chains differ, one by 17.8%. Rebuilding the length from points would drop
+    every one of those gaps the moment a vertical scale was applied.
+
+    So take the ratio the axes change the geometry by, and apply it to the
+    length the engine already measured. ratio == 1.0 returns length_pt exactly.
+    """
+    if ratio == 1.0 or len(points) < 2:
+        return length_pt
+    plain = axis = 0.0
+    for i in range(1, len(points)):
+        dx = points[i][0] - points[i - 1][0]
+        dy = points[i][1] - points[i - 1][1]
+        plain += math.hypot(dx, dy)
+        axis += math.hypot(dx, dy * ratio)
+    if plain <= 0:
+        return length_pt
+    return length_pt * (axis / plain)
+
+
+def _wz_norm(zones) -> list:
+    """Work-area rectangles off the wire: junk rows dropped, corners
+    sorted, zero-area boxes refused. Mirrors wzNorm() in webui/app.js."""
+    out = []
+    for z in zones or []:
+        try:
+            x0, y0, x1, y1 = float(z[0]), float(z[1]), float(z[2]), float(z[3])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+            continue
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        if x1 - x0 <= 0 or y1 - y0 <= 0:
+            continue
+        out.append((x0, y0, x1, y1))
+    return out
+
+
+def _wz_pt_in(x, y, zones) -> bool:
+    return any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in zones)
+
+
+def _wz_seg_t(ax, ay, bx, by, zones) -> float:
+    """Fraction of segment a->b inside the UNION of rects, as merged
+    t-intervals in [0,1]. Mirrors wzSegT() in webui/app.js exactly: the
+    export must clip precisely as the panel the operator approved from,
+    or the approved number and the exported number silently diverge.
+    Exact axis-aligned slab clipping - never midpoint voting."""
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return 1.0 if _wz_pt_in(ax, ay, zones) else 0.0
+    iv = []
+    for z in zones:
+        t0, t1 = 0.0, 1.0
+        if dx == 0:
+            if ax < z[0] or ax > z[2]:
+                continue
+        else:
+            ta, tb = (z[0] - ax) / dx, (z[2] - ax) / dx
+            if ta > tb:
+                ta, tb = tb, ta
+            t0, t1 = max(t0, ta), min(t1, tb)
+        if dy == 0:
+            if ay < z[1] or ay > z[3]:
+                continue
+        else:
+            ta, tb = (z[1] - ay) / dy, (z[3] - ay) / dy
+            if ta > tb:
+                ta, tb = tb, ta
+            t0, t1 = max(t0, ta), min(t1, tb)
+        if t1 > t0:
+            iv.append((t0, t1))
+    if not iv:
+        return 0.0
+    iv.sort()
+    total, (s, e) = 0.0, iv[0]
+    for a2, b2 in iv[1:]:
+        if a2 <= e:
+            e = max(e, b2)
+        else:
+            total += e - s
+            s, e = a2, b2
+    total += e - s
+    return total
+
+
+def _wz_frac(points, zones, ratio: float = 1.0) -> float:
+    """Fraction of a chain's (axis-weighted) polyline inside the work-area
+    union. Mirrors wzChainFrac()/wzPolyInsideLen() in webui/app.js: the
+    inside PORTION is decided in true page space, the LENGTH each piece
+    contributes is axis-weighted, and the exported quantity is the engine
+    length scaled by this fraction - welded pickup gaps are apportioned,
+    never re-measured, so a zone covering the whole sheet returns the
+    engine's own number exactly."""
+    if not zones:
+        return 1.0
+    if not points:
+        return 0.0
+    if len(points) < 2:
+        return 1.0 if _wz_pt_in(points[0][0], points[0][1], zones) else 0.0
+    inside = total = 0.0
+    for i in range(1, len(points)):
+        ax, ay = points[i - 1][0], points[i - 1][1]
+        bx, by = points[i][0], points[i][1]
+        seg = math.hypot(bx - ax, (by - ay) * ratio)
+        if seg <= 0:
+            continue
+        total += seg
+        t = _wz_seg_t(ax, ay, bx, by, zones)
+        if t > 0:
+            inside += t * seg
+    if total <= 0:
+        return 1.0 if _wz_pt_in(points[0][0], points[0][1], zones) else 0.0
+    return inside / total
 
 
 def _client_pdf(raw: str) -> Path:
@@ -202,7 +330,11 @@ if True:
     # Terms and Privacy must be readable BEFORE anyone signs in - a policy you
     # can only see once you have already accepted it is not a policy. They pull
     # legal.css and the logo, so those are public too, and nothing else is.
+    # The site mark: /favicon.ico was already public, but the SVG and the
+    # apple-touch PNG were not, so the login page - the one page every user
+    # sees before any of this matters - fell back to a blank tab icon.
     _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico",
+               "/favicon.svg", "/favicon-32.png", "/favicon-180.png",
                "/terms", "/terms.html", "/privacy", "/privacy.html",
                "/legal.css", "/lockup-animated.svg"}
 
@@ -213,7 +345,8 @@ if True:
     # were told.
     _RESET_OK = {"/change-password", "/change-password.html",
                  "/api/change-password", "/api/me", "/api/logout",
-                 "/api/beta-notice", "/favicon.ico"}
+                 "/api/beta-notice", "/favicon.ico", "/favicon.svg",
+                 "/favicon-32.png", "/favicon-180.png"}
 
     # Crude per-IP throttle. Twenty known accounts on one box does not warrant
     # a real rate limiter, but it should not be a free password oracle either.
@@ -401,6 +534,50 @@ def _is_staff(request: Request) -> bool:
     single-password mode too, where there is nothing to separate."""
     return bool(request.scope.get("tk_staff")) or _who(request) is None
 
+
+# ---------------------------------------------------------------------------
+# BRANDING. The one Settings value that is not a browser preference, because
+# the thing it brands (report_pdf, below) is generated on the server. See
+# takeoff_engine/branding.py for why it is stored per account rather than
+# once per install.
+#
+# Both fields are OPTIONAL with a safe default, so a client that predates
+# this endpoint - or one that only knows about `company` - still works: it
+# posts what it has, the missing field reads as "" and the record is
+# rewritten without it. Nothing here can 404 or 500 a box that has never
+# been branded; the blank record is a legitimate answer.
+class BrandingBody(BaseModel):
+    company: str | None = None
+    contact: str | None = None
+
+
+@app.get("/api/branding")
+def get_branding(request: Request):
+    """The company this seat's reports are stamped with.
+
+    `scope` says where the record came from and `seat` says where a save
+    would go, so the UI can tell the operator which of the two they are
+    looking at instead of showing a name with no provenance.
+    """
+    rec, scope = _branding.resolve(_who(request))
+    return {"company": rec["company"], "contact": rec["contact"],
+            "scope": scope,
+            "seat": "account" if _who(request) else "install",
+            "company_max": _branding.COMPANY_MAX,
+            "contact_max": _branding.CONTACT_MAX}
+
+
+@app.post("/api/branding")
+def post_branding(body: BrandingBody, request: Request):
+    """Set this seat's company. Writing a blank company is a decision, not a
+    reset: it means "stamp nothing", and it outranks the install default."""
+    rec, scope = _branding.save(
+        _who(request), {"company": body.company, "contact": body.contact})
+    return {"company": rec["company"], "contact": rec["contact"],
+            "scope": scope, "seat": scope,
+            "company_max": _branding.COMPANY_MAX,
+            "contact_max": _branding.CONTACT_MAX}
+
 # BETA NOTICE. The whole point of this product is a number an estimator puts
 # in a bid, so the caveat has to travel WITH the number, not sit on a login
 # page nobody re-reads. It is stamped on every page of the report PDF, tailed
@@ -554,6 +731,126 @@ def reopen_job(job_id: str):
         return _register(src)
     return {"job_id": job_id, "pages": pages, "kinds": kinds,
             "sizes": sizes, "name": _display_name(src)}
+
+
+@app.get("/api/projects")
+def list_projects(request: Request):
+    """The landing page's card grid: every plan set this account may see,
+    enriched with what a card needs at a glance.
+
+    Same visibility rule as /api/recent (yours plus the shared set; staff and
+    single-password mode see everything) and the same handle - the job id,
+    never a filesystem path, so it is safe on a hosted box.
+
+    Per job: `detected` counts p<N>_result.json in the job dir exactly as
+    /api/recent does; `approved` counts p<N>_elements.json, which only an
+    approve writes, so counting them IS the approved-page count with no new
+    bookkeeping; `when` is the job DIRECTORY's mtime (last engine activity:
+    a detect, a render, an approve), falling back to the PDF's own mtime for
+    a job that was registered but never opened; `has_thumb` says whether the
+    page-0 strip thumbnail (p0_28.png, the page-strip's own 28-dpi cache) is
+    already on disk - the UI only puts an <img> on cards that have one, so
+    listing 60 jobs never triggers 60 fresh page renders.
+
+    The reply says its own coverage ({total, projects}): if the list is ever
+    longer than the cap, the landing page can say "showing N of M" instead of
+    silently reading as "my plans are gone".
+
+    DEMO ROWS ARE NEVER CAPPED. The landing page tabs "Demo plans" against
+    "Your projects", and a demo that fell off the end of the newest-200 slice
+    would make the demo tab quietly wrong - on this laptop the demo sheets sit
+    at position 300-odd of 420. So the slice applies to the OTHER rows only
+    and every demo row is sent, which is also what lets the demo tab claim
+    full search reach honestly.
+
+    `demo` reports the set's health: how many the manifest expects, how many
+    are actually on this box, and which are missing - so the UI can say "the
+    demo plans are not on this server" instead of drawing an empty tab.
+    """
+    me = _who(request)
+    staff = _is_staff(request)
+    out = []
+    demos = []
+    with JOBS_LOCK:
+        items = list(JOBS.items())
+    for jid, j in items:
+        owner = j.get("owner")
+        if not staff and owner is not None and owner != me:
+            continue
+        src = Path(j.get("path", ""))
+        try:
+            if not src.exists():
+                continue        # the file moved; a dead card helps nobody
+            when = src.stat().st_mtime
+        except OSError:
+            continue
+        name = _display_name(src)
+        dm = _demo_meta(name, owner)
+        # A demo card pictures the sheet its card describes, not the cover
+        # sheet in front of it: Oncor page 0 is a title block and page 2 is
+        # the grading plan the demo is about. Everything else still pictures
+        # page 0, which is what an operator recognises their own upload by.
+        thumb_page = int(dm.get("page") or 0) if dm else 0
+        d = JOBS_DIR / jid
+        detected = 0
+        approved = 0
+        has_thumb = False
+        try:
+            if d.is_dir():
+                when = max(when, d.stat().st_mtime)
+                detected = len(list(d.glob("p*_result.json")))
+                approved = len(list(d.glob("p*_elements.json")))
+                has_thumb = (d / ("p%d_28.png" % thumb_page)).exists()
+                if not has_thumb and thumb_page:
+                    # the demo page has never been rendered but page 0 has:
+                    # a picture of the wrong page beats "not opened yet"
+                    thumb_page = 0
+                    has_thumb = (d / "p0_28.png").exists()
+        except OSError:
+            pass
+        row = {
+            "job_id": jid,
+            "name": name,
+            "pages": int(j.get("pages") or 0),
+            "detected": detected,
+            "approved": approved,
+            "when": when,
+            "has_thumb": has_thumb,
+            # which page has_thumb is talking about (0 for everything that is
+            # not a demo, so no existing reader changes behaviour)
+            "thumb_page": thumb_page,
+            "uploaded": bool(_UPLOAD_PREFIX.match(src.name)),
+            "owner": owner,
+            "mine": owner is not None and owner == me,
+            "shared": owner is None,
+            # A demo is a SHARED row whose name is in demo-plans.json. It is
+            # the "shared demo" the badge has always named, now said in the
+            # data instead of guessed at in JavaScript.
+            "demo": dm is not None,
+            # one line for the card: what this sheet demonstrates
+            "demo_note": (dm or {}).get("shows") or None,
+            # the sheet a visitor should land on (engine page index)
+            "demo_page": (dm or {}).get("page") if dm else None,
+            # UNCHANGED. Deleting a demo is still the server's call and still
+            # the rule it already had (DELETE /api/job refuses an owner-less
+            # row to anyone who is not staff), so a hosted client sees no
+            # delete on a demo card and our own box still can clean one off.
+            "deletable": staff or (owner == me),
+        }
+        (demos if dm is not None else out).append(row)
+
+    demos.sort(key=lambda r: -r["when"])
+    out.sort(key=lambda r: -r["when"])
+    have = {r["name"] for r in demos}
+    return {
+        # unchanged meaning: every row this account may see
+        "total": len(out) + len(demos),
+        # every demo, then the newest 200 of everything else
+        "projects": demos + out[:200],
+        "demo": {"expected": len(DEMO_PLANS),
+                 "present": len(have),
+                 "missing": sorted(n for n in DEMO_PLANS if n not in have)},
+    }
 
 
 # FEEDBACK. Replaces a phone call. Stored as JSONL beside the job store so it
@@ -745,6 +1042,446 @@ def _display_name(path) -> str:
     return _UPLOAD_PREFIX.sub("", Path(path).name)
 
 
+# THE DEMO SET. demo-plans.json is the one list of plans that are OURS and may
+# be shown to anyone; see the _readme inside it for the provenance rule.
+#
+# This is NOT a second visibility notion. A row is a demo only when it is
+# already SHARED under the rule /api/recent and /api/projects have always
+# used - owner is None - and its display name is in the manifest. So a client
+# who uploads a file called "C8.0-STORM-LAYOUT-Rev.1.pdf" gets their own
+# private job (owner = them), exactly as before, and it is not a demo.
+#
+# Read once at import. A box that ships without the file simply has no demo
+# set, which the landing page then says out loud rather than drawing an empty
+# tab (/api/projects reports expected/present/missing).
+DEMO_MANIFEST = ROOT / "demo-plans.json"
+
+
+def _load_demo_plans() -> dict:
+    """{display name -> {"page": int, "shows": str}}. Never raises: a broken
+    or absent manifest costs the demo tab, it must not cost the service."""
+    try:
+        raw = json.loads(DEMO_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    plans = raw.get("plans")
+    if not isinstance(plans, dict):
+        return {}
+    out = {}
+    for name, meta in plans.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        meta = meta if isinstance(meta, dict) else {}
+        try:
+            page = int(meta.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+        out[name] = {"page": max(0, page),
+                     "shows": str(meta.get("shows") or "")}
+    return out
+
+
+DEMO_PLANS = _load_demo_plans()
+
+
+def _demo_meta(name: str, owner) -> dict | None:
+    """The manifest entry for a job row, or None when it is not a demo.
+    Shared-ness is the gate; the name only selects WHICH demo."""
+    if owner is not None:
+        return None
+    return DEMO_PLANS.get(name)
+
+
+def _classify_async(job_id: str, src: str, n: int) -> None:
+    """Per-page vector/raster classification, off the request thread.
+
+    Lifted verbatim out of _register so a second caller can use it: when a
+    demo re-points its one job at a source whose bytes moved, the kinds have
+    to be recomputed for the SAME job rather than by registering a new one.
+    """
+    def _classify_later():
+        try:
+            d2 = pymupdf.open(src)
+            got = []
+            for i in range(n):
+                got.append(classify_page(d2[i]).kind)
+                with JOBS_LOCK:
+                    j2 = JOBS.get(job_id)
+                    if j2 is None:
+                        d2.close()
+                        return          # job went away; stop working
+                    j2["kinds_progress"] = len(got)
+            d2.close()
+        except Exception:
+            # A classification failure must not cost the operator the job:
+            # every page falls back to "unknown", which the UI renders as
+            # no kind label at all rather than as an error.
+            got = ["unknown"] * n
+        with JOBS_LOCK:
+            j2 = JOBS.get(job_id)
+            if j2 is not None:
+                j2["kinds"] = got
+                j2["kinds_progress"] = n
+                _save_registry()
+    threading.Thread(target=_classify_later, daemon=True).start()
+
+
+# ---- THE DEMO TAB IS THE MANIFEST, NOT THIS BOX'S HISTORY ------------------
+# It used to be built from JOB ROWS whose display name matched the manifest,
+# and two things were wrong with that.
+#
+#   * It showed the box's history rather than the demo set. This laptop holds
+#     15 registered jobs for the Oncor sheet and 14 for Belle Farms
+#     Structural - one for every time the corpus PDF's mtime moved under
+#     _register's (path, mtime, owner) reuse key - so the tab read "Demo
+#     plans 140" for a manifest of seven drawings.
+#   * Every one of those rows carried a DETECTION computed weeks ago, so a
+#     visitor clicking a demo card was handed a finished takeoff instantly.
+#     That is a pre-warmed cache presented as a live run, which is the one
+#     thing this repo's demo rules forbid - the same reasoning that put
+#     POST /reset in the service in the first place.
+#
+# So /api/demo-plans below answers from demo-plans.json alone: exactly the
+# manifest's plans, one entry each, on a box with zero jobs for them or with
+# sixty-three. Jobs are an implementation detail of OPENING one, and
+# POST /api/demo/{name}/open guarantees the visitor gets an undetected
+# document. /api/projects is UNCHANGED - it still flags demo rows, which is
+# what keeps them off "Your projects".
+
+# Page rasters for the demo cards. Deliberately NOT inside a job directory:
+# the card's picture used to be the job's own p<N>_28.png page-strip cache,
+# and the fresh-open sweep deletes that - so a demo card would have lost its
+# thumbnail the first time anybody opened it. A demo thumbnail is a picture
+# of the PDF and outlives every run of the engine over it.
+DEMO_THUMBS = JOBS_DIR / "_demo_thumbs"
+
+# name -> resolved source path. Re-validated on read, and a full plan-root
+# scan is rate-limited: an unseeded box must not walk the corpus on every
+# paint of the landing page.
+_DEMO_SRC: dict = {}
+_DEMO_SCAN_AT = 0.0
+_DEMO_SCAN_EVERY_S = 30.0
+_DEMO_PAGES: dict = {}
+
+
+def _demo_source(name: str):
+    """The PDF behind a manifest entry, or None when this box does not have it.
+
+    Two places it can legitimately be:
+      * already registered as a job - which is how a HOSTED box has it, since
+        the only way in there is /api/upload writing
+        JOBS_DIR/upload_<hash>_<name>.pdf;
+      * loose under PLAN_ROOTS - which is how this laptop has it, straight out
+        of the TakeoffPro AI corpus.
+    Registered rows are checked first, so a seeded box never walks its plan
+    roots at all.
+
+    Never raises and never invents: a name it cannot place returns None, and
+    the card then says so in words rather than erroring or vanishing.
+    """
+    global _DEMO_SCAN_AT
+    if name not in DEMO_PLANS:
+        return None
+    hit = _DEMO_SRC.get(name)
+    if hit:
+        p = Path(hit)
+        if p.exists():
+            return p
+        _DEMO_SRC.pop(name, None)       # the file went away; do not serve it
+    with JOBS_LOCK:
+        rows = sorted((jid, j.get("path", "")) for jid, j in JOBS.items()
+                      if j.get("owner") is None)
+    for _jid, raw in rows:
+        p = Path(raw)
+        try:
+            if _display_name(p) == name and p.exists():
+                _DEMO_SRC[name] = str(p)
+                return p
+        except OSError:
+            continue
+    now = time.time()
+    if now - _DEMO_SCAN_AT < _DEMO_SCAN_EVERY_S:
+        return None                     # scanned recently and it was not there
+    _DEMO_SCAN_AT = now
+    want = set(DEMO_PLANS) - set(_DEMO_SRC)
+    for root in PLAN_ROOTS:
+        if not want:
+            break
+        if not root.is_dir():
+            continue
+        try:
+            for p in sorted(root.rglob("*.pdf")):
+                n = _display_name(p)
+                if n in want:
+                    _DEMO_SRC[n] = str(p)
+                    want.discard(n)
+                    if not want:
+                        break
+        except OSError:
+            continue
+    hit = _DEMO_SRC.get(name)
+    return Path(hit) if hit else None
+
+
+def _demo_pages(src: Path):
+    """Page count for a card, or None. Cheap - pymupdf.open plus page_count,
+    no classification and no drawing read - and memoised on (path, mtime,
+    size) so a page of cards costs one open per plan per edit of the file."""
+    try:
+        st = src.stat()
+    except OSError:
+        return None
+    key = (str(src), round(st.st_mtime, 2), st.st_size)
+    if key in _DEMO_PAGES:
+        return _DEMO_PAGES[key]
+    try:
+        doc = pymupdf.open(src)
+        n = int(doc.page_count)
+        doc.close()
+    except Exception:
+        return None                     # a card without a page count, not a 500
+    _DEMO_PAGES[key] = n
+    return n
+
+
+def _sweep_job_dir(job_id: str):
+    """Unlink every file in a job's directory and forget its page statuses.
+
+    The shared body of POST /reset and of a demo's fresh open: both mean the
+    same thing by "cold", and two copies of it would drift apart. The guard
+    re-derives the directory from JOBS_DIR and refuses anything that is not a
+    direct child of it, so a crafted job id cannot walk out of the jobs tree.
+    Returns (removed, failed) - a file another process holds open is reported,
+    never silently counted as swept.
+    """
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve() or not d.is_dir():
+        return (0, 0)
+    removed = failed = 0
+    for f in sorted(d.iterdir()):
+        if not f.is_file():
+            continue
+        try:
+            f.unlink()
+            removed += 1
+        except OSError:
+            failed += 1                 # held open elsewhere; report the rest
+    # The in-memory status map is what makes the UI think a page is done.
+    # Leaving it behind would show "detected" over an empty directory.
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is not None:
+            j["status"] = {}
+    return (removed, failed)
+
+
+def _demo_job(name: str, src: Path) -> str:
+    """The ONE job a demo plan is ever opened as.
+
+    BOUNDED BY CONSTRUCTION. A demo open never registers a second job for a
+    plan that already has one, so three opens of the same demo leave the
+    registry exactly as they found it. That is the whole point: unbounded
+    fresh jobs are how this box reached 15 rows for Oncor and 14 for Belle
+    Farms Structural. _register's reuse key is (path, mtime, owner), the
+    corpus PDF's mtime moves whenever OneDrive touches it, and every open
+    after a sync therefore registered a NEW job and orphaned the last one's
+    cache. Keying the demo's job on the manifest NAME instead of on mtime is
+    what closes that hole.
+
+    Deterministic: the lowest job id among the shared rows for this name wins,
+    preferring one whose recorded mtime still matches the file, so the same
+    plan resolves to the same job on every open and across restarts.
+    """
+    try:
+        mtime = round(src.stat().st_mtime, 2)
+    except OSError:
+        mtime = None
+    with JOBS_LOCK:
+        cands = sorted(jid for jid, j in JOBS.items()
+                       if j.get("owner") is None
+                       and _display_name(Path(j.get("path", ""))) == name)
+        fresh = [jid for jid in cands
+                 if JOBS[jid].get("path") == str(src)
+                 and JOBS[jid].get("mtime") == mtime
+                 and JOBS[jid].get("sizes")]
+        jid = fresh[0] if fresh else (cands[0] if cands else None)
+    if jid is None:
+        # nothing registered for it yet: the ordinary path, owner-less so the
+        # row stays SHARED and keeps satisfying _demo_meta's sharedness gate
+        return _register(src, owner=None)["job_id"]
+    if not fresh:
+        # The row exists but points at bytes that have moved. Re-derive what
+        # _register would have derived and write it back into the SAME row,
+        # rather than letting _register mint a new one.
+        n, sizes = 0, []
+        try:
+            doc = pymupdf.open(src)
+            n = doc.page_count
+            for p in range(n):
+                r = doc[p].rect
+                sizes.append([round(r.width, 2), round(r.height, 2)])
+            doc.close()
+        except Exception:
+            return _register(src, owner=None)["job_id"]
+        with JOBS_LOCK:
+            j = JOBS.get(jid)
+            if j is None:
+                return _register(src, owner=None)["job_id"]
+            j["path"] = str(src)
+            j["mtime"] = mtime
+            j["pages"] = n
+            j["sizes"] = sizes
+            j["kinds"] = None
+            j["kinds_progress"] = 0
+            j["status"] = {}
+            _save_registry()
+        _classify_async(jid, str(src), n)
+    return jid
+
+
+@app.get("/api/demo-plans")
+def demo_plans():
+    """The demo tab, straight off demo-plans.json.
+
+    Exactly the manifest's plans, one entry each, ALWAYS - this box's job rows
+    do not add an entry and do not remove one. `available` is the honest
+    degradation: a hosted box that has not been seeded still gets every card,
+    each saying in words that its drawing is not here, instead of an empty tab
+    or a 500.
+
+    Nothing here is a filesystem path. The only handle is the manifest name,
+    which is already public in the shipped file.
+    """
+    plans = []
+    present = 0
+    for name, meta in DEMO_PLANS.items():
+        src = _demo_source(name)
+        if src is not None:
+            present += 1
+        plans.append({
+            "name": name,
+            "shows": meta.get("shows") or "",
+            # the sheet a visitor lands on (engine page index, 0-based)
+            "page": int(meta.get("page") or 0),
+            "available": src is not None,
+            # cheaply known, or null - a card prints what it has
+            "pages": _demo_pages(src) if src is not None else None,
+        })
+    return {
+        "version": 1,
+        "plans": plans,
+        "expected": len(DEMO_PLANS),
+        "present": present,
+        "missing": sorted(p["name"] for p in plans if not p["available"]),
+    }
+
+
+@app.get("/api/demo/{name}/thumb")
+def demo_thumb(name: str):
+    """A page RASTER for a demo card - never a detection.
+
+    Rendering the sheet ahead of time is honest: it is a picture of the PDF,
+    the same thing any reader would draw, and it says nothing at all about
+    what the engine found. The dishonest one is a cached DETECTION, which is
+    exactly what a demo open throws away.
+    """
+    if name not in DEMO_PLANS:
+        raise HTTPException(404, "not a demo plan")
+    src = _demo_source(name)
+    if src is None:
+        raise HTTPException(404, "that demo plan is not on this server")
+    page = int(DEMO_PLANS[name].get("page") or 0)
+    try:
+        st = src.stat()
+    except OSError:
+        raise HTTPException(404, "that demo plan is not on this server")
+    tag = "%s_%d_%d_p%d" % (
+        hashlib.sha1(name.encode("utf-8")).hexdigest()[:12],
+        int(st.st_mtime), st.st_size, page)
+    DEMO_THUMBS.mkdir(parents=True, exist_ok=True)
+    cache = DEMO_THUMBS / (tag + ".png")
+    if not cache.exists():
+        try:
+            doc = pymupdf.open(src)
+            p = page if 0 <= page < doc.page_count else 0
+            pix = doc[p].get_pixmap(dpi=28)
+            tmp = cache.with_name("%s.%s.tmp"
+                                  % (cache.name, uuid.uuid4().hex[:8]))
+            # tobytes, not pix.save: save() infers the format from the
+            # extension and the temp name ends ".tmp"
+            tmp.write_bytes(pix.tobytes("png"))
+            doc.close()
+            os.replace(tmp, cache)      # atomic: no half-PNG for the next GET
+        except Exception:
+            raise HTTPException(500, "could not render that page")
+    return Response(cache.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.post("/api/demo/{name}/open")
+def demo_open(name: str):
+    """Open a demo plan FRESH. The visitor presses Detect and watches it work.
+
+    THE RULE, and it is the whole reason this route exists rather than the
+    card reusing /api/job/{id}/open: a demo arrives UNDETECTED, every time,
+    for every visitor. A demo that opens instantly because somebody detected
+    it months ago is a staged demo, and this product's own demo-integrity rule
+    says a visitor watches the engine run.
+
+    So the open sweeps everything DERIVED from the PDF first - detections,
+    page renders, earthwork maps, callouts, the triage sidecar, and any
+    approved export or report a previous demo run left behind. What survives
+    is the PDF (never inside the job directory) and the registry row.
+
+    WHAT HAPPENS TO THE JOB. Nothing is created and nothing accumulates: see
+    _demo_job - one job per demo plan, reused forever, so three opens of a
+    demo leave the registry exactly the size they found it. That job is
+    owner-less, so /api/projects flags it demo:true and it therefore appears
+    on NEITHER tab: not on "Your projects" (it is not the operator's upload)
+    and not on "Demo plans" (that tab is the manifest now). It exists only as
+    the handle the workbench holds the open document by.
+
+    Concurrency is the honest caveat: two visitors opening the same demo at
+    once share that job, so the second one's sweep resets the first one's run.
+    Acceptable for a demo box with one visitor in front of it; named here so
+    nobody discovers it in front of a client.
+    """
+    meta = DEMO_PLANS.get(name)
+    if meta is None:
+        raise HTTPException(404, "not a demo plan")
+    src = _demo_source(name)
+    if src is None:
+        raise HTTPException(
+            410, "\"%s\" is one of our demo plans, but its PDF is not on this "
+                 "server. A box gets the demo library by running seed-demo.sh "
+                 "against it." % name)
+    job_id = _demo_job(name, src)
+    removed, failed = _sweep_job_dir(job_id)
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(500, "the demo job went away mid-open")
+        pages = int(j.get("pages") or 0)
+        kinds = j.get("kinds")
+        sizes = j.get("sizes")
+    page = int(meta.get("page") or 0)
+    # training ledger (observation only): everything after this point for this
+    # job is a FRESH detection, and a trainer reading the ledger later must be
+    # able to see where that boundary was.
+    ledger.record("demo_opened", job_id, None, None,
+                  {"name": name, "removed": removed, "failed": failed},
+                  None, pdf_path=str(src))
+    return {"job_id": job_id, "pages": pages, "kinds": kinds, "sizes": sizes,
+            "name": name,
+            # the sheet the card described, clamped to the set as it is now
+            "demo_page": page if 0 <= page < pages else 0,
+            # what the sweep actually did. A reset that half-failed and then
+            # replayed a cached sheet during a demo is why this is reported
+            # rather than assumed.
+            "fresh": {"removed": removed, "failed": failed},
+            "demo": True}
+
+
 def _register(path: Path, classify: bool = True, owner=None) -> dict:
     """classify=False skips per-page vector/raster classification, which
     reads every drawing on every page. Rasterisation callers do not need it,
@@ -761,8 +1498,21 @@ def _register(path: Path, classify: bool = True, owner=None) -> dict:
             # so two people uploading the same PDF land on the same path - and
             # without this the second one would be handed the first one's job
             # and then be refused access to it by the ownership check.
-            if (j.get("path") == str(path) and j.get("mtime") == mtime
-                    and j.get("owner") == owner):
+            # RECLAIM AN INTERRUPTED OPEN. mtime is written when a job is
+            # registered, but an open that dies before it finishes leaves a row
+            # with mtime None - and None can never equal a real timestamp, so
+            # that row could never be matched and the next open registered
+            # ANOTHER one. Measured on this box: 420 registry rows, 250 of them
+            # carrying mtime None, including 63 rows for one Belle Farms sheet
+            # and 54 for one Oncor sheet - months of restarts and killed dev
+            # servers, each leaving a permanent orphan. A null mtime means "we
+            # never finished recording this", not "this is a different file",
+            # so it is reclaimed by path+owner and its mtime repaired below.
+            _mt = j.get("mtime")
+            if (j.get("path") == str(path) and j.get("owner") == owner
+                    and (_mt == mtime or _mt is None)):
+                if _mt is None:
+                    j["mtime"] = mtime
                 kinds0 = j.get("kinds")
                 sizes0 = j.get("sizes")
                 # Gated on SIZES only. It used to require kinds too, so a job
@@ -796,31 +1546,7 @@ def _register(path: Path, classify: bool = True, owner=None) -> dict:
     doc.close()
     kinds = None if classify else ["unknown"] * n_pages
     if classify:
-        def _classify_later(job_id=job_id, src=str(path), n=n_pages):
-            try:
-                d2 = pymupdf.open(src)
-                got = []
-                for i in range(n):
-                    got.append(classify_page(d2[i]).kind)
-                    with JOBS_LOCK:
-                        j2 = JOBS.get(job_id)
-                        if j2 is None:
-                            d2.close()
-                            return          # job went away; stop working
-                        j2["kinds_progress"] = len(got)
-                d2.close()
-            except Exception:
-                # A classification failure must not cost the operator the job:
-                # every page falls back to "unknown", which the UI renders as
-                # no kind label at all rather than as an error.
-                got = ["unknown"] * n
-            with JOBS_LOCK:
-                j2 = JOBS.get(job_id)
-                if j2 is not None:
-                    j2["kinds"] = got
-                    j2["kinds_progress"] = n
-                    _save_registry()
-        threading.Thread(target=_classify_later, daemon=True).start()
+        _classify_async(job_id, str(path), n_pages)
     with JOBS_LOCK:
         JOBS[job_id]["kinds"] = kinds
         JOBS[job_id]["kinds_progress"] = 0 if kinds is None else len(kinds)
@@ -924,11 +1650,24 @@ def _sched_finish_locked(key: tuple, reason: str | None = None) -> None:
     """Record the outcome of a child that has exited (reason=None: read it
     off the disk) or that we killed (reason given: clean partial files)."""
     job_id, page = key
-    proc = _SCHED_RUNNING.pop(key)["proc"]
+    info = _SCHED_RUNNING.pop(key)
+    proc = info["proc"]
     d = _job_dir(job_id)
     rf, ef = result_path(d, page), error_path(d, page)
     if reason is None:
+        # Success means the child WROTE a result - not that one exists. A
+        # stale file from an older engine sits at the same path, and "does
+        # rf exist" read a child that died on startup (OOM during numpy
+        # import, measured 2026-08-30 on ellis p42) as done: the status
+        # then reported idle-stale and the UI polled "detecting..."
+        # forever. Freshness = mtime at-or-after the moment we spawned.
+        fresh = False
         if rf.exists():
+            try:
+                fresh = rf.stat().st_mtime >= info["t0"] - 2.0
+            except OSError:
+                fresh = False
+        if fresh:
             st = "done"
         elif ef.exists():
             try:
@@ -1077,6 +1816,201 @@ def job_kinds(job_id: str):
                 "pages": int(j.get("pages") or 0)}
 
 
+# ---------------------------------------------------------------------------
+# SHEET TRIAGE - which pages of a set matter to excavation (EXCAVATION-PLAN
+# section 7 item 4: "48-page set, the operator knows in 30 seconds which 12
+# matter"). CLASSIFICATION ONLY: this paints attention in the page strip and
+# never detects, excludes, or produces a quantity. Text-layer only and cheap
+# on purpose - no detection, no AI call, no render: one get_text() pass per
+# page plus the title-block probe the engine already has (read_sheet_number),
+# cached to a triage.json sidecar in the job dir.
+#
+# The score is a transparent keyword tally so the UI can show WHY a page was
+# tiered: the `hits` list IS the whole computation, term by term. Weights and
+# caps were calibrated against the measured text of three real sets on
+# 2026-08-30 (Barn civil 15p, Kayden Springs 48p, ellis 54p; the synthetic
+# edge of each rule is pinned in tests/test_triage.py):
+#   * counts are CAPPED per family (min(count, cap)) so one repeated word
+#     cannot carry a page: ellis SD1, a structural-detail sheet, says FILL
+#     five times in compaction notes and must stay "other";
+#   * bare GRADE, RIM, INV and ELEVATION are deliberately NOT signals -
+#     measured ambiguity: "GRADE 60" is rebar steel on ellis SD1, RIM is a
+#     rim joist on ellis SD1/SD3 (x11/x26), and ELEVATION is a building
+#     facade on every ellis A3.x sheet;
+#   * DRAIN scores +1 where DRAINAGE scores +2: roof drains put DRAINx3 on
+#     ellis A4.10, an architectural wall-section sheet.
+
+TRIAGE_VERSION = 1          # bump when the table below changes - cached
+                            # triage.json sidecars key on it
+
+# (label, regex over the UPPERCASED whitespace-normalized page text,
+#  points per occurrence, cap on occurrences counted)
+_TRIAGE_KW = [
+    # --- excavation / civil signals (positive) ---------------------------
+    # weight 3: words that in this corpus only appear on earth-moving sheets
+    ("GRADING",     re.compile(r"\b(?:RE)?GRADING\b"),             3, 5),
+    ("EARTHWORK",   re.compile(r"\bEARTHWORKS?\b"),                3, 5),
+    ("EXCAVATION",  re.compile(r"\bEXCAVAT\w*"),                   3, 5),
+    # weight 2: civil utility / sitework vocabulary
+    ("CONTOUR",     re.compile(r"\bCONTOURS?\b"),                  2, 5),
+    ("TOPSOIL",     re.compile(r"\bTOPSOIL\b"),                    2, 5),
+    ("EROSION",     re.compile(r"\bEROSION\b"),                    2, 5),
+    ("STORM",       re.compile(r"\bSTORM\b"),                      2, 5),
+    ("SANITARY",    re.compile(r"\bSANITARY\b"),                   2, 5),
+    ("SEWER",       re.compile(r"\bSEWERS?\b"),                    2, 5),
+    ("WATER LINE",  re.compile(r"\bWATER\s?(?:LINES?|MAINS?)\b"),  2, 5),
+    ("UTILITY",     re.compile(r"\bUTILIT(?:Y|IES)\b"),            2, 5),
+    ("DRAINAGE",    re.compile(r"\bDRAINAGE\b"),                   2, 5),
+    ("TRENCH",      re.compile(r"\bTRENCH\w*"),                    2, 5),
+    ("MANHOLE",     re.compile(r"\bMANHOLES?\b"),                  2, 5),
+    ("SWALE",       re.compile(r"\bSWALES?\b"),                    2, 5),
+    ("SILT FENCE",  re.compile(r"\bSILT\s+FENCE\b"),               2, 5),
+    ("CULVERT",     re.compile(r"\bCULVERTS?\b"),                  2, 5),
+    ("GRUBBING",    re.compile(r"\bGRUB(?:BING)?\b"),              2, 5),
+    # weight 1: civil-leaning but shared with other trades
+    ("DEMO",        re.compile(r"\bDEMO\w*"),                      1, 5),
+    ("SITE",        re.compile(r"\bSITE\b"),                       1, 5),
+    ("HYDRANT",     re.compile(r"\bHYDRANTS?\b"),                  1, 5),
+    ("DRAIN",       re.compile(r"\bDRAINS?\b"),                    1, 5),
+    ("CUT",         re.compile(r"\bCUT\b"),                        1, 3),
+    ("FILL",        re.compile(r"\bFILL\b"),                       1, 3),
+    # --- other-trade signals (negative) -----------------------------------
+    ("ELECTRICAL",  re.compile(r"\bELECTRICAL\b"),                -2, 5),
+    ("MECHANICAL",  re.compile(r"\bMECHANICAL\b"),                -2, 5),
+    ("PLUMBING",    re.compile(r"\bPLUMBING\b"),                  -2, 5),
+    ("HVAC",        re.compile(r"\bHVAC\b"),                      -2, 5),
+    ("REFLECTED CEILING", re.compile(r"\bREFLECTED\s+CEILING\b"), -3, 3),
+    ("DOOR SCHEDULE",     re.compile(r"\bDOOR\s+SCHEDULES?\b"),   -3, 3),
+    ("WINDOW SCHEDULE",   re.compile(r"\bWINDOW\s+SCHEDULES?\b"), -3, 3),
+]
+
+# Printed sheet-number prefix, when read_sheet_number found one. C is the
+# civil series on every set measured; A/S/M/E/P are architectural,
+# structural, mechanical, electrical, plumbing. -6 rather than -4 because
+# ellis A1.02 - an architectural index sheet, 3,413 words - name-drops
+# GRADING, EXCAVATION and DRAINAGE and needs the prefix to outweigh the
+# borrowed vocabulary. Every other letter (V survey, G general, T title...)
+# is neutral: no evidence either way.
+_TRIAGE_CIVIL_PREFIX = 4
+_TRIAGE_OTHER_PREFIX = -6
+
+# Tier thresholds. A bare C prefix (+4) lands in "maybe", not "core": a C
+# detail sheet with no excavation words on it is plausibly relevant, not
+# certainly - core demands keyword evidence. Calibrated so that on ellis
+# (54 pages, 3 civil) exactly the civil sheets are core, and on Barn
+# (15 pages, all civil) all 15 are.
+_TRIAGE_CORE_MIN = 6    # score >= 6  -> "core"
+_TRIAGE_MAYBE_MIN = 2   # score >= 2  -> "maybe"; below -> "other"
+
+
+def triage_score(text: str, sheet_no: "str | None") -> dict:
+    """Score one page's TEXT LAYER for excavation relevance. Pure - no I/O,
+    nothing but the constant table above - so tests/test_triage.py can run
+    it on synthetic word lists with no PDF and no server.
+
+    Returns {"tier", "score", "words", "hits"} where hits is the full
+    term-by-term computation [[label, count, points], ...] sorted by
+    |points| descending, so a tooltip can lead with the strongest evidence.
+    Never a quantity: the only outputs are a tier and the words that earned
+    it.
+
+    A page with NO text abstains: tier "unknown". A raster/scanned sheet is
+    invisible to a text probe, and calling it "other" would dim a page this
+    code knows nothing about.
+    """
+    T = " ".join((text or "").upper().split())
+    if not T:
+        return {"tier": "unknown", "score": 0, "words": 0, "hits": []}
+    words = len(T.split())
+    score = 0
+    hits = []
+    for label, rx, pts, cap in _TRIAGE_KW:
+        n = len(rx.findall(T))
+        if not n:
+            continue
+        p = pts * min(n, cap)
+        score += p
+        hits.append([label, n, p])
+    pre = (sheet_no or "").strip().upper()
+    m = re.match(r"[A-Z]+", pre)
+    if m:
+        letter = m.group(0)[0]
+        if letter == "C":
+            score += _TRIAGE_CIVIL_PREFIX
+            hits.append([f"sheet {pre} (C = civil)", 1, _TRIAGE_CIVIL_PREFIX])
+        elif letter in "ASMEP":
+            score += _TRIAGE_OTHER_PREFIX
+            hits.append([f"sheet {pre} ({letter} = other trade)", 1,
+                         _TRIAGE_OTHER_PREFIX])
+    hits.sort(key=lambda h: (-abs(h[2]), h[0]))
+    tier = ("core" if score >= _TRIAGE_CORE_MIN
+            else "maybe" if score >= _TRIAGE_MAYBE_MIN else "other")
+    return {"tier": tier, "score": score, "words": words, "hits": hits}
+
+
+@app.get("/api/job/{job_id}/triage")
+def job_triage(job_id: str):
+    """Per-page excavation-relevance tiers for the whole set, with evidence.
+
+    Cheap by construction - text layer plus the title-block sheet-number
+    probe, page by page; no detection, no AI, no render. Measured first-call
+    cost on this box: 5.0 s for 15 pages (Barn), 12.0 s for 48 (Kayden),
+    5.7 s for 54 (ellis); afterwards served from the triage.json sidecar,
+    which keys on TRIAGE_VERSION + the PDF mtime the registry recorded.
+    /reset sweeps the sidecar with the other derived files, so a reset demo
+    recomputes it live.
+    """
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(404, "unknown job")
+        src = Path(j.get("path", ""))
+        mtime = j.get("mtime")
+    side = _job_dir(job_id) / "triage.json"
+    if side.exists():
+        try:
+            d = json.loads(side.read_text())
+            if d.get("version") == TRIAGE_VERSION and d.get("mtime") == mtime:
+                return d
+        except (OSError, ValueError):
+            pass                     # corrupt cache; recompute below
+    if not src.exists():
+        raise HTTPException(410, "that plan set is no longer on this server")
+    pages = []
+    doc = pymupdf.open(src)
+    try:
+        for i in range(doc.page_count):
+            pg = doc[i]
+            try:
+                txt = pg.get_text("text")
+            except Exception:
+                txt = ""             # a broken page abstains as "unknown"
+            try:
+                sn = read_sheet_number(pg)
+            except Exception:
+                sn = None
+            row = triage_score(txt, sn)
+            row["page"] = i
+            row["sheet_no"] = sn
+            pages.append(row)
+    finally:
+        doc.close()
+    counts = {"core": 0, "maybe": 0, "other": 0, "unknown": 0}
+    for r in pages:
+        counts[r["tier"]] += 1
+    d = {"version": TRIAGE_VERSION, "mtime": mtime,
+         "pages": pages, "counts": counts}
+    # atomic like the calcstate sidecar: a crash mid-write must leave no
+    # half-file for the next GET to trip over
+    tmp = side.with_name(f"{side.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(d, indent=1))
+        os.replace(tmp, side)
+    except OSError:
+        pass                         # cache write is best-effort; still reply
+    return d
+
+
 @app.get("/api/job/{job_id}/page/{page}/result")
 def result(job_id: str, page: int):
     f = _job_dir(job_id) / f"p{page}_result.json"
@@ -1148,23 +2082,18 @@ def reset_job(job_id: str, preview: bool = False):
         out["preview"] = True
         return out
 
-    removed = 0
-    for f in files:
-        try:
-            f.unlink()
-            removed += 1
-        except OSError:
-            pass  # a file the operator has open elsewhere; report the rest
-
-    # The in-memory status map is what makes the UI think a page is done.
-    # Leaving it behind would show "detected" over a directory with nothing
-    # in it - the screen disagreeing with the record, again.
-    with JOBS_LOCK:
-        j = JOBS.get(job_id)
-        if j is not None:
-            j["status"] = {}
+    # Same sweep a demo's fresh open performs - one definition of "cold", not
+    # two that can drift apart. It unlinks the files and clears the in-memory
+    # status map (leaving that behind would show "detected" over a directory
+    # with nothing in it - the screen disagreeing with the record, again).
+    removed, _failed = _sweep_job_dir(job_id)
 
     out["removed"] = removed
+    # training ledger (observation only): later events for this job refer
+    # to a FRESH detection - the provenance boundary matters at training time
+    ledger.record("job_reset", job_id, None, None,
+                  {"counts": counts, "removed": removed},
+                  None, pdf_path=(JOBS.get(job_id) or {}).get("path"))
     return out
 
 
@@ -1231,6 +2160,11 @@ def delete_job(job_id: str, request: Request):
             pdf_removed = True
         except OSError:
             pass
+    # training ledger (observation only): the job's events end here, and a
+    # trainer reading the ledger later should know the source went away
+    ledger.record("job_deleted", job_id, None, None,
+                  {"files_removed": removed, "pdf_removed": pdf_removed},
+                  None)
     return {"ok": True, "name": name, "files_removed": removed,
             "pdf_removed": pdf_removed}
 
@@ -1273,23 +2207,30 @@ def page_confidence(job_id: str, page: int):
         lines = _page_lines(pg)
     finally:
         doc.close()
+    dinfo = {}
     try:
-        spots = read_spot_grades(words, lines=lines)
+        spots = read_spot_grades(words, lines=lines, datum_info=dinfo)
     except Exception:
-        spots = []
-    declared = read_spot_datum(lines)
-    # Which branch of read_spot_grades resolved each grade, reconstructed
-    # from the same three inputs the reader itself used (value >= 1000 ->
-    # printed in full; declared datum -> the sheet's own note; otherwise
-    # the consensus guess). Reconstructed here rather than returned by the
-    # reader so that no stored detect result changes shape.
+        spots, dinfo = [], {}
+    declared = dinfo.get("declared")
+    # Which branch resolved each grade, reconstructed with the SAME rule the
+    # reader now applies: the note only wins where read_spot_grades let it
+    # win (dinfo["chosen"]). The old reconstruction assumed the note always
+    # wins - the exact assumption that shipped 171 grades 100 ft low on Barn
+    # C3.3 under "from_sheet_note: 171".
+    # Count the reader's OWN resolution stamps (g["res"]) instead of
+    # re-deriving with a copied threshold. The old >= 1000.0 copy here
+    # drifted from the reader's corroborated >= 100 rule and called 210
+    # printed pad elevations "a guess" (defect shape: one semantic
+    # threshold duplicated in two files - now impossible to re-arm).
     n_printed = n_note = n_inferred = n_unresolved = 0
     for g in spots:
+        r = g.get("res")
         if not g.get("resolved"):
             n_unresolved += 1
-        elif g["value"] >= 1000.0:
+        elif r == "printed":
             n_printed += 1
-        elif declared is not None and g["value"] < 100.0:
+        elif r == "note":
             n_note += 1
         else:
             n_inferred += 1
@@ -1301,7 +2242,15 @@ def page_confidence(job_id: str, page: int):
             "from_sheet_note": n_note,
             "inferred": n_inferred,
             "unresolved": n_unresolved,
+            # legend sample rows the reader dropped (text-layer fallback
+            # rule here - this endpoint has no detect result to hand the
+            # reader legend boxes from)
+            "legend_excluded": dinfo.get("legend_excluded", 0),
             "declared_datum": declared,
+            # Both candidates and the disagreement, so no banner ever again
+            # asserts "the drafter's statement" while the sheet's own
+            # contours read 100 ft higher.
+            "datum": dinfo,
         },
     }
 
@@ -1480,11 +2429,29 @@ def _page_scale(job_id: str, page: int, res: dict,
                     json.dumps(pick, indent=1))
             except OSError:
                 pass  # unwritable: this approve still honours the screen
+            # training ledger (observation only, never raises): a human
+            # overruled the engine's reading - the core scale label
+            ledger.record("scale_set", job_id, page,
+                          {"ft_per_paper_inch": eng_ft,
+                           "text": (eng or {}).get("text"),
+                           "source": (eng or {}).get("source")},
+                          dict(pick), None,
+                          pdf_path=(JOBS.get(job_id) or {}).get("path"))
         else:
+            _had_pick = _stored_scale_pick(job_id, page)
             try:
                 _scale_pick_path(job_id, page).unlink(missing_ok=True)
             except OSError:
                 pass
+            if _had_pick:
+                # the reviewer went BACK to the engine's own reading - as
+                # much a label as the overrule was
+                ledger.record("scale_pick_retired", job_id, page,
+                              _had_pick,
+                              {"ft_per_paper_inch": want, "set_by": "auto"},
+                              {"engine_text": (eng or {}).get("text"),
+                               "engine_source": (eng or {}).get("source")},
+                              pdf_path=(JOBS.get(job_id) or {}).get("path"))
     else:
         # Nothing on the wire (an older UI, or a re-approve from a script):
         # an earlier human decision is still the best information this page
@@ -1569,6 +2536,13 @@ class ApproveScale(BaseModel):
     ft_per_paper_inch: float
     text: str | None = None
     picked_by_reviewer: bool = False
+    # A PROFILE sheet prints two scales that are both right at once: the run
+    # measured across, the rise measured up, deliberately exaggerated so the
+    # slope is readable. When the reviewer has told the screen about the second
+    # one, it has to travel with the approve or the report PDF quietly
+    # disagrees with the panel it was approved from - and a report is the one
+    # artifact that leaves the building. None = one scale governs both axes.
+    v_ft_per_paper_inch: float | None = None
 
 
 class QtyOverride(BaseModel):
@@ -1636,6 +2610,13 @@ class ApproveBody(BaseModel):
     # the scale the reviewer had on screen. Omitted = keep whatever this page
     # already decided (a stored pick, else the engine's). See _page_scale.
     scale: ApproveScale | None = None
+    # WORK AREA quantity mask, [[x0,y0,x1,y1],...] in page pt: per-label
+    # footage counts only length inside the union of these boxes, clipped
+    # with the same segment/rect math the review panel used (_wz_frac).
+    # None or empty = no mask, and the export is byte-for-byte what it was.
+    # Elements always keep full geometry - the mask changes what COUNTS,
+    # never what was detected.
+    work_zones: list[list[float]] | None = None
     # label -> the quantity the operator typed over the computed one, for
     # EVERY row kind the itemized panel shows: footage, EA object count,
     # symbol count, calculator CY/SF/LF. Built from computeTakeoffRows(), the
@@ -1643,6 +2624,61 @@ class ApproveBody(BaseModel):
     # export cannot drift from the screen the way the hand-assembled payload
     # did. See QtyOverride.
     quantity_overrides: list["QtyOverride"] = []
+    # ---- OPERATOR LINE COLOUR ------------------------------------------
+    # The operator giving a black-and-white sheet a readable visual language
+    # ("red for a fiber line, light yellow for existing contour"). Both maps
+    # are OVERRIDES: the engine's measured colour is still what arrives on
+    # each chain, it is still what identifies the family across the sheets of
+    # a set, and nothing here rewrites it - `approve` ranks them below.
+    #
+    # Optional with empty defaults, so a client that predates the field posts
+    # exactly what it always did. Its export then gains two EMPTY declarations
+    # (`operator_created_style_ids: []` and an empty `line_colors`) and is
+    # otherwise unchanged - written even when empty for the same reason
+    # `overrides` is: [] says "this export knows what an operator colour is
+    # and has none", which a file predating the field cannot say, and a
+    # reader has to be able to tell those two apart.
+    #
+    # style_id -> "#rrggbb" the whole family is drawn in. Already RESOLVED by
+    # the client, which is the only place that knows the operator's
+    # cross-job colour convention (it lives in that browser's saved work
+    # beside the prices, the same way the trades do).
+    style_colors: dict[int, str] = {}
+    # chain_id -> "#rrggbb" for ONE line, overriding its family. This is what
+    # the individual-line detector bought: the app can address a single line,
+    # so a single line can carry its own colour.
+    chain_colors: dict[int, str] = {}
+    # THE MACHINE-READABLE OPERATOR PROVENANCE. style_ids of families a HUMAN
+    # created in the review UI (the detector never found them; their lines
+    # were moved in by hand). Until this field the fact survived export only
+    # as English inside `notes`, so a downstream reader had to parse prose to
+    # tell an operator's family from a detected one. The note is still sent -
+    # a person reading the report deserves it too - and this is its typed
+    # twin, exactly as export["scale"]["setBy"] is the typed twin of the
+    # sentence in its `name`.
+    operator_created_style_ids: list[int] = []
+
+
+def _hex_color(v) -> "str | None":
+    """A colour an operator chose, normalised to "#rrggbb", or None.
+
+    Validated rather than trusted: these strings are written straight into
+    the export and onto the report, and a client that sent "red" or
+    "#ff00cc; drop" must degrade to the engine's own measured colour rather
+    than put a broken value in front of a reader. Silent fallback is right
+    here and only here - the value is decoration, not a quantity, so nothing
+    a person is billed for can move because a colour failed to parse.
+    """
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lower()
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) == 3 and all(c in "0123456789abcdef" for c in s):
+        return "#" + "".join(c * 2 for c in s)
+    if len(s) == 6 and all(c in "0123456789abcdef" for c in s):
+        return "#" + s
+    return None
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -1652,6 +2688,24 @@ def approve(job_id: str, page: int, body: ApproveBody):
         raise HTTPException(404, "no result to approve")
     res = json.loads(f.read_text())
     scale = body.image_dpi / 72.0
+    # One ratio for the whole page: fy/fx, or exactly 1.0 when the sheet has a
+    # single scale - in which case _axis_len_pt is never called and every
+    # existing export is byte-for-byte what it was.
+    _v_ratio = 1.0
+    if body.scale and body.scale.v_ft_per_paper_inch:
+        _fx = body.scale.ft_per_paper_inch
+        _fy = body.scale.v_ft_per_paper_inch
+        if _fx > 0 and _fy > 0:
+            _v_ratio = _fy / _fx
+
+    _wz = _wz_norm(body.work_zones)
+    _wz_fr: list = []   # per-element inside fraction, parallel to `elements`
+    # families a human invented, as a set, for the per-element stamp below
+    _mine_sids = {int(s) for s in body.operator_created_style_ids
+                  if isinstance(s, (int, float)) and not isinstance(s, bool)}
+    _sid_exported: set = set()          # style_ids that produced an element
+    _style_col_used: dict = {}          # style_id -> the colour it drew in
+    _chain_col_used: dict = {}          # chain_id -> its own colour override
     elements = []
     excluded = set(body.excluded_chain_ids)
     for ch in list(res["chains"]) + list(body.added_chains):
@@ -1659,17 +2713,62 @@ def approve(job_id: str, page: int, body: ApproveBody):
             or body.labels.get(ch["style_id"])
         if label is None or ch["chain_id"] in excluded:
             continue
+        wf = _wz_frac(ch["points"], _wz, _v_ratio) if _wz else 1.0
+        _wz_fr.append(wf)
         color = ch.get("color")
-        hexcol = "#%02x%02x%02x" % tuple(int(c * 255) for c in color) if color else "#333333"
+        # THE ENGINE'S OWN COLOUR, kept whatever else happens. It is a
+        # measurement (chain.py grouped these chains by it), so it is carried
+        # beside any override rather than replaced by one.
+        engine_hex = "#%02x%02x%02x" % tuple(int(c * 255) for c in color) if color else "#333333"
+        # PRECEDENCE - per-chain > per-family > engine. Read it as "the more
+        # specific decision wins, and a measurement is what you get when
+        # nobody decided". It mirrors webui/app.js colorResolve() exactly;
+        # the convention-by-label rank that sits between per-family and
+        # engine there is already folded into style_colors by the client,
+        # which is the only side that holds the book.
+        _col_ovr = (_hex_color(body.chain_colors.get(ch["chain_id"]))
+                    or _hex_color(body.style_colors.get(ch["style_id"])))
+        hexcol = _col_ovr or engine_hex
         elements.append({
             "type": "line",
             "label": label,
             "color": hexcol,
+            # Machine-readable twin of the colour itself, written only when a
+            # human actually chose one - so a reader can tell "this is red
+            # because a person said so" from "this is red because the
+            # drafter plotted it red", and can still recover what was
+            # measured. Keyed on whether an override was SENT, not on whether
+            # the two strings differ: choosing exactly the detected colour is
+            # still a decision.
+            **({"colorSetBy": _BY_REVIEWER, "engineColor": engine_hex}
+               if _col_ovr else {}),
+            # ...and the same for the family's provenance, per element, so a
+            # reader never has to join against a list to learn it.
+            **({"styleCreatedBy": _BY_REVIEWER}
+               if ch["style_id"] in _mine_sids else {}),
             "vertices": [{"x": round(x * scale, 1), "y": round(y * scale, 1)}
                          for x, y in ch["points"]],
             "detectedClass": ch["class"],
             "lengthPt": ch["length_pt"],
+            # `lengthPt` stays TRUE page points, always. When a vertical scale
+            # is in force this carries the axis-adjusted length beside it
+            # rather than quietly changing what lengthPt means - a field whose
+            # units depend on a flag elsewhere is how silent unit bugs start.
+            **({"lengthPtAxis": _axis_len_pt(ch["points"], _v_ratio,
+                                             ch["length_pt"])}
+               if _v_ratio != 1.0 else {}),
+            # geometry stays FULL under a work-area mask; the fraction is
+            # written beside it so a reader can reconcile clipped items to
+            # elements without re-deriving the clip
+            **({"workAreaFrac": round(wf, 6)} if _wz else {}),
         })
+        # what actually reached the export, for the summaries written below
+        _sid_exported.add(ch["style_id"])
+        if _col_ovr:
+            if _hex_color(body.chain_colors.get(ch["chain_id"])):
+                _chain_col_used[ch["chain_id"]] = _col_ovr
+            else:
+                _style_col_used[ch["style_id"]] = _col_ovr
     export = {
         "source": Path(JOBS[job_id]["path"]).name if job_id in JOBS else "",
         "pageIndex": page,
@@ -1700,10 +2799,15 @@ def approve(job_id: str, page: int, body: ApproveBody):
     # itemization: per-label count + footage (when scale known) + pricing
     ft_per_in = det["ft_per_paper_inch"] if det else None
     totals: dict = {}
-    for el in elements:
+    for el, _f in zip(elements, _wz_fr) if _wz else ((el, 1.0) for el in elements):
+        # work-area mask: a chain fully outside counts nothing - not
+        # footage and not a line count - exactly as computeTakeoffRows()
+        # skips it in the panel the operator approved from
+        if _wz and _f <= 0:
+            continue
         t = totals.setdefault(el["label"], {"count": 0, "length_pt": 0.0})
         t["count"] += 1
-        t["length_pt"] += el["lengthPt"]
+        t["length_pt"] += el.get("lengthPtAxis", el["lengthPt"]) * _f
     # `qty <= 0` is "no override" here because it is "no override" in the box:
     # computeTakeoffRows applies one only `if (!isNaN(ov) && ov > 0)`.
     ov_ft: dict = {}
@@ -1822,12 +2926,50 @@ def approve(job_id: str, page: int, body: ApproveBody):
     ]
     if ov_warn:
         export["override_warnings"] = ov_warn[:12]
+    # Written even when empty, for the same reason `overrides` is: [] says
+    # "this export knows what an operator-created family is and has none",
+    # which a file predating the field cannot say. Only ids that actually
+    # reached an element are listed - a family with nothing in it exports
+    # nothing, so naming it here would be a claim with no rows behind it.
+    _mine_used = sorted({ch_sid for ch_sid in _mine_sids
+                         if ch_sid in _sid_exported})
+    export["operator_created_style_ids"] = _mine_used
+    # ...and the colours a person chose, as a summary beside the per-element
+    # stamps, so a reader can see the sheet's whole visual language at once
+    # without walking every element.
+    export["line_colors"] = {
+        "by_style": {str(k): v for k, v in sorted(_style_col_used.items())},
+        "by_chain": {str(k): v for k, v in sorted(_chain_col_used.items())},
+    }
     # verbatim onto the report (report_pdf prints them under the scale
     # lines); capped so no caller can paper over the table with prose
     export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
                        if str(x).strip()]
+    if _wz:
+        # Disclosure travels with the record (CLAUDE.md: a mask states what
+        # it removed, never silently): the zones, and counted vs excluded
+        # footage, in the export AND as a note the report PDF prints.
+        _in_pt = sum(el.get("lengthPtAxis", el["lengthPt"]) * f
+                     for el, f in zip(elements, _wz_fr))
+        _all_pt = sum(el.get("lengthPtAxis", el["lengthPt"]) for el in elements)
+        wa = {"zones": [list(z) for z in _wz],
+              "counted_pt": round(_in_pt, 1),
+              "excluded_pt": round(_all_pt - _in_pt, 1)}
+        if ft_per_in:
+            wa["counted_ft"] = round(_in_pt / 72.0 * ft_per_in, 1)
+            wa["excluded_ft"] = round((_all_pt - _in_pt) / 72.0 * ft_per_in, 1)
+        export["work_area"] = wa
+        _u = "ft" if ft_per_in else "pt"
+        export["notes"].append(
+            f"Work area: {len(_wz)} box(es) drawn by the reviewer. Every "
+            f"quantity in this export counts only length inside them - "
+            f"{wa.get('counted_ft', wa['counted_pt']):,} {_u} counted, "
+            f"{wa.get('excluded_ft', wa['excluded_pt']):,} {_u} outside "
+            f"excluded. Element geometry is complete; each element's "
+            f"workAreaFrac says how much of it counted.")
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
+    _ledger_approve(job_id, page, body, res, export)
     return JSONResponse({"exported": len(elements), "file": str(out),
                          "items": items, "scale": export.get("scale"),
                          "overrides": export["overrides"],
@@ -1925,6 +3067,309 @@ def get_scale_pick(job_id: str, page: int):
     }
 
 
+# ---------- training-ledger hooks ------------------------------------------
+# Server-side capture of operator decisions (takeoff_engine/ledger.py). Every
+# helper here is OBSERVATION ONLY: fully try/except-wrapped, and nothing in
+# the detection or calculation path ever reads what they write - a ledger
+# failure can cost an event, never a request, and deleting out/ledger changes
+# no number any endpoint returns.
+
+
+def _ledger_pdf(job_id: str):
+    j = JOBS.get(job_id)
+    return j.get("path") if j else None
+
+
+def _ledger_calcstate(job_id: str, page: int, old: dict, new: dict) -> None:
+    """Semantic, row-level events for one calculator-sidecar write: the old
+    and new blobs are diffed key by key (ledger.calcstate_events), and any
+    event that names a chain gets the engine's own cached per-chain features
+    attached - copied from p<N>_result.json, never recomputed."""
+    try:
+        evs = ledger.calcstate_events(old, new)
+        if not evs:
+            return
+        feats: dict = {}
+        if any((e.get("context") or {}).get("chain_id") is not None
+               for e in evs):
+            feats = ledger.chain_feature_map(
+                _job_dir(job_id) / f"p{page}_result.json")
+        pdf = _ledger_pdf(job_id)
+        for e in evs:
+            ctx = dict(e.get("context") or {})
+            cid = ctx.get("chain_id")
+            if cid in feats:
+                ctx["chain"] = feats[cid]
+            ledger.record(e["event"], job_id, page, e.get("before"),
+                          e.get("after"), ctx, pdf_path=pdf)
+    except Exception:
+        pass
+
+
+# chain_excluded events per approve are capped: a mass-erase of a dense
+# sheet is one gesture, not thousands of independent judgments, and the
+# ledger should not balloon on it. The cap is disclosed in the summary
+# event's context (n_excluded carries the true count).
+_LEDGER_MAX_EXCLUDED = 2000
+
+
+def _ledger_approve(job_id: str, page: int, body: "ApproveBody",
+                    res: dict, export: dict) -> None:
+    """Label events for one approve: per-style labels (engine suggestion ->
+    final), per-chain relabels, per-chain erasures (junk labels), and one
+    approve_export summary with the final itemized counts."""
+    try:
+        pdf = _ledger_pdf(job_id)
+        styles = {int(s["style_id"]): s for s in res.get("styles") or []
+                  if isinstance(s, dict) and s.get("style_id") is not None}
+        chains = {c.get("chain_id"): c for c in res.get("chains") or []
+                  if isinstance(c, dict)}
+        for c in body.added_chains:
+            if isinstance(c, dict) and c.get("chain_id") is not None:
+                chains.setdefault(c["chain_id"], c)
+        mine = {int(s) for s in body.operator_created_style_ids
+                if isinstance(s, (int, float)) and not isinstance(s, bool)}
+        for sid, label in body.labels.items():
+            st = styles.get(int(sid))
+            ledger.record(
+                "style_label", job_id, page,
+                {"suggested_label": (st or {}).get("suggested_label")},
+                {"label": label},
+                {"style_id": int(sid),
+                 # PROVENANCE, on the label event itself: a model trained on
+                 # these must not learn an operator's invented family as if
+                 # the detector had proposed it and been renamed. Written on
+                 # every style_label, true or false, so its absence means
+                 # "an export from before the field" and never "detected".
+                 "operator_created": int(sid) in mine,
+                 "style": ledger.style_features(st) if st else None},
+                pdf_path=pdf)
+        # COLOUR, recorded like every other operator correction: what the
+        # engine measured, what the human left in force, and the features the
+        # engine had. Two events because they are two decisions at two
+        # scopes - see webui/app.js colorResolve for the ranking between them.
+        for sid, hexv in (body.style_colors or {}).items():
+            hexv = _hex_color(hexv)
+            if hexv is None:
+                continue
+            st = styles.get(int(sid))
+            ledger.record(
+                "style_color", job_id, page,
+                {"color": (st or {}).get("color")},
+                {"color": hexv, "set_by": _BY_REVIEWER},
+                {"style_id": int(sid),
+                 "label": body.labels.get(int(sid)),
+                 "operator_created": int(sid) in mine,
+                 "style": ledger.style_features(st) if st else None},
+                pdf_path=pdf)
+        for cid, hexv in (body.chain_colors or {}).items():
+            hexv = _hex_color(hexv)
+            if hexv is None:
+                continue
+            ch = chains.get(int(cid))
+            ledger.record(
+                "chain_color", job_id, page,
+                {"color": (ch or {}).get("color")},
+                {"color": hexv, "set_by": _BY_REVIEWER},
+                {"chain_id": int(cid),
+                 "chain": ledger.chain_features(ch) if ch else None},
+                pdf_path=pdf)
+        for cid, label in body.chain_labels.items():
+            ch = chains.get(int(cid))
+            ledger.record(
+                "chain_relabel", job_id, page,
+                {"label": body.labels.get((ch or {}).get("style_id"))},
+                {"label": label},
+                {"chain_id": int(cid),
+                 "chain": ledger.chain_features(ch) if ch else None},
+                pdf_path=pdf)
+        for cid in body.excluded_chain_ids[:_LEDGER_MAX_EXCLUDED]:
+            ch = chains.get(cid)
+            ledger.record(
+                "chain_excluded", job_id, page,
+                {"label": body.labels.get((ch or {}).get("style_id"))},
+                None,
+                {"chain_id": cid,
+                 "chain": ledger.chain_features(ch) if ch else None},
+                pdf_path=pdf)
+        wa = {k: v for k, v in (export.get("work_area") or {}).items()
+              if k != "zones"}
+        ledger.record(
+            "approve_export", job_id, page, None,
+            {"n_elements": len(export.get("elements") or []),
+             "items": export.get("items"),
+             "overrides": export.get("overrides"),
+             "scale": export.get("scale"),
+             "work_area": wa or None},
+            {"n_excluded": len(body.excluded_chain_ids),
+             "n_excluded_ledgered": min(len(body.excluded_chain_ids),
+                                        _LEDGER_MAX_EXCLUDED),
+             "n_added_chains": len(body.added_chains),
+             "n_extra_items": len(body.extra_items),
+             "object_counts": body.object_counts or None,
+             # the sheet's visual language and its provenance, in the one
+             # event that summarises a whole approve
+             "n_style_colors": len(body.style_colors or {}),
+             "n_chain_colors": len(body.chain_colors or {}),
+             "operator_created_style_ids":
+                 export.get("operator_created_style_ids") or [],
+             "image_dpi": body.image_dpi},
+            pdf_path=pdf)
+    except Exception:
+        pass
+
+
+def _ledger_earthwork(job_id: str, page: int, body: "EarthworkBody",
+                      result: dict) -> None:
+    """One event per Calculate press: the inputs' shape and the volumes the
+    operator was shown. The row-level decisions behind it (z per chain,
+    surface assignments) are captured by the calcstate hook; this records
+    that the operator ran THIS configuration and saw THESE numbers."""
+    try:
+        after = {k: result.get(k) for k in
+                 ("cut_yd3", "fill_yd3", "net_yd3", "area_sf", "cell_ft",
+                  "existing_offset_ft", "proposed_offset_ft")}
+        ctx = {"n_existing": len(body.existing),
+               "n_proposed": len(body.proposed),
+               "n_existing_points": len(body.existing_points),
+               "n_proposed_points": len(body.proposed_points),
+               "n_existing_layers": len(body.existing_layers),
+               "n_proposed_layers": len(body.proposed_layers),
+               "strip_area_sf": body.strip_area_sf,
+               "cut_reuse_pct": body.cut_reuse_pct,
+               "has_boundary": bool(body.boundary)}
+        ledger.record("earthwork_calc", job_id, page, None, after, ctx,
+                      pdf_path=_ledger_pdf(job_id))
+    except Exception:
+        pass
+
+
+def _ledger_structure(job_id: str, page: int, body: "StructureBody",
+                      rows: list, totals: dict) -> None:
+    try:
+        after = {"totals": totals, "n_structures": len(rows)}
+        ctx = {"structures": [
+            {"name": s.get("name"),
+             "n_points": len(s.get("points") or []),
+             "depth_ft": s.get("depth_ft"),
+             "layback_ft": s.get("layback_ft"),
+             "footing_ft": s.get("footing_ft")}
+            for s in body.structures if isinstance(s, dict)][:50]}
+        ledger.record("structure_calc", job_id, page, None, after, ctx,
+                      pdf_path=_ledger_pdf(job_id))
+    except Exception:
+        pass
+
+
+@app.get("/api/ledger/stats")
+def ledger_stats():
+    """Training-ledger statistics: totals, per-event-type and per-job
+    counts, month files, time range, bytes on disk. This endpoint reads
+    the ledger files directly - it sits OUTSIDE the detection/calculation
+    pipeline, so the write-only invariant in takeoff_engine/ledger.py
+    holds: no pipeline code path reads the ledger."""
+    return JSONResponse(ledger.stats())
+
+
+# ---------- calculator-input sidecar --------------------------------------
+# The review UI's calculator panels (earthwork contours, trench, structure)
+# hold operator DECISIONS - surface assignments, corrected elevations, layer
+# stacks, trench depths, structure outlines - and until this sidecar they
+# lived only in browser memory: a reload emptied the panel while the priced
+# row it produced survived, so the takeoff could say "Site Cut 13,677 CY"
+# with nothing behind it. Same pattern as the scale pick (_scale_pick_path):
+# one JSON file per page in the job dir, so a reload AND another seat both
+# get the inputs back. The blob is opaque to the server on purpose - its
+# shape belongs to the UI (webui/app.js calcStatePayload), and it carries
+# engine_sig so the UI can tell when chain-keyed choices predate the current
+# detection instead of silently mis-applying them.
+
+CALCSTATE_MAX_BYTES = 256 * 1024
+
+
+def _calcstate_path(job_id: str, page: int) -> Path:
+    return _job_dir(job_id) / f"p{page}_calcstate.json"
+
+
+def _calcstate_guard(job_id: str) -> None:
+    """Refuse a job_id that is not a direct child of JOBS_DIR (`..` and
+    friends), same rule the delete route enforces - this route WRITES."""
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve():
+        raise HTTPException(404, "unknown job")
+
+
+def _calcstate_check(raw: bytes) -> dict:
+    """The blob the UI may store: a JSON object, size-capped.
+
+    The cap exists because this is an unstructured write path into the job
+    dir: without one a bug that serialises the whole detection result (or a
+    hostile client) turns every page flip into megabytes on disk. 256 KB is
+    ~13x a deliberately heavy blob (200 contour rows + 4 layers + 3 drawn
+    structures serialises to 19.4 KB, measured 2026-08-30)."""
+    if len(raw) > CALCSTATE_MAX_BYTES:
+        raise HTTPException(413, (
+            f"calculator state is {len(raw):,} bytes; the cap is "
+            f"{CALCSTATE_MAX_BYTES:,}. Nothing was saved - the earlier "
+            f"record, if any, still stands."))
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise HTTPException(400, "calculator state must be JSON")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "calculator state must be a JSON object")
+    return data
+
+
+def _calcstate_put(job_id: str, page: int, raw: bytes) -> dict:
+    """Validate and store one page's calculator inputs. Atomic: a crash
+    mid-write must leave the previous record intact, not half a file -
+    json.loads on the GET side would otherwise return {} and the operator's
+    decisions would look deleted rather than merely stale."""
+    _calcstate_guard(job_id)
+    if job_id not in JOBS and not (JOBS_DIR / job_id).is_dir():
+        raise HTTPException(404, "unknown job")
+    data = _calcstate_check(raw)
+    f = _calcstate_path(job_id, page)
+    # the record being replaced, read BEFORE the replace: the training
+    # ledger diffs old vs new to emit row-level events (observation only -
+    # an unreadable old blob just means the diff starts from {})
+    old: dict = {}
+    if f.exists():
+        try:
+            _o = json.loads(f.read_text())
+            old = _o if isinstance(_o, dict) else {}
+        except (OSError, ValueError):
+            old = {}
+    # unique tmp name: two debounced saves landing together must not
+    # interleave in one tmp file and publish a torn record
+    tmp = f.with_name(f"{f.name}.{uuid.uuid4().hex[:8]}.tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.replace(tmp, f)
+    _ledger_calcstate(job_id, page, old, data)
+    return {"ok": True, "bytes": len(raw)}
+
+
+@app.get("/api/job/{job_id}/page/{page}/calcstate")
+def get_calcstate(job_id: str, page: int):
+    """The stored calculator inputs for this page, or {} when none exist.
+    {} rather than 404 so the UI's restore path is one unconditional GET."""
+    _calcstate_guard(job_id)
+    f = _calcstate_path(job_id, page)
+    if not f.exists():
+        return {}
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+@app.post("/api/job/{job_id}/page/{page}/calcstate")
+async def post_calcstate(job_id: str, page: int, request: Request):
+    return JSONResponse(_calcstate_put(job_id, page, await request.body()))
+
+
 @app.get("/api/job/{job_id}/page/{page}/elements")
 def get_elements(job_id: str, page: int):
     f = _job_dir(job_id) / f"p{page}_elements.json"
@@ -1935,7 +3380,7 @@ def get_elements(job_id: str, page: int):
 
 
 @app.get("/api/job/{job_id}/report.pdf")
-def report_pdf(job_id: str):
+def report_pdf(job_id: str, request: Request):
     """Compile every approved page of this job into a deliverable PDF:
     per page an overlay of the approved lines on the sheet, then an
     itemized table (label / count / footage / pricing)."""
@@ -1957,6 +3402,35 @@ def report_pdf(job_id: str):
     out = pymupdf.open()
     grand: dict = {}
     all_notes: list[str] = []
+
+    # THE LETTERHEAD. Resolved for the account that asked for this file, not
+    # for the job's owner: "prepared by" is a statement about who produced
+    # the document, and staff opening a client's job produced it. Blank on a
+    # box nobody has branded, and a blank one draws nothing at all - the PDF
+    # is then byte-for-byte the one this endpoint made before branding
+    # existed.
+    #
+    # It sits in the TOP MARGIN of the text pages (baselines 36 and 46; the
+    # itemized title's own baseline is 60 and its 16pt cap-height reaches
+    # only to y=48.6), so not one existing line moves. It is deliberately
+    # NOT drawn on the sheet-overlay pages: those are a full-bleed raster of
+    # the client's own drawing and text over them would sit on the linework.
+    _brec, _bscope = _branding.resolve(_who(request))
+    _bco = (_brec.get("company") or "").strip()
+    _bct = (_brec.get("contact") or "").strip()
+
+    def _letterhead(pg) -> None:
+        """Stamp the company on one 612x792 text page. Self-declared and
+        printed verbatim - this is the one thing on the report that is not a
+        measurement, so it carries no caveat and earns none. It never
+        displaces the beta band, which is drawn last, at the bottom, over
+        every page including this one."""
+        if not _bco:
+            return
+        pg.insert_text((50, 36), _bco[:80], fontsize=10)
+        if _bct:
+            pg.insert_text((50, 46), _bct[:120], fontsize=7.5,
+                           color=(0.38, 0.38, 0.38))
     for pno in pages:
         exp = json.loads((jd / f"p{pno}_elements.json").read_text())
         pg = doc[pno]
@@ -1980,9 +3454,23 @@ def report_pdf(job_id: str):
         # itemized table page
         items = exp.get("items", [])
         tp = out.new_page(width=612, height=792)
+        _letterhead(tp)
         y = 60
-        tp.insert_text((50, y), f"Page {pno + 1} - Itemized takeoff",
-                       fontsize=16)
+        # Head the table with the PRINTED sheet number when detection read
+        # one off the title block ("Sheet C3.1 (page 4)"): the client names
+        # sheets by that number, not by PDF position. The index stays in
+        # print because the two disagree on purpose (CLAUDE.md - page
+        # numbering is ambiguous). Falls back to the old header untouched.
+        _sn = None
+        _rf = jd / f"p{pno}_result.json"
+        if _rf.exists():
+            try:
+                _sn = json.loads(_rf.read_text()).get("sheet_no")
+            except (OSError, ValueError):
+                _sn = None
+        _hdr = (f"Sheet {_sn} (page {pno + 1}) - Itemized takeoff" if _sn
+                else f"Page {pno + 1} - Itemized takeoff")
+        tp.insert_text((50, y), _hdr, fontsize=16)
         y += 17
         # Every number in the table below is this multiplication. When a
         # person overrode the engine's reading, the printed takeoff says so
@@ -2025,6 +3513,7 @@ def report_pdf(job_id: str):
                 or (it.get("unit") and it.get("length_ft") is not None)
             if y > (722 if _sub else 740):
                 tp = out.new_page(width=612, height=792)
+                _letterhead(tp)
                 y = 60
             _ov = it.get("qty_set_by") == _BY_REVIEWER
             tp.insert_text((50, y), (str(it["label"])[:50] + " *") if _ov
@@ -2102,6 +3591,7 @@ def report_pdf(job_id: str):
 
     # grand summary
     tp = out.new_page(width=612, height=792)
+    _letterhead(tp)
     y = 60
     tp.insert_text((50, y), f"{Path(job['path']).name} - Takeoff summary",
                    fontsize=16)
@@ -2146,6 +3636,7 @@ def report_pdf(job_id: str):
             key=lambda kv: (kv[1]["unit"] != "ft", -kv[1]["qty"])):
         if y > (728 if g["ov"] else 740):
             tp = out.new_page(width=612, height=792)
+            _letterhead(tp)
             y = 60
         tp.insert_text((50, y), (label[:50] + " *") if g["ov"] else label[:52],
                        fontsize=9)
@@ -2637,6 +4128,13 @@ class EarthworkBody(BaseModel):
     existing_points: list[dict] = []
     proposed_points: list[dict] = []
     cell_ft: float = 2.0
+    # How each surface is EVALUATED between its contours: "auto" (measure
+    # the sheet's label sparsity and pick), "linear" (the piecewise-linear
+    # TIN this app has always used), "clamped_ct" (C1-smooth, clipped to
+    # the local contour bracket). See earthwork.SURFACE_MODELS for the
+    # measurement behind the choice. The answer always names the model it
+    # used, whichever way this arrives.
+    surface_model: str = "auto"
     # Layer stacks (Beaumont workflow, F52). Each {name, thickness_in}.
     # existing_layers come OFF first (topsoil strip from the soils report,
     # old asphalt, road base): their total lowers the existing surface
@@ -2712,12 +4210,68 @@ def earthwork_suggest(job_id: str, page: int):
             # they measured correctly offline.
             self.layer = d.get("layer") or ""
             self.klass = d.get("class") or ""
+            # color + style_id feed the surface split and the exclusion
+            # rules below: white = invisible mask ink, style_id = the
+            # legend verdict for the family
+            self.color = d.get("color")
+            self.style_id = d.get("style_id")
     chains = [_C(c) for c in res["chains"]]
+    # Which chains may seed contour rows at all - an explicit precedence,
+    # never first-writer-wins (earthwork.family_verdicts has the rules):
+    #  a. a family the LEGEND matched to a non-contour row (property line,
+    #     swale, grade break...) never seeds - on C-04 those families
+    #     seeded 4 junk rows, each with a stolen nearby spot elevation;
+    #  b. near-white strokes never seed - they are mask ink, invisible on
+    #     paper (C-04 sids 44-48 seeded 10 junk rows the same way).
+    # Excluded chains also leave the label-matching pool entirely, so the
+    # labels they used to steal reach the real contours (earthwork.py).
+    from takeoff_engine.earthwork import (_chain_white, family_verdicts,
+                                          split_rows_surface)
+    verdicts = family_verdicts(res.get("styles") or [])
+    excl = set()
+    fam_excluded = []
+    n_by_sid = {}
+    for c in chains:
+        n_by_sid[c.style_id] = n_by_sid.get(c.style_id, 0) + 1
+    # Self-consistency gate on the legend evidence: a non-contour verdict
+    # is trusted only when the SAME legend read also matched a contour
+    # family somewhere on the sheet. On Stice's 600-acre grading plan the
+    # legend matcher hung "PROPOSED LOT LINE" on the proposed CONTOUR
+    # families themselves (1,733 chains, wiggly terraces by eye - see
+    # out/verify/2026-08-30/stice-recipe) and matched NO contour row at
+    # all; applying the exclusions there deleted 634 of the operator's
+    # 1,487 verified rows. A legend read that cannot find the contours
+    # has no standing to disqualify anything else.
+    legend_saw_contours = any(v["role"] in ("existing", "proposed",
+                                            "contour")
+                              for v in verdicts.values())
+    if legend_saw_contours:
+        for sid, v in sorted(verdicts.items()):
+            if v["role"] == "noncontour":
+                fam_excluded.append({"style_id": sid, "label": v["label"],
+                                     "reason": "legend: not a contour",
+                                     "n_chains": n_by_sid.get(sid, 0)})
+    noncontour_sids = {f["style_id"] for f in fam_excluded}
+    n_white = 0
+    for c in chains:
+        if c.style_id in noncontour_sids:
+            excl.add(int(c.chain_id))
+        elif _chain_white(c):
+            excl.add(int(c.chain_id))
+            n_white += 1
+    if n_white:
+        fam_excluded.append({"style_id": None, "label": "near-white strokes",
+                             "reason": "white ink (mask)",
+                             "n_chains": n_white})
     # contour labels printed inside line breaks are rotated + often
     # exploded to vectors: read them by deskewing each gap with the
     # line's own angle. OCR of a fixed raster is deterministic, so the
     # per-page cache reproduces on any seat (compute cache, not memory).
-    gcache = _job_dir(job_id) / f"p{page}_elevgaps.json"
+    # v2 suffix: the v1 cache was built with the old trigger (first-come
+    # 400-patch cap, lone-gap threshold) and holds none of the mask-covered
+    # or split-break labels; keeping the old filename would read that stale
+    # result back forever. Orphaned v1 files are harmless.
+    gcache = _job_dir(job_id) / f"p{page}_elevgaps2.json"
     gap_z = None
     if gcache.exists():
         try:
@@ -2734,13 +4288,14 @@ def earthwork_suggest(job_id: str, page: int):
         img = _np3.frombuffer(pix.samples, _np3.uint8).reshape(
             pix.height, pix.width, pix.n)[:, :, :3].copy()
         doc2.close()
-        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0)
+        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0,
+                                     exclude=excl)
         try:
             gcache.write_text(json.dumps(
                 {str(k): list(v) for k, v in gap_z.items()}))
         except OSError:
             pass
-    sug = suggest_elevations(chains, words, gap_z=gap_z)
+    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl)
     by_id = {c.chain_id: c for c in chains}
     for r in sug:
         w = by_id[r["chain_id"]].width
@@ -2750,7 +4305,13 @@ def earthwork_suggest(job_id: str, page: int):
     # and the whole population used to be invisible. They are POINT
     # elevations, so they ride alongside the contour rows.
     from takeoff_engine.earthwork import read_spot_grades
-    spots = read_spot_grades(words, lines=lines)
+    spot_datum_info = {}
+    # legend_samples: the reader drops spot labels inside the merged legend
+    # block (the legend's own sample rows - C-04 prints "ME 100.0"/"TW
+    # 100.0"/... as its illustration) and discloses the count.
+    spots = read_spot_grades(words, lines=lines,
+                             datum_info=spot_datum_info,
+                             legend_boxes=res.get("legend_samples") or [])
 
     # Two junk sources make the contour suggestions untrustworthy on sparse
     # sheets (Barn C3.4 offered 6 rows of which 4 were noise):
@@ -2762,6 +4323,24 @@ def earthwork_suggest(job_id: str, page: int):
     #    when at least two candidates agree on it. A lone outlier is noise;
     #    if nothing agrees, nothing is dropped (better a noisy list than a
     #    silently emptied one).
+    # Gap-OCR-minted rows must cohere with what the sheet's own TEXT
+    # witnesses: the glyph-derived row values plus the resolved spot
+    # grades. With >= 6 witnessed values, an OCR row further than 100 ft
+    # from every one of them is a misread minting terrain that nothing on
+    # the sheet corroborates - Barn C3.1 (272 spot grades around 7,7xx,
+    # zero labeled contours) got three such rows at 424-444 read out of
+    # dimension texts, and with no native rows at all the group-consensus
+    # below cannot reject them. 100 ft matches the consensus gap; 6
+    # matches the OCR anchor rule's threshold.
+    wit = sorted({float(r["z"]) for r in sug
+                  if r.get("how") in ("radius", "inline")}
+                 | {float(g["z"]) for g in spots
+                    if g.get("resolved") and g.get("z") is not None})
+    n_before_filters = len(sug)
+    if len(wit) >= 6:
+        sug = [r for r in sug
+               if r.get("how") != "gap-ocr"
+               or min(abs(float(r["z"]) - a) for a in wit) <= 100.0]
     boxes = res.get("legend_samples") or []
     def _in_legend(r):
         x, y = r.get("label_xy", [None, None])
@@ -2780,14 +4359,94 @@ def earthwork_suggest(job_id: str, page: int):
                 groups.append(cur); cur = []
             cur.append(r)
         groups.append(cur)
-        top = max(groups, key=len)
-        if len(top) >= 2:
+        # rank groups by GLYPH-backed rows first, count second: OCR can
+        # mint mutually-supporting misreads (Barn C3.1: three dimension
+        # texts read as 424-444 against the sheet's one real 7,7xx row),
+        # and on pure row count that junk band outvotes the surface the
+        # sheet's own text witnesses. A native token cannot be minted.
+        top = max(groups, key=lambda g: (
+            sum(1 for r in g if r.get("how") in ("radius", "inline")),
+            len(g)))
+        if len(top) >= 2 or (len(kept) > len(top)
+                             and any(r.get("how") in ("radius", "inline")
+                                     for r in top)):
             kept = top
-    dropped = len(sug) - len(kept)
+    dropped = n_before_filters - len(kept)
     sug = kept
+    # surface split with the rule disclosed per row (surface + split_by):
+    # legend verdict > color screening > width median - the UI keeps its
+    # own width-median default until it adopts these fields, so they are
+    # advisory, but the row set above (exclusions, label sources) is not
+    chain_info = {c.chain_id: {"style_id": c.style_id, "color": c.color,
+                               "width": c.width} for c in chains}
+    split_counts = split_rows_surface(sug, chain_info, verdicts)
+    # INTERVAL INFILL: the unlabelled contours between two labelled ones.
+    # A grading sheet labels a minority of its contours and expects the
+    # reader to COUNT the rest; the engine has been interpolating blindly
+    # across them. Each accepted fan is worth real volume - measured on
+    # C-04's existing surface, labelled-only vs +infill on identical cells,
+    # cut 1,781.0 -> 2,072.3 CY.
+    #
+    # These arrive with surface=None (skip) and inferred=True: unlike a
+    # read label they have NO printed evidence, and against the offline
+    # analyst's answer key this pass scored 24 of 41 rows vouched (16 of
+    # his 20 transect counts, 8 more of his 22 welds, zero disagreements)
+    # with 17 he did not assign, 3 of which he had explicitly refused. A
+    # 59%-vouched row is a suggestion to confirm, not an elevation to bill,
+    # so nothing here moves a volume until the operator clicks EXIST/PROP.
+    from takeoff_engine.earthwork import _is_plan_chain, infill_intervals
+    by_cid = {c.chain_id: c for c in chains}
+    seeded = {int(r["chain_id"]) for r in sug}
+    infill_rows, infill_diag = [], {}
+    for side in ("existing", "proposed"):
+        assigned = [{"chain_id": int(r["chain_id"]),
+                     "pts": by_cid[r["chain_id"]].pts, "z": r["z"],
+                     "family": by_cid[r["chain_id"]].style_id}
+                    for r in sug
+                    if r.get("surface") == side and r.get("z") is not None
+                    and r["chain_id"] in by_cid]
+        cands = [{"chain_id": int(c.chain_id), "pts": c.pts,
+                  "family": c.style_id}
+                 for c in chains
+                 if int(c.chain_id) not in seeded
+                 and int(c.chain_id) not in excl
+                 and _is_plan_chain(c)]
+        r = infill_intervals(assigned, cands)
+        infill_diag[side] = {"interval": r["interval"],
+                             "families": r.get("families"),
+                             "candidates_in_family":
+                                 r.get("n_candidates_in_family", 0),
+                             "transects": r["n_transects"],
+                             "refused": r["refused"],
+                             "n_rows": len(r["rows"])}
+        for row in r["rows"]:
+            cid = row["chain_id"]
+            if cid in seeded:
+                continue
+            seeded.add(cid)
+            ch = by_cid.get(cid)
+            row.update({"surface": None, "split_by": "interval-infill",
+                        "for_surface": side,
+                        "width": (ch.width if ch else None), "dist": None})
+            infill_rows.append(row)
+    sug = sug + infill_rows
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
+            "families_excluded": fam_excluded,
+            "split_counts": split_counts,
+            # every inferred row is counted here as well as flagged on
+            # itself, so a caller that ignores the flag still cannot show
+            # the row set without the number being available
+            "interval_infill": infill_diag,
+            "interval_infill_rows": len(infill_rows),
             "spot_grades": spots,
+            "spot_datum": spot_datum_info,
+            # disclosed heuristics: how many legend sample rows were dropped
+            # and how many spots came back with no z at all ("N legend
+            # samples excluded" / "N spots unresolved" in the UI). Additive
+            # keys; the per-spot rows still carry resolved/why themselves.
+            "spot_legend_excluded": spot_datum_info.get("legend_excluded", 0),
+            "spot_z_missing": spot_datum_info.get("z_missing", 0),
             "spot_datum_needed": bool(spots) and not any(
                 g.get("resolved") for g in spots),
             "scale": res.get("scale"),
@@ -2870,16 +4529,47 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       build("proposed", body.proposed, body.proposed_points),
                       ft_per_pt, cell_ft=body.cell_ft,
                       existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
-                      return_grid=return_grid, boundary=body.boundary)
+                      return_grid=return_grid, boundary=body.boundary,
+                      surface_model=body.surface_model)
     if "error" in result:
-        raise HTTPException(400, result["error"])
+        # UNWELD (audit item 10): stripping is pure area x depth and owes
+        # nothing to a TIN. A clearing / erosion-control sheet has no
+        # proposed contours, so cut_fill legitimately fails - but welding
+        # the layer slabs to that failure returned 0 CY for an item family
+        # worth $88,815 on Estimate #853. If the operator gave an area to
+        # strip over (a typed strip area, or a limit-of-work polygon whose
+        # shoelace area stands in for it), the layers still compute; the
+        # cut/fill failure is REPORTED, never papered over with zeros -
+        # cut_yd3/fill_yd3 stay absent so no consumer can print a zero.
+        area0 = None
+        if body.strip_area_sf:
+            area0 = float(body.strip_area_sf)
+        elif body.boundary and len(body.boundary) >= 3:
+            a = 0.0
+            bpts = body.boundary
+            for i in range(len(bpts)):
+                x0, y0 = bpts[i - 1][0], bpts[i - 1][1]
+                x1, y1 = bpts[i][0], bpts[i][1]
+                a += (x0 + x1) * (y0 - y1)
+            area0 = abs(a / 2.0) * ft_per_pt * ft_per_pt
+        if not ((ex_layers or pr_layers) and area0):
+            raise HTTPException(400, result["error"])
+        result = {"layers_only": True,
+                  "cut_fill_error": str(result["error"]),
+                  "area_source": ("typed strip area" if body.strip_area_sf
+                                  else "limit-of-work outline"),
+                  "area_sf": None, "net_yd3": None}
     result["ft_per_pt"] = round(ft_per_pt, 5)
     result["existing_offset_ft"] = round(ex_off, 4)
     result["proposed_offset_ft"] = round(pr_off, 4)
     # layer volumes: a slab of the strip area at the layer's thickness.
     # Default area is the TIN overlap (the region the cut/fill itself
     # covers); strip_area_sf overrides it with e.g. the clear & grub area.
-    area = float(body.strip_area_sf) if body.strip_area_sf else float(result["area_sf"])
+    if result.get("layers_only"):
+        area = area0
+    else:
+        area = (float(body.strip_area_sf) if body.strip_area_sf
+                else float(result["area_sf"]))
     result["layer_area_sf"] = round(area, 0)
     layers = []
     for side, rows in (("existing", ex_layers), ("proposed", pr_layers)):
@@ -2902,11 +4592,11 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
     # bids it the same way: Strip Topsoil over the Clear & Grub area,
     # Site Cut / Site Fill over the graded region.
     result["balance"] = material_balance(
-        result["cut_yd3"], result["fill_yd3"], layers,
+        result.get("cut_yd3") or 0.0, result.get("fill_yd3") or 0.0, layers,
         cut_reuse_pct=body.cut_reuse_pct,
         export_factor=body.export_factor,
         import_factor=body.import_factor,
-        cut_area_sf=result["area_sf"], layer_area_sf=area)
+        cut_area_sf=result.get("area_sf") or area, layer_area_sf=area)
     # The scale this volume was computed at. Since 2026-08-23 the route
     # honours a scale the reviewer typed, which means the answer can now
     # depend on a number they are free to change afterwards - and a cubic
@@ -2921,7 +4611,9 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
 def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     """Cut & fill volumes between two labeled contour surfaces, after
     lowering each by its layer stack (see EarthworkBody)."""
-    return JSONResponse(_earthwork_run(job_id, page, body))
+    result = _earthwork_run(job_id, page, body)
+    _ledger_earthwork(job_id, page, body, result)
+    return JSONResponse(result)
 
 
 @app.post("/api/job/{job_id}/page/{page}/earthwork/map")
@@ -2973,6 +4665,89 @@ def earthwork_map_cached(job_id: str, page: int, meta: int = 0):
         return JSONResponse(m)
     return Response(pp.read_bytes(), media_type="image/png",
                     headers=_ewmap_headers(m))
+
+
+class GradingZoneBody(BaseModel):
+    """One grading zone: a polygon plus a DECLARED design.
+
+    The zone workflow exists because a sheet often does not draw a full
+    proposed surface (measured on the Stice case, EXCAVATION-PLAN.md
+    section 25): the estimator picks a region and declares the design -
+    pad / plane / balance / strip - and the engine computes exact volumes
+    of that declared design against the detected existing ground.
+    """
+    # the zone outline, [[x, y], ...] in page points
+    polygon: list[list[float]]
+    # {mode:"pad", elev_ft} | {mode:"plane", elev_ft, slope_pct,
+    #  azimuth_deg, anchor:[x,y]} | {mode:"balance"} | {mode:"strip_only"}
+    design: dict = {}
+    # topsoil strip in inches over the zone; 0 = none. Lowers the existing
+    # surface before differencing (cut_fill's existing_offset convention)
+    # and reports its own strip_yd3 = area x depth.
+    strip_in: float = 0.0
+    # existing ground, same shapes the /earthwork route takes:
+    # rows [{chain_id, z}] and spot points [{x, y, z}]
+    existing_rows: list[dict] = []
+    existing_points: list[dict] = []
+    cell_ft: float | None = None
+
+
+@app.post("/api/job/{job_id}/page/{page}/earthwork/zone")
+def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
+    """Volumes of a declared design surface vs the detected existing
+    ground inside one polygon. Same honesty rules as _earthwork_run:
+    the scale comes from _page_scale (a typed scale is honoured), every
+    refusal carries its reason, and `coverage` says how much of the zone
+    the existing TIN actually reaches - never silently less."""
+    import base64
+
+    import numpy as _np
+
+    from takeoff_engine.earthwork import (Surface, render_cut_fill_map,
+                                          zone_cut_fill)
+
+    rf = _job_dir(job_id) / f"p{page}_result.json"
+    if not rf.exists():
+        raise HTTPException(404, "run detect first")
+    res = json.loads(rf.read_text())
+    # _page_scale, NOT res["scale"] - same rule as _earthwork_run: the
+    # reviewer's typed scale governs, or these volumes silently belong to
+    # a scale nobody is using any more.
+    det = _page_scale(job_id, page, res)
+    if not det:
+        raise HTTPException(400, "no scale on this page - type one into the "
+                                 "scale box in the sheet header first; "
+                                 "volumes need real-world units")
+    ft_per_pt = det["ft_per_paper_inch"] / 72.0
+    pts_by_id = {c["chain_id"]: _np.asarray(c["points"], float)
+                 for c in res["chains"]}
+    surf = Surface("existing")
+    for r in body.existing_rows:
+        try:
+            cid, z = int(r["chain_id"]), float(r["z"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if cid in pts_by_id:
+            surf.contours.append((pts_by_id[cid], z))
+    for q in body.existing_points:
+        try:
+            surf.points.append((float(q["x"]), float(q["y"]), float(q["z"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    out = zone_cut_fill(surf, body.polygon, ft_per_pt, body.design,
+                        cell_ft=body.cell_ft or 2.0,
+                        strip_in=body.strip_in)
+    if "error" in out:
+        raise HTTPException(400, out["error"])
+    # dz map clipped to the zone's grid, same palette as the whole-sheet
+    # cut/fill map (cut blue / fill yellow-orange - the client's own
+    # convention), base64 so one JSON reply carries numbers + picture.
+    png, meta = render_cut_fill_map(out.pop("grid"))
+    out["map_png_base64"] = base64.b64encode(png).decode("ascii")
+    out["bbox"] = meta["bbox_pt"]
+    out["ref_dz"] = meta["ref_dz_ft"]
+    out["ft_per_paper_inch"] = det["ft_per_paper_inch"]
+    return JSONResponse(out)
 
 
 @app.get("/api/job/{job_id}/page/{page}/callouts")
@@ -3139,6 +4914,12 @@ def _doc_schedule(job_id: str, path: str, page: int) -> dict:
     return best
 
 
+# bump when the symbol finder's own logic changes (it lives in this file,
+# outside engine_sig's hash): 3 = disclosed caps + legend glyph naming
+# (line-row veto, composed glyphs, twin candidates)
+SYMBOLS_ALGO = 4
+
+
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
 def symbols_suggest(job_id: str, page: int):
     """Cached wrapper. The finding is deterministic for a given page, and on
@@ -3156,14 +4937,19 @@ def symbols_suggest(job_id: str, page: int):
             # Same rule as a detect result (F96): a cache keyed only on the
             # PDF happily serves counts the current code would not produce.
             # This one feeds /marks-rollup, so a stale entry becomes a stale
-            # quantity in the number Bill faxes a supplier.
-            if js.get("engine_sig") == sig:
+            # quantity in the number Bill faxes a supplier. SYMBOLS_ALGO
+            # exists because this route's own logic lives in server.py,
+            # which engine_sig does not hash - bumping it here is what
+            # invalidates these caches when the finder changes.
+            if (js.get("engine_sig") == sig
+                    and js.get("symbols_algo") == SYMBOLS_ALGO):
                 return JSONResponse(js)
         except (OSError, ValueError):
             pass
     out = _symbols_compute(job_id, page)
     try:
         out["engine_sig"] = sig
+        out["symbols_algo"] = SYMBOLS_ALGO
         _job_dir(job_id).mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(out))
     except OSError:
@@ -3240,7 +5026,7 @@ def _symbols_compute(job_id: str, page: int):
         return None
 
     out = []
-    for (w, h, _), centers in groups.items():
+    for (w, h, l4), centers in groups.items():
         # a symbol repeats; also drop coincident duplicates (drawn twice)
         uniq = []
         for c in centers:
@@ -3263,18 +5049,35 @@ def _symbols_compute(job_id: str, page: int):
             # mark-bubble family: one countable group per mark, named by
             # the sheet, cross-checked against its own schedule
             for m in sorted(marks):
-                g = {"w": w, "h": h, "n": len(marks[m]),
+                g = {"w": w, "h": h, "l4": l4, "n": len(marks[m]),
                      "centers": marks[m], "name": m}
                 if m in sched:
                     g["schedule_qty"] = sched[m]
                 out.append(g)
             if len(unmarked) >= 3:
-                out.append({"w": w, "h": h, "n": len(unmarked),
+                out.append({"w": w, "h": h, "l4": l4, "n": len(unmarked),
                             "centers": unmarked})
         else:
-            out.append({"w": w, "h": h, "n": len(uniq), "centers": uniq})
+            out.append({"w": w, "h": h, "l4": l4, "n": len(uniq),
+                        "centers": uniq})
     out.sort(key=lambda g: -g["n"])
-    return {"groups": out[:15], "schedule": sched,
+
+    # Legend-glyph naming (Pierce's missed manhole) was BUILT AND REMOVED
+    # here on 2026-08-30 - three versions, each measured on Kayden C5.1:
+    # a flat (w, h, length) key named a NOTES row onto 882 letter glyphs
+    # and a waterline row onto its 12 line markers; composed-glyph
+    # verification (all strip units co-occurring) then found ZERO real
+    # structures, because the legend draws its symbol at a different size
+    # or block than the plan instances (4 anchor units on the plan, the
+    # companion circle never beside them; 1 of 3 hydrants verified). A
+    # namer that hits one instance in three is a confident wrong count.
+    # The working route is raster template matching seeded from the
+    # legend-strip render - marks.build_family already does exactly this
+    # for scanned bubbles - measured design in EXCAVATION-PLAN.md.
+    # a silent cap reports as full coverage (section-5 trap): the bound
+    # stays for response size, but the total is disclosed so the panel can
+    # say "40 of 57" instead of implying the sheet holds 15 symbol groups
+    return {"groups": out[:40], "groups_total": len(out), "schedule": sched,
             "schedule_marks": doc_sched.get("marks") or [],
             "schedule_page": doc_sched.get("page"),
             "schedule_header": doc_sched.get("header", ""),
@@ -3317,7 +5120,7 @@ def _symbols_raster(job: dict, page: int, vocab: list, sched: dict,
         out.append(g)
     out.sort(key=lambda g: (0 if g.get("name") else 1 if g.get("off_schedule")
                             else 2, -g["n"]))
-    return {"groups": out[:15], "schedule": sched,
+    return {"groups": out[:40], "groups_total": len(out), "schedule": sched,
             "schedule_marks": doc_sched.get("marks") or [],
             "schedule_page": doc_sched.get("page"),
             "schedule_header": doc_sched.get("header", ""),
@@ -3512,6 +5315,7 @@ def structure_calc(job_id: str, page: int, body: StructureBody):
                  ("Structure Backfill", "backfill_cy", "CY"),
                  ("Slab Prep", "slab_sf", "SF"))
              if totals[key] > 0]
+    _ledger_structure(job_id, page, body, rows, totals)
     return JSONResponse({"structures": rows, "totals": totals,
                          "extra_items": items,
                          "ft_per_pt": round(ft_per_pt, 5)})

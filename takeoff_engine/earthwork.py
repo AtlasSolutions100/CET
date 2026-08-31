@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import CloughTocher2DInterpolator, LinearNDInterpolator
 from scipy.spatial import cKDTree
 
 from .chain import _sample_polyline
@@ -30,7 +30,13 @@ class Surface:
     contours: list = field(default_factory=list)  # (pts Nx2 pt-space, z_ft)
     points: list = field(default_factory=list)    # (x_pt, y_pt, z_ft) spot grades
 
-    def interpolator(self, step_pt: float = 6.0):
+    def samples(self, step_pt: float = 6.0):
+        """(P Nx2 page pt, Z N ft) - every contour sample plus every spot.
+
+        Split out of interpolator() so the clamped-smooth model can reuse
+        the SAME point set the linear TIN is built from; the two models
+        must never disagree about what the sheet said.
+        """
         xs, zs = [], []
         for pts, z in self.contours:
             s, _ = _sample_polyline(np.asarray(pts, float), step=step_pt,
@@ -55,7 +61,126 @@ class Surface:
         Z = np.concatenate(zs)
         if len(P) < 3:
             return None, None
+        return P, Z
+
+    def interpolator(self, step_pt: float = 6.0):
+        P, Z = self.samples(step_pt)
+        if P is None:
+            return None, None
         return LinearNDInterpolator(P, Z), P
+
+
+# --- surface model: piecewise-linear TIN vs CLAMPED smooth ----------------
+#
+# The default model is and remains the piecewise-linear TIN. A linear TIN
+# through contour samples is EXACT ON the contours and regresses everything
+# between them toward a plane, so on a sheet whose labelled contours are far
+# apart in elevation it terraces the site and under-reads both cut and fill.
+# Measured (out/verify/2026-08-31/terrain-audit): Stice p0 reads cut -24.4%
+# and fill -28.6% against that sheet's OWN printed RAW QUANTITIES table.
+#
+# CloughTocher2DInterpolator is scipy's C1-smooth cubic on the same Delaunay
+# triangulation, and it restores the between-contour relief. RAW CT IS
+# DISQUALIFIED BY MEASUREMENT and must never ship: on Stice it rings to a
+# 1,242 ft max dig on a 425-521 ft site (cut +180%), and on Oncor's
+# retaining-wall bundles (1-ft contours 2-3 pt apart) it takes fill from
+# 7,979 to 13,979 CY (+75%) with 71 ft of phantom fill.
+#
+# What ships is CT CLAMPED per evaluated point to the z-range of the
+# CLAMP_K nearest contour samples. The clamp is what makes the model safe:
+# curvature between contours is kept, but an elevation outside the local
+# contour bracket cannot be invented, because the bracket is read off the
+# sheet's own labels. Measured on Stice p0: cut 1,690,910 -> 2,015,688
+# (-24.4% -> -9.9%) and fill 1,164,619 -> 1,484,150 (-28.6% -> -9.0%),
+# both moving toward the printed table simultaneously - the signature of a
+# systematic terracing bias being removed rather than noise.
+#
+# k = 12 is the audit's own bracket width, used unchanged so the shipped
+# numbers reproduce its measurement exactly. It is a LOCAL bound, so it can
+# slightly under-state ringing in a mixed-elevation neighbourhood; the
+# volume rows, not the clamp, are the evidence that it holds.
+CLAMP_K = 12
+
+# Above this median nearest-distinct-z band, "auto" picks the clamped
+# smooth model. Chosen from the separation the two reference jobs actually
+# show, and it is a two-job denominator - say so wherever it decides:
+#   Oncor C-04  median band 1.0 ft existing / 1.0 ft proposed  -> linear
+#   Stice p0    median band 3.2 ft existing / 4.7 ft proposed  -> clamped
+# The direction is the audit's counter-measurement, not a preference: on
+# Oncor, whose contours are dense, linear is the BETTER surface pointwise -
+# against the sheet's 20 printed proposed spot elevations linear scores
+# 0.266 ft mean |err| and clamped CT 0.352. Smoothing helps where the
+# labels are sparse and is slightly negative where they are dense, so the
+# gate is on measured label sparsity and the operator can always override.
+AUTO_BAND_FT = 2.0
+
+# Probe budget for the band statistic. Measured stable to the reported
+# digit across stride 1..41 (1,872,973 cells down to 1,105) and k 8..48 on
+# both reference jobs, so a bounded probe is not an approximation that
+# could flip the decision.
+_BAND_PROBE_MAX = 20000
+
+SURFACE_MODELS = ("auto", "linear", "clamped_ct")
+
+
+def _clamped_ct_eval(P, Z):
+    """f(gx, gy) -> z: C1 CloughTocher clipped to the local contour bracket.
+
+    Returns NaN outside the hull exactly as LinearNDInterpolator does (CT
+    shares the triangulation), so a caller's defined-region mask is
+    unaffected by the choice of model.
+    """
+    f = CloughTocher2DInterpolator(P, Z)
+    tree = cKDTree(P)
+    k = min(CLAMP_K, len(P))
+
+    def ev(gx, gy):
+        gx = np.asarray(gx, dtype=float)
+        shape = gx.shape
+        gxf = gx.ravel()
+        gyf = np.asarray(gy, dtype=float).ravel()
+        z = f(gxf, gyf)
+        _, idx = tree.query(np.column_stack([gxf, gyf]), k=k, workers=-1)
+        if idx.ndim == 1:
+            idx = idx[:, None]
+        zn = Z[idx]
+        # np.clip propagates NaN, so cells outside the hull stay undefined
+        return np.clip(z, zn.min(axis=1), zn.max(axis=1)).reshape(shape)
+
+    return ev
+
+
+def label_band_ft(P, Z, gx, gy) -> dict:
+    """How far apart in ELEVATION the labels around each cell are.
+
+    For each probed cell: the z of the nearest contour sample, and the z of
+    the nearest sample carrying a DIFFERENT elevation. Their difference is
+    the vertical gap the TIN is interpolating blindly across at that cell -
+    the measured footprint of terracing. Reported as a median over a
+    bounded probe of the cells the volume is actually integrated over.
+    """
+    n = len(gx)
+    if n == 0 or len(P) < 2:
+        return {"median_ft": None, "n_probe": 0}
+    step = max(1, int(np.ceil(n / _BAND_PROBE_MAX)))
+    qx, qy = gx[::step], gy[::step]
+    k = min(max(CLAMP_K, 2), len(P))
+    tree = cKDTree(P)
+    _, idx = tree.query(np.column_stack([qx, qy]), k=k, workers=-1)
+    if idx.ndim == 1:
+        idx = idx[:, None]
+    zn = Z[idx]
+    z1 = zn[:, 0]
+    diff = np.abs(zn - z1[:, None]) > 1e-9
+    has2 = diff.any(axis=1)
+    if not has2.any():
+        return {"median_ft": None, "n_probe": int(len(qx))}
+    z2 = zn[np.arange(len(zn)), np.argmax(diff, axis=1)]
+    band = np.abs(z2 - z1)[has2]
+    return {"median_ft": round(float(np.median(band)), 2),
+            "mean_ft": round(float(band.mean()), 2),
+            "p90_ft": round(float(np.percentile(band, 90)), 2),
+            "n_probe": int(len(qx))}
 
 
 def _points_in_poly(GX, GY, poly):
@@ -90,7 +215,8 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
              cell_ft: float = 2.0, existing_offset_ft: float = 0.0,
              proposed_offset_ft: float = 0.0,
              return_grid: bool = False,
-             boundary: "list | None" = None) -> dict:
+             boundary: "list | None" = None,
+             surface_model: str = "auto") -> dict:
     """Grid-integrate (proposed - existing) where both TINs are defined.
 
     Offsets LOWER a surface before differencing (z - offset). The client's
@@ -121,7 +247,19 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
 
     Passing None is not a special case that is merely handled; it is the
     original code path untouched, so every existing number is unchanged.
+
+    surface_model picks how each surface is EVALUATED between its contours
+    (see SURFACE_MODELS above): "linear" is the piecewise-linear TIN this
+    module has always used, "clamped_ct" is the C1-smooth model clipped to
+    the local contour bracket, and "auto" measures the sheet's own label
+    sparsity and picks one. Whichever runs, the result says so in
+    surface_model / surface_model_source / surface_model_why - a volume
+    must never leave here without naming the surface that produced it.
     """
+    model_req = str(surface_model or "auto")
+    if model_req not in SURFACE_MODELS:
+        return {"error": f"surface_model must be one of "
+                         f"{', '.join(SURFACE_MODELS)}"}
     fe, pe = existing.interpolator()
     fp, pp = proposed.interpolator()
     if fe is None or fp is None:
@@ -159,6 +297,65 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         ok = ok & inside
     if not ok.any():
         return {"error": "surfaces overlap in plan but their TINs do not"}
+    # THE DEFINED REGION IS DECIDED BY THE LINEAR TIN, ALWAYS. `ok` above is
+    # computed from the linear evaluation and is never recomputed for a
+    # different model, so area_sf, the boundary clip and the map's extent
+    # are identical whichever surface model runs and a before/after is a
+    # comparison of elevations only. (CT shares the Delaunay hull, so this
+    # costs nothing - it removes a floating-point edge case, not a region.)
+    Pex, Zex = existing.samples()
+    Ppr, Zpr = proposed.samples()
+    gxi, gyi = GX[ok], GY[ok]
+    band_ex = label_band_ft(Pex, Zex, gxi, gyi)
+    band_pr = label_band_ft(Ppr, Zpr, gxi, gyi)
+    bands = [b["median_ft"] for b in (band_ex, band_pr)
+             if b.get("median_ft") is not None]
+    band_ft = max(bands) if bands else None
+    if model_req == "auto":
+        # Decided per JOB, not per surface: the two reference measurements
+        # show the clamped model wins on BOTH surfaces together or neither
+        # (Stice one-surface-only variants both score worse than doing
+        # both), and the volume is a difference of the two.
+        if band_ft is None:
+            model = "linear"
+            why = ("linear: this sheet's contours carry too few distinct "
+                   "elevations to measure label sparsity")
+        elif band_ft >= AUTO_BAND_FT:
+            model = "clamped_ct"
+            why = (f"clamped smooth: labels are sparse - the median gap "
+                   f"between the two nearest contour elevations is "
+                   f"{band_ft} ft, at or over the {AUTO_BAND_FT} ft "
+                   f"threshold, so a linear TIN would terrace the ground "
+                   f"between them")
+        else:
+            model = "linear"
+            why = (f"linear TIN: labels are dense - the median gap between "
+                   f"the two nearest contour elevations is {band_ft} ft, "
+                   f"under the {AUTO_BAND_FT} ft threshold, and on a dense "
+                   f"sheet the linear surface matched printed spot "
+                   f"elevations better than the smooth one")
+        source = "auto (measured label sparsity)"
+    else:
+        model = model_req
+        source = "operator"
+        why = ("linear TIN: chosen on the panel"
+               if model == "linear" else
+               "clamped smooth: chosen on the panel")
+    if model == "clamped_ct":
+        # evaluated only on the cells that already count, so the smooth
+        # model costs one CT build + one k-nearest query per surface
+        ze = np.where(ok, np.nan, np.nan)
+        zp = np.where(ok, np.nan, np.nan)
+        ze[ok] = _clamped_ct_eval(Pex, Zex)(gxi, gyi)
+        zp[ok] = _clamped_ct_eval(Ppr, Zpr)(gxi, gyi)
+        # a clamped value can still come back NaN where CT declines a
+        # degenerate triangle; those cells leave the defined region
+        still = ~(np.isnan(ze) | np.isnan(zp))
+        ok = ok & still
+        if not ok.any():
+            return {"error": "the smooth surface model could not evaluate "
+                             "this sheet - switch the surface model to "
+                             "Linear on the panel"}
     # guarded so the zero-offset path is the exact expression it always was
     if existing_offset_ft:
         ze = ze - float(existing_offset_ft)
@@ -177,11 +374,28 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         "boundary_points": (len(boundary) if boundary is not None else 0),
         "cut_yd3": round(cut_ft3 / 27.0, 1),
         "fill_yd3": round(fill_ft3 / 27.0, 1),
+        # The deepest single cell each way, in feet - what the color map's
+        # darkest spots ARE. A volume alone hides whether the site moves
+        # 2 ft everywhere or 40 ft in one canyon; the extremes are the
+        # sanity check an estimator runs by eye against the contours.
+        "max_cut_ft": round(float(-dz[dz < 0].min()) if (dz < 0).any() else 0.0, 2),
+        "max_fill_ft": round(float(dz[dz > 0].max()) if (dz > 0).any() else 0.0, 2),
         "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),
         "area_sf": round(float(ok.sum()) * cell_area_ft2, 0),
         "cell_ft": round(cell_ft, 2),
         "existing_contours": len(existing.contours),
         "proposed_contours": len(proposed.contours),
+        # WHICH SURFACE PRODUCED THIS NUMBER. The two models disagree by
+        # +19% cut on a sparse sheet, so a volume that does not name its
+        # interpolant is a volume an operator cannot check. Reported on
+        # every call, including the linear default, so the field's absence
+        # never has to mean anything.
+        "surface_model": model,
+        "surface_model_source": source,
+        "surface_model_why": why,
+        "label_band_ft": band_ft,
+        "label_band_existing_ft": band_ex.get("median_ft"),
+        "label_band_proposed_ft": band_pr.get("median_ft"),
     }
     if return_grid:
         # row i / col j of dz covers page-pt box
@@ -489,16 +703,498 @@ def render_cut_fill_map(grid: dict) -> tuple[bytes, dict]:
     return buf.getvalue(), meta
 
 
+# --- grading zones: declared design vs detected existing ------------------
+#
+# The estimator's workflow when the sheet does NOT draw a full proposed
+# surface (measured on the Stice case, EXCAVATION-PLAN.md section 25):
+# pick a region and DECLARE the design - "pad at 2716.0", "1.5% plane
+# falling north", "balance it", "strip 8 inches" - then compute exact
+# volumes of that declared design against the detected existing ground.
+# Reference UX is the AGTEK-style region workflow.
+
+def _zone_centroid(poly: np.ndarray) -> tuple:
+    """Area centroid of a simple polygon (shoelace); falls back to the
+    vertex mean when the area is ~zero (degenerate ring)."""
+    x, y = poly[:, 0], poly[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    a = cross.sum() / 2.0
+    if abs(a) < 1e-9:
+        return float(x.mean()), float(y.mean())
+    cx = ((x + xn) * cross).sum() / (6.0 * a)
+    cy = ((y + yn) * cross).sum() / (6.0 * a)
+    return float(cx), float(cy)
+
+
+def zone_cut_fill(existing: Surface, polygon, ft_per_pt: float,
+                  design: dict, cell_ft: float = 2.0,
+                  strip_in: float = 0.0, label_target: int = 120) -> dict:
+    """Volumes of a DECLARED design surface against the detected existing
+    ground, inside one polygon (page pt).
+
+    design is one of:
+      {mode:"pad", elev_ft}                 constant elevation
+      {mode:"plane", elev_ft, slope_pct, azimuth_deg, anchor:[x,y]}
+          elev_ft at the anchor (default: polygon centroid), falling
+          slope_pct per 100 ft ALONG the azimuth. Azimuth is compass-style
+          on the sheet: 0 = up the page, 90 = right, measured clockwise.
+          That reads the top of the sheet as north - general drafting
+          practice, an INFERENCE, not something any one sheet declares;
+          the UI says so next to the input.
+      {mode:"balance"}                      bisect a pad elevation until
+          |cut - fill| < 0.5 CY; reports the solved elevation and its
+          offset from the existing mean.
+      {mode:"strip_only"}                   no design surface: cut/fill are
+          zero and only the strip term computes.
+
+    strip_in > 0 lowers the EXISTING surface by that many inches before
+    differencing (same convention as cut_fill's existing_offset_ft:
+    stripped ground starts lower, so the design's fill includes replacing
+    that depth) and reports the stripped volume as strip_yd3 = area x
+    depth. In strip_only mode nothing is differenced, so strip_yd3 is the
+    only volume.
+
+    Returns volumes + a "grid" dict (render_cut_fill_map shape) + coarse
+    cell_labels [{x, y, dz}] (<= label_target of them) for the per-cell
+    numbers display. {"error": reason} on any refusal - never silent.
+    """
+    poly = np.asarray(polygon, dtype=float)
+    if poly.ndim != 2 or poly.shape[0] < 3 or poly.shape[1] != 2:
+        return {"error": "the zone polygon needs at least 3 corners, "
+                         "each [x, y] in page points"}
+    x, y = poly[:, 0], poly[:, 1]
+    area_pt2 = abs(float((x * np.roll(y, -1) - np.roll(x, -1) * y).sum())) / 2.0
+    zone_area_sf = area_pt2 * ft_per_pt * ft_per_pt
+    if zone_area_sf < 1.0:
+        return {"error": f"that zone is degenerate - its corners enclose "
+                         f"{zone_area_sf:.3f} SF of ground. Draw a region, "
+                         f"not a line."}
+    mode = str((design or {}).get("mode") or "")
+    if mode not in ("pad", "plane", "balance", "strip_only"):
+        return {"error": f"unknown design mode {mode!r} - expected pad, "
+                         "plane, balance or strip_only"}
+    fe, _pe = existing.interpolator()
+    if fe is None:
+        return {"error": "the existing surface needs at least 3 sample "
+                         "points - assign labelled contours and/or spot "
+                         "grades to EXISTING first"}
+
+    cell_ft = float(cell_ft or 2.0)
+    if cell_ft <= 0:
+        cell_ft = 2.0
+    cell_pt = cell_ft / ft_per_pt
+    lo = poly.min(axis=0)
+    hi = poly.max(axis=0)
+    nx = max(int((hi[0] - lo[0]) / cell_pt), 1)
+    ny = max(int((hi[1] - lo[1]) / cell_pt), 1)
+    # same stall guard as cut_fill: widen cells rather than hang the service
+    while nx * ny > 4_000_000:
+        cell_pt *= 1.5
+        cell_ft *= 1.5
+        nx = max(int((hi[0] - lo[0]) / cell_pt), 1)
+        ny = max(int((hi[1] - lo[1]) / cell_pt), 1)
+    gx = lo[0] + (np.arange(nx) + 0.5) * cell_pt
+    gy = lo[1] + (np.arange(ny) + 0.5) * cell_pt
+    GX, GY = np.meshgrid(gx, gy)
+    inside = _points_in_poly(GX, GY, poly)
+    if not inside.any():
+        return {"error": "the zone is smaller than one grid cell at "
+                         f"{cell_ft:g} ft cells - draw it larger"}
+    ze = fe(GX, GY)
+    ok = inside & ~np.isnan(ze)
+    if not ok.any():
+        return {"error": "the existing surface does not reach this zone - "
+                         "the TIN built from the assigned contours and spot "
+                         "grades is undefined everywhere inside it. Assign "
+                         "elevations nearer the zone, or move it."}
+    existing_mean = float(ze[ok].mean())
+    try:
+        strip_ft = max(float(strip_in or 0.0), 0.0) / 12.0
+    except (TypeError, ValueError):
+        strip_ft = 0.0
+    zs = ze - strip_ft          # existing AFTER the strip comes off
+    cell_area_ft2 = cell_ft * cell_ft
+
+    def _vols(dz_arr):
+        d = dz_arr[ok]
+        fill3 = float(d[d > 0].sum() * cell_area_ft2)
+        cut3 = float(-d[d < 0].sum() * cell_area_ft2)
+        return cut3, fill3
+
+    balance_elev = None
+    if mode == "pad":
+        try:
+            elev = float(design["elev_ft"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "pad mode needs elev_ft, the pad's finish "
+                             "elevation in feet"}
+        zp = np.full_like(ze, elev)
+        dz = zp - zs
+    elif mode == "plane":
+        try:
+            elev = float(design["elev_ft"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "plane mode needs elev_ft, the elevation at "
+                             "the anchor point in feet"}
+        try:
+            slope = float(design.get("slope_pct") or 0.0)
+        except (TypeError, ValueError):
+            slope = 0.0
+        try:
+            az = float(design.get("azimuth_deg") or 0.0)
+        except (TypeError, ValueError):
+            az = 0.0
+        anc = design.get("anchor")
+        if (isinstance(anc, (list, tuple)) and len(anc) == 2):
+            ax, ay = float(anc[0]), float(anc[1])
+        else:
+            ax, ay = _zone_centroid(poly)
+        rad = np.radians(az)
+        # page y grows DOWN, so "up the page" (az 0) is -y
+        ux, uy = float(np.sin(rad)), -float(np.cos(rad))
+        d_ft = ((GX - ax) * ux + (GY - ay) * uy) * ft_per_pt
+        zp = elev - (slope / 100.0) * d_ft
+        dz = zp - zs
+    elif mode == "balance":
+        # net = fill - cut is strictly increasing in the pad elevation, so
+        # bisection cannot miss; 0.5 CY is the requested tolerance
+        lo_e = float(zs[ok].min()) - 1.0
+        hi_e = float(zs[ok].max()) + 1.0
+        mid = (lo_e + hi_e) / 2.0
+        for _ in range(80):
+            mid = (lo_e + hi_e) / 2.0
+            cut3, fill3 = _vols(np.full_like(ze, mid) - zs)
+            if abs(cut3 - fill3) / 27.0 < 0.5:
+                break
+            if fill3 > cut3:
+                hi_e = mid
+            else:
+                lo_e = mid
+        balance_elev = mid
+        dz = np.full_like(ze, mid) - zs
+    else:  # strip_only: no design surface, volumes only from the strip term
+        dz = np.zeros_like(ze)
+
+    cut_ft3, fill_ft3 = _vols(dz)
+    d = dz[ok]
+    area_sf = float(ok.sum()) * cell_area_ft2
+    strip_yd3 = area_sf * strip_ft / 27.0
+    coverage = float(ok.sum()) / float(inside.sum())
+
+    # coarse labels: aggregate the fine grid into <= label_target blocks,
+    # each labelled with the MEAN dz of its defined cells and positioned at
+    # their centroid (so a label on the zone's edge still sits inside it)
+    k = 1
+    if nx * ny > label_target:
+        k = int(np.ceil(np.sqrt(nx * ny / float(label_target))))
+        while ((nx + k - 1) // k) * ((ny + k - 1) // k) > label_target:
+            k += 1
+    labels = []
+    dz_ok = np.where(ok, dz, np.nan)
+    for bi in range(0, ny, k):
+        for bj in range(0, nx, k):
+            blk = dz_ok[bi:bi + k, bj:bj + k]
+            m = ~np.isnan(blk)
+            if not m.any():
+                continue
+            sub_ok = ok[bi:bi + k, bj:bj + k]
+            xs = GX[bi:bi + k, bj:bj + k][sub_ok]
+            ys = GY[bi:bi + k, bj:bj + k][sub_ok]
+            labels.append({"x": round(float(xs.mean()), 1),
+                           "y": round(float(ys.mean()), 1),
+                           "dz": round(float(blk[m].mean()), 1)})
+
+    out = {
+        "mode": mode,
+        "cut_yd3": round(cut_ft3 / 27.0, 1),
+        "fill_yd3": round(fill_ft3 / 27.0, 1),
+        "net_yd3": round((fill_ft3 - cut_ft3) / 27.0, 1),
+        "area_sf": round(area_sf, 0),
+        "zone_area_sf": round(zone_area_sf, 0),
+        # < 1.0 whenever the existing TIN stops short of the polygon: the
+        # volumes cover only the defined share, and the caller must say so
+        "coverage": round(coverage, 3),
+        "max_cut_ft": round(float(-d[d < 0].min()) if (d < 0).any() else 0.0, 2),
+        "max_fill_ft": round(float(d[d > 0].max()) if (d > 0).any() else 0.0, 2),
+        "existing_mean_ft": round(existing_mean, 2),
+        "existing_n_contours": len(existing.contours),
+        "existing_n_spots": len(existing.points),
+        "strip_in": round(strip_ft * 12.0, 2),
+        "strip_yd3": round(strip_yd3, 1),
+        "cell_ft": round(cell_ft, 2),
+        "cell_labels": labels,
+        "grid": {
+            "dz": dz_ok,
+            "ok": ok,
+            "x0_pt": float(lo[0]), "y0_pt": float(lo[1]),
+            "cell_pt": float(cell_pt), "nx": int(nx), "ny": int(ny),
+            "bbox_pt": [float(lo[0]), float(lo[1]),
+                        float(lo[0] + nx * cell_pt),
+                        float(lo[1] + ny * cell_pt)],
+        },
+    }
+    if balance_elev is not None:
+        out["balance_elev_ft"] = round(balance_elev, 2)
+        out["balance_delta_ft"] = round(balance_elev - existing_mean, 2)
+    return out
+
+
+# ---- label-in-gap machinery ----------------------------------------------
+# Contour elevation labels sit in a BREAK of their own line, or over a white
+# mask stroke painted along it. Both are located from the vector geometry.
+# Constants are measured on Oncor Cloudcrest C-04 (engine page index 3 =
+# printed C-04), whose 27 existing + 20 proposed labels are hand-verified in
+# out/verify/2026-08-31/oncor-c04-offline/report.json. Each states its
+# measurement; a value from one sheet is a sample, not a convention, so the
+# spans are chosen between measured populations, not at their edges.
+
+# A gap step: a polyline jump big enough to be part of a label break.
+# C-04's label breaks decompose into sub-gaps of 9.8-35.2 pt (tiny glyph
+# stubs welded into the chain split them); the largest NON-label jump that
+# must not trigger is the existing contours' own 9.0 pt dash gap. 9.5 sits
+# between the two measured populations. The floor also scales with the
+# chain's own median jump (x1.3): a smooth curve digitised at ~11 pt
+# vertex spacing (C-04 chain 813) otherwise reads as one endless "break".
+# 1.3 is bounded above by the existing d18/g9 contours, whose label breaks
+# measure down to 17.7 pt against a 13.5 pt median jump (ratio 1.31) - a
+# larger factor starts eating real label breaks.
+_GAP_STEP_PT = 9.5
+_GAP_STEP_MED_FACTOR = 1.3
+# Sub-gaps merge across drawn stubs totalling <= 8 pt: real dashes on these
+# sheets carry >= 9 pt of ink, welded glyph stubs measured 0.5-6 pt.
+_GAP_STUB_PT = 8.0
+# A merged break must span 14-110 pt end to end: the narrowest verified C-04
+# label break chord is 18.7 pt (14 leaves margin for tighter text) and the
+# widest 72.4; 110 tolerates a longer 4-digit-with-decimals label before the
+# OCR patch grows useless.
+_GAP_SPAN_PT = (14.0, 110.0)
+# Ranking span for candidate patches: C-04's 3-digit labels occupy breaks
+# centered on ~26 pt; regions closest to this are OCR'd first when a page
+# offers more candidates than the budget.
+_LABEL_SPAN_PT = 26.0
+# Near-white ink is invisible on paper: C-04's mask strokes (sids 44-48)
+# are exactly 1.0; the lightest visible screening measured on that sheet is
+# 0.7 gray. 0.92 splits the populations.
+WHITE_MIN = 0.92
+# A mask stroke is FAT white drawn along the line it hides: C-04 masks are
+# 3.2 pt wide, white glyph halos 0.1-1.2 pt. 1.5 splits them.
+_MASK_WIDTH_MIN = 1.5
+# One mask dash covers one label: drawn lengths measured 16-25 pt on C-04's
+# ten mask-covered labels (12-60 leaves room for longer labels).
+_MASK_SEG_PT = (12.0, 60.0)
+# The mask lies ON the chain it hides: mask-center-to-chain distance
+# measured 0.1-3.9 pt across those ten labels.
+_MASK_DIST_PT = 4.0
+# ...and runs along it: |cos| between mask segment and local chain tangent
+# measured 0.79-0.97 (the lowest is a curving contour under a straight
+# mask). 0.75 keeps that case and still rejects crossing strokes.
+_MASK_COS = 0.75
+# A native text token whose center sits within half a text-line height of
+# the break chord is IN the break; label text on these sheets is 7-10 pt
+# tall, so 6 pt covers it without reaching the next contour (~10-15 pt away
+# on C-04's tightest strip).
+_INLINE_PERP_PT = 6.0
+# A native token within this of the polyline is printed ON the line itself -
+# the PDF's own glyphs there outrank a raster OCR of the same spot, so a
+# gap-OCR value never overrides such a match. Measured: Stice's verified
+# on-line labels sit 0.2-1.6 pt from their chain; C-04's stolen spot
+# tokens sit 2.1-4.4 pt off it (at 6.0 this guard kept spot 570.3 on
+# chain 207 against the OCR's correct 570). 3.0 splits the populations.
+_ON_LINE_PT = 3.0
+
+
+def _chain_white(c) -> bool:
+    """Near-white stroke = invisible ink (a mask), never a contour."""
+    col = getattr(c, "color", None)
+    try:
+        return bool(col) and min(col) >= WHITE_MIN
+    except (TypeError, ValueError):
+        return False
+
+
+def _gap_regions(p: np.ndarray) -> list:
+    """Merged label-sized breaks of one polyline.
+
+    Walks the segment list (a gap test, not a bucket): a region opens at a
+    jump >= the chain's gap-step threshold and extends across further such
+    jumps while the drawn stubs between them total <= _GAP_STUB_PT. A run
+    whose chord outgrows the span cap is SPLIT greedily instead of thrown
+    away - discarding it silently lost chain 800's label on C-04 when its
+    break merged into a longer run. Returns
+    [(cx, cy, ux, uy, span), ...] - chord center, unit direction, length.
+    """
+    d = np.diff(p, axis=0)
+    jump = np.hypot(d[:, 0], d[:, 1])
+    pos = jump[jump > 0.5]
+    med = float(np.median(pos)) if len(pos) else 0.0
+    step = max(_GAP_STEP_PT, _GAP_STEP_MED_FACTOR * med)
+    out = []
+    n = len(jump)
+    runs = []
+    i = 0
+    while i < n:
+        if jump[i] < step:
+            i += 1
+            continue
+        run = [i]
+        stub = 0.0
+        j = i + 1
+        while j < n:
+            if jump[j] >= step:
+                run.append(j)
+                stub = 0.0
+            else:
+                stub += jump[j]
+                if stub > _GAP_STUB_PT:
+                    break
+            j += 1
+        runs.append(run)
+        i = run[-1] + 1
+
+    def _chord(a_i, b_i):
+        return float(np.hypot(*(p[b_i + 1] - p[a_i])))
+
+    for run in runs:
+        s = 0
+        while s < len(run):
+            e = s
+            while e + 1 < len(run) \
+                    and _chord(run[s], run[e + 1]) <= _GAP_SPAN_PT[1]:
+                e += 1
+            a, b = p[run[s]], p[run[e] + 1]
+            span = float(np.hypot(*(b - a)))
+            if _GAP_SPAN_PT[0] <= span <= _GAP_SPAN_PT[1]:
+                u = (b - a) / span
+                out.append((float((a[0] + b[0]) / 2),
+                            float((a[1] + b[1]) / 2),
+                            float(u[0]), float(u[1]), span))
+            s = e + 1
+        # A LONG run also gets one window per big gap step, centered on
+        # the STEP itself with the step's own direction. A run's chord is
+        # a straight line, but the break curves: on C-04, chain 805's
+        # label sat 13 pt perpendicular to its 58 pt region chord (out of
+        # the OCR band) and chain 801's sat past the chord's end after
+        # the >110 pt split - both are covered only by walking the actual
+        # polyline. 2 * _LABEL_SPAN_PT is where one centered patch stops
+        # covering a region's ends; 14 pt is the narrowest verified label
+        # break (the span floor).
+        if _chord(run[0], run[-1]) > 2 * _LABEL_SPAN_PT:
+            for idx in run:
+                L = float(jump[idx])
+                if L < _GAP_SPAN_PT[0]:
+                    continue
+                a, b = p[idx], p[idx + 1]
+                u = (b - a) / L
+                out.append((float((a[0] + b[0]) / 2),
+                            float((a[1] + b[1]) / 2),
+                            float(u[0]), float(u[1]),
+                            float(min(L + 8.0, 1.4 * _LABEL_SPAN_PT))))
+    return out
+
+
+def _label_regions(chains: list, exclude: set | None = None) -> dict:
+    """Places where a chain's own elevation label can sit.
+
+    {chain_id: [(kind, cx, cy, ux, uy, span), ...]} with kind 0 = under a
+    white mask stroke (strongest: something was deliberately hidden there),
+    kind 1 = a merged break of the polyline. Chains in `exclude` (legend
+    non-contours, white masks) get no regions - their labels are not
+    elevations, and the mask strokes themselves serve only as hints for the
+    chains they cover.
+    """
+    exclude = exclude or set()
+    plan = [c for c in chains
+            if c.length >= 60 and len(c.pts) >= 3 and _is_plan_chain(c)
+            and not _chain_white(c) and int(c.chain_id) not in exclude]
+    regions: dict = {}
+    for c in plan:
+        p = np.asarray(c.pts, float)
+        for cx, cy, ux, uy, span in _gap_regions(p):
+            regions.setdefault(int(c.chain_id), []).append(
+                (1, cx, cy, ux, uy, span))
+    masks = [c for c in chains
+             if _chain_white(c) and (getattr(c, "width", 0) or 0)
+             >= _MASK_WIDTH_MIN]
+    if masks and plan:
+        samp, owner, tang = [], [], []
+        for c in plan:
+            p = np.asarray(c.pts, float)
+            for a, b in zip(p[:-1], p[1:]):
+                L = float(np.hypot(*(b - a)))
+                if L < 1e-6:
+                    continue
+                u = (b - a) / L
+                k = max(int(L / 3.0), 1)
+                for t in np.linspace(0.0, 1.0, k, endpoint=False):
+                    samp.append(a + t * (b - a))
+                    owner.append(int(c.chain_id))
+                    tang.append(u)
+        if samp:
+            tree = cKDTree(np.asarray(samp))
+            tang = np.asarray(tang)
+            for c in masks:
+                p = np.asarray(c.pts, float)
+                for a, b in zip(p[:-1], p[1:]):
+                    L = float(np.hypot(*(b - a)))
+                    if not (_MASK_SEG_PT[0] <= L <= _MASK_SEG_PT[1]):
+                        continue
+                    u = (b - a) / L
+                    ctr = (a + b) / 2
+                    dd, ii = tree.query(ctr, k=12)
+                    dd = np.atleast_1d(dd)
+                    ii = np.atleast_1d(ii)
+                    d, i = float(dd[0]), int(ii[0])
+                    if d > _MASK_DIST_PT:
+                        continue
+                    if abs(float(tang[i] @ u)) < _MASK_COS:
+                        continue
+                    cid = int(owner[i])
+                    # ambiguity guard: when a SECOND chain also passes
+                    # within mask distance (C-04's south strip runs its
+                    # contours 10 pt apart under one dashed mask line),
+                    # the label under this mask cannot be assigned by
+                    # geometry - a wrong owner hands a neighbour's
+                    # elevation to the chain, which is worse than absence
+                    other = next((k for k in range(1, len(ii))
+                                  if k < len(dd)
+                                  and int(owner[int(ii[k])]) != cid), None)
+                    if other is not None \
+                            and float(dd[other]) <= _MASK_DIST_PT:
+                        continue
+                    # one region per spot: a mask redrawn over an already
+                    # found break would double the patch for no new info
+                    if any(np.hypot(r[1] - ctr[0], r[2] - ctr[1]) < 8.0
+                           for r in regions.get(cid, [])):
+                        continue
+                    # the label follows the CHAIN under the mask, not the
+                    # mask stroke: on C-04's south strip the masks run at
+                    # 0 deg over contours tilted -10 to -17 deg, and OCR
+                    # of the mask-angled patch clipped every digit - so
+                    # the region takes the chain's local tangent
+                    tv = tang[i]
+                    regions.setdefault(cid, []).append(
+                        (0, float(ctr[0]), float(ctr[1]),
+                         float(tv[0]), float(tv[1]), L))
+    return regions
+
+
 def suggest_elevations(chains: list, words: list,
                        max_d_pt: float = 16.0,
-                       gap_z: dict | None = None) -> list:
+                       gap_z: dict | None = None,
+                       exclude: set | None = None) -> list:
     """Auto-pair elevation-looking labels with the contour they sit on.
 
-    Returns [{chain_id, z, label_xy, dist}] - a SUGGESTION for the review
-    UI; the human confirms/edits, per the agreed human-in-loop flow.
+    Returns [{chain_id, z, label_xy, dist, how}] - a SUGGESTION for the
+    review UI; the human confirms/edits, per the agreed human-in-loop flow.
+    `how` discloses the evidence: "inline" (native token in the chain's own
+    break), "gap-ocr" (OCR of the break), "radius" (nearest label within
+    max_d_pt), "inherited" (propagated along the contour, pass 2).
+    Chains in `exclude` never seed and never take a label - see the
+    explicit source ranking below.
     """
     import re
 
+    exclude = exclude or set()
     cands = []
     for w in words:
         t = str(w[4]).strip()
@@ -508,12 +1204,33 @@ def suggest_elevations(chains: list, words: list,
                 cands.append(((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, v))
     if not cands:
         return []
+    # Explicit source ranking, stored in the `dist` slot so the existing
+    # keep-the-closest comparisons ARE the ranking (no first-writer-wins):
+    #   perp  native token inside the chain's own break ("inline") - its
+    #         perpendicular distance to the break chord, so a CLOSER
+    #         radius token still wins the chain (on Stice, rank-flat
+    #         inline let a neighbour's token in a phantom break outrank
+    #         the chain's own on-line label 202 times)
+    #   0.5   OCR of the chain's own break              ("gap-ocr") -
+    #         never numerically displaces an inline match (the explicit
+    #         same-text rule below is the only path), and never a radius
+    #         match closer than _ON_LINE_PT: a native token that close is
+    #         printed ON the line, and the PDF's own glyphs outrank a
+    #         raster re-read of the same spot
+    #   d     nearest-label radius match, d <= max_d_pt ("radius")
+    #   999   inherited along the contour               ("inherited")
+    out, seen, how = [], {}, {}
+
     samples, owner = [], []
     for c in chains:
         # a profile box or the title block is not plan ground - see
         # _NON_PLAN_LAYER. Filtering the sample pool once keeps both the
         # direct match below and the propagation in pass 2 off them.
-        if c.length < 60 or not _is_plan_chain(c):
+        # Excluded chains (legend non-contours, white masks) leave the pool
+        # entirely, so a label they used to steal now reaches the nearest
+        # chain that can actually be a contour.
+        if c.length < 60 or not _is_plan_chain(c) \
+                or int(c.chain_id) in exclude:
             continue
         s, _ = _sample_polyline(np.asarray(c.pts), step=4.0, max_n=60000)
         if len(s):
@@ -523,8 +1240,60 @@ def suggest_elevations(chains: list, words: list,
         return []
     tree = cKDTree(np.vstack(samples))
     owner = np.array(owner)
-    out, seen = [], {}
-    for cx, cy, v in cands:
+
+    # Pass 0 - native tokens sitting inside a chain's own break. Geometry
+    # (perpendicular distance to the break chord), not a bucket. A token
+    # consumed here is REMOVED from the radius pool: on C-04 the property
+    # line and mask strokes each grabbed a nearby contour's inline label as
+    # their own z through the radius match - the theft this pass ends.
+    # The break's OWNER must also be the STRICT nearest chain to the
+    # token: on the Stice sheet (1"=200', terrace contours closer together
+    # than the label text is tall) any laxer rule pulls labels sideways
+    # into neighbours' break regions - a 2.0 pt margin moved 336 of the
+    # operator's 1,487 verified rows off their values, 0.5 pt still moved
+    # 124. With owner == nearest, the inline pass can never assign a
+    # token to a different chain than the radius pass would, so its whole
+    # effect is rank: the chain's own in-break label outranks farther
+    # radius tokens and OCR re-reads. C-04's genuine in-break tokens all
+    # have their own chain as the strict nearest once the mask and
+    # property-line families are excluded from the pool.
+    consumed = set()
+    regions = _label_regions(chains, exclude=exclude)
+    if regions:
+        flat = []
+        for cid, regs in regions.items():
+            for kind, cx, cy, ux, uy, span in regs:
+                flat.append((cid, kind, cx, cy, ux, uy, span))
+        for ci, (tx, ty, v) in enumerate(cands):
+            best = None
+            for cid, kind, cx, cy, ux, uy, span in flat:
+                dx, dy = tx - cx, ty - cy
+                lon = abs(dx * ux + dy * uy)
+                per = abs(dx * -uy + dy * ux)
+                if lon <= span / 2 + 3.0 and per <= _INLINE_PERP_PT:
+                    if best is None or per < best[0]:
+                        best = (per, cid)
+            if best is None:
+                continue
+            per, cid = best
+            d_near, i_near = tree.query([tx, ty])
+            if int(owner[int(i_near)]) != cid:
+                continue  # another chain owns this token
+            consumed.add(ci)
+            # rank by the token's PATH distance, the same metric the
+            # radius pass uses - ranking by chord-perp let a phantom
+            # region's far token outrank the chain's own on-line label
+            # (43 Stice rows moved before this was equalised). Inline
+            # keeps its tag (and OCR protection) but can never prefer a
+            # token the radius pass would have rejected.
+            d_rank = max(float(d_near), 0.05)
+            if cid in seen and seen[cid][0] <= d_rank:
+                continue
+            seen[cid] = (d_rank, v, tx, ty)
+            how[cid] = "inline"
+    for ci, (cx, cy, v) in enumerate(cands):
+        if ci in consumed:
+            continue
         d, i = tree.query([cx, cy])
         if d > max_d_pt:
             continue
@@ -533,8 +1302,10 @@ def suggest_elevations(chains: list, words: list,
         if cid in seen and seen[cid][0] <= d:
             continue
         seen[cid] = (d, v, cx, cy)
+        how[cid] = "radius"
     # gap-OCR labels (see gap_label_elevations) are read out of the chain's
-    # own break - the strongest evidence there is; they outrank radius hits
+    # own break - stronger than any radius hit except a native token
+    # actually printed on the line (see the ranking above)
     if gap_z:
         # OCR misreads produce lone impossible values (195 and 861 on a
         # 548-588ft sheet). Real elevations never stand alone: contours
@@ -543,15 +1314,61 @@ def suggest_elevations(chains: list, words: list,
         # sheet offers 6+ to compare against - is a misread, not terrain.
         anchor = sorted({s[1] for s in seen.values()}
                         | {v for v, _, _ in gap_z.values()})
+        # Native band gate: with >= 3 distinct GLYPH-derived values on the
+        # page (radius or inline - a real witnessed population), an OCR
+        # value more than 100 ft from every one of them is a misread, not
+        # a second surface. OCR only fills gaps in a surface the native
+        # labels already witness; measured on Barn C3.0, the v2 pass also
+        # read 826/710/324/307/120/100 out of dimension texts against a
+        # 7,7xx-ft native population, and those mutually-supporting reads
+        # sail through the 25-ft anchor rule below. 100 ft matches the
+        # endpoint's surface-cluster gap.
+        native_vals = sorted({s[1] for s in seen.values()})
         for cid, (v, cx, cy) in gap_z.items():
             cid = int(cid)
+            if cid in exclude:
+                continue
+            if len(native_vals) >= 3 and min(
+                    (abs(v - a) for a in native_vals), default=0.0) > 100.0:
+                continue
             if len(anchor) >= 6:
                 near = min((abs(v - a) for a in anchor if a != v),
                            default=0.0)
                 if near > 25.0:
                     continue
-            if cid not in seen or seen[cid][0] > 0.5:
+            if cid not in seen or (how.get(cid) != "inline"
+                                   and seen[cid][0] > 0.5
+                                   and not (how.get(cid) == "radius"
+                                            and seen[cid][0] <= _ON_LINE_PT)):
                 seen[cid] = (0.5, v, cx, cy)
+                how[cid] = "gap-ocr"
+            elif how.get(cid) == "inline" and abs(seen[cid][1] - v) > 0.01:
+                # inline vs gap-OCR disagreement. Two measured shapes:
+                #  - DIFFERENT texts occupy the area: on C-04 the break
+                #    held a vector-exploded label (569/570/571) and a
+                #    nearby native SPOT value (565.2/567.8/570.3) merely
+                #    overlapped it - the OCR read was right 3 of 3, so a
+                #    structurally different value defers to the OCR;
+                #  - the SAME text, misread: on Barn C3.0 the native 7725
+                #    sat in its own break and the OCR returned 7715 - one
+                #    digit off at equal length. Native glyphs are exact;
+                #    a raster re-read of the same string cannot beat
+                #    them, so equal-length/one-digit-apart keeps inline.
+                a, b = f"{seen[cid][1]:g}", f"{v:g}"
+                same_text = (len(a) == len(b)
+                             and sum(x != y for x, y in zip(a, b)) <= 1)
+                # ...and the OCR value must be corroborated by another
+                # elevation within 5 ft (a contour interval or two on the
+                # measured sheets - C-04 steps 1 ft, Stice 2.5-5): the
+                # C-04 wins (569/570/571 over spot values) all have
+                # adjacent-contour support, while Stice's one such
+                # override was a 400 misread displacing a verified 472.5
+                # with nothing within 25 ft of it.
+                support = min((abs(v - x) for x in anchor if x != v),
+                              default=1e9)
+                if not same_text and support <= 5.0:
+                    seen[cid] = (0.5, v, cx, cy)
+                    how[cid] = "gap-ocr"
     # Pass 2 - propagate along the contour. A long contour splits into
     # several chains at wide gaps, and only the fragment nearest a printed
     # label matches directly (Oncor p4: 29 labeled chains, but each
@@ -563,7 +1380,8 @@ def suggest_elevations(chains: list, words: list,
     # matches disagree keeps only its direct matches (ambiguity is worse
     # than absence).
     ch_ok = [c for c in chains
-             if c.length >= 60 and len(c.pts) >= 2 and _is_plan_chain(c)]
+             if c.length >= 60 and len(c.pts) >= 2 and _is_plan_chain(c)
+             and int(c.chain_id) not in exclude]
     ends, tangs, cid_of = [], [], []
     for c in ch_ok:
         p = np.asarray(c.pts, float)
@@ -636,23 +1454,150 @@ def suggest_elevations(chains: list, words: list,
             for m in members:
                 if m not in seen:
                     seen[m] = (999.0, z, cx, cy)  # dist marks it inherited
+                    how[m] = "inherited"
     for cid, (d, v, cx, cy) in seen.items():
         out.append({"chain_id": cid, "z": v,
                     "label_xy": [round(cx, 1), round(cy, 1)],
-                    "dist": round(float(d), 1)})
+                    "dist": round(float(d), 1),
+                    "how": how.get(cid, "radius")})
     return sorted(out, key=lambda r: r["z"])
 
 
+# OCR patch budget, counted in TESSERACT CALLS (the numpy gates are free).
+# Candidate regions measured with the v2 triggers: C-04 ~950 raw (202
+# chains, ~600 reach tesseract), Barn C3.0 ~2,000, Stice 600-acre ~3,500.
+# The global order below is round-robin across chains (every chain's best
+# region before any chain's second - the v1 first-come cap starved C-04's
+# proposed contours completely, chains 799+ hit `patches_before=400` on
+# all 20). 1,400 covers every gate-passing region on C-04 (900 cut it off
+# in round ~3 and lost chain 800's fourth-ranked label break) and bounds
+# the one-time per-page cache build at ~3 min of tesseract on the largest
+# measured sheet.
+_OCR_BUDGET = 1400
+# Per chain: stop after three reads - a long contour repeats its label,
+# and the third read breaks the tie when one of the first two is a
+# misread (the majority rule in the conflict resolution below). A fourth
+# adds nothing that the ranking can use.
+_OCR_READS_PER_CHAIN = 3
+# Patch band height: label text on these sheets is 7-10 pt tall; a 12 pt
+# band clears it, while v1's 22 pt band pulled in the neighbouring contour
+# on C-04's tight strip (~10-15 pt between contours) and its labels with it.
+_OCR_BAND_PT = 12.0
+# "Ink" is anything darker than 235/255. C-04's screened existing labels
+# anti-alias to 193-230 in the 150 dpi raster (thin 0.6-gray strokes) - a
+# 200 threshold read whole gray labels as blank paper and every
+# existing-contour read vanished; 235 still excludes clean paper (255).
+_OCR_INK_LEVEL = 235
+# A patch more than 35% ink sits inside hatch or a solid fill, not a
+# label (inferred from the C-04 patches, stated as inference).
+_OCR_INK_MAX = 0.35
+# The label-vs-linework discriminator is ink OFF the chord line: the
+# polyline cannot say which segments are pen-up (a drawn 18 pt dash and an
+# 18 pt label break are the same jump), but label digits are 7-10 pt tall
+# while the linework this must reject is <= 3.5 pt wide - so beyond
+# +-2.0 pt of the chord a dash or an empty break is clean and a label is
+# not. Measured on C-04's 40 verified label regions: off-chord ink
+# 0.025-0.32; drawn dashes and empty breaks sit at ~0. 0.02 passed 40/40
+# labels and prunes ~40% of the non-label regions before tesseract, which
+# is what keeps the budget for regions that can pay (v1 spent its whole
+# 400-patch first-come budget on drawn dashes and starved chains 799+).
+_OCR_OFFCHORD_MIN = 0.02
+_OCR_OFFCHORD_HALF_PT = 2.0
+
+
+def _ocr_digit_string(pytesseract, re, img) -> tuple:
+    """(valid elevation string or None, raw attempts) for one binary image.
+
+    psm 7 treats the patch as one text line; psm 8 as one word - the
+    fallback recovers labels whose leading digit psm 7 clips (measured on
+    C-04: 803/804 read only under psm 8).
+    """
+    outs = []
+    for psm in (7, 8):
+        try:
+            t = pytesseract.image_to_string(
+                img,
+                config=f"--psm {psm} -c tessedit_char_whitelist=0123456789.",
+            ).strip().strip(".")
+        except Exception:
+            return None, outs
+        outs.append(t)
+        if re.fullmatch(r"\d{3,4}(\.\d{1,2})?", t):
+            return t, outs
+    return None, outs
+
+
+def _read_label_patch(cv2, pytesseract, re, patch) -> str | None:
+    """OCR one flattened label patch, two variants with an explicit rule.
+
+    V1: 2x upscale + Otsu, geometry untouched. V2: same, then drop
+    connected components that are line-like (w > 2.2h), sub-glyph
+    (h < 10 px at 2x150dpi ~ a 2.4 pt speck), or hollow-diagonal
+    (area < 15% of box - a stroke crossing the band), and tight-crop what
+    remains. V2 unglues digits from the dashes that touch them but can
+    also hallucinate: on C-04 it repaired 5833->583 yet misread 572 as
+    972. Rule, measured against the 47 hand-verified C-04 labels:
+      - V1 valid and V2 a shorter substring of it -> V2 (V1 = same digits
+        plus a stray stroke read as an extra digit: 5657->565, 5797->579);
+      - V1 valid otherwise -> V1;
+      - only V2 valid -> V2, but ONLY if every non-empty V1 raw attempt is
+        a substring of it (V1 glimpsed a fragment of the same digits; this
+        rejected V2's one plausible-but-wrong read, 575 for a true 577).
+    """
+    big = cv2.resize(patch, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    _, bw1 = cv2.threshold(big, 0, 255,
+                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    t1, raw1 = _ocr_digit_string(pytesseract, re, bw1)
+    _, inv = cv2.threshold(big, 0, 255,
+                           cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(inv, 8)
+    boxes = []
+    keep = np.zeros_like(inv)
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if h < 10 or h > inv.shape[0] - 2 or w > 2.2 * h \
+                or area < 0.15 * w * h:
+            continue
+        keep[lab == i] = 255
+        boxes.append((x, y, w, h))
+    t2 = None
+    if boxes:
+        x0 = min(b[0] for b in boxes)
+        y0 = min(b[1] for b in boxes)
+        x1 = max(b[0] + b[2] for b in boxes)
+        y1 = max(b[1] + b[3] for b in boxes)
+        tight = 255 - keep[max(y0 - 6, 0):y1 + 6, max(x0 - 6, 0):x1 + 6]
+        t2, _ = _ocr_digit_string(pytesseract, re, tight)
+    if t1 is not None and t2 is not None:
+        if t2 != t1 and len(t2) < len(t1) and t2 in t1:
+            return t2
+        return t1
+    if t1 is not None:
+        return t1
+    if t2 is not None and all(r in t2 for r in raw1 if r):
+        return t2
+    return None
+
+
 def gap_label_elevations(chains: list, page_img: np.ndarray,
-                         px_per_pt: float, max_patches: int = 400) -> dict:
+                         px_per_pt: float,
+                         max_patches: int = _OCR_BUDGET,
+                         exclude: set | None = None) -> dict:
     """Read elevation labels printed INSIDE breaks of their own contour.
 
     Contour elevations sit in a gap of the line, rotated to follow it.
     Native text misses them when the glyphs are exploded to vectors, and
     whole-page OCR misses them because they are rotated (Oncor p4: the
-    571-576 labels were found by neither). The chain itself knows both the
-    gap's position and its angle, so a small patch per wide gap, rotated
-    flat by the line's own direction, reads them.
+    571-576 labels were found by neither). The chain itself knows where a
+    label can sit - a merged break of its own polyline, or a white mask
+    stroke painted along it (_label_regions) - so a small patch per
+    region, rotated flat by the region's own direction, reads them.
+
+    Patches are scheduled round-robin across chains (every chain's best
+    region before any chain's second), regions ranked mask-first then by
+    closeness to the measured label span - an explicit ranking, so a
+    budget cut trims the least label-like patches instead of whichever
+    chains happened to come last (the v1 failure on C-04).
 
     Returns {chain_id: (z, cx_pt, cy_pt)}. Chains whose gap labels
     disagree are dropped - ambiguity is worse than absence.
@@ -664,68 +1609,633 @@ def gap_label_elevations(chains: list, page_img: np.ndarray,
         import pytesseract
     except Exception:
         return {}
-    H, W = page_img.shape[:2]
     if page_img.ndim == 3:
         gray = cv2.cvtColor(page_img, cv2.COLOR_RGB2GRAY)
     else:
         gray = page_img
-    found: dict = {}
-    n_patches = 0
-    for c in chains:
-        if c.length < 60 or len(c.pts) < 3:
+    regions = _label_regions(chains, exclude=exclude)
+    if not regions:
+        return {}
+    # rank regions inside each chain, then interleave chains round-robin;
+    # within one round the most label-like regions go first so the budget
+    # cut is by likelihood, not by chain order
+    for regs in regions.values():
+        regs.sort(key=lambda r: (r[0], abs(r[5] - _LABEL_SPAN_PT)))
+    order = []
+    rnd = 0
+    while True:
+        layer = [(cid, regs[rnd]) for cid, regs in regions.items()
+                 if len(regs) > rnd]
+        if not layer:
+            break
+        layer.sort(key=lambda t: (t[1][0], abs(t[1][5] - _LABEL_SPAN_PT),
+                                  t[0]))
+        order += layer
+        rnd += 1
+
+    reads: dict = {}
+    n_ocr = 0  # the budget counts tesseract calls; the numpy gates that
+    # reject empty breaks and drawn dashes are ~free and must not starve
+    # later chains the way v1's patch counter did
+    for cid, (kind, cx, cy, ux, uy, span) in order:
+        if n_ocr >= max_patches:
+            break
+        if len(reads.get(cid, ())) >= _OCR_READS_PER_CHAIN:
             continue
-        p = np.asarray(c.pts, float)
-        d = np.diff(p, axis=0)
-        jump = np.hypot(d[:, 0], d[:, 1])
-        pos = jump[jump > 0.5]
-        med = float(np.median(pos)) if len(pos) else 0.0
-        vals = []
-        for i in np.nonzero((jump >= max(18.0, 1.8 * med)) & (jump <= 90.0))[0]:
-            if n_patches >= max_patches:
-                break
-            n_patches += 1
-            a, b = p[i], p[i + 1]
-            cx, cy = (a + b) / 2
-            u = (b - a) / max(float(jump[i]), 1e-6)
-            ang = float(np.degrees(np.arctan2(u[1], u[0])))
-            if ang > 90:
-                ang -= 180
-            elif ang <= -90:
-                ang += 180
-            # crop a square that covers the rotated text box, rotate flat
-            w_pt = float(jump[i]) + 36.0
-            h_pt = 22.0
-            D = int((np.hypot(w_pt, h_pt) + 6) * px_per_pt)
-            cxp, cyp = int(cx * px_per_pt), int(cy * px_per_pt)
-            x0, y0 = max(cxp - D // 2, 0), max(cyp - D // 2, 0)
-            crop = gray[y0:y0 + D, x0:x0 + D]
-            if crop.size == 0:
+        ang = float(np.degrees(np.arctan2(uy, ux)))
+        if ang > 90:
+            ang -= 180
+        elif ang <= -90:
+            ang += 180
+        # crop a square that covers the rotated text box, rotate flat.
+        # A break region needs margin (the digits can outgrow the visible
+        # break); a mask region must stay tight - C-04's south strip
+        # prints its labels ~40 pt apart, and a wide mask patch caught the
+        # NEIGHBOUR's digits alongside the chain's own.
+        w_pt = span + (16.0 if kind == 0 else 30.0)
+        h_pt = _OCR_BAND_PT
+        D = int((np.hypot(w_pt, h_pt) + 6) * px_per_pt)
+        cxp, cyp = int(cx * px_per_pt), int(cy * px_per_pt)
+        x0, y0 = max(cxp - D // 2, 0), max(cyp - D // 2, 0)
+        crop = gray[y0:y0 + D, x0:x0 + D]
+        if crop.size == 0:
+            continue
+        M = cv2.getRotationMatrix2D((cxp - x0, cyp - y0), ang, 1.0)
+        rot = cv2.warpAffine(crop, M, (crop.shape[1], crop.shape[0]),
+                             borderValue=255)
+        bw = int(w_pt * px_per_pt / 2)
+        bh = int(h_pt * px_per_pt / 2)
+        mx, my = cxp - x0, cyp - y0
+        patch = rot[max(my - bh, 0):my + bh, max(mx - bw, 0):mx + bw]
+        if patch.size == 0:
+            continue
+        # ink gates (see the constants): a solid/hatch patch cannot be a
+        # label, and a patch with no ink OFF the chord is an empty break
+        # or the drawn line itself - skipping both keeps the tesseract
+        # time for patches that can pay
+        if float(np.mean(patch < _OCR_INK_LEVEL)) > _OCR_INK_MAX:
+            continue
+        off = int(_OCR_OFFCHORD_HALF_PT * px_per_pt)
+        mid = patch.shape[0] // 2
+        rows = np.r_[0:max(mid - off, 0),
+                     min(mid + off + 1, patch.shape[0]):patch.shape[0]]
+        if len(rows) and float(
+                np.mean(patch[rows] < _OCR_INK_LEVEL)) < _OCR_OFFCHORD_MIN:
+            continue
+        n_ocr += 1
+        txt = _read_label_patch(cv2, pytesseract, re, patch)
+        if txt is None and kind == 0 and n_ocr < max_patches:
+            # mask retry with break-sized margin: the tight mask patch
+            # clips a label whose digits outgrow the mask stroke (C-04
+            # chain 806); the wide patch stays second choice because in
+            # a dense strip it can catch a neighbour's digits - a wrong
+            # wide read still has to survive the band + kind ranking
+            wide = span + 30.0
+            D2 = int((np.hypot(wide, h_pt) + 6) * px_per_pt)
+            x2, y2 = max(cxp - D2 // 2, 0), max(cyp - D2 // 2, 0)
+            crop2 = gray[y2:y2 + D2, x2:x2 + D2]
+            if crop2.size:
+                M2 = cv2.getRotationMatrix2D((cxp - x2, cyp - y2), ang, 1.0)
+                rot2 = cv2.warpAffine(crop2, M2,
+                                      (crop2.shape[1], crop2.shape[0]),
+                                      borderValue=255)
+                bw2 = int(wide * px_per_pt / 2)
+                mx2, my2 = cxp - x2, cyp - y2
+                patch2 = rot2[max(my2 - bh, 0):my2 + bh,
+                              max(mx2 - bw2, 0):mx2 + bw2]
+                if patch2.size:
+                    n_ocr += 1
+                    txt = _read_label_patch(cv2, pytesseract, re, patch2)
+        if txt is None:
+            continue
+        v = float(txt)
+        if 10.0 <= v <= 9999.0:
+            reads.setdefault(cid, []).append((v, float(cx), float(cy), kind))
+    # Conflict resolution - an explicit ranking, measured on C-04's
+    # misread population (a line stroke read as an extra or swapped
+    # digit: 5674/567, 375/575, 978/578, 382/582, 904/584, 675/575):
+    #  1. dominant band: cluster every read value on GAPS > 30 ft (a
+    #     gap-walk, not a bucket) and, with >= 6 distinct values and a
+    #     band of >= 3, keep only reads inside the biggest band.
+    #     Misreads SUPPORT EACH OTHER under a nearest-neighbour rule -
+    #     C-04 read both 5657 and 5674, 17 ft apart, and each vouched
+    #     for the other - but they cannot outnumber the real labels'
+    #     band. 30 because a sheet's contour labels step 1-10 ft (C-04
+    #     545-590 dense at 1 ft, Stice 425-521, Barn 7583-7900), while
+    #     the closest measured leading-digit misread, 675 against a 590
+    #     band edge, sits 85 away; the endpoint's 100 ft surface gap
+    #     let that one in;
+    #  2. majority: a value read from two regions beats a value read
+    #     from one (the label repeats along the contour, the misread
+    #     does not repeat the same way);
+    #  3. a single break (kind 1) value beats mask reads - a mask patch
+    #     in a dense strip can catch a NEIGHBOUR's label, a chain's own
+    #     break cannot;
+    #  4. still ambiguous -> drop the chain (worse than absence).
+    all_vals = sorted({v for vals in reads.values() for v, _, _, _ in vals})
+    band = None
+    if len(all_vals) >= 6:
+        groups, cur = [], [all_vals[0]]
+        for prev, v in zip(all_vals, all_vals[1:]):
+            if v - prev > 30.0:
+                groups.append(cur)
+                cur = []
+            cur.append(v)
+        groups.append(cur)
+        top = max(groups, key=len)
+        if len(top) >= 3:
+            band = set(top)
+    found: dict = {}
+    for cid, vals in reads.items():
+        if band is not None:
+            vals = [t for t in vals if t[0] in band]
+            if not vals:
                 continue
-            M = cv2.getRotationMatrix2D((cxp - x0, cyp - y0), ang, 1.0)
-            rot = cv2.warpAffine(crop, M, (crop.shape[1], crop.shape[0]),
-                                 borderValue=255)
-            bw = int(w_pt * px_per_pt / 2)
-            bh = int(h_pt * px_per_pt / 2)
-            mx, my = cxp - x0, cyp - y0
-            patch = rot[max(my - bh, 0):my + bh, max(mx - bw, 0):mx + bw]
-            if patch.size == 0:
-                continue
-            try:
-                txt = pytesseract.image_to_string(
-                    patch,
-                    config="--psm 7 -c tessedit_char_whitelist=0123456789.",
-                ).strip().strip(".")
-            except Exception:
-                continue
-            if re.fullmatch(r"\d{3,4}(\.\d{1,2})?", txt):
-                v = float(txt)
-                if 10.0 <= v <= 9999.0:
-                    vals.append((v, float(cx), float(cy)))
-        if vals:
-            zs = {v for v, _, _ in vals}
-            if len(zs) == 1:
-                found[int(c.chain_id)] = vals[0]
+        zs = {v for v, _, _, _ in vals}
+        if len(zs) > 1:
+            counts = {}
+            for v, _, _, _ in vals:
+                counts[v] = counts.get(v, 0) + 1
+            best = max(counts.values())
+            lead = [v for v, n in counts.items() if n == best]
+            if best >= 2 and len(lead) == 1:
+                vals = [t for t in vals if t[0] == lead[0]]
+                zs = {lead[0]}
+        if len(zs) > 1:
+            brk = [t for t in vals if t[3] == 1]
+            if len({v for v, _, _, _ in brk}) == 1:
+                vals = brk
+                zs = {v for v, _, _, _ in vals}
+        if len(zs) == 1:
+            v, cx, cy, _ = vals[0]
+            found[int(cid)] = (v, cx, cy)
     return found
+
+
+# --- existing vs proposed: the surface split ------------------------------
+# The suggest reply must say WHICH rule decided each row (split_by), and the
+# rules apply in an explicit precedence - never first-writer-wins:
+#   a. legend verdict   the sheet's own legend names the family
+#   b. color screening  gray = screened existing, dark = proposed - only
+#                       when the page actually draws both populations
+#   c. width median     today's behaviour, the monochrome fallback
+_LEGEND_TAG = re.compile(r"\(legend\)\s*$", re.I)
+# Screening constants, measured on Oncor C-04: existing contours print
+# 0.5-0.6 equal-RGB gray, proposed contours 0.0 black; the sheet's
+# annotation grays sit at 0.502 and 0.702. A "gray" must have near-equal
+# channels (tolerance 0.05 covers AutoCAD's 0.5019... float grays) - a real
+# color (blue water line, red demo) gets NO screening verdict and falls
+# through to width rather than being guessed at.
+_EQ_RGB_TOL = 0.05
+# Gray band: above _DARK_MAX with headroom (0.35), below white ink (0.88 <
+# WHITE_MIN so no stroke is both "gray" and "white").
+_GRAY_BAND = (0.35, 0.88)
+# Dark: C-04 proposed is 0.0; 0.30 leaves room for near-black plots while
+# staying clear of the 0.5 grays.
+_DARK_MAX = 0.30
+# A population is >= 2 rows of that ink: one stray gray stroke on an
+# otherwise black-and-white sheet must not flip the whole page to color
+# screening (the monochrome Barn sheets are exactly that case).
+_POP_MIN = 2
+
+
+def _ink_kind(color) -> str | None:
+    """"gray" / "dark" / "white" for a near-equal-RGB stroke, else None."""
+    if not color:
+        return None
+    try:
+        vals = [float(v) for v in color]
+    except (TypeError, ValueError):
+        return None
+    if not vals:
+        return None
+    if max(vals) - min(vals) > _EQ_RGB_TOL:
+        return None  # a real color; screening says nothing about it
+    v = sum(vals) / len(vals)
+    if v >= WHITE_MIN:
+        return "white"
+    if v <= _DARK_MAX:
+        return "dark"
+    if _GRAY_BAND[0] <= v <= _GRAY_BAND[1]:
+        return "gray"
+    return None
+
+
+def family_verdicts(styles: list) -> dict:
+    """What the sheet's own legend says each style family is.
+
+    {style_id: {"role", "label"}} for legend-matched families only:
+      "existing"/"proposed"  a CONTOUR row that names its surface
+      "contour"              a CONTOUR row that does not
+      "noncontour"           any other legend row (property line, swale,
+                             grade break, fence...) - NEVER seeds rows
+    Matching is on the legend row's OWN words (CONTOUR / EXIST / PROPOSED),
+    not an invented taxonomy of line types (CLAUDE.md section 4); anything
+    the legend did not match falls through to color/width unlabeled.
+    """
+    out: dict = {}
+    for s in styles or []:
+        if not isinstance(s, dict):
+            continue
+        sid = s.get("style_id")
+        lab = s.get("suggested_label") or ""
+        if sid is None or not _LEGEND_TAG.search(lab):
+            continue
+        up = lab.upper()
+        if "CONTOUR" in up:
+            role = ("existing" if "EXIST" in up
+                    else "proposed" if "PROPOSED" in up
+                    else "contour")
+        else:
+            role = "noncontour"
+        out[int(sid)] = {"role": role, "label": lab.strip()}
+    return out
+
+
+def split_rows_surface(rows: list, chain_info: dict,
+                       verdicts: dict) -> dict:
+    """Assign surface + split_by to each suggest row, by the precedence
+    documented above. Mutates rows in place; returns {rule: count}.
+
+    chain_info: {chain_id: {"style_id", "color", "width"}} from the stored
+    detect result. Rows whose chain is unknown fall to the width rule.
+    """
+    counts = {"legend": 0, "color": 0, "width": 0}
+    undecided = []
+    kinds = {}
+    for r in rows:
+        info = chain_info.get(r.get("chain_id")) or {}
+        kinds[r["chain_id"]] = _ink_kind(info.get("color"))
+        v = verdicts.get(info.get("style_id")) or {}
+        role = v.get("role")
+        if role in ("existing", "proposed"):
+            r["surface"] = role
+            r["split_by"] = "legend"
+            counts["legend"] += 1
+        else:
+            undecided.append(r)
+    # color screening only where the page truly draws both populations -
+    # counted over ALL seeded rows so a legend-decided family still proves
+    # the sheet is a two-ink sheet
+    n_gray = sum(1 for k in (kinds[r["chain_id"]] for r in rows)
+                 if k == "gray")
+    n_dark = sum(1 for k in (kinds[r["chain_id"]] for r in rows)
+                 if k == "dark")
+    two_inks = n_gray >= _POP_MIN and n_dark >= _POP_MIN
+    still = []
+    for r in undecided:
+        k = kinds[r["chain_id"]]
+        if two_inks and k in ("gray", "dark"):
+            r["surface"] = "existing" if k == "gray" else "proposed"
+            r["split_by"] = "color"
+            counts["color"] += 1
+        else:
+            still.append(r)
+    # width fallback: the median rule the UI applies today, computed over
+    # every returned row so a monochrome sheet reproduces today's split
+    # exactly
+    ws = sorted((r.get("width") or 0) for r in rows)
+    wmed = ws[len(ws) // 2] if ws else 0
+    for r in still:
+        w = r.get("width") or 0
+        r["surface"] = "existing" if w <= wmed else "proposed"
+        r["split_by"] = "width"
+        counts["width"] += 1
+    return counts
+
+
+# --- interval infill: the unlabelled contours between two labelled ones ---
+#
+# A grading sheet labels a MINORITY of its contours. The draughtsman writes
+# 556 and 561 and draws the four lines between them unlabelled, because a
+# reader counts them: the contour interval is stated on the sheet, so the
+# four in between can only be 557, 558, 559, 560. The engine has been
+# throwing that information away and interpolating blindly across the gap.
+#
+# Measured cost of throwing it away, Oncor C-04 (the offline analyst did
+# this fan by hand; his row set is the answer key, report.json how="interp"):
+# rebuilding with LABELLED ROWS ONLY against the full human set, same cells,
+# gives cut 1,781.0 -> 2,001.9 CY (+12.4%) and fill 6,871.5 -> 6,932.2
+# (+0.9%); the infilled rows also EXTEND the defined surface from 79,248 to
+# 83,796 SF, worth ~1,047 CY more fill, so the full effect is +16.1% fill.
+#
+# THE REFUSAL RULE IS THE LOAD-BEARING PART, and it is the analyst's own
+# (report.json's `dropped` list shows him applying exactly it): assign the
+# monotone fan ONLY when the number of unlabelled siblings crossed between
+# two labelled contours equals dz/interval - 1. If a line is missing, or an
+# extra line got in, or the transect clipped a curve twice, the count does
+# not match and NOTHING is assigned. Ambiguity is worse than absence: an
+# absent contour leaves the TIN to interpolate, a wrong one puts a confident
+# wrong elevation into a bid.
+#
+# The interval is READ, never invented - from the sheet's own CONTOUR
+# INTERVAL note if the caller has one, else the modal delta between adjacent
+# distinct labelled elevations. Where that modal delta is design-label noise
+# rather than a contour interval, the count test simply never matches and
+# the whole pass abstains, which is the correct outcome. Measured: on Stice
+# p0 the modal adjacent-delta is 0.1 ft (219 of 331 deltas) because the
+# existing side carries decimal design labels, and this pass assigns zero
+# rows there rather than inventing a 0.1 ft fan.
+
+# How far a transect may reach looking for the flanking labelled contour,
+# as a multiple of the sheet's own median inter-contour spacing. Only the
+# FIRST labelled crossing on each side is ever used, so a generous reach
+# costs search, not accuracy.
+_INFILL_REACH_SPACINGS = 30.0
+# Stations per labelled chain: the transect is cast perpendicular at each.
+# More stations = more independent votes per candidate; they must AGREE.
+_INFILL_STATIONS = 8
+# A fan wider than this is not something a crossing count can honestly
+# resolve on a real sheet - one missed line and every elevation in it is
+# wrong. Refuse rather than guess.
+_INFILL_MAX_FAN = 12
+# dz/interval must land on an integer this closely to count as a whole
+# number of contour steps.
+_INFILL_STEP_TOL = 0.02
+# Transect budget, so a 1,500-contour sheet cannot stall the request.
+_INFILL_MAX_TRANSECTS = 6000
+
+
+def contour_interval(zs, note_ft=None) -> dict:
+    """The sheet's contour interval - read off the labels, never invented.
+
+    note_ft, when the caller has read the sheet's own CONTOUR INTERVAL
+    note, wins outright: the sheet stating its interval is better evidence
+    than any statistic over the labels we happened to resolve.
+
+    Otherwise: the modal delta between ADJACENT DISTINCT labelled
+    elevations. `share` is what fraction of those deltas the modal value
+    accounts for - reported, not thresholded, so the caller and the
+    operator can see how much consensus is behind it. Measured: Oncor C-04
+    existing 1.0 ft on 33 of 34 deltas (0.97); Stice p0 existing 0.1 ft on
+    219 of 331 (0.66), which is decimal design-label noise and is exactly
+    why the count rule, not this share, decides whether anything ships.
+    """
+    if note_ft:
+        try:
+            v = float(note_ft)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > 0:
+            return {"interval_ft": v, "source": "sheet's contour-interval "
+                    "note", "modal_count": 0, "n_deltas": 0, "share": None}
+    u = np.unique(np.round(np.asarray(list(zs), dtype=float), 3))
+    if len(u) < 3:
+        return {"interval_ft": None, "source": "too few distinct labelled "
+                "elevations to read an interval", "modal_count": 0,
+                "n_deltas": 0, "share": None}
+    d = np.round(np.diff(u), 2)
+    d = d[d > 1e-6]
+    if not len(d):
+        return {"interval_ft": None, "source": "labelled elevations do not "
+                "step", "modal_count": 0, "n_deltas": 0, "share": None}
+    vals, cnt = np.unique(d, return_counts=True)
+    i = int(cnt.argmax())
+    return {"interval_ft": float(vals[i]),
+            "source": "modal step between adjacent labelled elevations",
+            "modal_count": int(cnt[i]), "n_deltas": int(len(d)),
+            "share": round(float(cnt[i]) / len(d), 3)}
+
+
+def _seg_crossings(a, b, pts):
+    """Parameters t in (0,1) where segment a->b crosses polyline pts.
+
+    Plain segment-segment intersection, vectorised over the polyline. A
+    grazing/parallel touch (denominator ~0) is dropped rather than counted:
+    a transect that runs along a contour has not crossed it.
+    """
+    d = b - a
+    p0 = pts[:-1]
+    p1 = pts[1:]
+    e = p1 - p0
+    den = d[0] * e[:, 1] - d[1] * e[:, 0]
+    live = np.abs(den) > 1e-12
+    if not live.any():
+        return np.empty(0)
+    w = p0[live] - a
+    den = den[live]
+    t = (w[:, 0] * e[live][:, 1] - w[:, 1] * e[live][:, 0]) / den
+    u = (w[:, 0] * d[1] - w[:, 1] * d[0]) / den
+    m = (t > 1e-9) & (t < 1 - 1e-9) & (u >= 0.0) & (u <= 1.0)
+    return t[m]
+
+
+def _median_contour_spacing(items) -> float:
+    """Median distance from a contour sample to the nearest sample of a
+    DIFFERENT chain - how far apart this sheet draws its contours, in pt."""
+    xs, ids = [], []
+    for cid, pts, _z in items:
+        s, _ = _sample_polyline(np.asarray(pts, float), step=12.0,
+                                max_n=4000)
+        if len(s):
+            xs.append(s)
+            ids.append(np.full(len(s), cid))
+    if not xs:
+        return 0.0
+    P = np.vstack(xs)
+    I = np.concatenate(ids)
+    if len(P) < 4:
+        return 0.0
+    k = min(24, len(P))
+    dist, idx = cKDTree(P).query(P, k=k, workers=-1)
+    other = I[idx] != I[:, None]
+    has = other.any(axis=1)
+    if not has.any():
+        return 0.0
+    first = np.argmax(other, axis=1)
+    d = dist[np.arange(len(P)), first][has]
+    return float(np.median(d))
+
+
+def infill_intervals(assigned: list, candidates: list,
+                     interval_ft=None, note_ft=None) -> dict:
+    """Suggest elevations for unlabelled contours between two labelled ones.
+
+    assigned:   [{chain_id, pts Nx2 page pt, z, family}] on ONE surface
+    candidates: [{chain_id, pts, family}] unlabelled chains, same surface
+
+    `family` is the chain's style family (style_id): A TRANSECT COUNTS ONLY
+    SAME-FAMILY SIBLINGS. A contour's unlabelled neighbours are drawn in the
+    same linetype it is - that is what makes them countable - and without
+    the restriction every property line, swale and lot line the transect
+    crosses is counted as a sibling and the fan never matches. Measured on
+    Oncor C-04 with the restriction OFF, feeding all 589 chains as
+    candidates: the proposed surface (whose contours are a single family,
+    style 41) assigned 0 of the analyst's 14 rows. With it on, see
+    out/verify/2026-08-31/cutfill-accuracy/a3_infill.json.
+
+    Returns {"rows": [...], "interval": {...}, "refused": {...},
+             "n_transects": int}. Each row is
+    {chain_id, z, how: "interval-infill", inferred: True, votes, src}
+    where `src` is the sentence shown to the operator - it names the two
+    labelled contours the fan was counted between, so the suggestion can be
+    checked against the sheet without leaving the panel.
+
+    Nothing here decides anything: these are SUGGESTIONS the operator
+    confirms, and every one is flagged inferred so an inferred elevation is
+    never mistaken for a printed one.
+    """
+    out = {"rows": [], "refused": {"count_mismatch": 0, "no_flanking_label": 0,
+                                   "fan_too_wide": 0, "not_whole_steps": 0,
+                                   "repeat_crossing": 0, "vote_conflict": 0,
+                                   "adjacent_labels_nothing_between": 0},
+           "n_transects": 0}
+
+    def _prep(rows, want_z):
+        out2 = []
+        for d in rows or []:
+            p = np.asarray(d.get("pts"), dtype=float)
+            if p.ndim != 2 or len(p) < 2:
+                continue
+            z = d.get("z")
+            if want_z:
+                if z is None:
+                    continue
+                z = float(z)
+            else:
+                z = None
+            out2.append((int(d["chain_id"]), p, z, d.get("family")))
+        return out2
+
+    assigned = _prep(assigned, True)
+    candidates = _prep(candidates, False)
+    iv = contour_interval([z for _, _, z, _ in assigned], note_ft=note_ft)
+    out["interval"] = iv
+    if interval_ft:
+        iv = {"interval_ft": float(interval_ft), "source": "caller",
+              "modal_count": 0, "n_deltas": 0, "share": None}
+        out["interval"] = iv
+    step = iv.get("interval_ft")
+    if not step or step <= 0 or not assigned or not candidates:
+        return out
+
+    # A contour's countable siblings are the families its own LABELLED
+    # members are drawn in. Anything else on the sheet is invisible to the
+    # transect - not skipped over, simply not a contour of this surface.
+    fams = {f for _, _, _, f in assigned if f is not None}
+    allc = list(assigned)
+    allc += [(cid, p, None, f) for cid, p, _z, f in candidates
+             if (not fams) or f in fams]
+    out["n_candidates_in_family"] = len(allc) - len(assigned)
+    out["families"] = sorted(str(f) for f in fams)
+    if len(allc) == len(assigned):
+        return out
+    # geometry index: bbox per chain, so a transect only tests the chains it
+    # could possibly reach
+    box = np.asarray([[p[:, 0].min(), p[:, 1].min(),
+                       p[:, 0].max(), p[:, 1].max()] for _, p, _, _ in allc])
+    zof = {cid: z for cid, _, z, _ in allc}
+    reach = _INFILL_REACH_SPACINGS * (_median_contour_spacing(
+        [(c, p, z) for c, p, z, _ in assigned]) or 0.0)
+    if reach <= 0:
+        return out
+
+    votes: dict = {}
+    conflicted: set = set()
+    for oid, opts, oz, _of in assigned:
+        if out["n_transects"] >= _INFILL_MAX_TRANSECTS:
+            break
+        n = len(opts)
+        idxs = np.unique(np.linspace(0, n - 1, _INFILL_STATIONS).astype(int))
+        for i in idxs:
+            j0 = max(0, i - 2)
+            j1 = min(n - 1, i + 2)
+            tan = opts[j1] - opts[j0]
+            L = float(np.hypot(*tan))
+            if L < 1e-9:
+                continue
+            nrm = np.array([-tan[1] / L, tan[0] / L])
+            origin = opts[i]
+            out["n_transects"] += 1
+            for sign in (1.0, -1.0):
+                a = origin
+                b = origin + sign * reach * nrm
+                lo = np.minimum(a, b)
+                hi = np.maximum(a, b)
+                near = ((box[:, 0] <= hi[0]) & (box[:, 2] >= lo[0])
+                        & (box[:, 1] <= hi[1]) & (box[:, 3] >= lo[1]))
+                hits = []
+                for k in np.nonzero(near)[0]:
+                    cid = allc[k][0]
+                    if cid == oid:
+                        continue
+                    for t in _seg_crossings(a, b, allc[k][1]):
+                        hits.append((float(t), cid))
+                if not hits:
+                    continue
+                hits.sort()
+                # walk outward to the first LABELLED crossing
+                run = []
+                zend = None
+                cend = None
+                for t, cid in hits:
+                    if zof.get(cid) is None:
+                        run.append(cid)
+                    else:
+                        zend = zof[cid]
+                        cend = cid
+                        break
+                if zend is None:
+                    out["refused"]["no_flanking_label"] += 1
+                    continue
+                if len(run) != len(set(run)):
+                    # the transect clipped one contour twice - it is running
+                    # along a curve, not across the fan
+                    out["refused"]["repeat_crossing"] += 1
+                    continue
+                dz = zend - oz
+                steps = dz / step
+                rs = round(steps)
+                if abs(steps - rs) > _INFILL_STEP_TOL:
+                    out["refused"]["not_whole_steps"] += 1
+                    continue
+                if abs(rs) < 2:
+                    # the two labels are one interval apart: there is
+                    # nothing between them. Not a refusal - a walk with
+                    # nothing to say. Counted separately so the refusal
+                    # buckets stay readable as failures.
+                    out["refused"]["adjacent_labels_nothing_between"] += 1
+                    continue
+                if abs(rs) - 1 > _INFILL_MAX_FAN:
+                    out["refused"]["fan_too_wide"] += 1
+                    continue
+                # THE RULE: crossed unlabelled siblings must be exactly
+                # dz/interval - 1, or nothing is assigned
+                if len(run) != abs(rs) - 1:
+                    out["refused"]["count_mismatch"] += 1
+                    continue
+                sgn = 1.0 if dz > 0 else -1.0
+                for m, cid in enumerate(run, start=1):
+                    z = round(oz + sgn * m * step, 4)
+                    prev = votes.get(cid)
+                    if prev is None:
+                        votes[cid] = {"z": z, "n": 1,
+                                      "src": (oid, oz, cend, zend)}
+                    elif abs(prev["z"] - z) > 1e-6:
+                        # two transects read this line differently: refuse it
+                        conflicted.add(cid)
+                    else:
+                        prev["n"] += 1
+    for cid in conflicted:
+        votes.pop(cid, None)
+    out["refused"]["vote_conflict"] = len(conflicted)
+    for cid, v in sorted(votes.items()):
+        oid, oz, cend, zend = v["src"]
+        nz = _fmt_z(v["z"])
+        out["rows"].append({
+            "chain_id": int(cid), "z": v["z"], "how": "interval-infill",
+            "inferred": True, "votes": v["n"],
+            "src": (f"counted between labelled {_fmt_z(oz)} (line {oid}) "
+                    f"and {_fmt_z(zend)} (line {cend}) at the sheet's "
+                    f"{_fmt_z(step)} ft contour interval - not a printed "
+                    f"label, confirm against the sheet"),
+            "label": f"{nz} (inferred)"})
+    return out
+
+
+def _fmt_z(v: float) -> str:
+    f = float(v)
+    return str(int(round(f))) if abs(f - round(f)) < 1e-6 else f"{f:g}"
 
 
 # --- spot grades: the elevations a grading sheet actually prints ----------
@@ -774,8 +2284,24 @@ def _is_plan_chain(c) -> bool:
 # appear in the Beaumont Guide civil legend, and 11 printed labels were being
 # skipped for want of them. Same standard of evidence as the rest of the list
 # - the sheet's own vocabulary, each printed with a value beside it.
+# PE = pad elevation, the finish grade of a building pad. Measured absent
+# on 2026-08-30: Stice's Coral Mountain preliminary grading sheet prints
+# ~204 "PE 486.0" pad callouts and every one was invisible to this reader
+# (out/verify/2026-08-30/stice-recipe/RECIPE.md). A pad elevation is
+# PROPOSED ground, like FG.
+# EW = end of wall, added 2026-08-30: Oncor Cloudcrest C-04's own legend
+# prints "EW 100.0  PROPOSED END OF WALL ELEVATION" and the sheet carries
+# 4 printed EW callouts (568.6/569.8/558.8/557.6) that were invisible for
+# want of the tag. Sheet vocabulary, same standard as the rest.
+# PE (pad elevation) and WSE (water surface) are LINE-READER-ONLY tags: the
+# word-pair pass below was measured wrong 9/9 times it fired for them
+# corpus-wide ("...HDPE..." material codes, "2% PE in 50 Yrs" probability
+# notes, rotated lot labels pairing with a neighbour's decimal) while the
+# whole-line readers took all 505 real labels (sweep: worktree
+# suspicious-shannon-55137d, out/verify/2026-08-30/pe-spot-tag/).
 _SPOT_TAG = re.compile(
-    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)\s*:?$", re.I)
+    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)\s*:?$",
+    re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
 _SPOT_VALUE = re.compile(r"^\d{1,4}(\.\d{1,2})?$")
@@ -787,9 +2313,21 @@ _FULL_ELEV = re.compile(r"^\d{3,4}$")
 # neighbour's value is on a DIFFERENT line and can no longer be captured.
 # The glued form `FIN:05.25'` is the one the sheet's own legend prints as its
 # example, and the word-pair reader could never see it.
+# PE is deliberately absent here (unlike _SPOT_TAG): Stice's 191 PE pads all
+# read through the word pass today, and adding PE to the line pass would move
+# every one of those rows' anchor coordinates for no change in value.
 _SPOT_LINE = re.compile(
-    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)"
+    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW|PE|WSE)"
     r"\s*[:=]?\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s*$", re.I)
+# The same whole-line label with the VALUE PRINTED FIRST: "583.5 ME".
+# Oncor Cloudcrest C-04 prints every plan callout this way (21 of them)
+# while its legend prints the samples tag-first ("ME 100.0") - the reader
+# parsed only the tag-first order and returned nothing but the legend's own
+# illustration. Both orders are the drafter's choice, not a convention.
+_SPOT_LINE_VT = re.compile(
+    r"^\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s+"
+    r"(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW|PE|WSE)\s*[:=]?\s*$",
+    re.I)
 # These sheets DECLARE their datum in the spot-elevation legend:
 #   "NOTE: ALL SPOT ELEVATIONS ARE TRUNCATED CIVIL ELEVATIONS
 #    (IE. EXAMPLE: TOP OF PATIO @ 7705.25' = FIN:05.25')"
@@ -825,10 +2363,87 @@ def read_spot_datum(lines: list) -> float | None:
 # 10 pt separates them with room on both sides.
 _SPOT_SAME_R2 = 10.0 ** 2
 
+# --- legend-box exclusion: the legend's sample rows are not ground --------
+#
+# legend_detect hands back one sample box PER LINE-STYLE ROW, but a legend's
+# spot-elevation rows carry no line swatch, so they sit in the vertical GAP
+# between detected boxes. Measured on Oncor C-04: line-sample boxes end at
+# y=114.9 and resume at y=212.7, and the five spot-sample rows ("100.0",
+# "ME 100.0" ... "EW 100.0", 19.2 pt pitch) live in that 97.8 pt gap.
+# Bridging vertically-stacked boxes into one block covers them; 120 pt holds
+# the measured 97.8 with margin and is far below any gap a plan area between
+# two separate legend blocks would open (the C-04 sheet is 1728 pt tall).
+# Boxes only merge when their x-ranges overlap, so two legends in different
+# corners of a sheet stay two blocks.
+_LEGEND_ROW_BRIDGE = 120.0
+
+
+def _legend_blocks(boxes) -> list:
+    """Merge per-row legend sample boxes into whole-legend blocks."""
+    bs = sorted((tuple(float(v) for v in b[:4]) for b in (boxes or ())),
+                key=lambda b: (b[1], b[0]))
+    blocks: list = []
+    for b in bs:
+        if blocks:
+            x0, y0, x1, y1 = blocks[-1]
+            if (b[1] - y1 <= _LEGEND_ROW_BRIDGE
+                    and not (b[2] < x0 or b[0] > x1)):
+                blocks[-1] = (min(x0, b[0]), y0, max(x1, b[2]),
+                              max(y1, b[3]))
+                continue
+        blocks.append(b)
+    return blocks
+
+
+# Fallback legend signature for when no legend boxes are available (the
+# confidence endpoint reads only the text layer; older cached results may
+# predate legend_samples). A legend prints ONE sample row per tag, every row
+# the SAME sample value, in one tight column: C-04's read as ME/TW/BW/EW all
+# exactly 100.0, x-centres within 0.6 pt, rows 19.2 pt apart. The rule below
+# asks for >= 3 spots with an identical value in a <= 6 pt column at <= 30 pt
+# consecutive spacing (10x / 1.5x the measured figures). False-positive risk,
+# stated: three REAL callouts printing the same elevation, column-aligned
+# within 6 pt and packed at under 30 pt pitch, would be swallowed - that is a
+# wall/kerb run at constant grade with its labels stacked touching each
+# other, which none of the four measured sheets (C-04, Barn C3.0/C3.1,
+# Stice p0) exhibits. Walked with gap tests, not bucketed (CLAUDE.md 5).
+_LEGEND_COL_DX = 6.0
+_LEGEND_COL_DY = 30.0
+
+
+def _legend_sample_rows(spots: list) -> set:
+    """Indices of spots that look like a legend's own sample column."""
+    by_val: dict = {}
+    for i, g in enumerate(spots):
+        by_val.setdefault(g["value"], []).append(i)
+    drop: set = set()
+    for ii in by_val.values():
+        if len(ii) < 3:
+            continue
+        ii = sorted(ii, key=lambda i: spots[i]["y"])
+        run = [ii[0]]
+
+        def _flush(run):
+            if len(run) >= 3:
+                drop.update(run)
+
+        for prev, cur in zip(ii, ii[1:]):
+            xs = [spots[i]["x"] for i in run] + [spots[cur]["x"]]
+            if (spots[cur]["y"] - spots[prev]["y"] <= _LEGEND_COL_DY
+                    and max(xs) - min(xs) <= _LEGEND_COL_DX):
+                run.append(cur)
+            else:
+                _flush(run)
+                run = [cur]
+        _flush(run)
+    return drop
+
 
 def read_spot_grades(words: list, max_dx: float = 26.0,
-                     row_tol: float = 6.0, lines: list | None = None) -> list:
-    """Spot elevations printed as `FG: 15.96` / `TW: 7918.60`.
+                     row_tol: float = 6.0, lines: list | None = None,
+                     datum_info: dict | None = None,
+                     legend_boxes: list | None = None) -> list:
+    """Spot elevations printed as `FG: 15.96` / `TW: 7918.60` / `583.5 ME`.
 
     Civil sheets abbreviate: the value carries only the last two digits and
     the hundreds come from the nearest full contour label (`7715` written in
@@ -860,7 +2475,18 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     pass takeoff_engine.extract.page_words(page), not page.get_text("words"),
     or rotated sheets silently mis-place every grade.
 
-    Returns [{tag, value, z, base, x, y, resolved}].
+    legend_boxes: the detect result's `legend_samples` row boxes, when the
+    caller has them. Spot labels inside the merged legend block are the
+    legend's own sample rows (C-04 prints "ME 100.0"... as its illustration),
+    not ground; they are dropped BEFORE the datum machinery so their sample
+    values cannot vote, and the count is disclosed in
+    datum_info["legend_excluded"]. Without boxes the column-cluster fallback
+    (_legend_sample_rows) still runs.
+
+    Returns [{tag, value, z, base, x, y, resolved}]; an unresolved spot also
+    carries why="no_datum" (z is None ONLY there, and the count is disclosed
+    in datum_info["z_missing"] - 0.0 is a real elevation, never a missing
+    one).
     """
     ws = [w for w in words if str(w[4]).strip()]
     raw_anchors = [((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, float(w[4]))
@@ -873,6 +2499,14 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     # p2: 12 labels double-counted at 2.5-3.4 pt apart. A radius test is what
     # the question actually is.
     line_at: dict = {}
+    # Line bboxes pass A consumed. A matched line IS one whole label (both
+    # regexes are anchored), so a tag word inside one is already read and
+    # must not source a second pairing in pass B - on C-04 the tag of
+    # "585.3 ME" otherwise re-grabs the NEXT callout's 585.7 printed 18.7 pt
+    # to its right, a duplicate 36 pt from where that value truly sits (the
+    # 10 pt same-label radius cannot catch it because it is not the same
+    # position; this is the cross-capture defect, one level up).
+    consumed: list = []
 
     # Pass A - whole PDF text lines. The PDF's own line grouping is
     # rotation-independent, so this reads the labels written up the side of a
@@ -881,15 +2515,23 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     for ln in (lines or ()):
         t = str(ln[4]).strip()
         m = _SPOT_LINE.match(t)
-        if not m:
-            continue
-        tag = m.group(1).upper()
+        if m:
+            tag, val = m.group(1).upper(), float(m.group(2))
+        else:
+            # value-first print order ("583.5 ME") - same label, the
+            # drafter's other choice. See _SPOT_LINE_VT.
+            m = _SPOT_LINE_VT.match(t)
+            if not m:
+                continue
+            tag, val = m.group(2).upper(), float(m.group(1))
         x = (ln[0] + ln[2]) / 2.0
         y = (ln[1] + ln[3]) / 2.0
-        out.append({"tag": tag, "value": float(m.group(2)),
+        out.append({"tag": tag, "value": val,
                     "x": round(float(x), 1), "y": round(float(y), 1),
                     "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
         line_at.setdefault(tag, []).append((x, y))
+        consumed.append((float(ln[0]), float(ln[1]),
+                         float(ln[2]), float(ln[3])))
 
     # Pass B - the original word-pair reader, for anything the line grouping
     # split (a tag and its value emitted as two lines). Anything already found
@@ -901,7 +2543,11 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         if not m:
             continue
         tag = m.group(1).upper()
+        cx = (w[0] + w[2]) / 2
         cy = (w[1] + w[3]) / 2
+        # this tag word sits inside a line pass A already read whole - done
+        if any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3] for r in consumed):
+            continue
         best = None
         for v in ws:
             if v is w:
@@ -915,6 +2561,15 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
                 continue
             if best is None or dx < best[0]:
                 best = (dx, v)
+        # DELIBERATELY right-side only. The value-first order ("583.5 ME")
+        # is handled by the whole-line pass above (_SPOT_LINE_VT), where the
+        # PDF's own line grouping vouches that value and tag belong together.
+        # A left-side WORD search was tried here 2026-08-30 and measured
+        # harmful on both regression sheets: Stice p0's rotated pad clusters
+        # put a neighbouring pad's value 0.6 pt left of a PE tag while the
+        # tag's own value sat 5.8 pt right (10 of 191 pads flipped to the
+        # neighbour's elevation, one junk PE 103.0), and Barn C3.1 grew 17
+        # duplicate rows from second tags re-reading a neighbour's value.
         if best is None:
             continue
         val = float(best[1][4])
@@ -932,6 +2587,22 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
                     "y": round(float(y), 1),
                     "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
 
+    # --- legend-sample exclusion, BEFORE any datum voting ----------------
+    # The legend's sample rows carry a made-up value (C-04: 100.0 on every
+    # row). Left in, they do not just pollute the list - they vote in the
+    # datum consensus below and can mutually "corroborate" each other.
+    blocks = _legend_blocks(legend_boxes)
+    # same 6/8 pt pad the contour-suggestion legend filter uses in server.py
+    in_block = set()
+    for i, g in enumerate(out):
+        if any(b[0] - 6 <= g["x"] <= b[2] + 6 and b[1] - 8 <= g["y"] <= b[3] + 8
+               for b in blocks):
+            in_block.add(i)
+    drop = in_block | _legend_sample_rows(out)
+    n_legend = len(drop)
+    if drop:
+        out = [g for i, g in enumerate(out) if i not in drop]
+
     # --- page datum by consensus (see the docstring) ---
     partial = [g["value"] for g in out if g["value"] < 1000.0]
     anchors = []
@@ -947,24 +2618,99 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     if len(band) < 2:
         band = []          # one lone number is not a datum
 
-    # The sheet's own declared datum outranks the consensus guess. Consensus
-    # reads other numbers ON the sheet and infers; this line is the drafter
-    # telling us. Where they disagree the guess has been wrong by a clean
-    # multiple of 100 ft, which is invisible in a review because every value
-    # still looks like a plausible elevation.
+    # The sheet's own declared datum versus the consensus band - and NEITHER
+    # always wins, because each has a measured failure on this one plan set:
+    #
+    #   Barn C3.1 (engine index 3): the note's 7705.25 is RIGHT and the band
+    #   is a false [7900] built from the legend's own sample text, two labels
+    #   strong. Declared-always-wins was added for this sheet; before it, all
+    #   272 spot grades shipped exactly 200 ft high.
+    #
+    #   Barn C3.3 (engine index 5, printed sheet C3.3): the note reads
+    #   "EXAMPLE: TOP OF PATIO @ 7605.25'" - a stale boilerplate value - while
+    #   the sheet's own contours print 7720/7725/7730/7735, a four-label band.
+    #   Declared-always-wins shipped all 171 spot grades exactly 100 ft LOW,
+    #   marked resolved, under a green banner. Same defect on C3.5 and C3.6
+    #   (1 grade each).
+    #
+    # The prefix cannot distinguish them: every datum line in the set, genuine
+    # and stale alike, begins "EXAMPLE:" (it is how the legend note is
+    # worded). What distinguishes them is BAND STRENGTH. Three or more full
+    # elevations printed on the sheet body agreeing with each other outrank
+    # one boilerplate legend sentence; a two-label band is exactly the shape a
+    # legend echo produces and must not veto the note. Measured on all 15
+    # pages of the Barn set: this rule corrects the 3 poisoned pages (173
+    # grades fall to their genuine bands) and preserves C3.1's 272.
+    #
+    # Where the two sources disagree AT ALL, the disagreement is reported, not
+    # swallowed - `datum_info["conflict"]` - so the UI can show both numbers
+    # and offer the override. A wrong elevation that is visible is survivable;
+    # the shipped defect was wrong-and-green with the override hidden.
     declared = read_spot_datum(lines)
+    band_base = float(int(band[0][2] // 100) * 100) if band else None
+    conflict = (declared is not None and band_base is not None
+                and abs(band_base - declared) > 50.0)
+    use_declared = declared is not None and not (conflict and len(band) >= 3)
+    if datum_info is not None:
+        datum_info.update(
+            declared=declared, band_base=band_base, band_n=len(band),
+            conflict=bool(conflict),
+            chosen=("declared" if use_declared and declared is not None
+                    else "band" if band else None))
+
+    # A 3-digit spot on a 3-digit site is printed in full, not truncated.
+    # Measured 2026-08-30 on Stice's Coral Mountain sheet (site runs
+    # 425-521 ft): 191 PE pad elevations print as 466.0-style values and
+    # the >= 1000 rule alone left every one unresolved. The truncation
+    # convention keeps the LAST TWO digits (Barn: 7705.25' prints as
+    # 05.25'), so a value >= 100 is only "full" when the sheet's own full
+    # elevations corroborate it - at least two page anchors within 100 ft.
+    # A lone 3-digit value on a 7,000-ft sheet still falls through to the
+    # datum machinery / honest unresolved.
+    full3 = sorted(av for _, _, av in raw_anchors)
+    # The spot population can also corroborate ITSELF: Oncor C-04 prints all
+    # 21 tagged callouts in full (551.2-586.4, one 35-ft family) and not one
+    # bare 3-digit word anywhere on the page (its contour labels are exploded
+    # vector glyphs, invisible to the text layer), so the anchor rule alone
+    # left every correct printed value unresolved. Three or more tagged spots
+    # agreeing within 100 ft is the same standard the anchor band already
+    # uses (truncated values are always < 100, so a 3-digit family is a
+    # printed-in-full family); a LONE 3-digit value still falls through to
+    # the datum machinery / honest unresolved, and two values cannot vouch
+    # for each other. Stated residual risk: three non-elevation tag-value
+    # pairs landing inside one 100-ft window would self-corroborate - none of
+    # the four measured sheets prints even one such pair.
+    spot3 = sorted(g["value"] for g in out if 100.0 <= g["value"] < 1000.0)
+    def _corroborated(v):
+        import bisect
+        i = bisect.bisect_left(full3, v - 100.0)
+        j = bisect.bisect_right(full3, v + 100.0)
+        if (j - i) >= 2:
+            return True
+        i = bisect.bisect_left(spot3, v - 100.0)
+        j = bisect.bisect_right(spot3, v + 100.0)
+        return (j - i) >= 3   # v itself is in spot3: itself + 2 others
 
     for g in out:
         val = g["value"]
         if val >= 1000.0:
-            g.update(z=val, base=None, resolved=True)
-        elif declared is not None and val < 100.0:
-            g.update(z=declared + val, base=declared, resolved=True)
+            g.update(z=val, base=None, resolved=True, res="printed")
+        elif val >= 100.0 and _corroborated(val):
+            g.update(z=val, base=None, resolved=True, res="printed")
+        elif use_declared and val < 100.0:
+            g.update(z=declared + val, base=declared, resolved=True, res="note")
         elif band:
             ax, ay, av = min(band, key=lambda a: (a[0] - g["x"]) ** 2
                                                  + (a[1] - g["y"]) ** 2)
             k = round((av - val) / 100.0)
-            g.update(z=val + 100.0 * k, base=av, resolved=True)
+            g.update(z=val + 100.0 * k, base=av, resolved=True, res="inferred")
         else:
-            g.update(z=None, base=None, resolved=False)
+            # z is None ONLY here, and each such spot says so itself. This
+            # is "genuinely absent": the value printed truncated and no
+            # credible page datum exists. (0.0 is a real elevation; every
+            # missing-z test downstream must be `is None`, CLAUDE.md 5.)
+            g.update(z=None, base=None, resolved=False, why="no_datum")
+    if datum_info is not None:
+        datum_info["legend_excluded"] = n_legend
+        datum_info["z_missing"] = sum(1 for g in out if g["z"] is None)
     return out

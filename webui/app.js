@@ -28,33 +28,86 @@
 // resolve a same-origin path for src/href, immune to a credentialed base
 const url = (p) => location.origin + p;
 const $ = (id) => document.getElementById(id);
+// THE ADDRESS THE OPERATOR ACTUALLY TYPED. Read here, at the top, because
+// the view toggles rewrite it during boot: showProjects(true) fires from
+// "land on Projects when nothing is open" and replaceStates "#projects"
+// over whatever was there, so by the time the Settings block runs there is
+// no "#settings" left to route on. Captured once, used once (svGoto below).
+const BOOT_HASH = location.hash;
 const IMG_DPI = 130; // must match /image endpoint default
+const LF = String.fromCharCode(10);   // newline for title= tooltips
 
 const state = window.state = {
   job: null, page: 0, kinds: [],
+  triage: null,             // /triage reply: per-page excavation tiers
   img: null, result: null,
-  include: new Map(), labels: new Map(), isolate: null, hot: null,
+  include: new Map(), labels: new Map(), isolate: null,
+  // FAMILY HOVER. null, or a Set of style_ids to light up on the canvas.
+  // It was a single style_id (state.hot) and one caller already needed more:
+  // a Bid view row pools several styles under one bid line and could only
+  // highlight m.sids[0], so hovering "Storm drain" lit one of its three CAD
+  // layers and the operator was shown a third of the thing they pointed at.
+  // A Set is the generalisation; every writer goes through hotFam/hotFamOff.
+  // Pure display - never read by an edit, a quantity or the undo stack.
+  hotStyle: null,
+  inheritedInc: new Map(),  // style_id -> tick that came from ANOTHER sheet's
+                            // hand decision (set-level inherit); drives the
+                            // one-line disclosure in renderStyles()
   selected: null, excluded: new Set(),
   chainLabels: new Map(),   // chain_id -> label override (separate-from-group)
+  // OPERATOR LINE COLOUR - an OVERRIDE LAYER, never a rewrite. The engine's
+  // colour stays in st.color / ch.color untouched, because it is EVIDENCE
+  // and not decoration: styleFp() (the cross-sheet family identity that
+  // keys set-level include/exclude decisions across all 48 sheets of a set)
+  // contains rawColor(st.color), and chain.py grouped these chains by
+  // (class, colour, weight, layer) in the first place. Overwriting either
+  // field would silently void the operator's decisions on every other sheet
+  // and destroy a measurement. Everything that PAINTS goes through
+  // styleCssColor / chainCssColor, which consult these two maps first.
+  famColor: new Map(),      // style_id -> "#rrggbb" chosen for the family
+  lineColor: new Map(),     // chain_id -> "#rrggbb" chosen for one line
   nextChainId: 1,           // ids for chains created by edits
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // one of POINT_TOOLS below, or null
   measurePts: [],
+  vScale: null,             // ft per paper inch for the VERTICAL axis on a
+                            // profile sheet, when it differs from horizontal.
+                            // null = one scale governs both, as on a plan.
   faithful: true,           // draw each line with its true pattern + weight
   gen: 0,                   // bumped per document/page switch; stale async
                             // callbacks compare against it and bail out
   selPt: null,              // index of the selected vertex on state.selected
   cutA: null,               // first anchor of an in-progress cut-span
   drawPts: [],              // vertices of the in-progress drawn line
+  ewBoundDraft: [],         // vertices of an in-progress hand-drawn limit of work
   drawSrc: null,            // chain_id whose family a drawn line joins
   hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
+  multiSel: new Set(),      // marquee multi-select: chain_ids boxed by
+                            // Shift+drag; bulk delete / bulk reclass act on it
+  marquee: null,            // in-progress Shift+drag box {a:[x,y], b:[x,y]} pt
+  drawSnaps: [],            // parallel to drawPts: the snap each point took
+                            // (null where the point was placed in free space)
+  snapHit: null,            // the live snap under the cursor while draw /
+                            // extend / join is armed - what the click WILL use
+  snapMsg: "",              // last hint printed for it, so hovering does not
+                            // rewrite the status line on every mousemove
+  extendAnchor: null,       // spur anchor picked on the selected line's own
+                            // body: {chain_id, segIndex, point, isVertex}
+  drawPend: null,           // a finished draw waiting for its family pick
+                            // {pts, head, tail} - nothing is committed yet
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
   conf: null,               // /confidence payload for the current page:
                             // NOT-TO-SCALE + spot-elevation provenance, the
                             // two trust facts the detect result cannot carry
   confKey: null,            // "job:page" the payload above belongs to
+  ckDone: null,             // Set of review-queue entry ids the operator has
+                            // clicked through; null until the calcstate
+                            // sidecar has answered so a saved check-off is
+                            // never clobbered by an empty first save
+  ckShowAll: false,         // "and N more" pressed: the cap is open
+  ckCollapsed: false,       // queue body folded to its header (session-only)
   hotChain: null,           // chain highlighted from a calculator row
   extraItems: [],           // calculator outputs: {label, qty, unit}
   areaInc: new Map(),       // area group_id -> included in the takeoff
@@ -72,6 +125,21 @@ const state = window.state = {
   seedLabels: new Map(),    // style_id -> the default we seeded (AI may replace)
   aiAuto: false,            // this page's verdicts were auto-applied
   aiUndo: null,             // snapshot taken before applying AI focus
+  workZones: [],            // WORK AREA quantity mask: [[x0,y0,x1,y1],...] in
+                            // page pt. Chains COUNT only by their length
+                            // inside the union; detection itself is untouched
+  wzDrag: null,             // in-progress work-area drag {a:[x,y], b:[x,y]}
+  wzRev: 0,                 // bumped on any zone or geometry change so the
+                            // per-chain inside-fraction memo invalidates
+  gzones: [],               // GRADING ZONES: declared-design regions
+                            // [{id, name, polygon, design, strip_in, added,
+                            //   showNums, labels, result, img, err}].
+                            // result/img are recomputed via the zone
+                            // endpoint, never restored from storage.
+  gzDraft: [],              // corners of an in-progress hand-drawn zone
+  gzHover: null,            // cursor position for the zone draft preview
+  gzDrag: null,             // in-progress zone box drag {a:[x,y], b:[x,y]}
+  gzSeq: 1,                 // next default zone number ("Zone 3")
   view: { x: 0, y: 0, k: 1 },
 };
 
@@ -81,12 +149,19 @@ const state = window.state = {
 // tool; every tool in this set has the same problem, so they all get it.
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
-  "ew-bound", "ew-pick", "st-pick", "st-draw",
+  "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
+  "gz-draw", "gz-box",
 ]);
 
 function syncCursor() {
   const cv = document.getElementById("view");
   if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
+  // The work-area button's lit state rides the same chokepoint as the
+  // cursor: ~20 places assign state.tool, and any of them can take the
+  // tool away (arming measure, a page switch). Hooked here so the button
+  // can never stay lit for a tool that is no longer armed.
+  const wb = document.getElementById("wzBtn");
+  if (wb) wb.classList.toggle("active", state.tool === "wz-draw");
 }
 
 // Hooked to ASSIGNMENT, not to each of the ~20 places that arm or clear a
@@ -195,14 +270,28 @@ function uploadPdf(file) {
 // sample list is empty, so without this the only way back to a document is to
 // re-upload it - a 40 MB transfer, and on a large set a detection the server
 // has already done. Keyed by job id; no path ever reaches the client.
+//
+// #recentSel IS GONE. The Projects grid lists the same jobs as cards, with
+// the page count, how much is detected and a thumbnail, so a second flat
+// dropdown of the same 60 names was duplication. What is NOT gone is this
+// function: RECENT_META is the only place the browser learns whether the
+// SERVER considers the open document deletable, and #docRemoveBtn reads it.
+// So the fetch and the RECENT_META fill now happen unconditionally, and only
+// the <select> painting is guarded - the early `if (!sel) return` that used
+// to sit at the top would have silently disarmed the remove button.
 async function loadRecent() {
-  const sel = $("recentSel");
-  if (!sel) return;
+  const sel = $("recentSel");     // retired from index.html; may be absent
   let rows = [];
   try {
     const r = await fetch("/api/recent");
     if (r.ok) rows = await r.json();
   } catch (e) { return; }
+  // RECENT_META first, and from every row, so it is correct whether or not
+  // anything is drawing a list.
+  RECENT_META = {};
+  for (const d of rows) RECENT_META[d.job_id] = d;
+  syncRemoveBtn();
+  if (!sel) return;
   sel.innerHTML = "";
   const head = document.createElement("option");
   head.value = "";
@@ -212,7 +301,7 @@ async function loadRecent() {
   // Remember, per job, whether the SERVER said it may be deleted. The button
   // below only reads this to decide what to show; the service decides again
   // when asked, because a disabled button is decoration, not a permission.
-  RECENT_META = {};
+  // (Filled above now, before this <select> is even looked for.)
   const opt = (d) => {
     const o = document.createElement("option");
     o.value = d.job_id;
@@ -287,21 +376,10 @@ $("docRemoveBtn").onclick = async () => {
   }
 };
 
-$("recentSel").onchange = async () => {
-  const id = $("recentSel").value;
-  if (!id) return;
-  setStatus("opening…", "busy");
-  try {
-    const r = await fetch(`/api/job/${id}/open`);
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      return setStatus(e.detail || `could not reopen (${r.status})`, "err");
-    }
-    applyOpened(await r.json());
-  } catch (e) {
-    setStatus("could not reopen — the server did not answer", "err");
-  }
-};
+// The #recentSel change handler lived here. Its job - GET /api/job/<id>/open
+// then applyOpened() - is what pvOpenJob() in the Projects grid already does,
+// through the same route, so retiring the <select> lost no capability and
+// left no second reopen path to drift.
 loadRecent();
 
 $("uploadBtn").onclick = () => $("fileInput").click();
@@ -350,14 +428,23 @@ addEventListener("drop", (e) => {
 
 // What kind of box is this? A hosted one refuses filesystem paths, so the
 // path box is a dead control there and is removed rather than left to fail.
+// The three controls now live in Settings -> "This machine", so the whole
+// section and its nav entry go with them: an empty group under a heading
+// that says "This machine" reads as a broken page, not as a hidden feature.
 fetch("/api/config").then(r => r.ok ? r.json() : null).then(cfg => {
   if (!cfg || !cfg.hosted) return;
-  for (const id of ["pathInput", "openBtn", "sampleSel"]) {
+  for (const id of ["pathInput", "openBtn", "sampleSel",
+                    "svGroupMachine", "svMachineSection", "svNavMachine"]) {
     const el = $(id);
     if (el) el.hidden = true;
   }
-  $("uploadBtn").textContent = "Upload plans";
-  $("uploadBtn").title = "Choose a PDF, or drag one anywhere onto this window.";
+  // #uploadBtn is the "+ New project" button now. Its LABEL is not rewritten
+  // here any more - it said "Upload plans" on a hosted box and "Upload plans"
+  // everywhere else, so the assignment only ever restated the markup, and
+  // today it would quietly undo the new label. The title still earns its
+  // place: on a hosted box this really is the only way in.
+  $("uploadBtn").title = "Upload a PDF from this computer, or drag one "
+    + "anywhere onto this window. This server does not open files by path.";
 }).catch(() => { /* a local box with no /api/config: leave the UI alone */ });
 
 async function openPath(path) {
@@ -378,13 +465,36 @@ async function openPath(path) {
 // opened by path on a local box, or uploaded on the hosted one. Extracted so
 // the two entry points cannot drift - the upload path used to be unreachable
 // from the UI at all, which on a hosted server meant there was no way in.
-function applyOpened(j) {
+// `landOn` is an OPTIONAL engine page index to open on. Every existing caller
+// passes nothing and gets page 0, exactly as before; the Projects grid passes
+// a demo plan's own page, so clicking "Oncor Cloudcrest" opens the grading
+// sheet the card describes rather than the cover sheet in front of it.
+function applyOpened(j, landOn) {
+  // the landing page yields to a document, whichever way it arrived: card
+  // click, recents pick, sample, path, upload, or a drop on the window
+  showProjects(false);
+  // ...and so does the pricing settings page (the header's upload/drop
+  // controls stay reachable while it is up)
+  if (svIsOpen()) showSettings(false);
   // the remove button belongs to whatever is on screen now
   setTimeout(syncRemoveBtn, 0);
   state.gen++;
   // a newly uploaded set should appear in the picker without a reload
   setTimeout(loadRecent, 300);
   state.job = j.job_id; state.result = null;
+  state.triage = null;      // the old document's tiers must not paint this one
+  // ...and neither may the old document's Auto-detected card. Both of its
+  // blocks are renderings of a DETECTION, and this is the one path every open
+  // goes through. Found live on the SECOND open of a demo plan: #confBanner
+  // had been emptied, but #ckPanel still held the first run's 19 check rows
+  // and #autoHead was still on screen over nothing - the empty header
+  // syncAutoCard() exists to prevent. #ckPanel's own children are static
+  // markup renderCheckQueue writes into, so the rows are cleared, not the
+  // panel.
+  if ($("confBanner")) { $("confBanner").hidden = true; $("confBanner").innerHTML = ""; }
+  if ($("ckPanel")) $("ckPanel").hidden = true;
+  if ($("ckRows")) $("ckRows").innerHTML = "";
+  syncAutoCard();
   // The server no longer blocks the open on classifying every page (it read
   // every drawing on every page: 16s for a 20-page set, 38s for a 15-page
   // one, with nothing on screen saying the app had not hung). The page list
@@ -392,6 +502,9 @@ function applyOpened(j) {
   state.kinds = j.kinds || new Array(j.pages).fill(null);
   state.legendNames = []; $("legendVocab").innerHTML = "";
   $("docName").textContent = j.name;
+  // the masthead ellipsizes a long plan name (it always did); the full one
+  // has to stay readable on hover now that the name is the header's subject
+  $("docName").title = j.name;
   state.docName = j.name;
   const sel = $("pageSel");
   sel.innerHTML = "";
@@ -406,7 +519,20 @@ function applyOpened(j) {
   $("detectAllBtn").textContent = "Detect all";
   renderPageStrip();
   refreshPageStatuses();
-  selectPage(0);
+  loadTriage(state.job);
+  // Guarded: an out-of-range hint (a manifest that names page 4 of a set that
+  // has since been re-exported to 2 pages) falls back to page 0 rather than
+  // leaving the canvas on a page that does not exist.
+  const land = Number.isInteger(landOn) && landOn >= 0 && landOn < j.pages
+    ? landOn : 0;
+  // selectPage() does NOT write the masthead picker - the page strip's own
+  // click handler has always done that itself, and this call site got away
+  // with it only because a freshly rebuilt <select> already reads 0 and the
+  // page opened was always 0. Landing anywhere else without this line puts
+  // the canvas on sheet 3 while the picker says page 1, which is precisely
+  // the kind of quiet disagreement a takeoff cannot afford. Caught live.
+  $("pageSel").value = land;
+  selectPage(land);
   setStatus(`${j.pages} pages`);
   if (!j.kinds) pollKinds(state.job, state.gen);
 }
@@ -455,19 +581,47 @@ async function selectPage(p) {
   // itself over the current one - which is how a Belle Farms sheet ended up
   // under another plan with the old itemised takeoff still listed.
   const gen = ++state.gen;
+  // The transient line belongs to the page that produced it. While the sheet
+  // facts rode setStatus, loadResult's own sentence overwrote whatever was
+  // there on every page switch; now that the facts have their own segment,
+  // nothing does - so "detecting…" or an error from the PREVIOUS sheet would
+  // sit under the new one, describing work on a page nobody is looking at.
+  setStatus("");
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
+  // chains are per page: an undo stack that outlived the sheet would
+  // "restore" chains onto a page they never belonged to. Same rule as the
+  // work area below - page switch is the reliable chokepoint.
+  state.multiSel = new Set(); state.marquee = null;
+  state.sgPartial = new Map();
+  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.extendAnchor = null; state.drawPend = null; drawFamClose();
+  undoClear(undoStack);
+  // The WORK AREA belongs to ONE sheet. loadResult also clears it, but
+  // loadResult only runs when the new page HAS a loadable result - an
+  // undetected page skipped it and kept the PREVIOUS sheet's boxes armed
+  // (caught live on Kayden 38->39: detect would then have silently masked
+  // the wrong sheet). Page switch is the reliable chokepoint; the new
+  // page's own saved boxes come back via wzApplySaved in calcStateLoad.
+  state.workZones = []; state.wzDrag = null; state.wzRev++;
+  state.ewBoundDraft = []; state.ewBoundHover = null;
+  // grading zones belong to ONE sheet, drafts included; this page's own
+  // saved zones come back via gzApplySaved in calcStateLoad
+  gzPageReset();
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
+  // check-offs are per page and per detection; loadResult reseeds them, but
+  // a page with no result yet must not inherit the previous page's set
+  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
   updateSelBar(null);
   // scaleMemApply BEFORE renderSheetHead, always - see loadResult().
   scaleMemApply();
   scopeApply();
   renderSheetHead();
   renderScopeBar();
-  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); renderMultiBar(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
     if (gen !== state.gen) return;   // a later page won the race
@@ -500,7 +654,15 @@ async function poll(gen = state.gen) {
     setPageStatus(state.page, "error");
     return setStatus(j.status, "err");
   }
-  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); }
+  if (j.status === "done") { setStatus("done"); setPageStatus(state.page, "done"); loadResult(gen); return; }
+  // "idle" while we are polling = the worker exited without writing a
+  // result OR an error. The old code fell through here silently: no timer,
+  // no message, "detecting…" frozen on screen until a reload (measured on
+  // ellis p42 when a memory-starved child died during numpy import). The
+  // server now reports most of these as errors (fresh-result check in
+  // _sched_finish_locked); this is the belt for a race or an old server.
+  setPageStatus(state.page, "idle");
+  setStatus("the detection worker exited without a result — press Detect to retry", "err");
 }
 
 // ---------- page thumbnail strip: the whole-PDF page-by-page flow --------
@@ -529,11 +691,13 @@ function renderPageStrip() {
     foot.className = "thumb-foot";
     const num = document.createElement("span");
     num.textContent = p + 1;
+    const tag = document.createElement("span");
+    tag.className = "tri-tag";        // filled by applyTriageToStrip()
     const badge = document.createElement("span");
     const st = state.pageStatus[p] || "idle";
     badge.className = "thumb-badge " + st;
     badge.title = BADGE_TITLE[st] || st;
-    foot.append(num, badge);
+    foot.append(num, tag, badge);
     t.append(img, foot);
     t.onclick = () => {
       if (p === state.page) return;
@@ -542,6 +706,7 @@ function renderPageStrip() {
     };
     list.appendChild(t);
   });
+  applyTriageToStrip();
 }
 function markCurrentThumb() {
   const list = $("thumbList");
@@ -568,6 +733,116 @@ async function refreshPageStatuses() {
   if (job !== state.job) return;   // another document won the race
   res.forEach((j, p) => setPageStatus(p,
     j.status === "done" ? "done" : j.status === "running" ? "running" : "idle"));
+}
+// ---------- sheet triage: which pages LOOK like excavation work ----------
+// Attention paint only. The tiers come from GET /triage - a text-layer
+// keyword score computed server-side, with the evidence attached (hits =
+// the term-by-term computation). Nothing here detects, excludes, or touches
+// a quantity: a tint, a tooltip that shows WHY, and an operator-toggled dim
+// of the other-trade pages. Dimmed is never hidden - every thumb stays in
+// place, stays clickable, and opens its page exactly as before.
+const TRI_TIER_WORD = {
+  core: "strong excavation signals",
+  maybe: "some excavation signals",
+  other: "looks like another trade",
+  unknown: "no text - not triaged",
+};
+async function loadTriage(job) {
+  let d = null;
+  try {
+    const r = await fetch(`/api/job/${job}/triage`);
+    if (r.ok) d = await r.json();
+  } catch (e) { return; }             // no triage is just an unpainted strip
+  if (!d || !Array.isArray(d.pages)) return;
+  // Job-scoped guard, NOT the page generation token: triage is a property
+  // of the DOCUMENT, and openJob calls selectPage(0) right after this -
+  // which bumps state.gen, so a gen guard discarded every reply (caught
+  // live on ellis: endpoint 200 with 54 pages scored, strip never painted).
+  if (state.job !== job) return;      // a different document opened since
+  state.triage = d;
+  applyTriageToStrip();
+}
+function triageTitle(p, r) {
+  const kind = state.kinds[p];
+  const head = `page ${p + 1}`
+    + (r.sheet_no ? ` — sheet ${r.sheet_no}` : "")
+    + (kind && kind !== "unknown" ? ` — ${kind}` : "");
+  if (r.tier === "unknown") return head + LF + TRI_TIER_WORD.unknown;
+  const ev = (r.hits || []).slice(0, 5)
+    .map(h => `${h[0]}×${h[1]} (${h[2] > 0 ? "+" : ""}${h[2]})`)
+    .join(", ");
+  return head + LF
+    + `${TRI_TIER_WORD[r.tier] || r.tier} (score ${r.score})` + LF
+    + (ev || "no keyword hits");
+}
+function applyTriageToStrip() {
+  const d = state.triage;
+  const hl = localStorage.getItem("core-triage-hl") === "on";
+  [...$("thumbList").children].forEach((t, p) => {
+    t.classList.remove("tri-core", "tri-maybe", "tri-other",
+                       "tri-unknown", "tri-dim");
+    const r = d && d.pages && d.pages[p];
+    if (!r) return;
+    t.classList.add("tri-" + r.tier);
+    if (hl && (r.tier === "other" || r.tier === "unknown"))
+      t.classList.add("tri-dim");     // dim, never hide
+    t.title = triageTitle(p, r);
+    const tag = t.querySelector(".tri-tag");
+    if (tag) tag.textContent =
+      r.tier === "unknown" ? "no text" : (r.sheet_no || "");
+  });
+  renderTriageBar();
+}
+function renderTriageBar() {
+  const bar = $("triageBar");
+  const d = state.triage;
+  if (!d || !Array.isArray(d.pages) || !d.pages.length) {
+    bar.hidden = true;
+    return;
+  }
+  const n = d.pages.filter(r => r.tier === "core" || r.tier === "maybe").length;
+  const dim = d.pages.length - n;     // what "highlight" would dim
+  const unk = (d.counts && d.counts.unknown) || 0;
+  const hl = localStorage.getItem("core-triage-hl") === "on";
+  bar.innerHTML = "";
+  // REMOVED 2026-09-01, owner's words: "lets also remove the 'x out of y
+  // sheets look like excavation work' because ive upload general construction
+  // blueprints and it still said it so it just looks odd".
+  //
+  // The scorer is a keyword count over each sheet's text (server.py triage).
+  // On a set that is not civil it still returns SOME best-scoring sheets, and
+  // printing that as "N sheets look like excavation work" turned a relative
+  // ranking of this set into an assertion about the document. The ranking
+  // itself is honest and still earns its place: it drives the per-thumb tier
+  // tint, the sheet-number tag and the per-thumb tooltip (applyTriageToStrip
+  // / triageTitle), all of which say what they are when you look at them.
+  // What went is the sentence that read the ranking as a verdict.
+  //
+  // The dim toggle stays: it is opt-in, it dims nothing until pressed, and it
+  // is now named for what it DOES rather than for what the sheets ARE.
+  if (dim > 0) {
+    const b = document.createElement("button");
+    b.className = "mini";
+    b.textContent = hl ? `undim ${dim} sheets` : `dim ${dim} sheets`;
+    b.title = hl
+      ? "Restore full brightness on the dimmed sheets."
+      : `Dim the ${dim} sheet${dim === 1 ? "" : "s"} whose text scores lowest`
+        + ` against excavation keywords`
+        + (unk ? ` (${unk} of them carry no readable text at all)` : "")
+        + `. That is a ranking of THIS set, not a judgement that the work is`
+        + ` or is not excavation. Nothing is hidden or excluded — every page`
+        + ` still opens, and detection and quantities are untouched.`;
+    b.onclick = () => {
+      localStorage.setItem("core-triage-hl", hl ? "off" : "on");
+      applyTriageToStrip();
+    };
+    bar.appendChild(b);
+    bar.hidden = false;
+    return;
+  }
+  // nothing to dim and nothing left to say: an empty bordered strip is worse
+  // than no strip
+  bar.hidden = true;
 }
 $("stripToggle").onclick = () => {
   const min = $("pageStrip").classList.toggle("collapsed");
@@ -628,14 +903,33 @@ async function loadResult(gen = state.gen) {
   state.include = new Map(); state.labels = new Map();
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
-  state.tool = null; state.measurePts = [];
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
+  // a fresh result invalidates every snapshot on the undo stack ("Reset
+  // edits" reloads through here, and re-detect replaces every chain object)
+  state.multiSel = new Set(); state.marquee = null;
+  state.sgPartial = new Map();
+  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.extendAnchor = null; state.drawPend = null; drawFamClose();
+  undoClear(undoStack);
+  state.tool = null; state.measurePts = []; state.vScale = null;
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  // hover highlight and per-family expansion are page state like the rest:
+  // a style_id means nothing outside the result it came from
+  state.hotStyle = null; famOpen.clear();
   // a limit of work belongs to ONE sheet: the next page's grading line is
   // a different polygon, and carrying this one over would clip the new
   // sheet's volumes to an outline drawn somewhere else
   state.ewBound = null;
+  // the WORK AREA is per sheet for the same reason; this page's own boxes
+  // come back from the calcstate sidecar below (wzApplySaved)
+  state.workZones = []; state.wzDrag = null; state.wzRev++;
+  state.ewBoundDraft = []; state.ewBoundHover = null;
+  // grading zones too - restored by gzApplySaved once the sidecar answers
+  gzPageReset();
   state.conf = null; state.confKey = null; state.confErr = false;
+  // review queue: check-offs belong to a page and a detection; reseeded
+  // from the calcstate sidecar once it loads (renderCheckQueue)
+  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
   state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
@@ -648,6 +942,13 @@ async function loadResult(gen = state.gen) {
   $("ewBasis").innerHTML = ""; $("ewBasis").classList.add("off");
   $("ewTake").classList.add("off"); $("ewAdd").classList.remove("on");
   $("trPanel").hidden = true; $("trBtn").hidden = false;
+  // trench: same three rules as earthwork just above. Stale numbers must
+  // not survive a doc/page switch, the consent button must not offer to
+  // "Remove" rows state.tr no longer describes, and the band table must
+  // not describe the previous sheet's run.
+  $("trResult").textContent = "";
+  $("trTake").classList.add("off"); $("trAdd").classList.remove("on");
+  $("trBandBox").classList.add("off"); $("trBandRows").innerHTML = "";
   $("symPanel").hidden = true; $("symBtn").hidden = false;
   $("rollPanel").hidden = true; $("rollBtn").hidden = false;
   $("xsPanel").hidden = true; $("xsBtn").hidden = false; state.xs = null;
@@ -675,6 +976,14 @@ async function loadResult(gen = state.gen) {
   // restored here for the same reason: they belong to this sheet, and the
   // operator committed them.
   calcRestore();
+  // ...and the INPUTS behind those rows - contour surface picks, layer
+  // stacks, trench depths, structure outlines - live in a server-side
+  // sidecar (p<N>_calcstate.json, audit item 11), so a reload and every
+  // other seat get them back too. Awaited BEFORE the first render of the
+  // calculator panels: an opened panel must start from the saved record,
+  // not from defaults that a slower fetch corrects behind the operator.
+  await calcStateLoad(gen);
+  if (gen !== state.gen) return;
   // The remembered scale pick has to be back in state.result BEFORE anything
   // paints. renderSheetHead draws the scale chip, the picker's ON highlight
   // AND the confidence banner's opening sentence straight off
@@ -689,7 +998,13 @@ async function loadResult(gen = state.gen) {
   scopeApply();   // verdicts before the first paint; see scopeApply()
   renderSheetHead();
   renderScopeBar();
-  renderStyles(); renderChips(); renderLegend(); renderAreas();
+  // Toolkit gating is computed in updateSelBar, which until now only ran on a
+  // SELECTION change - so DRAW (whose gate is a detected sheet, not a
+  // selection, since "users should be able to draw a line at any time") stayed
+  // disabled from its markup until the operator happened to click a line.
+  // A tool the operator cannot reach is the same as a tool that does not exist.
+  updateSelBar(null);
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderMultiBar();
   // arApplyItems, not renderItemized: calcRestore brought back WHICH areas the
   // operator ticked, and the priced rows are DERIVED from that selection at
   // the scale in force. Rendering without re-deriving would show the
@@ -702,14 +1017,15 @@ async function loadResult(gen = state.gen) {
   scaleRestore(gen);
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
-  const sc = state.result.scale;
-  setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
-    (sc ? ` · scale ${sc.text} (${sc.source}` +
-      (sc.agrees === true ? ", matches the drawn bar"
-        : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
-        : "") + ")"
-      : " · no scale found"),
-    sc && sc.agrees === false ? "err" : "");
+  // The sheet facts used to be announced here, through setStatus, where the
+  // next transient message erased them. They live in the status bar's own
+  // segment now - same sentence, built by sheetFactsText() - and they stay
+  // up for as long as the sheet does. renderSheetHead() above already
+  // painted them once; this repaint keeps the old call ORDER (the sentence
+  // was always the last thing loadResult said), and if the async
+  // scaleRestore() above later corrects the scale, its scaleRepaint() ->
+  // renderSheetHead() -> renderSheetFacts() chain repaints this too.
+  renderSheetFacts();
 }
 
 // ---------- sidebar ----------
@@ -947,7 +1263,11 @@ function drawPatternSample(cnv, s, w, h) {
   const rep = state.result.chains.find(c => c.style_id === s.style_id);
   const tpl = rep && rep.template && rep.template.length >= 2
     ? rep.template : dashArray(s.signature);
-  sctx.strokeStyle = cssColor(s.color, s.width);
+  // the family's RESOLVED colour - the operator's, else the convention's,
+  // else the engine's (styleColorInfo). The engine's own value stays visible
+  // as evidence on the row's colour chip, the way the 'engine id' chip shows
+  // the measured cadence.
+  sctx.strokeStyle = styleCssColor(s);
   sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
   if (s.class !== "solid" && tpl && tpl.length >= 2) {
     const span = tpl.reduce((a, b) => a + b, 0);
@@ -959,6 +1279,30 @@ function drawPatternSample(cnv, s, w, h) {
 }
 
 // ---------- on-sheet mini legend ----------
+// UI FIX 8 - the ONE test for "nothing named this family", shared by the
+// style list and the on-sheet mini legend so the two surfaces can never
+// disagree about which rows are named.
+//
+// It is character-for-character the rule ckCollect() already applies to
+// queue "N ft of linework has no name" in CHECK THESE: no legend row
+// matched the pattern, the operator has not typed over the engine's seed,
+// and the drafter filed it under nothing or under AutoCAD's default layer
+// "0". detect_page.py seeds an unmatched family's label with its own
+// measurement - `f"{class} {signature}"`, i.e. `solid solid` and
+// `dash1 d18.0 g9.0` - so "no name" is emphatically NOT "empty label".
+//
+// This is presentation only. Nothing here writes state.labels, so the
+// itemized takeoff, the CSV and every total keep the exact strings they
+// carried before.
+function styleIsUnnamed(s) {
+  const seed = (state.seedLabels.get(s.style_id) || "").trim();
+  const cur = (state.labels.get(s.style_id) ?? s.suggested_label ?? "").trim();
+  const leaf = layerSplit((s.layer || "").trim()).leaf.trim();
+  return !/\(legend\)\s*$/.test(s.suggested_label || "")
+    && !(cur !== "" && cur !== seed)
+    && (leaf === "" || leaf === "0");
+}
+
 function renderMiniLegend() {
   const box = $("miniLegend");
   if (!state.result) { box.hidden = true; return; }
@@ -981,14 +1325,38 @@ function renderMiniLegend() {
     drawPatternSample(cnv, st, 80, 18);
     const lab = document.createElement("span");
     lab.className = "ml-lab";
-    lab.textContent = state.labels.get(st.style_id) || st.suggested_label
-      || `${st.class} · ${st.signature}`;
+    // Same fix as the style row, on the second surface that showed a
+    // measurement where a name goes. The pattern stays visible, in
+    // parentheses, where it reads as evidence rather than identity.
+    if (styleIsUnnamed(st)) {
+      lab.classList.add("unnamed");
+      lab.textContent = `Unnamed (${st.signature})`;
+      lab.title = "No legend row matched this pattern and the drafter filed "
+        + "it under no CAD layer. The takeoff and the CSV still list it as \""
+        + ((state.seedLabels.get(st.style_id) || "").trim()
+           || st.suggested_label || "") + "\" until you name it in the "
+        + "sidebar's line-styles list.";
+    } else {
+      lab.textContent = state.labels.get(st.style_id) || st.suggested_label
+        || `${st.class} · ${st.signature}`;
+    }
     const ft = document.createElement("span");
     ft.className = "ml-ft";
-    const q = ftPerIn ? st.length_pt / 72 * ftPerIn : st.length_pt;
+    const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
     ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
       + (ftPerIn ? " ft" : " pt");
-    row.append(cnv, lab, ft);
+    // the second surface a line is identified on, so it gets the same jump
+    // to the styles list. Its own button, with stopPropagation, because the
+    // row's plain click already means "isolate" and that meaning is kept.
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "ml-goto";
+    go.textContent = "≡";
+    go.setAttribute("aria-label", "Find this line type in the styles list");
+    go.title = "Jump to this line type's row in the Line styles list — "
+      + "opens its group if you closed it. Changes nothing.";
+    go.onclick = (e) => { e.stopPropagation(); revealStyleRow(st.style_id, "legend"); };
+    row.append(cnv, lab, ft, go);
     row.onclick = () => {
       state.isolate = state.isolate === st.style_id ? null : st.style_id;
       renderMiniLegend(); draw();
@@ -1017,6 +1385,11 @@ function fmtQty(pt) {
   return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " LF";
 }
 function renderSheetHead() {
+  // The status bar's persistent half is the same set of facts this header
+  // draws, so it repaints on exactly the same beats: every detect, every
+  // page switch, every scale change (renderSheetHead is what all eleven of
+  // those call). Before the early return, so an empty app clears it too.
+  renderSheetFacts();
   const el = $("sheetHead");
   if (!state.job) { el.hidden = true; return; }
   el.hidden = false;
@@ -1033,7 +1406,15 @@ function renderSheetHead() {
     s.textContent = txt;
     return s;
   };
-  meta.append(chip(`Sheet ${state.page + 1} / ${state.kinds.length}`));
+  // The printed sheet number when the engine read one off the title block
+  // ("C3.1"), with the 1-based page position kept beside it: the client's
+  // drawings are named by the printed number, but every filename and API
+  // call in this tool is indexed - showing only one of the two is how
+  // "page 4" has already meant two different sheets (CLAUDE.md §5).
+  const sheetNo = state.result && state.result.sheet_no;
+  meta.append(chip(sheetNo
+    ? `${sheetNo} (page ${state.page + 1} of ${state.kinds.length})`
+    : `Sheet ${state.page + 1} / ${state.kinds.length}`));
   const kind = state.kinds[state.page];
   if (kind && kind !== "unknown") meta.append(chip(kind));
   // Scale, with its second opinion. A wrong scale is this engine's most
@@ -1158,8 +1539,139 @@ function renderScalePick(host) {
     row.appendChild(b);
   }
   host.appendChild(row);
+  renderVScalePick(host, uniq);
 }
-// reapply a remembered pick after a detect
+
+// ---------- the second scale, on the OTHER axis --------------------------
+// A profile sheet prints two scales that are both correct at once: the run
+// at one, the rise at the other. The picker above chooses which single scale
+// governs, which is right for a plan sheet printing a detail at a different
+// scale, and wrong here - picking one leaves every sloped pipe measured with
+// the other axis exaggerated.
+//
+// SUGGESTED, NEVER APPLIED. Measured on Kayden Springs Unit 2 p39: the
+// engine finds 1"=50' governing 100% of the linework and 1"=5' governing
+// 0.0%, because the ranking is region-scoped and a vertical scale governs no
+// REGION - it governs an axis. That 0%/100% split with the smaller reading
+// scoring zero is a good signal, but acting on it silently would change
+// every length on the page, which is the worst failure this product has.
+// So it is offered with the reason shown, and the operator confirms.
+// WITHDRAWN 2026-08-27 - do not re-enable without the region test below.
+//
+// The control applies one ratio to the WHOLE PAGE. On a plan-and-profile
+// sheet only the bottom graph carries two scales, so the plan half above it
+// gets divided down too. Measured on the delivered approve for Kayden Springs
+// U2 engine page index 39 = printed sheet C5.2
+// (takeoff-jobs/d0e10205df40/p39_elements.json, 354 elements):
+//
+//   sheet total                       52,854.3 ft -> 33,949.7 ft   -35.8%
+//   "Profile sewer pipe" - the ONLY thing it exists to fix    -1.6 ft  -0.1%
+//   C-U2-PROP-LOT                                         -2,288.7 ft -85.9%
+//   TITLEBLOCK - SHEET                                    -2,004.6 ft -37.3%
+//   G-TBLK-LOGO                                             -675.5 ft -44.7%
+//
+// It buys 1.6 ft of correctness and destroys 18,904 ft. It shrinks the
+// sheet's own title block by 37% and the company logo by 45%, because those
+// have vertical edges and the ratio hits every y component on the page.
+//
+// Two things compound it. state.vScale is persisted nowhere, so the same
+// sheet approved twice ships 33,949.7 ft and then 52,854.3 ft under a
+// byte-identical scale block. And _scale_report_lines() in server.py can only
+// print one "Scale: 1 inch = X ft", so the report states a single scale above
+// a table computed from two.
+//
+// The fix is not a patch: the ratio has to apply only to chains inside the
+// profile region. The two bands ARE separable in the shipped file - plan
+// geometry at export-px y 1600-2731, profile pipes at y 4956-5119 - so the
+// region test is available and none is applied.
+//
+// Safe to withdraw this way: with no vertical scale set every path returns
+// the engine's own number untouched, and this suggestion is the only thing
+// that can set one. Nothing approved to date is affected.
+const V_SCALE_ENABLED = false;
+
+function vScaleSuggestion(uniq) {
+  if (!V_SCALE_ENABLED) return null;
+  if (!uniq || uniq.length !== 2) return null;
+  const sc = state.result && state.result.scale;
+  if (!sc) return null;
+  const sorted = [...uniq].sort(
+    (x, y) => x.ft_per_paper_inch - y.ft_per_paper_inch);
+  const small = sorted[0], large = sorted[1];
+  // vertical exaggeration means the vertical scale shows FEWER feet per inch
+  if (!(small.ft_per_paper_inch < large.ft_per_paper_inch * 0.5)) return null;
+  // and the axis one governs no region, while the plan one governs the sheet
+  const gs = small.governs_pct, gl = large.governs_pct;
+  if (gs === null || gs === undefined || gl === null || gl === undefined)
+    return null;
+  if (!(gs <= 5 && gl >= 60)) return null;
+  return { vert: small, horiz: large };
+}
+
+function renderVScalePick(host, uniq) {
+  const sug = vScaleSuggestion(uniq);
+  const on = state.vScale !== null && state.vScale !== undefined;
+  if (!sug && !on) return;
+  const sc = state.result.scale;
+
+  const row = document.createElement("div");
+  row.className = "sh-scales";
+  const lab = document.createElement("span");
+  lab.className = "dim";
+  lab.textContent = on
+    ? `two axes \u2014 across ${(+sc.ft_per_paper_inch).toFixed(2)} ft/in, `
+      + `up ${(+state.vScale).toFixed(2)} ft/in:`
+    : "looks like a profile \u2014 second scale is for the VERTICAL axis:";
+  row.appendChild(lab);
+
+  const mk = (text, title, active, fn) => {
+    const b = document.createElement("button");
+    b.className = "sh-scale-pick" + (active ? " on" : "");
+    b.textContent = text;
+    b.title = title;
+    b.onclick = fn;
+    row.appendChild(b);
+  };
+
+  if (sug) {
+    mk(`use ${(+sug.vert.ft_per_paper_inch).toFixed(2)} ft/in up`,
+       `${sug.vert.text} governs no area of this sheet, and shows fewer feet `
+       + `per inch than ${sug.horiz.text}. On a profile that is the vertical `
+       + `exaggeration. Applying it measures each line's rise at this scale `
+       + `and its run at the other.`,
+       on,
+       () => {
+         // the horizontal scale must be the one governing the drawing
+         if (Math.abs(sc.ft_per_paper_inch - sug.horiz.ft_per_paper_inch) > 1e-6) {
+           state.result.scale = Object.assign({}, sc, {
+             text: sug.horiz.text,
+             ft_per_paper_inch: sug.horiz.ft_per_paper_inch,
+             count: sug.horiz.count, agrees: null, delta_pct: null,
+             picked_by_reviewer: true, typed_by_reviewer: false,
+           });
+         }
+         state.vScale = sug.vert.ft_per_paper_inch;
+         setStatus(`two scales applied \u2014 across `
+           + `${(+sug.horiz.ft_per_paper_inch).toFixed(2)} ft/in, up `
+           + `${(+sug.vert.ft_per_paper_inch).toFixed(2)} ft/in. Sloped lines `
+           + `are no longer measured as if the sheet were flat.`);
+         renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+         renderMiniLegend(); draw();
+       });
+  }
+  if (on) {
+    mk("one scale", "Go back to measuring both axes at the horizontal scale",
+       false,
+       () => {
+         state.vScale = null;
+         setStatus("back to a single scale for both axes");
+         renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
+         renderMiniLegend(); draw();
+       });
+  }
+  host.appendChild(row);
+}
+  // reapply a remembered pick after a detect
 function scaleMemApply() {
   if (!state.result) return;
   const sc = state.result.scale;
@@ -1366,6 +1878,24 @@ let scaleTypedOpen = false;
 let scaleTypedDraft = "";
 let scaleTypedFor = null;
 
+// The ONE way a human-entered scale lands: undo capture, scaleTypedObj (which
+// stamps typed_by_reviewer so the approve payload and the p<N>_scale.json
+// sidecar both record whose number this is), session store, repaint. The
+// typed-scale box and the measure-line calibration both commit through here -
+// two entrances, one path, so they cannot drift apart.
+function applyTypedScale(ft, text) {
+  if (scaleUndo.key !== scaleTypedKey()) {
+    scaleUndo.key = scaleTypedKey();
+    scaleUndo.scale = state.result.scale || null;
+  }
+  state.result.scale = scaleTypedObj(state.result.scale, ft, text);
+  try {
+    store.setItem(scaleTypedKey(), JSON.stringify({ ft, text }));
+    store.removeItem(scaleKey());
+  } catch (e) { /* private mode: this session still honours it */ }
+  scaleRepaint();
+}
+
 function renderScaleTyped(host) {
   if (!state.result) return;
   if (scaleTypedFor !== scaleTypedKey()) {
@@ -1496,20 +2026,11 @@ function renderScaleTyped(host) {
     use.onclick = () => {
       const p = reread();
       if (p.err || p.err === "") { inp.focus(); return; }
-      if (scaleUndo.key !== scaleTypedKey()) {
-        scaleUndo.key = scaleTypedKey();
-        scaleUndo.scale = state.result.scale || null;
-      }
-      state.result.scale = scaleTypedObj(state.result.scale, p.ft, p.text);
-      try {
-        store.setItem(scaleTypedKey(), JSON.stringify({ ft: p.ft, text: p.text }));
-        store.removeItem(scaleKey());
-      } catch (e) { /* private mode: this session still honours it */ }
+      applyTypedScale(p.ft, p.text);
       scaleTypedOpen = false; scaleTypedDraft = "";
       setStatus(`scale set BY HAND to ${p.ft.toFixed(2)} ft per inch — every `
         + `quantity on this sheet recalculated from a number you typed, not `
         + `one the sheet states`);
-      scaleRepaint();
     };
     reread();
     setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
@@ -1522,6 +2043,14 @@ function renderScaleTyped(host) {
 function scaleRepaint() {
   renderSheetHead(); renderStyles(); renderAreas(); renderItemized();
   renderMiniLegend(); draw();
+  // Cut/fill does NOT follow a scale change - the surfaces are integrated
+  // server-side at whatever scale was in force when Calculate was pressed
+  // (see ewScaleStale). The warning banner existed for exactly this case but
+  // was only painted by the Calculate handler itself, so the natural order -
+  // Calculate, notice the lengths look wrong, correct the scale - repainted
+  // the stale cubic yards as priced rows with no banner at all. Volume moves
+  // with the SQUARE of the scale; a silent 2x here is 4x on every CY.
+  renderEwStale();
 }
 
 // Restore a scale a reviewer set on an EARLIER visit to this page. The
@@ -1987,7 +2516,23 @@ function confLines() {
   // plausible elevation. See takeoff_engine/earthwork.read_spot_datum.
   const sp = cf && cf.spots;
   if (sp && sp.n) {
-    if (sp.from_sheet_note)
+    // A sheet can disagree WITH ITSELF: Barn C3.3's legend note reads 7605.25
+    // while its own printed contours sit at 7720-7735. The old banner called
+    // the note "the drafter's statement" unconditionally and coloured it
+    // green - over 171 elevations that were exactly 100 ft low. When the two
+    // sources conflict, say so first, in warn colour, with both numbers.
+    const dtm = sp.datum;
+    if (dtm && dtm.conflict)
+      say("warn", `<b>This sheet disagrees with itself about the spot-`
+        + `elevation datum.</b> Its legend note reads <span class="conf-num">`
+        + `${confFt(dtm.declared)} ft</span>, but ${dtm.band_n} full `
+        + `elevation${confPlural(dtm.band_n, "")} printed on the drawing sit`
+        + `${dtm.band_n === 1 ? "s" : ""} in the <span class="conf-num">`
+        + `${confFt(dtm.band_base)} ft</span> band. Using <b>`
+        + `${confFt(dtm.chosen === "band" ? dtm.band_base : dtm.declared)} ft`
+        + `</b>. Check one printed elevation by eye before pricing anything `
+        + `built on these.`);
+    if (sp.from_sheet_note && !(dtm && dtm.conflict))
       say("ok", `<b>${sp.from_sheet_note} spot elevation`
         + `${confPlural(sp.from_sheet_note, "")} read from this sheet.</b> `
         + `The sheet prints them shortened, and its own legend states what `
@@ -1999,7 +2544,15 @@ function confLines() {
         + `${confPlural(sp.printed_in_full, "")} printed in full</b> on the `
         + `sheet — nothing about ${confPlural(sp.printed_in_full, "it", "them")}`
         + ` had to be worked out.`);
-    if (sp.inferred)
+    if (sp.inferred && dtm && dtm.conflict)
+      // The conflict banner above already carries the story; this one must
+      // not claim "no note could be read" when a note WAS read and overruled.
+      say("warn", `<b>${sp.inferred} spot elevation`
+        + `${confPlural(sp.inferred, "")} anchored to the sheet's printed `
+        + `elevations</b> after its legend note was overruled (above). `
+        + `Confirm one against an elevation you can read before trusting `
+        + `any cut or fill volume.`);
+    if (sp.inferred && !(dtm && dtm.conflict))
       say("warn", `<b>${sp.inferred} spot elevation`
         + `${confPlural(sp.inferred, "")} rest on a guess.</b> The sheet `
         + `prints them shortened (“FG: 15.96”) and no note saying what the `
@@ -2094,14 +2647,16 @@ async function confLoad(gen, key) {
 function renderConfidence() {
   const box = $("confBanner");
   if (!box) return;
-  if (!state.result) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!state.result) { box.hidden = true; box.innerHTML = "";
+    renderCheckQueue(); return; }   // hides the review queue too
   const key = state.job + ":" + state.page;
   if (state.confKey !== key) {
     state.confKey = key; state.conf = null; state.confErr = false;
     confLoad(state.gen, key);
   }
   const lines = confLines();
-  if (!lines.length) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!lines.length) { box.hidden = true; box.innerHTML = "";
+    syncAutoCard(); return; }   // the card may now have nothing to show
   // The worst line sets the banner, and green needs a positive: a page whose
   // every line is merely "nothing contradicts this" is amber, not green.
   let worst = "ok";
@@ -2119,6 +2674,7 @@ function renderConfidence() {
   const badge = waiting ? "checking…"
     : { ok: "corroborated", warn: "check first", stop: "stop" }[worst];
   box.hidden = false;
+  syncAutoCard();
   box.className = "conf " + worst + (waiting ? " checking" : "");
   box.innerHTML =
     `<div class="conf-head"><span class="conf-badge `
@@ -2127,7 +2683,618 @@ function renderConfidence() {
     + lines.map(l => `<div class="conf-line ${l.level}">`
         + `<span class="conf-dot ${l.level}"></span>`
         + `<span class="conf-txt">${l.html}</span></div>`).join("");
+  renderCheckQueue();
 }
+
+// ---------- CHECK THESE: the confidence-ranked review queue ---------------
+// The style list on a civil sheet runs to 280 undifferentiated rows (Barn
+// C3.0, engine page index 2 = printed sheet 3), and a list with no opinion
+// about which rows matter moves the checking work onto the operator instead
+// of removing it (EXCAVATION-PLAN.md section 7 item 2). This panel lists the
+// specific things the engine is LEAST sure about on this sheet, most
+// consequential first, and presents everything else as decided.
+//
+// Rules it lives under:
+//   * Nothing here is a new number. Every entry is a regrouping of
+//     measurements and flags the app already holds - state.result, the
+//     /confidence payload, the /earthwork/suggest payload, the calcstate
+//     sidecar, the symbol groups. The panel never fetches: a source that has
+//     not been loaded contributes no entries, and the panel SAYS which
+//     checks could not run yet rather than implying a clean bill.
+//   * The cap is disclosed. At most CK_CAP entries show; the rest are one
+//     click away behind "and N more", never silently gone.
+//   * Clicking an entry navigates to the thing and marks it checked - a
+//     visible struck-through state, undoable, persisted per page through
+//     the calcstate sidecar (additive `checks` key). A check-off changes
+//     NOTHING about the takeoff; it is the operator's own reading log.
+//   * Severity colours match the confidence banner's contract for the same
+//     facts (stop = two sources contradict or no scale at all; warn = one
+//     source, or a choice the reviewer has to make), so the two surfaces
+//     can never disagree about the same doubt.
+//
+// The block between the markers below is PURE - no DOM, no state.*, no
+// fetch - and tests/test_check_queue.js evals exactly that block standalone
+// (same technique as tests/test_trench_math.js). Keep it that way.
+
+// CHECK-QUEUE-BEGIN
+
+// At most this many entries render before the "and N more" button. The
+// target the plan states is "show the ~12 things the engine is least sure
+// about"; 12 also keeps the panel under one screen at the sidebar's 330px.
+const CK_CAP = 12;
+
+// A style whose welded-gap + picked-up-ink share exceeds this fraction of
+// its footage is queued: a quarter of the length being paper the drafter
+// never inked is past what routine stitching produces (Kayden C5.1's whole
+// sheet measures 2.27% welded; its worst billable layer 6.10%), so 25%
+// marks a style whose number is substantially inferred rather than drawn.
+const CK_WELD_FRAC = 0.25;
+
+// Footage floor for per-style entries. 500 pt is the codebase's own
+// existing "big enough to matter" line - loadResult ticks a solid style on
+// by default only above it - and the 1%-of-sheet term keeps the floor
+// proportionate on dense sheets so the queue is never 12 slivers while a
+// real doubt waits below the cap.
+const CK_STYLE_FLOOR_PT = 500;
+const CK_STYLE_FLOOR_SHARE = 0.01;
+function ckStyleFloor(totalPt) {
+  return Math.max(CK_STYLE_FLOOR_PT, CK_STYLE_FLOOR_SHARE * (totalPt || 0));
+}
+
+// Ranking weights. The common currency is AFFECTED FOOTAGE in paper points
+// (paper points, not feet, because the no-scale case still has to rank and
+// feet do not exist there). Per-style entries carry exactly the footage in
+// doubt; page-wide entries carry the page's included footage times a share
+// factor:
+//   CK_W_PAGE  = 1.0   no-scale / caption-vs-bar / printed-sf-vs-scale /
+//                      datum conflict: the doubt multiplies EVERY quantity
+//                      on the page (scale) or every volume (datum), so it
+//                      carries the whole page.
+//   CK_W_OCR   = 0.6   a scale read by OCR off a scan: one page-wide number
+//                      from the least trustworthy reader this app has, with
+//                      no second reading on the sheet to catch it - below
+//                      the outright contradictions, above the multi-scale
+//                      choice (which at least prints its alternatives).
+//   CK_W_MULTI = 0.5   several printed scales and the engine could not
+//                      settle which governs: an even choice between
+//                      captions puts half the expected footage at stake.
+//   CK_W_MULTI_RANKED = 0.25  several printed scales but the engine ranked
+//                      one decisively (governs, margin > 1.5): the residual
+//                      doubt of a measured pick that is still, finally, the
+//                      reviewer's choice to confirm.
+//   CK_W_DROPS = 0.4   saved operator inputs that no longer match this
+//                      detection: a silently reverted decision. Bounded by
+//                      the calculators' scope rather than the whole sheet,
+//                      but it undoes work the operator believes done - so
+//                      above any single style short of ~40% of the page.
+//   CK_W_SCHED = 0.35  a mark count the sheet's own schedule contradicts:
+//                      a genuine two-source disagreement, but bounded to
+//                      one mark family; |delta| breaks ties inside it.
+//   spots unresolved:  totalPt * (unresolved / n) - the share of the
+//                      sheet's elevation evidence that carries no height.
+// Severity sorts before weight (stop always outranks warn), so these
+// factors order entries WITHIN a colour, never across it.
+const CK_W_PAGE = 1.0;
+const CK_W_OCR = 0.6;
+const CK_W_MULTI = 0.5;
+const CK_W_MULTI_RANKED = 0.25;
+const CK_W_DROPS = 0.4;
+const CK_W_SCHED = 0.35;
+
+// 720 pt at 30 ft/in -> "300 ft"; no scale -> honest paper units, because a
+// queue entry must never print a foot the sheet cannot back.
+function ckFt(pt, ftPerIn) {
+  if (!ftPerIn) {
+    const inch = pt / 72;
+    return (inch >= 100 ? Math.round(inch) : +inch.toFixed(1)) + " paper-inches";
+  }
+  const ft = pt / 72 * ftPerIn;
+  return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " ft";
+}
+// 30 -> "30", 5.333 -> "5.33" (same trim rule as confFt, kept local so the
+// marked block stays standalone)
+function ckDec(v) {
+  const n = +v;
+  if (!isFinite(n)) return "?";
+  return n.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+// How many of the calcstate sidecar's chain/style-keyed inputs would NOT
+// survive being applied to this detection. Mirrors the drop arms of
+// ewApplySaved (a contour row or limit-of-work seed whose chain id is gone)
+// and trApplySaved (a pipe-run style id that renumbered) so this count and
+// the in-panel calcDropText can never disagree - with one honest gap: a
+// bound seed whose chain exists but no longer stitches into a ring is only
+// discovered by the stitcher at panel-open, so this may undercount by that
+// one case, never overcount.
+function ckDrops(saved, chainIds, styleIds) {
+  const cs = new Set(chainIds || []), ss = new Set(styleIds || []);
+  let ew = 0, tr = 0;
+  const sv = saved && saved.ew;
+  if (sv && Array.isArray(sv.rows))
+    for (const r of sv.rows)
+      if (r && typeof r.chain_id === "number" && !cs.has(r.chain_id)) ew++;
+  const bd = saved && saved.ew_bound;
+  if (bd && typeof bd.chain_id === "number" && !cs.has(bd.chain_id)) ew++;
+  const tv = saved && saved.tr;
+  if (tv && typeof tv.style_id === "number" && !ss.has(tv.style_id)) tr++;
+  return { ew: ew, tr: tr };
+}
+
+// Build the queue from plain data. Input contract (everything optional
+// except totalPt/styles; an absent source contributes no entries and, where
+// it means a check has not run, one `pending` line):
+//   totalPt   included footage on the sheet, paper pt
+//   ftPerIn   ft per paper inch, or null when no scale is in force
+//   styles    [{sid, pt, name, legend, layerLeaf, named, included, weldPt}]
+//   scale     {present, text, ftIn, conflict, corroborated, barFt,
+//              deltaPct, source, operator, multi:{n,lo,hi,settled}|null}
+//   tag       {agrees, implied, ratio, n} | null   (printed-sf cross-check)
+//   datum     {state:"checked"|"pending"|"failed", conflict, declared,
+//              bandBase, bandN}
+//   spots     {state, n, unresolved}
+//   drops     {state, ew, tr, sigChanged}
+//   marks     [{code, n, sched}] | null   (null = Count never pressed)
+// Returns {entries:[{id, sev, w, head, text, act}], pending:[string]}.
+// Entries are NOT capped or ordered here - ckOrder does that - so no
+// caller can accidentally rank and cap with different rules.
+function ckBuild(inp) {
+  const out = [], pending = [];
+  const totalPt = +inp.totalPt || 0;
+  const fpi = inp.ftPerIn || null;
+  const sc = inp.scale || { present: false };
+
+  // ---- the scale: the one number under every other number ---------------
+  if (!sc.present) {
+    out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "No scale could be read off this sheet.",
+      text: "Nothing below is real feet until one is set - use the scale "
+        + "box in the sheet header before pricing anything from this page.",
+      act: { t: "sheethead" } });
+  } else if (sc.conflict) {
+    out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "Two readings of the scale disagree.",
+      text: "The printed caption says 1 in = " + ckDec(sc.ftIn) + " ft, the "
+        + "drawn bar measures 1 in = " + ckDec(sc.barFt) + " ft - "
+        + ckDec(sc.deltaPct) + "% apart, and every foot on this sheet moves "
+        + "with the answer. The caption is in force; settle it in the header.",
+      act: { t: "sheethead" } });
+  } else if (!sc.operator && sc.source === "ocr" && sc.corroborated !== true) {
+    out.push({ id: "scale", sev: "warn", w: totalPt * CK_W_OCR,
+      head: "The scale was read by OCR off a scan.",
+      text: "Character recognition is the least trustworthy reading this app "
+        + "has and nothing on the sheet backs it up - check 1 in = "
+        + ckDec(sc.ftIn) + " ft against a dimension printed on the drawing.",
+      act: { t: "sheethead" } });
+  }
+  // A single uncorroborated printed caption is deliberately NOT queued: it
+  // is the normal case on this corpus, the banner already says it in words,
+  // and a queue that fires on the norm stops meaning "least sure".
+  if (sc.present && sc.multi && !sc.operator) {
+    // reviewer-picked or typed scales are the operator's own decision and
+    // do not queue; the engine's unsettled or merely-ranked pick does
+    const m = sc.multi;
+    out.push({ id: "scales", sev: "warn",
+      w: totalPt * (m.settled ? CK_W_MULTI_RANKED : CK_W_MULTI),
+      head: "This sheet prints " + m.n + " different scales.",
+      text: (m.settled
+        ? "The engine measured 1 in = " + ckDec(sc.ftIn) + " ft as governing "
+          + "most of the drawing, but details here are drawn to others ("
+          + ckDec(m.lo) + " to " + ckDec(m.hi) + " ft/in) and the pick is "
+          + "still yours to confirm in the header."
+        : "From 1 in = " + ckDec(m.lo) + " ft to 1 in = " + ckDec(m.hi)
+          + " ft, and nothing on the sheet settled which governs the "
+          + "drawing - confirm the pick in the header before pricing."),
+      act: { t: "sheethead" } });
+  }
+  if (inp.tag && inp.tag.agrees === false) {
+    out.push({ id: "scaletag", sev: "stop", w: totalPt * CK_W_PAGE,
+      head: "The sheet's own printed areas contradict the scale.",
+      text: inp.tag.n + " area figure" + (inp.tag.n === 1 ? "" : "s")
+        + " printed on this page impl" + (inp.tag.n === 1 ? "ies" : "y")
+        + " 1 in = " + ckDec(inp.tag.implied) + " ft, not the "
+        + ckDec(sc.ftIn) + " ft in force - square-foot numbers are out "
+        + "roughly " + (inp.tag.ratio >= 10 ? Math.round(inp.tag.ratio)
+                        : (+inp.tag.ratio).toFixed(1)) + "x.",
+      act: { t: "sheethead" } });
+  }
+
+  // ---- the spot-elevation datum: worth 100 ft per elevation -------------
+  const dt = inp.datum || { state: "pending" };
+  if (dt.state === "checked" && dt.conflict) {
+    out.push({ id: "datum", sev: "warn", w: totalPt * CK_W_PAGE,
+      head: "The sheet disagrees with itself about the elevation datum.",
+      text: "Its own note reads " + ckDec(dt.declared) + " ft while "
+        + dt.bandN + " printed elevation" + (dt.bandN === 1 ? " sits" : "s sit")
+        + " in the " + ckDec(dt.bandBase) + " ft band - a wrong pick moves "
+        + "every cut/fill volume by the difference. Open Earthwork and check "
+        + "one printed elevation by eye.",
+      act: { t: "ew" } });
+  }
+  const sp = inp.spots || { state: "pending" };
+  if (sp.state === "checked" && sp.n > 0 && sp.unresolved > 0) {
+    out.push({ id: "spots", sev: "warn",
+      w: totalPt * (sp.unresolved / sp.n),
+      head: sp.unresolved + " of " + sp.n
+        + " spot elevations carry no height.",
+      text: "The sheet prints them shortened and nothing readable on the "
+        + "page says what the missing hundreds are - they stay out of every "
+        + "volume until a base elevation is typed in Earthwork.",
+      act: { t: "ew" } });
+  }
+  if (dt.state === "pending" || sp.state === "pending")
+    pending.push("Elevation checks have not answered yet - where each spot "
+      + "elevation's base height came from is still being read off the page "
+      + "(earthwork not opened; the page reader runs on its own).");
+  else if (dt.state === "failed" || sp.state === "failed")
+    pending.push("Elevation checks could not run - the page reader did not "
+      + "answer, so nothing here has ruled out a guessed datum. Reload the "
+      + "sheet, or open Earthwork to read the elevations directly.");
+
+  // ---- saved operator inputs that no longer apply ------------------------
+  const dr = inp.drops || { state: "pending" };
+  if (dr.state === "checked") {
+    const sig = dr.sigChanged
+      ? " (the engine has changed since they were saved)" : "";
+    if (dr.ew > 0)
+      out.push({ id: "drops:ew", sev: "warn", w: totalPt * CK_W_DROPS,
+        head: dr.ew + " saved earthwork input" + (dr.ew === 1 ? "" : "s")
+          + " no longer match" + (dr.ew === 1 ? "es" : "") + " this detection.",
+        text: "Contour or boundary picks made on an earlier detection"
+          + sig + " cannot be applied, and any volume they fed needs "
+          + "re-checking - open Earthwork to see what survives.",
+        act: { t: "ew" } });
+    if (dr.tr > 0)
+      out.push({ id: "drops:tr", sev: "warn", w: totalPt * CK_W_DROPS,
+        head: "The saved trench pipe-run no longer matches this detection.",
+        text: "The line style it pointed at" + sig + " is gone or "
+          + "renumbered, so the saved trench setup cannot be applied - "
+          + "open Trench and re-pick the run.",
+        act: { t: "tr" } });
+  } else if (dr.state === "failed") {
+    pending.push("The saved-inputs record could not be read, so stale "
+      + "operator inputs cannot be checked this load.");
+  } else {
+    pending.push("Saved calculator inputs not read yet - the stale-input "
+      + "check is pending.");
+  }
+
+  // ---- mark counts vs the sheet's own schedule ---------------------------
+  if (inp.marks === null || inp.marks === undefined) {
+    pending.push("Mark counts vs the sheet's schedule: unchecked - press "
+      + "Count to scan this page's symbols.");
+  } else {
+    for (const mk of inp.marks) {
+      if (typeof mk.sched !== "number" || mk.sched === mk.n) continue;
+      out.push({ id: "sym:" + mk.code, sev: "warn",
+        w: totalPt * CK_W_SCHED + Math.abs(mk.n - mk.sched),
+        head: mk.code + ": counted " + mk.n + ", the schedule says "
+          + mk.sched + ".",
+        text: "The sheet's own schedule contradicts the geometric count - "
+          + "one of the two is wrong. Hover the row in Counts to see every "
+          + "counted instance.",
+        act: { t: "sym" } });
+    }
+  }
+
+  // ---- per-style doubts ---------------------------------------------------
+  const floor = ckStyleFloor(totalPt);
+  for (const s of (inp.styles || [])) {
+    if (!s.included || !(s.pt >= floor)) continue;
+    // Unnamed AND unfiled: no legend row matched it, the drafter gave it no
+    // usable layer (empty, or AutoCAD's default "0"), and the operator has
+    // not named it. On Barn C4.0, 38.8% of the footage had no name at all
+    // (EXCAVATION-PLAN.md section 15 item 14) - footage that reaches the
+    // priced takeoff under a pattern string.
+    const leaf = (s.layerLeaf || "").trim();
+    if (!s.legend && !s.named && (leaf === "" || leaf === "0")) {
+      out.push({ id: "style:" + s.sid, sev: "warn", w: s.pt,
+        head: ckFt(s.pt, fpi) + " of linework has no name.",
+        text: "No legend row matched it and the drafter filed it under "
+          + (leaf === "0" ? "layer \"0\"" : "no CAD layer")
+          + " (shown as \"" + (s.name || "unnamed") + "\") - if it is your "
+          + "trade it is unpriced under that blank; if not, it pads the "
+          + "sheet totals. Click to isolate it on the canvas.",
+        act: { t: "style", sid: s.sid } });
+    }
+    // Substantially inferred footage: welded gap + picked-up ink past a
+    // quarter of the style's length. The number is real geometry, but much
+    // of it is paper the drafter never inked - the operator should look at
+    // the run before pricing it.
+    if (s.pt > 0 && s.weldPt / s.pt > CK_WELD_FRAC) {
+      out.push({ id: "weld:" + s.sid, sev: "warn", w: s.weldPt,
+        head: Math.round(100 * s.weldPt / s.pt) + "% of \""
+          + (s.name || "style " + s.sid) + "\" is inferred, not drawn.",
+        text: "Of " + ckFt(s.pt, fpi) + ", " + ckFt(s.weldPt, fpi)
+          + " is welded gap or ink picked up from elsewhere rather than "
+          + "drawn line. Click to isolate the run and look before pricing.",
+        act: { t: "style", sid: s.sid } });
+    }
+  }
+  return { entries: out, pending: pending };
+}
+
+// Order and cap. Checked-off entries sink to the bottom (dealt with, still
+// visible), severity sorts before weight (stop always above warn), weight
+// before id (id keeps the order deterministic on ties). The cap never
+// hides: callers must render `more` as an opener when it is nonzero.
+function ckOrder(entries, doneIds, cap, showAll) {
+  const done = new Set(doneIds || []);
+  const sevRank = (e) => e.sev === "stop" ? 2 : 1;
+  const sorted = [...entries].sort((a, b) =>
+    (done.has(a.id) ? 1 : 0) - (done.has(b.id) ? 1 : 0)
+    || sevRank(b) - sevRank(a)
+    || b.w - a.w
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const shown = showAll ? sorted : sorted.slice(0, cap);
+  return { shown: shown, more: sorted.length - shown.length,
+           total: sorted.length,
+           unchecked: entries.reduce((n, e) => n + (done.has(e.id) ? 0 : 1), 0) };
+}
+// CHECK-QUEUE-END
+
+// Everything the pure block needs, read out of live state in one place.
+// READ-ONLY over state: collecting must never mutate a pick, a label or a
+// fetch. Sources that have not been loaded map to state:"pending"/"failed"
+// or marks:null - the pure block turns those into `pending` lines.
+function ckCollect() {
+  const res = state.result;
+  const sc = res.scale;
+  let totalPt = 0, allPt = 0;
+  for (const s of res.styles) {
+    const pt = styleLenPt(s);
+    allPt += pt;
+    if (state.include.get(s.style_id)) totalPt += pt;
+  }
+  if (!totalPt) totalPt = allPt;   // nothing ticked: rank against the sheet
+  // welded/picked-up footage per style, honouring excluded chains the same
+  // way sheetOverCapture does
+  const weld = new Map();
+  for (const ch of res.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    weld.set(ch.style_id, (weld.get(ch.style_id) || 0)
+      + (ch.gap_pt || 0) + (ch.pickup_pt || 0));
+  }
+  const styles = res.styles.map(s => {
+    const seed = (state.seedLabels.get(s.style_id) || "").trim();
+    const cur = (state.labels.get(s.style_id) ?? s.suggested_label ?? "").trim();
+    return {
+      sid: s.style_id,
+      pt: styleLenPt(s),
+      name: cur || (s.suggested_label || "").trim(),
+      legend: /\(legend\)\s*$/.test(s.suggested_label || ""),
+      layerLeaf: layerSplit((s.layer || "").trim()).leaf,
+      // named = anything beyond the seeded default: the operator typed, the
+      // label memory restored a past decision, or a legend-sheet name was
+      // applied. All three are decisions; a decided row is not queued.
+      named: cur !== "" && cur !== seed,
+      included: !!state.include.get(s.style_id),
+      weldPt: weld.get(s.style_id) || 0,
+    };
+  });
+  let scale = { present: false };
+  if (sc) {
+    const uniq = scaleCandidates();
+    const why = (sc.typed_by_reviewer || sc.picked_by_reviewer)
+      ? null : scalePickWhy();
+    scale = {
+      present: true,
+      text: sc.text || "",
+      ftIn: +sc.ft_per_paper_inch,
+      conflict: sc.agrees === false,
+      corroborated: sc.agrees === true,
+      barFt: sc.bar_ft_per_paper_inch,
+      deltaPct: sc.delta_pct,
+      source: sc.source || "text",
+      operator: !!(sc.typed_by_reviewer || sc.picked_by_reviewer),
+      multi: uniq.length > 1 ? {
+        n: uniq.length,
+        lo: Math.min(...uniq.map(c => +c.ft_per_paper_inch)),
+        hi: Math.max(...uniq.map(c => +c.ft_per_paper_inch)),
+        settled: !!(why && why.kind === "governs" && !why.thin),
+      } : null,
+    };
+  }
+  const tc = confTagCheck();
+  const tag = tc ? { agrees: tc.agrees, implied: tc.implied,
+                     ratio: tc.ratio, n: tc.tc.n_matched } : null;
+  // datum + spots: the earthwork suggest payload when the panel has been
+  // opened, else the /confidence payload, else pending/failed. Item 3 and
+  // item 5 of the queue spec, one truth each, never both counted twice.
+  const dj = (state.ew && state.ew.datum)
+    || (state.conf && state.conf.spots && state.conf.spots.datum) || null;
+  const checkedSrc = !!(state.ew || state.conf);
+  const dstate = checkedSrc ? "checked" : (state.confErr ? "failed" : "pending");
+  const datum = { state: dstate, conflict: !!(dj && dj.conflict),
+    declared: dj && dj.declared, bandBase: dj && dj.band_base,
+    bandN: (dj && dj.band_n) || 0 };
+  let spots = { state: dstate, n: 0, unresolved: 0 };
+  if (state.ew && Array.isArray(state.ew.spots)) {
+    spots = { state: "checked", n: state.ew.spots.length,
+      unresolved: state.ew.spots.filter(g => !g.resolved).length };
+  } else if (state.conf && state.conf.spots) {
+    spots = { state: "checked", n: state.conf.spots.n || 0,
+      unresolved: state.conf.spots.unresolved || 0 };
+  }
+  let drops = { state: state.calcSaveBroken ? "failed" : "pending",
+                ew: 0, tr: 0, sigChanged: false };
+  if (state.calcSavedLoaded) {
+    const saved = state.calcSaved || {};
+    // custom chains are excluded from the live set on purpose: ewApplySaved
+    // drops a saved row that points at one, so this count must too
+    const d = ckDrops(saved,
+      res.chains.filter(c => !c.custom).map(c => c.chain_id),
+      res.styles.map(s => s.style_id));
+    drops = { state: "checked", ew: d.ew, tr: d.tr,
+      sigChanged: !!(saved.engine_sig && res.engine_sig
+                     && saved.engine_sig !== res.engine_sig) };
+  }
+  const marks = state.sym
+    ? state.sym.filter(g => (g.name || "").trim()
+                            && g.schedule_qty !== undefined)
+        .map(g => ({ code: g.name.trim(), n: g.n, sched: g.schedule_qty }))
+    : null;
+  return { totalPt: totalPt, ftPerIn: sc ? sc.ft_per_paper_inch : null,
+           styles: styles, scale: scale, tag: tag, datum: datum,
+           spots: spots, drops: drops, marks: marks };
+}
+
+function renderCheckQueue() {
+  const panel = $("ckPanel");
+  if (!panel) return;
+  if (!state.result) { panel.hidden = true; return; }
+  // Seed the check-offs from the calcstate sidecar exactly once per page
+  // load. A check-off attests to what the operator SAW, and style ids
+  // renumber when the engine changes - so on an engine_sig mismatch every
+  // saved check-off is dropped rather than re-attached to whatever now
+  // wears the id. Dropped check-offs come back as UNCHECKED entries: the
+  // conservative direction (re-ask, never silently vouch).
+  if (state.ckDone === null && state.calcSavedLoaded) {
+    const saved = state.calcSaved || {};
+    const ids = (saved.checks && Array.isArray(saved.checks.done))
+      ? saved.checks.done.filter(x => typeof x === "string") : [];
+    const same = saved.engine_sig && state.result.engine_sig
+      && saved.engine_sig === state.result.engine_sig;
+    state.ckDone = new Set(same ? ids : []);
+  }
+  const built = ckBuild(ckCollect());
+  const done = state.ckDone || new Set();
+  const ord = ckOrder(built.entries, [...done], CK_CAP, state.ckShowAll);
+  panel.hidden = false;
+  $("ckTitle").textContent = "Check these (" + ord.unchecked + ")";
+  $("ckToggle").textContent = state.ckCollapsed ? "show" : "hide";
+  $("ckBody").hidden = state.ckCollapsed;
+  // the ▾/▸ the CSS paints from `.closed` must agree with the real state
+  $("ckHead").classList.toggle("closed", !!state.ckCollapsed);
+  syncAutoCard();
+  if (state.ckCollapsed) return;
+  const rows = $("ckRows");
+  rows.innerHTML = "";
+  $("ckHint").hidden = !built.entries.length;
+  if (!built.entries.length) {
+    const d = document.createElement("div");
+    d.className = "ck-clean";
+    d.textContent = built.pending.length
+      ? "Nothing queued by the checks that have run. Some could not run "
+        + "yet - see below."
+      : "Every check that could run on this sheet came back with nothing "
+        + "to hold.";
+    rows.appendChild(d);
+  }
+  for (const e of ord.shown) {
+    const isDone = done.has(e.id);
+    const row = document.createElement("div");
+    row.className = "ck-row " + e.sev + (isDone ? " done" : "");
+    const dot = document.createElement("span");
+    dot.className = "ck-dot " + e.sev;
+    const txt = document.createElement("span");
+    txt.className = "ck-txt";
+    const b = document.createElement("b");
+    b.textContent = e.head;
+    txt.appendChild(b);
+    txt.appendChild(document.createTextNode(" " + e.text));
+    row.append(dot, txt);
+    row.title = isDone
+      ? "You checked this off. Click to go there again; “not done” puts it back."
+      : "Click to go to it - that marks it checked (undoable, and it changes nothing in the takeoff).";
+    if (isDone) {
+      const un = document.createElement("button");
+      un.className = "mini ck-undo";
+      un.textContent = "not done";
+      un.onclick = (ev) => { ev.stopPropagation(); ckSetDone(e.id, false); };
+      row.appendChild(un);
+    }
+    row.onclick = () => {
+      if (!isDone) ckSetDone(e.id, true);
+      ckGo(e);
+    };
+    rows.appendChild(row);
+  }
+  const more = $("ckMore");
+  if (ord.more > 0) {
+    more.hidden = false;
+    more.textContent = "and " + ord.more + " more, ranked lower - show the "
+      + "whole list (the cap hides nothing; this opens it)";
+    more.onclick = () => { state.ckShowAll = true; renderCheckQueue(); };
+  } else if (state.ckShowAll && ord.total > CK_CAP) {
+    more.hidden = false;
+    more.textContent = "showing all " + ord.total
+      + " - collapse to the top " + CK_CAP;
+    more.onclick = () => { state.ckShowAll = false; renderCheckQueue(); };
+  } else {
+    more.hidden = true;
+  }
+  const pend = $("ckPending");
+  if (built.pending.length) {
+    pend.hidden = false;
+    pend.innerHTML = "";
+    const h = document.createElement("div");
+    h.className = "ck-pend-line";
+    h.textContent = "Could not run yet:";
+    pend.appendChild(h);
+    for (const p of built.pending) {
+      const d = document.createElement("div");
+      d.className = "ck-pend-line";
+      d.textContent = "· " + p;
+      pend.appendChild(d);
+    }
+  } else pend.hidden = true;
+}
+
+// The check-off itself. Session state plus the calcstate sidecar (additive
+// `checks` key), through the same debounced push every calculator input
+// uses. It is the operator's reading log - it never touches a quantity.
+function ckSetDone(id, val) {
+  if (!state.ckDone) state.ckDone = new Set();   // sidecar broken: session-only
+  if (val) state.ckDone.add(id); else state.ckDone.delete(id);
+  calcStateDirty();
+  renderCheckQueue();
+}
+
+// Go TO the thing. Isolation reuses the style list's own mechanic
+// (state.isolate + the row's .iso class via renderStyles), panels reuse
+// their own open buttons - opening Earthwork from here runs the exact
+// handler the toolbar button runs, fetch and consent story included,
+// because the click on this row IS the operator asking for that panel.
+function ckGo(e) {
+  const a = e.act || {};
+  if (a.t === "style") {
+    state.isolate = a.sid;
+    renderStyles(); renderMiniLegend(); draw();
+    const row = document.querySelector(
+      '#styleList .style-row[data-sid="' + a.sid + '"]');
+    if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+    const st = state.result.styles.find(s => s.style_id === a.sid);
+    setStatus("isolated: "
+      + (state.labels.get(a.sid) || (st && st.suggested_label) || ("style " + a.sid))
+      + " — Esc shows everything again");
+  } else if (a.t === "sheethead") {
+    const el = $("sheetHead");
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "ew") {
+    if ($("ewPanel").hidden) $("ewBtn").onclick();
+    else $("ewPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "tr") {
+    if ($("trPanel").hidden) $("trBtn").onclick();
+    else $("trPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  } else if (a.t === "sym") {
+    if (!$("symPanel").hidden)
+      $("symPanel").scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+}
+
+function ckSetCollapsed(on) {
+  state.ckCollapsed = on;
+  renderCheckQueue();
+}
+$("ckToggle").onclick = () => ckSetCollapsed(!state.ckCollapsed);
+// The header's own chevron. `.side-head h2::before` paints a ▾ on EVERY
+// side-head, so this one looked clickable and did nothing - the queue only
+// closed from the "hide" button beside it. CHECK THESE is not in the generic
+// SECTIONS fold because it owns its own collapsed state (state.ckCollapsed
+// gates the row BUILD, not just visibility), so the title drives that state
+// instead of a second, competing mechanism.
+$("ckHead").querySelector("h2").onclick = () => ckSetCollapsed(!state.ckCollapsed);
 
 // ---------- what the drafter called it -----------------------------------
 // `s.layer` is the CAD layer name and it is the only field on a style row
@@ -2170,6 +3337,18 @@ function renderConfidence() {
 function layerTail(lay) {
   const parts = String(lay).split("|");
   return parts.length > 1 ? "…" + parts[parts.length - 1] : parts[0];
+}
+
+// The same string, split rather than truncated. AutoCAD stamps every layer
+// that arrives through an external reference with the source drawing's name,
+// so `A|B` is layer B seen through xref A. layerTail() prints "…B", which
+// makes a bare B and an xref'd B indistinguishable on screen - and those two
+// are routinely different things: on Kayden Springs U2 sheet 39 the bare
+// C-U2-SSWR-LAT is two NTS lot details, the xref'd one is the actual laterals.
+function layerSplit(lay) {
+  const s = String(lay);
+  const i = s.lastIndexOf("|");
+  return i < 0 ? { xref: null, leaf: s } : { xref: s.slice(0, i), leaf: s.slice(i + 1) };
 }
 
 // ======================= operator-declared trade scope =====================
@@ -2396,24 +3575,67 @@ function scopeEvidenceForMark(g) {
 // would be wrong (a scope that changes sheet to sheet is a scope nobody can
 // audit, and the whole-job rollup adds sheets together).
 //
-// TAKING A DEFAULT FROM AN ACCOUNT LATER. The owner's plan is to ask at login.
-// When that exists, the login answer becomes the DEFAULT VALUE of this record
-// and nothing else changes: `scopeRec()` would fall back to the account trades
-// when the document has no record of its own, `scopeSetTrades` would keep
-// writing per document, and the bar would say "from your account" instead of
-// "not declared" so an operator can always see which one is talking. The
-// per-document record must stay the winner - the account says what you usually
-// do, the document says what you are doing here.
+// TAKING A DEFAULT FROM SETTINGS. Landed 2026-09-01, and built exactly the
+// way this note said it would be: the Settings page's standing trade default
+// becomes the DEFAULT VALUE of this record and nothing else changes.
+// `scopeRec()` falls back to it when the document has no record of its own,
+// `scopeSetTrades` still writes per document, and the bar SAYS which of the
+// two is talking ("from your Settings default" vs the declaration). The
+// per-document record stays the winner - Settings says what you usually do,
+// the document says what you are doing here.
+//
+// The seeding rule is in scopeSeed() in the SETTINGS-PURE block, and it turns
+// on record PRESENCE rather than on a non-empty trade list: "show everything"
+// writes {trades: []}, and re-seeding that from the default would be the
+// standing preference silently overriding a decision the operator had just
+// made on this sheet.
 function scopeKey() { return docKey() + "::scope"; }
 function scopeRec() {
-  try {
-    const r = JSON.parse(store.getItem(scopeKey()) || "{}");
-    return { trades: Array.isArray(r.trades) ? r.trades.filter(t => SCOPE_TOKENS[t]) : [],
-      showAside: !!r.showAside };
-  } catch (e) { return { trades: [], showAside: false }; }
+  return scopeSeed(store.getItem(scopeKey()), scopeDefaultTrades(), SCOPE_TOKENS);
 }
 function scopeSave(r) {
-  try { store.setItem(scopeKey(), JSON.stringify(r)); } catch (e) {}
+  // Only the two fields this record IS. `from` is scopeSeed's provenance
+  // answer, computed on every read; persisting it would freeze a "default"
+  // stamp onto a record that, by the act of being written, has become the
+  // document's own declaration.
+  try {
+    store.setItem(scopeKey(), JSON.stringify(
+      { trades: r.trades || [], showAside: !!r.showAside }));
+  } catch (e) {}
+}
+
+// THE STANDING DEFAULT (Settings -> Scope). What trade you usually do, as
+// opposed to what you are doing on this sheet. Lives in raw localStorage
+// beside `core-theme` and `core-scope-hidden`, NOT in `store`: it is a
+// preference of this browser, not a takeoff decision, so it must not appear
+// on the saved-work button and must not be swept away by "Forget everything"
+// - which clears the per-document declarations that this value then
+// legitimately re-seeds.
+const SCOPE_DEFAULT_KEY = "core-scope-default";
+function scopeDefaultTrades() {
+  try {
+    const r = JSON.parse(localStorage.getItem(SCOPE_DEFAULT_KEY) || "[]");
+    return Array.isArray(r) ? r.filter(t => SCOPE_TOKENS[t]) : [];
+  } catch (e) { return []; }
+}
+function scopeSetDefaultTrades(list) {
+  const keep = (list || []).filter(t => SCOPE_TOKENS[t]);
+  try { localStorage.setItem(SCOPE_DEFAULT_KEY, JSON.stringify(keep)); }
+  catch (e) { /* private mode: the default simply does not persist */ }
+  // A document that already carries its own record is NOT touched. The only
+  // thing that can move is a document with no declaration, whose seed just
+  // changed - repaint it so the sheet and the setting never disagree.
+  //
+  // GUARDED on state.result, unlike its sibling scopeSetTrades. That one is
+  // only reachable from the scope panel, which exists only when a sheet is
+  // loaded; this one is reachable from the Settings page with nothing open at
+  // all, and the sheet renderers below have no sheet to draw.
+  scopeApply();
+  if (state.result) {
+    renderScopeBar(); renderStyles(); renderChips(); renderItemized();
+    renderMiniLegend(); if (state.sym) renderSym(); draw();
+  }
+  if (!$("settingsView").hidden) renderSvScope();
 }
 
 // Recompute every style's verdict and reconcile the tick boxes.
@@ -2534,18 +3756,72 @@ function scopeTally() {
     // the operator's own tick state, before this filter touched anything
     if (!(state.scopeOwnerOn && state.scopeOwnerOn.has(s.style_id))) continue;
     t.on += 1;
-    const ft = ftPerIn ? s.length_pt / 72 * ftPerIn : s.length_pt;
+    const ft = ftPerIn ? styleLenPt(s) / 72 * ftPerIn : styleLenPt(s);
     t["ft" + d.v.charAt(0).toUpperCase() + d.v.slice(1)] += ft;
   }
   t.ftUnit = ftPerIn ? "ft" : "pt";
   return t;
 }
 
+// OWNER (2026-08-31): "the ability to close the -'whose scope is this' tab".
+// Closed, not deleted: the declaration is a real provenance input and the
+// panel's own filter keeps running on whatever was already declared. The
+// record is per browser in the existing store, beside core-pagestrip /
+// core-minilegend / core-sidebar-*.
+//
+// HOW IT COMES BACK: a "Scope" button that is ALWAYS in the Line styles card
+// header, next to all / none. It is on whenever the panel is showing, so the
+// control that closed the panel and the control that reopens it are the same
+// visible thing - the feature can never be lost behind a preference nobody
+// can find. Closing while a trade is declared says so on the button and in
+// its tooltip, because a filter that is still narrowing the list must not go
+// quiet just because its panel is folded away.
+const SCOPE_HIDE_KEY = "core-scope-hidden";
+function scopeHidden() {
+  try { return localStorage.getItem(SCOPE_HIDE_KEY) === "1"; }
+  catch (e) { return false; }
+}
+function scopeSetHidden(on) {
+  try { localStorage.setItem(SCOPE_HIDE_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
+  renderScopeBar();
+  const n = scopeRec().trades.length;
+  setStatus(on
+    ? "scope panel closed" + (n
+        ? ` — the ${n} trade${n === 1 ? " you declared is" : "s you declared are"}`
+          + " STILL filtering the list; the Scope button in the Line styles "
+          + "header reopens it"
+        : " — the Scope button in the Line styles header reopens it")
+    : "scope panel open");
+}
+// The always-present reopen control. Rendered from renderScopeBar so the two
+// can never disagree about whether the panel is up.
+function renderScopeToggle() {
+  const btn = $("scopeToggle");
+  if (!btn) return;
+  if (!state.result) { btn.hidden = true; return; }
+  btn.hidden = false;
+  const hid = scopeHidden();
+  const n = scopeRec().trades.length;
+  btn.classList.toggle("active", !hid);
+  btn.textContent = (hid && n) ? `scope (${n})` : "scope";
+  btn.setAttribute("aria-expanded", hid ? "false" : "true");
+  btn.title = hid
+    ? (n ? `Reopen "Whose scope is this?". It is closed, but the ${n} trade`
+           + `${n === 1 ? " you declared is" : "s you declared are"} still `
+           + "filtering this list."
+         : 'Reopen "Whose scope is this?" — declare whose trade this sheet is '
+           + "and the list narrows to it.")
+    : 'Close the "Whose scope is this?" panel. Nothing is cleared: whatever '
+      + "you declared keeps filtering, and this button brings the panel back.";
+}
+
 function renderScopeBar() {
   const box = $("scopeBar");
   if (!box) return;
   box.innerHTML = "";
+  renderScopeToggle();
   if (!state.result) { box.hidden = true; return; }
+  if (scopeHidden()) { box.hidden = true; return; }
   box.hidden = false;
   const rec = scopeRec(), t = scopeTally();
   const declared = rec.trades.length > 0;
@@ -2564,7 +3840,38 @@ function renderScopeBar() {
     clr.onclick = () => scopeSetTrades([]);
     head.appendChild(clr);
   }
+  const x = document.createElement("button");
+  x.className = "mini x";
+  x.id = "scopeClose";
+  x.textContent = "\u00d7";
+  x.title = 'Close this panel. It does NOT clear your declaration \u2014 '
+    + "whatever you declared keeps filtering the list. The Scope button in "
+    + "the Line styles header above brings it back, and says how many trades "
+    + "are still declared while it is closed.";
+  x.onclick = () => scopeSetHidden(true);
+  head.appendChild(x);
   box.appendChild(head);
+
+  // WHICH SCOPE IS TALKING. A declaration seeded from the Settings standing
+  // default looks identical to one the operator typed on this sheet, and an
+  // operator who cannot tell the two apart cannot audit the takeoff. So it
+  // is said, every time, on the bar.
+  //
+  // Its OWN LINE, not a chip in the header. The header is a flex row in a
+  // 330px column already holding the title, "show everything" and the close
+  // control; a fourth item there overlapped the title outright (measured on
+  // Barn C3.0, out/verify/2026-09-01/settings-page).
+  if (declared && rec.from === "default") {
+    const src = document.createElement("div");
+    src.className = "scope-src";
+    src.textContent = "from your Settings default — nothing declared on "
+      + "this sheet yet";
+    src.title = "This sheet has NO declaration of its own, so it started "
+      + "from the standing trade default on the Settings page. Touch any "
+      + "trade below and the choice becomes this document's own - the "
+      + "Settings default never overrides a declaration you have made.";
+    box.appendChild(src);
+  }
 
   const chips = document.createElement("div");
   chips.className = "scope-chips";
@@ -2677,6 +3984,643 @@ function renderSymScope() {
 }
 // ===================== end operator-declared trade scope ===================
 
+// ---- one bid line, more than one place on the sheet ----------------------
+// computeTakeoffRows() groups by LABEL, not by style, so every style carrying
+// the same name sums into a single itemized row. Usually that is exactly
+// right: one CAD layer drawn in two weights is one item. It is NOT right when
+// the contributing styles come from DIFFERENT CAD layers AND sit in different
+// parts of the sheet, because that is the shape a typical-detail block makes -
+// same layer name, own scale, parked in a corner.
+//
+// Measured on Kayden Springs U2 sheet 39: the itemized panel reads
+// `C-U2-SSWR-LAT 79 lines 3913.6 ft` while the plan holds 71 lines / 3,308 ft.
+// The surplus is eight lines inside TYPICAL 35' and 25' WIDE LOT - LATERAL
+// DETAIL, both captioned NTS, so they have no length at the sheet's scale at
+// all. Nothing on screen could have led anyone to that.
+//
+// Both narrowing tests earn their place. Same-label-different-style alone
+// fires on 74% of that sheet's rows (median 52% across 110 cached client
+// sheets) - wallpaper. Requiring different layer STRINGS and disjoint bounding
+// boxes drops it to 20% there and a median of 0% across the corpus, with 63 of
+// 110 sheets showing nothing at all.
+//
+// It states the arithmetic and shows you where the other piece is. It does not
+// judge which piece belongs - an engine-side merge of these was tried and cost
+// C9.0 4.3pp of ink recall, because that sheet's bare layers are legend
+// swatches. Deciding is the estimator's.
+function splitItems() {
+  if (!state.result) return new Map();
+  const chains = new Map();
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    // work-area mask: a detail block the operator boxed out no longer
+    // counts, so it must not raise a "counted twice" chip either - the
+    // chip's claim is about footage that is IN the numbers
+    const cPt = chainCountedPt(ch);
+    if (wzActive() && !(cPt > 0)) continue;
+    let e = chains.get(ch.style_id);
+    if (!e) chains.set(ch.style_id, e = { n: 0, pt: 0, bb: null });
+    e.n++; e.pt += cPt;
+    for (const p of ch.points) {
+      if (!e.bb) e.bb = [p[0], p[1], p[0], p[1]];
+      else {
+        if (p[0] < e.bb[0]) e.bb[0] = p[0];
+        if (p[1] < e.bb[1]) e.bb[1] = p[1];
+        if (p[0] > e.bb[2]) e.bb[2] = p[0];
+        if (p[1] > e.bb[3]) e.bb[3] = p[1];
+      }
+    }
+  }
+  // Aggregate by LAYER inside each label, not by style. The chip's claim is
+  // "this item comes from N layers in different places", so the disjointness
+  // test has to be between LAYERS. Comparing style to style instead fired on
+  // NOTES: that label carries 14 styles across only 2 layers - the same
+  // annotation layer drawn at a dozen widths, scattered over the sheet - and
+  // each little blob is disjoint from the others, so every one of them lit up.
+  // 14 of the first build's 22 chips on Kayden sheet 39 were that, and a chip
+  // on a 14-way split is useless anyway: there is nothing to go and look at.
+  const byLabel = new Map();
+  for (const [sid, e] of chains) {
+    const st = state.result.styles.find(x => x.style_id === sid);
+    if (!st) continue;
+    const lab = (state.labels.get(sid) || st.suggested_label || "unlabeled").trim();
+    const lay = (st.layer || "").trim();
+    if (!byLabel.has(lab)) byLabel.set(lab, new Map());
+    const byLayer = byLabel.get(lab);
+    let g = byLayer.get(lay);
+    if (!g) byLayer.set(lay, g = { layer: lay, n: 0, pt: 0, bb: null, sids: [] });
+    g.n += e.n; g.pt += e.pt; g.sids.push(sid);
+    if (e.bb) {
+      if (!g.bb) g.bb = e.bb.slice();
+      else {
+        g.bb[0] = Math.min(g.bb[0], e.bb[0]); g.bb[1] = Math.min(g.bb[1], e.bb[1]);
+        g.bb[2] = Math.max(g.bb[2], e.bb[2]); g.bb[3] = Math.max(g.bb[3], e.bb[3]);
+      }
+    }
+  }
+  const apart = (p, q) => p.bb && q.bb &&
+    (p.bb[2] < q.bb[0] || q.bb[2] < p.bb[0] ||
+     p.bb[3] < q.bb[1] || q.bb[3] < p.bb[1]);
+  const out = new Map();
+  for (const [lab, byLayer] of byLabel) {
+    const parts = [...byLayer.values()];
+    if (parts.length < 2) continue;
+    // The chip exists to point at ONE other place worth looking at. When an
+    // item is spread over more than a handful of style rows, no row-level chip
+    // can do that, and plain fragmentation is a likelier read than a hidden
+    // detail block. Measured: this cut takes Kayden sheet 39 from 22 flagged
+    // rows to 8 - exactly the four civil layers that are genuinely split - and
+    // across 110 cached client sheets it drops the worst sheet from 89% of
+    // rows to 10%, mean 5% to 2%, without changing the 67 sheets that flag
+    // nothing at all.
+    const rowsInLabel = parts.reduce((t, p) => t + p.sids.length, 0);
+    if (rowsInLabel > 4) continue;
+    const total = parts.reduce((t, p) => t + p.pt, 0);
+    for (const p of parts) {
+      if (!parts.some(q => q !== p && apart(p, q))) continue;
+      for (const sid of p.sids) out.set(sid, { label: lab, total, parts, me: p });
+    }
+  }
+  return out;
+}
+
+// ---------- LINE STYLES, GROUPED BY PATTERN KIND -------------------------
+// The owner, 2026-09-01: "the ability to close by line style in the line
+// styles tab, so inside line styles close and turn off all annotation, or
+// solid, or dashed etc.. this way instead of scrolling past 1,000 lines i can
+// just close annotation and scroll through solids because I know what im
+// looking for is solid or whatever".
+//
+// THE SIZE OF THE PROBLEM, measured off the two sheets this was built
+// against (counts are style ROWS, from each row's own `class` field):
+//   Barn Civil C3.0 (engine page 2)  280 rows / 1,840 chains
+//       solid 103 - dash1 81 - annotation 49 - dash2 41 - dash3 6
+//   Oncor C-04     (engine page 4)    65 rows /   589 chains
+//       dash1 20 - annotation 14 - dash2 14 - solid 13 - dash-text 3 - dash3 1
+//
+// THREE GROUPS, NOT SIX. He said "annotation, or solid, or dashed" - three
+// buckets - while the engine measures dash1 / dash2 / dash3 / dash-text as
+// genuinely different cadences. Six headers on a 280-row list is more
+// scrolling, not less, and it makes him translate "dashed" into four engine
+// words before he can put anything away. So the HEADERS are his three
+// (Solid / Dashed / Annotation) and the engine's evidence survives ON EVERY
+// ROW, where it already lived: the class badge still reads `dash2`, the mono
+// chip still reads `d18.0 g9.0`, the swatch still draws the real cadence.
+// The Dashed header also prints its own breakdown ("81 dash1, 41 dash2,
+// 6 dash3") in its count tooltip, so the four-way split is one hover away
+// and is never lost.
+// A fourth group, Other, exists only to catch a class none of the three
+// claims - it renders only when the sheet actually has one, so a future
+// engine class can never fall out of the list unseen.
+//
+// This also fixes a documented oddity (webui/CHANGES.md "Known limits"):
+// `annotation` was absent from the old CLASS_ORDER, so `indexOf` returned -1
+// and the sheet's 49 annotation rows sorted ABOVE its 103 solid ones. The
+// group order below is deliberate and is the operator's reading order:
+// Solid, Dashed, Annotation, Other.
+//
+// CLOSING AND TURNING OFF ARE DIFFERENT ACTIONS AND STAY DIFFERENT.
+// He used both phrases in one sentence, and they are not the same thing:
+//   * CLOSE (the caret) hides the group's rows from the scroll. It is a
+//     display convenience. It changes NO quantity: not the takeoff total,
+//     not the canvas, not the export. The header keeps printing the group's
+//     counted footage while it is closed, so the number is on screen saying
+//     it did not move.
+//   * TURN OFF (the checkbox) unticks the whole family. That removes its
+//     footage from the takeoff and its lines from the canvas - the header's
+//     footage chip drops to "nothing counted", which is exactly the
+//     difference made visible.
+// A collapse may never exclude anything, and nothing on the fold path calls
+// setInclude. The header's checkbox is three-state: ticked, unticked, or
+// indeterminate when the group is part on and part off.
+//
+// STYLEGROUP-PURE-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_style_groups.js
+// can eval the block, like LINE-FAMILY / TRENCH-MATH / UNDO-CORE.
+
+// The operator's three buckets, in his reading order, plus the catch-all.
+// `classes` lists the engine class names each bucket claims - the style
+// row's own `class` field, not a taxonomy invented here.
+const SG_DEFS = [
+  { key: "solid", name: "Solid", classes: ["solid"] },
+  { key: "dashed", name: "Dashed",
+    classes: ["dash1", "dash2", "dash3", "dash-text"] },
+  { key: "annotation", name: "Annotation", classes: ["annotation"] },
+  // never claimed by name: whatever the other three did not take
+  { key: "other", name: "Other", classes: [] },
+];
+
+// Which bucket a style row belongs to. Unknown / missing class -> "other",
+// so a class this file has never heard of still gets a header and a count
+// rather than vanishing.
+function sgKeyOf(cls) {
+  const c = String(cls == null ? "" : cls);
+  for (const g of SG_DEFS) if (g.classes.indexOf(c) >= 0) return g.key;
+  return "other";
+}
+
+// Per browser, in the same "core-" localStorage namespace the page strip,
+// the mini legend, the sidebar fold and the theme already use. Keyed on the
+// GROUP, not on the page or the document, which is what makes a closed
+// Annotation group survive a page switch: the operator who put annotation
+// away on C3.0 wants it away on C4.0 too, and the three keys exist on every
+// sheet, so nothing can dangle.
+function sgFoldKey(key) { return "core-sgfold-" + key; }
+
+// The render plan for the whole list: which groups exist on this sheet,
+// which rows fall in each, whether each renders open or closed, and what the
+// header has to say. renderStyles() only builds DOM from what comes back.
+//
+//   q        the search box, already trimmed and upper-cased ("" for none)
+//   matches  (style, q) -> bool   the text filter
+//   sees     (style) -> bool      the declared-trade filter (no-q only, the
+//                                 same rule the flat list used)
+//   isOn     (style) -> bool      the include tick
+//   closed   Set of group keys the operator has collapsed
+//   lenOf    (style) -> number    footage accessor for the header's subtotal
+//
+// A SEARCH ALWAYS WINS OVER A COLLAPSE. A query that could not reach a row
+// inside a closed group would be a search that lies - the same failure the
+// A-WALL fix was raised for - so a group with hits renders OPEN for as long
+// as the query stands, flagged `forcedOpen` so the header can say why, and
+// the operator's stored collapse is left untouched and comes back the moment
+// the box is cleared. A group with no hits is omitted entirely, exactly as
+// the flat list omitted rows with no hits.
+//
+// `rows` is what the group ACTS ON (the header tick, the footage subtotal);
+// `collapsed` only decides whether those rows are painted. The two are
+// deliberately separate - that separation IS the feature.
+function sgPlan(styles, opts) {
+  const o = opts || {};
+  const q = o.q || "";
+  const matches = o.matches || (() => true);
+  const sees = o.sees || (() => true);
+  const isOn = o.isOn || (() => false);
+  const closed = o.closed || new Set();
+  const lenOf = o.lenOf || (s => s.length_pt || 0);
+  const acc = new Map(SG_DEFS.map(g => [g.key, {
+    key: g.key, name: g.name, rows: [], nAll: 0, classes: new Map(),
+  }]));
+  for (const s of styles || []) {
+    const g = acc.get(sgKeyOf(s.class));
+    g.nAll += 1;
+    g.classes.set(s.class, (g.classes.get(s.class) || 0) + 1);
+    if (q) { if (!matches(s, q)) continue; }
+    else if (!sees(s)) continue;
+    g.rows.push(s);
+  }
+  const groups = [];
+  let nShown = 0, nHit = 0, nAll = 0;
+  for (const def of SG_DEFS) {
+    const g = acc.get(def.key);
+    nAll += g.nAll;
+    if (!g.rows.length) continue;         // nothing to head on this sheet
+    // longest first inside a group: an estimator scanning for the thing he
+    // is looking for wants the rows carrying the footage at the top. Style
+    // id ascending as the tiebreak, so repaints are deterministic.
+    g.rows.sort((a, b) => (lenOf(b) - lenOf(a)) || (a.style_id - b.style_id));
+    const forcedOpen = !!q && closed.has(g.key);
+    g.collapsed = closed.has(g.key) && !forcedOpen;
+    g.forcedOpen = forcedOpen;
+    g.nHit = g.rows.length;
+    g.filtered = g.nHit < g.nAll;
+    g.tick = sgTickState(g.rows, isOn);
+    g.lenOn = g.rows.reduce((t, s) => t + (isOn(s) ? lenOf(s) : 0), 0);
+    // "81 dash1, 41 dash2, 6 dash3" - the engine's own split, kept at group
+    // level so folding four headers into one loses no evidence.
+    g.breakdown = [...g.classes.entries()]
+      .filter(e => e[1] > 0)
+      .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1))
+      .map(e => e[1] + " " + e[0]);
+    nHit += g.nHit;
+    if (!g.collapsed) nShown += g.nHit;
+    groups.push(g);
+  }
+  return { groups, nShown, nHit, nAll };
+}
+
+// Three-state, because two states would lie about a part-ticked group.
+// Counted over the rows the group ACTS ON, which is also what the header
+// prints, so the box and the number beside it can never disagree.
+function sgTickState(rows, isOn) {
+  const n = (rows || []).length;
+  let on = 0;
+  for (const s of rows || []) if (isOn(s)) on += 1;
+  return { n, on, state: !n ? "none" : on === n ? "all" : on ? "some" : "none" };
+}
+
+// THE MIRROR OF revealChain(). revealChain goes list -> sheet; this decides
+// whether sheet -> list can land, and if it cannot, says why in words the
+// operator can act on. It never reports success it cannot deliver: a row the
+// current filter has removed from the list is NOT scrolled to, because
+// scrolling to nothing and calling it a hit is how a navigation aid teaches
+// an operator to stop trusting it.
+//
+//   style   the style row, or null/undefined when it is gone
+//   q       the search box, trimmed and upper-cased
+//   qRaw    the search box as typed, for the message
+//   matches / sees / closed  as in sgPlan
+//
+// Returns { ok, why, msg, group, expand }. `expand` is true when the row's
+// group is collapsed and the caller must open it first.
+function sgReveal(style, opts) {
+  const o = opts || {};
+  if (!style) return { ok: false, why: "gone", group: "", expand: false,
+    msg: "that line type is gone — an edit consumed or deleted it" };
+  const q = o.q || "";
+  const matches = o.matches || (() => true);
+  if (q && !matches(style, q)) return { ok: false, why: "search",
+    group: "", expand: false,
+    msg: "the filter box (“" + (o.qRaw || q) + "”) is hiding that "
+      + "line type's row — clear the box and click again" };
+  if (!q && o.sees && !o.sees(style)) return { ok: false, why: "scope",
+    group: "", expand: false,
+    msg: "that line type is set aside by your declared trade, so the list is "
+      + "not showing its row — turn on “show set aside” in the "
+      + "scope panel and click again" };
+  const key = sgKeyOf(style.class);
+  return { ok: true, why: "", msg: "", group: key,
+           expand: !!(o.closed && o.closed.has(key)) };
+}
+// STYLEGROUP-PURE-END
+
+// ---- the live half: the operator's collapse state, and who may write it ---
+// Display only. Nothing below this line changes a measured quantity except
+// sgTickGroup(), which is the checkbox and says so.
+const sgClosed = new Set();
+(function sgLoadFolds() {
+  for (const g of SG_DEFS) {
+    let v = null;
+    try { v = localStorage.getItem(sgFoldKey(g.key)); } catch (e) {}
+    if (v === "closed") sgClosed.add(g.key);
+  }
+})();
+function sgSetClosed(key, closed) {
+  if (closed) sgClosed.add(key); else sgClosed.delete(key);
+  // private mode: the fold is then per-session, the same degradation the
+  // sidebar fold and the page strip already take
+  try { localStorage.setItem(sgFoldKey(key), closed ? "closed" : "open"); }
+  catch (e) {}
+}
+
+// The style list's text filter, lifted out of renderStyles so the reveal
+// path can ask the SAME question the list asked - one rule, not two that
+// drift.
+//
+// The layer joins the searchable text as the WHOLE string, not the displayed
+// tail: typing `A-WALL` has to find `BR FND - BARN EAST|A-WALL` (substring,
+// so the tail matches anyway) and typing `BARN EAST` has to find it too.
+//
+// The failure this repairs is nastier than "the field was not searchable".
+// 31 of C4.3's 151 styles carry A-WALL in their layer, and the unpatched box
+// returns 30 of them - because `suggested_label` DEFAULTS to the layer tail,
+// so a layer-named row is findable by accident, through its label. The single
+// row it cannot return is the single row whose label the legend overwrote:
+// style 106, 380.9 LF, labelled PROPOSED PVC SURFACE STORM DRAIN PIPE.
+// Searching the sheet's walls quietly omitted the one wall that is not filed
+// as a wall. Both counts measured live off #styleList .style-row
+// (PLATE-3-search-a-wall-30-of-31.png).
+function sgMatchRow(s, q) {
+  const label = state.labels.get(s.style_id) ?? "";
+  return (label + " " + s.signature + " " + s.class + " " + (s.layer || ""))
+    .toUpperCase().includes(q);
+}
+
+// THE PLAN, AS THE LIST CURRENTLY STANDS. One live entry point, so
+// renderStyles, the header tick and the header refresh can never disagree
+// about which rows a group holds - and so nothing keeps a group object across
+// an edit. A stale `rows` array would be the worst kind of bug here: a bulk
+// tick acting on families that are no longer on the sheet.
+//
+// It costs one pass over state.result.styles (280 on the biggest cached
+// sheet, measured at well under a millisecond); the DOM build is the
+// expensive half and this does not do it.
+function sgCurrentPlan() {
+  const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
+  return sgPlan(state.result ? state.result.styles : [], {
+    q,
+    matches: sgMatchRow,
+    sees: scopeSeesRow,
+    isOn: (st) => !!state.include.get(st.style_id),
+    closed: sgClosed,
+    lenOf: styleLenPt,
+  });
+}
+
+// The group headers WITHOUT rebuilding the list. refreshStyleRows() exists
+// because renderStyles() throws away the operator's scroll position on a
+// 280-row sheet; it rewrites the two pieces of text on a row that an edit can
+// move, and the group header carries exactly the same kind of text - a live
+// footage and a live count. Without this, deleting a line left the header
+// asserting the footage the group had BEFORE the delete, which is the
+// "confident wrong number" this codebase has been burned by.
+function sgSyncHeads() {
+  const heads = document.querySelectorAll("#styleList .sg-head");
+  if (!heads.length || !state.result) return;
+  const by = new Map(sgCurrentPlan().groups.map(g => [g.key, g]));
+  for (const h of heads) {
+    const g = by.get(h.dataset.group);
+    if (!g) continue;
+    const ft = h.querySelector(".sg-ft");
+    if (ft) {
+      ft.textContent = g.tick.on ? fmtQty(g.lenOn) + " counted"
+                                 : "nothing counted";
+      ft.classList.toggle("zero", !g.tick.on);
+    }
+    const n = h.querySelector(".sg-n");
+    if (n) n.textContent = g.filtered ? g.nHit + " of " + g.nAll
+                                      : String(g.nAll);
+    const cb = h.querySelector(".sg-tick");
+    if (cb) {
+      cb.checked = g.tick.state === "all";
+      cb.indeterminate = g.tick.state === "some";
+    }
+    h.classList.toggle("all-off", g.tick.state === "none");
+    h.classList.toggle("part-off", g.tick.state === "some");
+  }
+}
+
+// The whole group's tick, in one write pass and one repaint. A BULK gesture,
+// so - exactly like the card's own `all` / `none` buttons - it writes the
+// page record through setInclude and deliberately does NOT call
+// setIncludeSetWide: speaking for every other sheet in the set is reserved
+// for a hand tick on a single row (see the rule at setIncludeSetWide).
+//
+// Scope put-backs are honoured inline rather than through scopeKeepRow,
+// which repaints the entire sidebar per row - 49 full repaints for one click
+// on Annotation. Same two branches, same order (a row handed BACK to the
+// filter is ticked on first, or the filter never records that IT is the
+// reason it is off - see the 25.0k ft measurement at scopeKeepRow), then one
+// scopeApply() and one repaint at the end.
+// A GROUP TICK MUST BE ABLE TO GIVE BACK WHAT IT TOOK.
+//
+// The header checkbox is three-state, and a real sheet usually starts
+// PARTIAL: Barn C3.0's Solid group is 37 of 103 ticked, 87.0k LF counted,
+// and that mix is the operator's (or the engine's default) - work, either
+// way. The native cycle is indeterminate -> all on -> all off, and there is
+// no click that returns to 37 of 103. Measured 2026-09-01: one click moved
+// that sheet's takeoff 178.0k -> 182.5k, a second (intended as an undo)
+// -> 91.0k, and no third click brought it back. Ticks are DECISIONS, so
+// they are deliberately not in the undo stack, and they persist across a
+// reload - so the only recovery was clearing all 313 saved keys for the
+// document, which discards labels and prices with it. An 87k LF swing with
+// nothing on screen saying a selection was destroyed is exactly the silent
+// wrong number this project exists to refuse.
+//
+// So the partial set is REMEMBERED the moment a tick leaves it, and the
+// cycle gains a fourth stop: partial -> all on -> all off -> BACK TO THE
+// PARTIAL. Session-scoped and keyed by group, cleared when the page changes
+// because style_ids are per page; it is an escape hatch, not a saved
+// decision, and it never writes anything the record has to carry.
+function sgPartialMem() {
+  if (!state.sgPartial) state.sgPartial = new Map();
+  return state.sgPartial;
+}
+function sgTickGroup(key, on) {
+  const g = sgCurrentPlan().groups.find(x => x.key === key);
+  if (!g) return;
+  const mem = sgPartialMem();
+  // leaving a partial state: photograph it before it is gone
+  if (g.tick.state === "some")
+    mem.set(key, new Set(g.rows.filter(s => state.include.get(s.style_id))
+                             .map(s => s.style_id)));
+  // coming back from all-off with a photograph on file: restore it instead
+  const back = (g.tick.state === "none" && on) ? mem.get(key) : null;
+  if (back && back.size && back.size < g.rows.length) {
+    if (!state.scopeKeep) state.scopeKeep = new Set();
+    for (const s of g.rows) setInclude(s.style_id, back.has(s.style_id));
+    renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
+    setStatus("restored the " + back.size + " of " + g.rows.length + " "
+      + g.name.toLowerCase() + " line types you had counted — "
+      + "tick again for all " + g.rows.length);
+    return;
+  }
+  if (!state.scopeKeep) state.scopeKeep = new Set();
+  let scoped = false;
+  for (const s of g.rows) {
+    const v = ((state.scopeV && state.scopeV.get(s.style_id)) || {}).v;
+    if (v === "out" && on) {
+      state.scopeKeep.add(s.style_id); setInclude(s.style_id, true);
+      scoped = true; continue;
+    }
+    if (v === "kept" && !on) {
+      state.scopeKeep.delete(s.style_id);
+      setIncludeTransient(s.style_id, true);
+      scoped = true; continue;
+    }
+    setInclude(s.style_id, on);
+  }
+  if (scoped) { scopeApply(); renderScopeBar(); }
+  renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
+  // never silent: a bulk quantity change says what it did
+  const kept = mem.get(key);
+  setStatus(g.tick.n + " " + g.name.toLowerCase() + " line type"
+    + (g.tick.n === 1 ? "" : "s") + (on ? " turned on" : " turned off")
+    + (on ? "" : " — their footage has left the takeoff")
+    + (kept && kept.size && kept.size < g.rows.length
+        ? " · tick twice more to get your " + kept.size + " back" : ""));
+}
+
+// The group header. Two controls, side by side, that must never be confused
+// for each other: the caret CLOSES (display), the checkbox TURNS OFF
+// (quantity). They are labelled as those two different things, the footage
+// chip beside them prints what the group is currently contributing, and the
+// header states its own tick state when the group is part on and part off.
+function sgHeadEl(g) {
+  const h = document.createElement("div");
+  h.className = "sg-head" + (g.collapsed ? " closed" : "")
+    + (g.forcedOpen ? " searched" : "")
+    + (g.tick.state === "none" ? " all-off"
+       : g.tick.state === "some" ? " part-off" : "");
+  h.dataset.group = g.key;
+
+  const fold = document.createElement("button");
+  fold.type = "button";
+  fold.className = "sg-fold";
+  fold.textContent = g.collapsed ? "▸" : "▾";
+  fold.setAttribute("aria-expanded", g.collapsed ? "false" : "true");
+  fold.setAttribute("aria-label",
+    (g.collapsed ? "Show" : "Hide") + " the " + g.name + " rows");
+  fold.title = g.forcedOpen
+    ? "Opened by your filter so its matches are reachable. Clear the filter "
+      + "box and it goes back to closed."
+    : (g.collapsed ? "Show" : "Hide") + " these " + g.tick.n + " rows."
+      + LF + LF
+      + "This is the SCROLL, not the takeoff. Closing a group hides its rows "
+      + "from this list and changes nothing else: not the total, not the "
+      + "canvas, not the export. The footage on the right keeps counting "
+      + "while it is closed. To take the footage out, use the tick box.";
+  fold.onclick = (e) => {
+    e.stopPropagation();
+    sgSetClosed(g.key, !g.collapsed);
+    renderStyles();
+  };
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "sg-tick";
+  cb.checked = g.tick.state === "all";
+  cb.indeterminate = g.tick.state === "some";
+  cb.setAttribute("aria-label", "Count the " + g.name + " line types");
+  cb.title = "Turn " + (g.tick.state === "all" ? "OFF" : "ON") + " all "
+    + g.tick.n + " " + g.name.toLowerCase() + " line type"
+    + (g.tick.n === 1 ? "" : "s") + "." + LF + LF
+    + "This is the TAKEOFF, not the scroll. Unticking removes this group's "
+    + "footage from the total and its lines from the sheet. To put the rows "
+    + "away without changing a number, use the arrow on the left."
+    + (g.filtered ? LF + LF + "Your filter is narrowing this group, so it "
+        + "acts on the " + g.nHit + " rows shown, not on all " + g.nAll + "."
+      : "");
+  // by KEY, not by this closure's `g`: between paint and click an edit can
+  // have removed a family, and a bulk tick must never act on a stale list
+  cb.onclick = (e) => { e.stopPropagation(); sgTickGroup(g.key, cb.checked); };
+
+  const nm = document.createElement("span");
+  nm.className = "sg-name";
+  nm.textContent = g.name;
+
+  const n = document.createElement("span");
+  n.className = "sg-n";
+  n.textContent = g.filtered ? g.nHit + " of " + g.nAll : String(g.nAll);
+  n.title = (g.filtered
+      ? g.nHit + " of this group's " + g.nAll + " line types match the filter."
+      : g.nAll + " line type" + (g.nAll === 1 ? "" : "s") + " in this group.")
+    + LF + LF + "What the engine actually measured, row by row: "
+    + g.breakdown.join(", ") + "." + LF
+    + "Every row below still carries its own class badge and its own "
+    + "measured dash and gap lengths.";
+
+  const ft = document.createElement("span");
+  ft.className = "sg-ft" + (g.tick.on ? "" : " zero");
+  ft.textContent = g.tick.on ? fmtQty(g.lenOn) + " counted" : "nothing counted";
+  ft.title = g.tick.on
+    ? g.tick.on + " of this group's " + g.tick.n + " line types are ticked, "
+      + "and this is what they add to the takeoff right now. Closing the "
+      + "group does not change it; unticking the group takes it to zero."
+    : "Every line type in this group is unticked, so it adds nothing to the "
+      + "takeoff and draws nothing on the sheet.";
+
+  h.append(fold, cb, nm, n, ft);
+  if (g.collapsed) {
+    const hid = document.createElement("span");
+    hid.className = "sg-hid";
+    hid.textContent = "rows hidden";
+    hid.title = "Closed for scrolling only. Every quantity in this group is "
+      + "unchanged — the figure on the right is still being counted.";
+    h.appendChild(hid);
+  }
+  if (g.forcedOpen) {
+    const so = document.createElement("span");
+    so.className = "sg-hid searched";
+    so.textContent = "opened by filter";
+    so.title = "You closed this group, and your filter matches rows inside "
+      + "it. It is open so those rows are reachable; clearing the filter box "
+      + "closes it again.";
+    h.appendChild(so);
+  }
+  // the whole header is the fold's hit target - the two controls above stop
+  // propagation, so a click can never mean both things at once
+  h.onclick = () => { sgSetClosed(g.key, !g.collapsed); renderStyles(); };
+  return h;
+}
+
+// CLICK A LINE, THEN GO TO ITS ROW - the mirror of revealChain(), and its
+// deliberate twin rather than a parallel mechanism: same shape, same return
+// contract (false when it could not land), same "say what went wrong instead
+// of pretending" rule.
+//
+//   sid   the style_id to reach
+//   from  a word for the status line, so the operator knows which surface
+//         sent him here
+//
+// It opens the Line styles card if it is folded, opens the row's group if it
+// is closed, scrolls the row into the middle of the list and flashes it for
+// 1.8s. It re-renders ONLY when it actually changed something - a 280-row
+// rebuild to scroll to a row already on screen would throw away the list's
+// scroll position for nothing.
+function revealStyleRow(sid, from) {
+  if (!state.result) return false;
+  const s = state.result.styles.find(x => x.style_id === sid);
+  const box = $("styleList");
+  const raw = $("styleSearch") ? $("styleSearch").value.trim() : "";
+  const v = sgReveal(s, { q: raw.toUpperCase(), qRaw: raw,
+    matches: sgMatchRow, sees: scopeSeesRow, closed: sgClosed });
+  if (!v.ok) { setStatus(v.msg, "err"); return false; }
+  let rebuilt = false;
+  const head = $("stylesHead");
+  if (head && head.classList.contains("closed")) {
+    const h2 = head.querySelector("h2");
+    if (h2 && h2.onclick) { h2.onclick(); rebuilt = true; }
+  }
+  if (v.expand) { sgSetClosed(v.group, false); renderStyles(); rebuilt = true; }
+  let row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  if (!row && !rebuilt) {
+    renderStyles();
+    row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  }
+  if (!row) {
+    setStatus("that line type has no row in the list right now", "err");
+    return false;
+  }
+  row.scrollIntoView({ block: "center", behavior: "smooth" });
+  for (const r of box.querySelectorAll(".style-row.row-found"))
+    r.classList.remove("row-found");
+  row.classList.add("row-found");
+  clearTimeout(revealStyleRow._t);
+  revealStyleRow._t = setTimeout(() => row.classList.remove("row-found"), 1800);
+  // the SAME "nothing named this" test the row and the mini legend use, so
+  // the status line can never announce the engine's own measurement
+  // (`dash2 d9.0 d54.0 g9.0`) as if it were a trade name
+  const nm = styleIsUnnamed(s)
+    ? "an unnamed " + s.class + " family (" + s.signature + ")"
+    : ((state.labels.get(sid) || s.suggested_label || "").trim()
+       || "an unnamed " + s.class + " family");
+  setStatus((from ? from + ": " : "") + "in the line styles list — " + nm
+    + (v.expand ? " (opened its group)" : ""));
+  return true;
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -2700,46 +4644,44 @@ function renderStyles() {
       + "nothing the drafter wrote to check them against.";
     box.appendChild(note);
   }
-  const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
-  const CLASS_NAME = { solid: "Solid lines", dash1: "Dashed",
-    dash2: "Dash-dot", dash3: "Compound (dash-dot-dot)",
-    "dash-text": "Lettered runs (W / SD / FO)" };
-  const styles = [...state.result.styles].sort((a, b) =>
-    CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class)
-    || b.length_pt - a.length_pt);
-  let lastClass = null;
-  for (const s of styles) {
-    const label = state.labels.get(s.style_id) ?? "";
-    // The layer joins the searchable text as the WHOLE string, not the
-    // displayed tail: typing `A-WALL` has to find `BR FND - BARN EAST|A-WALL`
-    // (substring, so the tail matches anyway) and typing `BARN EAST` has to
-    // find it too.
-    //
-    // The failure this repairs is nastier than "the field was not searchable".
-    // 31 of C4.3's 151 styles carry A-WALL in their layer, and the unpatched
-    // box returns 30 of them - because `suggested_label` DEFAULTS to the layer
-    // tail, so a layer-named row is findable by accident, through its label.
-    // The single row it cannot return is the single row whose label the legend
-    // overwrote: style 106, 380.9 LF, labelled PROPOSED PVC SURFACE STORM
-    // DRAIN PIPE. Searching the sheet's walls quietly omitted the one wall
-    // that is not filed as a wall. Both counts measured live off
-    // #styleList .style-row (PLATE-3-search-a-wall-30-of-31.png).
-    if (q && !((label + " " + s.signature + " " + s.class
-                + " " + (s.layer || "")).toUpperCase().includes(q)))
-      continue;
-    // The declared-trade filter, applied AFTER the text filter and only when
-    // the text box is empty. A search that cannot return a row the operator
-    // knows is on the sheet is a search that lies, so typing anything at all
-    // is itself the "show me everything" gesture - the row comes back with
-    // its set-aside badge on, never silently missing.
-    if (!q && !scopeSeesRow(s)) continue;
-    if (s.class !== lastClass) {
-      lastClass = s.class;
-      const h = document.createElement("div");
-      h.className = "class-head";
-      h.textContent = CLASS_NAME[s.class] || s.class;
-      box.appendChild(h);
-    }
+  // Set-level disclosure. Ticks this page INHERITED from hand decisions on
+  // other sheets are announced, never a side effect: one line, with a count,
+  // and the way out stated. memApply() counts them; setInclude() removes a
+  // row from the count the moment the operator overrides it here.
+  const nInh = state.inheritedInc ? state.inheritedInc.size : 0;
+  if (nInh) {
+    const note = document.createElement("div");
+    note.className = "layer-none-note";
+    note.textContent = nInh + (nInh === 1 ? " choice" : " choices")
+      + " carried over from other sheets of this set — page-level changes "
+      + "override.";
+    box.appendChild(note);
+  }
+  const splits = splitItems();
+  // GROUPED BY PATTERN KIND. sgPlan() (the STYLEGROUP-PURE block above) owns
+  // the groups, their order, the two filters - the text filter is now
+  // sgMatchRow(), the same rule the reveal path asks, lifted out so the two
+  // cannot drift - and which groups render closed. This loop only builds DOM.
+  //
+  // The plan is flattened into one sequence so the row-building body below is
+  // character-for-character the body it always was: a header is simply an
+  // entry that carries no style. No re-indent, no chance of behaviour drift
+  // in 300 lines of row construction.
+  const plan = sgCurrentPlan();
+  const seq = [];
+  for (const g of plan.groups) {
+    seq.push({ head: g });
+    // A CLOSED GROUP BUILDS NO ROWS AT ALL - that is the whole point on a
+    // 280-row sheet. The cost of a group the operator has put away is one
+    // header node, not 49 rows each carrying a canvas swatch and a dozen
+    // listeners. It is also why #stylesCount honestly reads "231 of 280"
+    // while Annotation is closed: the card count is taken from the rows that
+    // exist, and fewer rows exist.
+    if (!g.collapsed) for (const st of g.rows) seq.push({ style: st });
+  }
+  for (const entry of seq) {
+    const s = entry.style;
+    if (!s) { box.appendChild(sgHeadEl(entry.head)); continue; }
     const row = document.createElement("div");
     const sv = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
     row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off")
@@ -2750,12 +4692,18 @@ function renderStyles() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
+    if (state.inheritedInc && state.inheritedInc.has(s.style_id))
+      cb.title = "Carried over from another sheet of this set — change it "
+        + "here to override for this page.";
     cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
       // Ticking a row the scope filter set aside IS the put-back: record it,
       // or scopeApply() would untick it again on the next repaint and the
       // operator would watch their own click undo itself.
       if (sv.v === "out" && cb.checked) { scopeKeepRow(s, true); return; }
       if (sv.v === "kept" && !cb.checked) { scopeKeepRow(s, false); return; }
+      // A hand tick on the row itself - and only that - also speaks for the
+      // set (scope put-backs returned above; bulk buttons never come here).
+      setIncludeSetWide(s, cb.checked);
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -2765,24 +4713,140 @@ function renderStyles() {
     const sw = document.createElement("canvas");
     sw.className = "swatch-line";
     drawPatternSample(sw, s, 92, 20);
+    // THE SWATCH IS THE COLOUR CONTROL. It is already this family's colour on
+    // this family's row, so nothing else has to be invented or explained.
+    // stopPropagation because the row's own click is "isolate".
+    {
+      const info = styleColorInfo(s);
+      if (info.src !== "engine") sw.classList.add("recoloured");
+      sw.tabIndex = 0;
+      sw.setAttribute("role", "button");
+      sw.title = (info.src === "engine"
+          ? "This is the colour the detector measured. "
+          : "You set this colour (" + colorSrcLabel(info.src) + "); the "
+            + "detector measured " + engineCssFor(s) + ". ")
+        + "Click to change the colour of every line in this family — it "
+        + "drives the canvas, this swatch, the legend and the export. It is "
+        + "saved and it is NOT undone by Ctrl+Z.";
+      sw.onclick = (e) => { e.stopPropagation(); colorPopForStyle(s, sw); };
+      sw.onkeydown = (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault(); e.stopPropagation(); colorPopForStyle(s, sw);
+      };
+    }
 
     const main = document.createElement("div");
     main.className = "style-main";
     const lab = document.createElement("input");
     lab.className = "style-label"; lab.name = "label-" + s.style_id;
     lab.value = state.labels.get(s.style_id) ?? "";
+    // UI FIX 8. When nothing named a family, detect_page.py seeds the label
+    // with the engine's own fallback - `f"{class} {signature}"`, i.e. the
+    // strings `solid solid` and `dash1 d18.0 g9.0` - and the row then wore
+    // a measurement in the slot where a trade name goes. styleIsUnnamed()
+    // is the shared test (see its comment); the seed goes to the mono
+    // evidence chip on the meta line - where the operator can still read
+    // the literal string the export will carry - and the name slot says
+    // that nothing named this. Typing over the placeholder IS the rename;
+    // it is the same input, the same oninput, the same memSave.
+    const seedLab = (state.seedLabels.get(s.style_id) || "").trim();
+    const unnamed = styleIsUnnamed(s);
+    if (unnamed) {
+      lab.value = "";
+      // The mock's phrase is "Unnamed - no legend match". Measured at the
+      // 330px sidebar it needs 174px in a 117px label box, so it clips; and
+      // carrying the second half on the meta line instead cost +76% of
+      // style-list scroll (3,663px -> 6,460px on this sheet's 65 rows).
+      // The word alone goes in the name slot. WHY it is unnamed is not
+      // dropped - it is on this box's own title, and CHECK THESE states it
+      // in full for every row over the floor ("N ft of linework has no
+      // name. No legend row matched it and the drafter filed it under no
+      // CAD layer"), which is the link CRITIQUE fix 8 asks the two to make.
+      lab.placeholder = "Unnamed";
+      lab.classList.add("unnamed");
+      // the row's own hook, for two things this row alone needs: its meta
+      // line may WRAP so the id chip is never half-shown, and its class
+      // badge is hidden because the chip already begins with the class
+      // (see the rules in style.css, which carry the measurements)
+      row.classList.add("style-row-unnamed");
+      lab.title = "No legend row matched this pattern and the drafter filed "
+        + "it under no CAD layer, so the engine has only its own measurement "
+        + "to call it by (the chip below). Type a trade name here.";
+    }
     if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
+    // A NAMED family had no title, and an <input> can neither wrap nor
+    // ellipsise - it just cuts. Measured 2026-09-01 on Oncor C-04: 8 of the
+    // 65 rows cut their own name, the worst losing 36%, and the only way to
+    // read the rest was to click in and scroll. The unnamed path already
+    // explained itself on this same attribute; the named one now shows the
+    // name. (Widening is not the fix: the column is the operator's to resize,
+    // and a 40-character CAD name would still lose.)
+    if (!unnamed && lab.value) lab.title = lab.value;
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
+      if (!unnamed) lab.title = lab.value;   // stays true as it is typed
+      colorBust();  // the colour convention is keyed on the NAME
       memSave(s);   // decisions persist: same label on every future load
       clearTimeout(lab._t);   // itemized + legend regroup as you type
       lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${fmtQty(s.length_pt)} · ${s.n} lines · ${s.signature}`;
-    main.append(lab, meta);
+    meta.appendChild(document.createTextNode(
+      `${fmtQty(styleLenPt(s))} · ${styleLiveCount(s.style_id)} lines · `));
+    // Same string as before, in a mono chip: `dash1 d18.0 g9.0` is what the
+    // engine measured off the sheet, not what the thing is called.
+    const eid = document.createElement("span");
+    eid.className = "style-eid";
+    // On an unnamed row the chip carries the SEED verbatim - the exact
+    // string the itemized takeoff and the CSV still use for this family -
+    // so emptying the name box hides nothing. Elsewhere it is the signature.
+    eid.textContent = unnamed ? (seedLab || s.signature) : s.signature;
+    eid.title = unnamed
+      ? "The engine's own id for this family, and the name this row still "
+        + "carries in the itemized takeoff and the CSV until you name it: "
+        + "its pattern class and its measured dash and gap lengths in points."
+      : "The engine's own id for this pattern — measured dash and gap "
+        + "lengths in points. Evidence, not a name.";
+    meta.appendChild(eid);
+    // work-area disclosure, per row: a row that lost footage to the mask
+    // says how much, on its own line, compactly
+    {
+      const wOut = styleLiveOut(s.style_id);
+      if (wOut > 0.05) {
+        meta.appendChild(document.createTextNode(
+          ` · ${fmtQty(wOut)} outside work area`));
+        meta.title = `${fmtQty(wOut)} of this style lies outside the drawn `
+          + `work area and is not counted anywhere below. Clear the work `
+          + `area to count it again.`;
+      }
+    }
+    // The affordance for the absence stated above. It opens the SAME label
+    // box - no new rename path, no new store key - so a name typed here
+    // persists exactly the way a name typed in the box always has.
+    //
+    // It rides on the LABEL's own line, in the space "Unnamed" leaves free,
+    // rather than on the meta line. Measured on this sheet (65 rows, 330px
+    // sidebar): on the meta line it wrapped the row from 53px to 90-107px
+    // and the style list from 3,663px to 6,460px of scroll (+76%). Here it
+    // costs nothing.
+    if (unnamed) {
+      const nirow = document.createElement("div");
+      nirow.className = "style-namerow";
+      const ni = document.createElement("button");
+      ni.type = "button";
+      ni.className = "style-nameit";
+      ni.textContent = "name it";
+      ni.title = "Type a trade name for this family. Same box the legend "
+        + "fills in when it finds a match; the name sticks to this pattern "
+        + "on every sheet of the set.";
+      ni.onclick = (e) => { e.stopPropagation(); lab.focus(); lab.select(); };
+      nirow.append(lab, ni);
+      main.append(nirow, meta);
+    } else {
+      main.append(lab, meta);
+    }
 
     const badge = document.createElement("span");
     badge.className = `badge ${s.class}`; badge.textContent = s.class;
@@ -2832,9 +4896,19 @@ function renderStyles() {
       if (lay) {
         const tag = document.createElement("span");
         tag.className = "sl-tag"; tag.textContent = "layer";
+        const parts = layerSplit(lay);
+        layerEl.append(tag);
+        if (parts.xref) {
+          // the xref name may be elided - it says where the layer came from,
+          // not what it is - but it must be VISIBLE, because its presence or
+          // absence is the only thing separating two same-named rows
+          const xr = document.createElement("span");
+          xr.className = "sl-xref"; xr.textContent = parts.xref + "|";
+          layerEl.appendChild(xr);
+        }
         const nm = document.createElement("span");
-        nm.className = "sl-name"; nm.textContent = layerTail(lay);
-        layerEl.append(tag, nm);
+        nm.className = "sl-name"; nm.textContent = parts.leaf;
+        layerEl.appendChild(nm);
         // The full string, un-elided, plus what the field IS - the row shows
         // both names side by side and says nothing about which is right,
         // because deciding that is the estimator's job and a wrong verdict
@@ -2878,11 +4952,96 @@ function renderStyles() {
           : sv.why;
     }
 
+    // PROVENANCE, on the row: a family the operator invented must never be
+    // readable as one the detector found. It rides in the badge column, next
+    // to the pattern class, so it is impossible to miss while scanning.
+    let mineEl = null;
+    if (famIsMine(s)) {
+      row.classList.add("style-row-mine");
+      mineEl = document.createElement("span");
+      mineEl.className = "badge mine";
+      mineEl.textContent = "yours";
+      mineEl.title = "You created this line family on this sheet \u2014 the "
+        + "detector did not find it. Its lines were moved in by hand, and "
+        + "every foot in it is measured from those lines exactly like any "
+        + "other row." + LF + LF
+        + "It exports: each line carries this name, and the export (and the "
+        + "face of the report PDF) states that a reviewer created the family. "
+        + "It lives with this page's other edits \u2014 a page switch or "
+        + "reload clears it, the same way it clears a split or a deleted line.";
+    }
+
+    // THE PER-FAMILY LINE LIST toggle (owner: "can we get a drop down of each
+    // line in each line style/family?"). It is its own grid column at the
+    // right-hand end, so the sub-lines below (.style-layer / .style-scope /
+    // .item-split, all `grid-column: 3 / -1`) still span to the row's edge and
+    // no row gets taller for it.
+    const nLive = styleLiveCount(s.style_id);
+    const famBtn = document.createElement("button");
+    famBtn.className = "fam-toggle" + (famOpen.has(s.style_id) ? " open" : "");
+    famBtn.dataset.sid = String(s.style_id);
+    famBtn.textContent = famOpen.has(s.style_id) ? "\u25be" : "\u25b8";
+    famBtn.setAttribute("aria-expanded", famOpen.has(s.style_id) ? "true" : "false");
+    famBtn.disabled = !nLive;
+    famBtn.title = nLive
+      ? `List the ${nLive} individual line${nLive === 1 ? "" : "s"} in this `
+        + "family \u2014 hover a row to light it on the sheet, click it to "
+        + "select and centre on it. Nothing in the list changes a quantity."
+      : "No lines in this family right now, so there is nothing to list.";
+    famBtn.onclick = (e) => {
+      e.stopPropagation();      // the row's own click isolates; this must not
+      if (famOpen.has(s.style_id)) famOpen.delete(s.style_id);
+      else famOpen.set(s.style_id, FAM_PAGE);
+      famRenderList(s);
+    };
+
     row.append(cb, sw, main, mm, badge);
+    if (mineEl) row.appendChild(mineEl);
+    row.appendChild(famBtn);
     if (layerEl) row.appendChild(layerEl);
+    const sp = splits.get(s.style_id);
+    if (sp) {
+      const el = document.createElement("button");
+      el.className = "item-split";
+      const others = sp.parts.filter(p => p !== sp.me);
+      el.innerHTML = '<span class="is-tag">item</span>'
+        + '<span class="is-txt">' + fmtQty(sp.total) + " total, from "
+        + sp.parts.length + " layers</span>";
+      el.title = 'The takeoff adds up by NAME, so the item "' + sp.label
+        + '" is the total of these ' + sp.parts.length + " CAD layers:" + LF + LF
+        + sp.parts.map(p => "   " + (p === sp.me ? "→ " : "   ")
+            + (p.layer || "(no layer)") + "   " + fmtQty(p.pt) + ", "
+            + p.n + " lines").join(LF)
+        + LF + LF
+        + "They are different CAD layers and they sit in different parts of "
+        + "the sheet. Often that is fine. Sometimes one of them is a TYPICAL "
+        + "… DETAIL drawn to its own scale, or marked NTS, filed under the "
+        + "same layer name as the real linework - and it is being added to "
+        + "your quantity." + LF + LF
+        + "Click to isolate the other row on the canvas so you can see where "
+        + "it is. Nothing is added, removed or merged.";
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        const cur = others.findIndex(p => p.sids.includes(state.isolate));
+        const next = others[(cur + 1) % others.length];
+        const tgt = next.sids[0];
+        state.isolate = state.isolate === tgt ? null : tgt;
+        for (const r of box.querySelectorAll(".style-row.iso")) r.classList.remove("iso");
+        if (state.isolate !== null) {
+          const t = box.querySelector('.style-row[data-sid="' + state.isolate + '"]');
+          if (t) { t.classList.add("iso"); t.scrollIntoView({ block: "nearest" }); }
+        }
+        setStatus(state.isolate === null ? "isolate off"
+          : "isolated: " + (next.layer || "(no layer)") + " — "
+            + fmtQty(next.pt) + ", " + next.n + " lines of the "
+            + fmtQty(sp.total) + ' in "' + sp.label + '". Esc shows everything again');
+        draw();
+      };
+      row.appendChild(el);
+    }
     if (scopeEl) row.appendChild(scopeEl);
-    row.onmouseenter = () => { state.hot = s.style_id; draw(); };
-    row.onmouseleave = () => { state.hot = null; draw(); };
+    row.onmouseenter = () => hotFam([s.style_id]);
+    row.onmouseleave = () => hotFamOff();
     // Isolating from the style list had NO on-screen indicator of any kind.
     // The mini legend's green cue is only repainted by the mini legend's own
     // click handler and by the I key, and it only lists the top eight styles
@@ -2892,7 +5051,24 @@ function renderStyles() {
     // itself now carries the state, which is the one place the operator is
     // certain to be looking, and the status line names what is isolated.
     if (state.isolate === s.style_id) row.classList.add("iso");
-    row.onclick = () => {
+    // an operator-created family has no CAD layer and no engine seed, so the
+    // label memory (labelKey -> styleFp) cannot tell two of them apart. It is
+    // page state by design; skip memSave for it rather than write a record
+    // that a later family with the same pattern would read back as its own.
+    if (famIsMine(s)) lab.oninput = () => {
+      state.labels.set(s.style_id, lab.value);
+      colorBust();
+      clearTimeout(lab._t);
+      lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
+    };
+    row.onclick = (e) => {
+      // CTRL/CMD+CLICK adds or removes this whole FAMILY from the
+      // multi-selection. It is the modified click, so the row's own
+      // meaning - isolate - is untouched and still one plain click away.
+      if (e && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        msPickFamily(s);
+        return;
+      }
       const on = state.isolate !== s.style_id;
       state.isolate = on ? s.style_id : null;
       // Toggle the class in place rather than re-rendering: renderStyles()
@@ -2906,7 +5082,109 @@ function renderStyles() {
       renderMiniLegend(); draw();
     };
     box.appendChild(row);
+    if (famOpen.has(s.style_id)) famRenderList(s);
   }
+  // the rows this list just rebuilt have to come back wearing the
+  // multi-selection they were already in
+  msMarkRows();
+}
+
+// ---------- the per-family line list ----------------------------------
+// One block, inserted directly after its style row inside #styleList, built
+// and torn down in place. NOT through renderStyles(): that does
+// box.innerHTML = "" and rebuilds every row, which on a 280-row sheet throws
+// away the operator's scroll position under the cursor (the same reason the
+// isolate handler already refuses to call it).
+//
+// BOUNDED. famLines() builds at most `cap` rows, longest first, and returns
+// the true total; the footer states "showing 50 of 214" and offers the next
+// 50. A family with hundreds of lines therefore costs 50 nodes, not 214, and
+// nothing is ever hidden without a count beside it.
+function famRenderList(s) {
+  const sid = s.style_id;
+  const box = $("styleList");
+  const row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  const old = box.querySelector('.fam-lines[data-sid="' + sid + '"]');
+  if (old) old.remove();
+  const btn = row && row.querySelector(".fam-toggle");
+  if (!famOpen.has(sid)) {
+    if (btn) {
+      btn.classList.remove("open");
+      btn.textContent = "\u25b8";
+      btn.setAttribute("aria-expanded", "false");
+    }
+    return;
+  }
+  if (btn) {
+    btn.classList.add("open");
+    btn.textContent = "\u25be";
+    btn.setAttribute("aria-expanded", "true");
+  }
+  const cap = famOpen.get(sid) || FAM_PAGE;
+  const d = famLines(state.result.chains, sid,
+    { cap, excluded: state.excluded, lenOf: chainLenPt });
+  const wrap = document.createElement("div");
+  wrap.className = "fam-lines";
+  wrap.dataset.sid = String(sid);
+  if (!d.total) {
+    const none = document.createElement("div");
+    none.className = "fam-none";
+    none.textContent = "no lines in this family right now";
+    wrap.appendChild(none);
+  }
+  for (const r of d.rows) {
+    const li = document.createElement("div");
+    li.className = "fam-line";
+    li.dataset.cid = String(r.chain_id);
+    const id = document.createElement("span");
+    id.className = "fam-id";
+    id.textContent = "#" + r.chain_id;
+    const len = document.createElement("span");
+    len.className = "fam-len";
+    len.textContent = fmtQty(r.len);
+    const meta = document.createElement("span");
+    meta.className = "fam-meta";
+    // enough to tell two lines of one family apart: how long, how many
+    // vertices, and whether it is a line you edited rather than a detected one
+    meta.textContent = r.nPts + " pts" + (r.custom ? " \u00b7 edited" : "");
+    li.append(id, len, meta);
+    li.title = "Hover: light this line on the sheet. Click: select it and "
+      + "centre the view on it. Neither changes anything.";
+    li.onmouseenter = () => { state.hotChain = r.chain_id; draw(); };
+    li.onmouseleave = () => { state.hotChain = null; draw(); };
+    li.onclick = (e) => {
+      e.stopPropagation();
+      if (!revealChain(r.chain_id))
+        setStatus("that line is gone \u2014 an edit consumed or deleted it", "err");
+    };
+    wrap.appendChild(li);
+  }
+  if (d.total) {
+    const foot = document.createElement("div");
+    foot.className = "fam-foot";
+    const txt = document.createElement("span");
+    txt.textContent = d.hidden
+      ? `showing ${d.shown} of ${d.total} lines (longest first) \u00b7 `
+        + `${fmtQty(d.totalLen)} in the family`
+      : `${d.total} line${d.total === 1 ? "" : "s"} \u00b7 ${fmtQty(d.totalLen)}`;
+    foot.appendChild(txt);
+    if (d.hidden) {
+      const more = document.createElement("button");
+      more.className = "mini";
+      more.textContent = `show ${Math.min(d.hidden, FAM_PAGE)} more`;
+      more.title = "Nothing is being withheld \u2014 the list is capped so a "
+        + "family with hundreds of lines does not build hundreds of rows at "
+        + "once. This adds the next " + FAM_PAGE + ".";
+      more.onclick = (e) => {
+        e.stopPropagation();
+        famOpen.set(sid, cap + FAM_PAGE);
+        famRenderList(s);
+      };
+      foot.appendChild(more);
+    }
+    wrap.appendChild(foot);
+  }
+  if (row) row.after(wrap); else box.appendChild(wrap);
 }
 // ---------- filled AREA regions: the square-foot takeoff ----------
 // Hardscape is bought by the square foot - Beaumont's own Estimate #853
@@ -3314,8 +5592,8 @@ function renderLegend() {
     chip.title = applied
       ? `applied to style ${sid}`
       : `click to label style ${sid} "${e.label}" — hover to highlight`;
-    chip.onmouseenter = () => { state.hot = sid; draw(); };
-    chip.onmouseleave = () => { state.hot = null; draw(); };
+    chip.onmouseenter = () => hotFam([sid]);
+    chip.onmouseleave = () => hotFamOff();
     chip.onclick = () => {
       state.labels.set(sid, e.label + " (legend)");
       setInclude(sid, true);
@@ -3324,6 +5602,9 @@ function renderLegend() {
     box.appendChild(chip);
   }
 }
+
+if ($("scopeToggle"))
+  $("scopeToggle").onclick = () => scopeSetHidden(!scopeHidden());
 
 $("styleSearch").oninput = () => renderStyles();
 // The box now matches CAD layer names too, and a capability nobody is told
@@ -3339,18 +5620,31 @@ function renderChips() {
   const box = $("colorChips");
   box.innerHTML = "";
   if (!state.result) return;
-  const groups = new Map(); // colorKey -> {css, sids: []}
+  // Grouped on the colour ON SCREEN, not on the engine's raw value. The chip
+  // is a VISUAL bulk toggle - "hide everything that looks like this" - so it
+  // has to group by what the operator is looking at, or recolouring a family
+  // red would leave its chip sitting in the black group. Two consequences,
+  // both wanted: a recoloured family leaves its engine-colour chip and gets
+  // its own, and two families the operator painted the same colour share one
+  // chip. With no overrides in play the grouping is byte-for-byte what it
+  // was. The engine's value is NOT touched - see styleColorInfo.
+  const groups = new Map(); // css -> {css, sids: [], nOvr}
   for (const s of state.result.styles) {
-    const key = JSON.stringify(s.color);
-    if (!groups.has(key)) groups.set(key, { css: cssColor(s.color), sids: [] });
+    const info = styleColorInfo(s);
+    const key = info.css;
+    if (!groups.has(key)) groups.set(key, { css: key, sids: [], nOvr: 0 });
     groups.get(key).sids.push(s.style_id);
+    if (info.src !== "engine") groups.get(key).nOvr++;
   }
   for (const [, g] of groups) {
     const anyOn = g.sids.some(sid => state.include.get(sid));
     const chip = document.createElement("div");
-    chip.className = "color-chip" + (anyOn ? "" : " off");
+    chip.className = "color-chip" + (anyOn ? "" : " off")
+      + (g.nOvr ? " recoloured" : "");
     chip.style.background = g.css;
-    chip.title = `${g.sids.length} style(s) — click to ${anyOn ? "hide" : "show"} all of this color`;
+    chip.title = `${g.sids.length} style(s) — click to ${anyOn ? "hide" : "show"} all of this color`
+      + (g.nOvr ? ` · ${g.nOvr} of them wear a colour you chose, not the `
+          + `one the detector measured` : "");
     chip.onclick = () => {
       for (const sid of g.sids) setInclude(sid, !anyOn);
       renderStyles(); renderChips(); renderItemized(); draw();
@@ -3505,14 +5799,19 @@ function renderMemBtn() {
 // Which saved keys belong to the document currently open. Everything
 // doc-scoped is built from docKey(), except the two scale keys, which predate
 // it and key on the document name directly.
-function memDocPrefixes() {
-  const n = state.docName || "unknown";
+function memPrefixesFor(name) {
+  const n = name || "unknown";
   return ["doc::" + n + "::", "scale::" + n + "::", "scaletyped::" + n + "::"];
 }
-function memDocKeys() {
-  const pre = memDocPrefixes();
+function memDocPrefixes() { return memPrefixesFor(state.docName); }
+// The saved keys belonging to a NAMED document - which is not always the open
+// one. A demo's fresh open has to forget the previous run's labels for the
+// document it is ABOUT to open, before state.docName has moved to it.
+function memKeysFor(name) {
+  const pre = memPrefixesFor(name);
   return [...sessionMem.keys()].filter(k => pre.some(x => k.startsWith(x)));
 }
+function memDocKeys() { return memKeysFor(state.docName); }
 
 // Two different jobs, and conflating them is how you either destroy an
 // evening of pricing or walk into a client demo with last week's labels
@@ -3751,6 +6050,402 @@ function calcRestore() {
   } catch (e) { /* same */ }
 }
 
+// ---------- calculator INPUT sidecar (the server record) -----------------
+// calcSave above keeps the priced ROWS in this browser; this keeps the
+// INPUTS behind them on the SERVER - p<N>_calcstate.json in the job dir,
+// the same pattern as the scale pick - so a reload, and any OTHER seat
+// opening the same page, gets the earthwork surface assignments, corrected
+// elevations, layer stacks, spot toggles, datum, limit of work, trench
+// setup and structure outlines back instead of an empty panel underneath a
+// priced takeoff row.
+//
+// Inputs, never results. Earthwork volumes are integrated server-side, so
+// a restored panel shows its inputs and NO result until Calculate is
+// pressed again - nothing is staged. Chain- and style-keyed choices apply
+// only while those ids still exist in the loaded detection; the rest are
+// COUNTED and said out loud in the panel (calcDropText), never dropped
+// silently. The blob carries engine_sig so "the chain renumbered" can be
+// told from "the engine changed since these were saved".
+let calcStateTimer = null;
+let calcStatePending = null;  // {url, txt, gen} snapshot taken at edit time
+let calcStateSent = null;     // last blob known to be on the server, as text
+
+function calcStateUrl() {
+  return `/api/job/${state.job}/page/${state.page}/calcstate`;
+}
+
+// JSON numbers only - +null is 0 and +"" is 0, and both have already put
+// wrong elevations into panels elsewhere in this file's history
+const calcNum = v => (typeof v === "number" && isFinite(v)) ? v : null;
+
+function calcStatePayload() {
+  if (!state.result) return null;
+  const saved = state.calcSaved || {};
+  const out = { v: 1, engine_sig: state.result.engine_sig || null };
+  if (state.ew) {
+    out.ew = {
+      rows: state.ew.rows.map(r => ({
+        chain_id: r.chain_id,
+        z: calcNum(r.z), surface: r.surface || null,
+        width: r.width || 0, dist: r.dist == null ? null : r.dist,
+        manual: !!r.manual,
+        // an INFERRED elevation stays inferred across a reload. Without
+        // this the badge and the report's inferred-count line vanish on
+        // the next visit and a counted elevation reads as a printed one -
+        // the same class of defect as the resurrected-junk-rows bug.
+        ...(r.inferred ? { inferred: true,
+                           inferred_why: r.inferredWhy || "" } : {}),
+      })),
+      layers: {
+        existing: state.ew.layers.existing.map(l => Object.assign({}, l)),
+        proposed: state.ew.layers.proposed.map(l => Object.assign({}, l)),
+      },
+      removed: (state.ew.removed || []).slice(),
+      spotOn: Object.assign({}, state.ew.spotOn),
+      spotSide: state.ew.spotSide,
+      spotDatum: calcNum(state.ew.spotDatum),
+      areaSf: calcNum(state.ew.areaSf),
+      added: !!state.ew.added,
+    };
+    // Picked/stitched boundary: the SEED chain, not the ring - geometry
+    // re-derives from the live detection on restore, so a re-detect that
+    // renumbers or improves the family re-stitches instead of replaying
+    // stale points. HAND-DRAWN boundary: the points themselves - they are
+    // the operator's own geometry, tied to no chain, and a re-detect can
+    // neither improve nor orphan them.
+    const m = state.ewBound && /^chain (\d+)$/.exec(state.ewBound.src || "");
+    const seed = state.ewBound && typeof state.ewBound.seed === "number"
+      ? state.ewBound.seed : (m ? +m[1] : null);
+    if (seed !== null) out.ew_bound = { chain_id: seed };
+    else if (state.ewBound && state.ewBound.src === "drawn outline")
+      out.ew_bound = { pts: state.ewBound.pts.map(q =>
+        [Math.round(q[0] * 10) / 10, Math.round(q[1] * 10) / 10]) };
+    else out.ew_bound = null;
+  } else {
+    // panel never opened this session: the earlier record stands untouched
+    if (saved.ew) out.ew = saved.ew;
+    if (saved.ew_bound) out.ew_bound = saved.ew_bound;
+  }
+  if (state.tr) {
+    out.tr = {
+      style_id: typeof state.tr.style_id === "number" ? state.tr.style_id : null,
+      od_in: state.tr.od_in, d0_ft: state.tr.d0_ft, d1_ft: state.tr.d1_ft,
+      rules: state.tr.rules.map(r => ({ to_ft: r.to_ft, clr_in: r.clr_in })),
+    };
+  } else if (saved.tr) out.tr = saved.tr;
+  const st = (state.st && state.st.result === state.result
+              && state.calcStApplied) ? state.st : null;
+  if (st) {
+    out.st = {
+      items: st.items.map(it => ({
+        name: it.name, pts: it.pts.map(p => [p[0], p[1]]),
+        source: it.source, chain_id: it.chain_id == null ? null : it.chain_id,
+        gap_pt: it.gap_pt || 0, depth_ft: it.depth_ft,
+        layback_ft: it.layback_ft, footing_ft: it.footing_ft,
+      })),
+      seq: st.seq, depth_ft: st.depth_ft,
+      layback_ft: st.layback_ft, footing_ft: st.footing_ft,
+    };
+  } else if (saved.st) out.st = saved.st;
+  // WORK AREA boxes (additive key "zones"): plain page-pt rects, keyed to
+  // no chain or style id, so a re-detect can never orphan them - restore
+  // re-applies them against whatever the live detection holds. Unlike the
+  // panels above there is no "never opened" case: wzApplySaved() runs on
+  // every load before the first snapshot, so state.workZones IS the truth
+  // and an empty list correctly writes no key (= zones cleared).
+  if (state.workZones && state.workZones.length)
+    out.zones = state.workZones.map(z => [z[0], z[1], z[2], z[3]]);
+  // GRADING ZONES (additive key "gzones"): the operator's INPUTS only -
+  // polygon, declared design, strip, name, added flag. Results are
+  // recomputed through the zone endpoint on restore, never staged from
+  // storage (the rule every calculator here follows). Like the work-area
+  // boxes there is no "never opened" carry case: gzApplySaved runs on
+  // every load before the first snapshot, so state.gzones IS the truth
+  // and an empty list correctly writes no key (= zones cleared).
+  if (state.gzones && state.gzones.length)
+    out.gzones = state.gzones.map(z => ({
+      id: z.id, name: z.name,
+      polygon: z.polygon.map(q => [Math.round(q[0] * 10) / 10,
+                                   Math.round(q[1] * 10) / 10]),
+      design: z.design, strip_in: z.strip_in,
+      added: !!z.added, show_nums: !!z.showNums,
+    }));
+  // Review-queue check-offs (additive key, same carry-forward rule as the
+  // panels above: until the queue has seeded from the sidecar, the earlier
+  // record stands untouched). Ids only - a check-off is the operator saying
+  // "I looked at this", never a number.
+  if (state.ckDone) out.checks = { done: [...state.ckDone].sort() };
+  else if (saved.checks) out.checks = saved.checks;
+  return out;
+}
+
+// Debounced save. The payload is SNAPSHOTTED at edit time: the operator can
+// flip pages inside the debounce window, and this save must go to the page
+// the edit was made on, not wherever state.page points a second later.
+function calcStateDirty() {
+  if (!state.result) return;
+  if (!state.calcSavedLoaded) {
+    if (state.calcSaveBroken && !state.calcSaveWarned) {
+      state.calcSaveWarned = true;
+      setStatus("calculator inputs are NOT being saved: the saved-inputs "
+        + "record could not be read when this page loaded. Reload to retry.", "err");
+    }
+    return;
+  }
+  const body = calcStatePayload();
+  if (!body) return;
+  calcStatePending = { url: calcStateUrl(), txt: JSON.stringify(body), gen: state.gen };
+  if (calcStateTimer) clearTimeout(calcStateTimer);
+  calcStateTimer = setTimeout(calcStatePush, 1000);
+}
+
+async function calcStatePush() {
+  if (calcStateTimer) { clearTimeout(calcStateTimer); calcStateTimer = null; }
+  const p = calcStatePending;
+  calcStatePending = null;
+  if (!p || p.txt === calcStateSent) return;
+  try {
+    const r = await fetch(p.url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: p.txt,
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      setStatus(e.detail || ("calculator inputs NOT saved (" + r.status + ")"), "err");
+      return;
+    }
+    if (p.gen === state.gen) {
+      calcStateSent = p.txt;
+      state.calcSaved = JSON.parse(p.txt);
+    }
+  } catch (e) {
+    setStatus("calculator inputs NOT saved " + '\u2014' + " server unreachable", "err");
+  }
+}
+
+// One GET per page load, awaited by loadResult before the panels can paint.
+async function calcStateLoad(gen) {
+  state.calcSaved = null; state.calcSavedLoaded = false; state.calcStApplied = false;
+  state.calcSaveBroken = false; state.calcSaveWarned = false;
+  calcStateSent = null;
+  const job = state.job, page = state.page;
+  let j = {}, ok = false;
+  try {
+    const r = await fetch(`/api/job/${job}/page/${page}/calcstate`);
+    if (r.ok) { j = await r.json(); ok = true; }
+  } catch (e) { /* fall through: ok stays false */ }
+  if (gen !== state.gen) return;
+  if (!ok) {
+    // A record that CANNOT BE READ is not the same as no record: saving
+    // over it from a blank panel would destroy the operator's inputs.
+    // Saves stay off for this page load, and the first edit says so.
+    state.calcSaveBroken = true;
+    return;
+  }
+  state.calcSaved = (j && typeof j === "object" && !Array.isArray(j)) ? j : {};
+  state.calcSavedLoaded = true;
+  // zones BEFORE the snapshot below: they restore straight into state (no
+  // panel to wait for), and a snapshot taken without them would make the
+  // first unrelated edit's save look like a change to them
+  wzApplySaved();
+  // grading zones restore straight into state too (their geometry and
+  // design are page facts, tied to no chain); their RESULTS recompute
+  // asynchronously through the endpoint after the snapshot below
+  gzApplySaved();
+  // what the server holds right now, so a no-op save is never sent
+  calcStateSent = JSON.stringify(calcStatePayload());
+  stApplySaved();
+  gzRestoreCompute();
+}
+
+// The count-of-dropped sentence, in the panel where the loss happened.
+function calcNotePut(hintId, txt) {
+  const anchor = $(hintId);
+  if (!anchor || !anchor.parentElement) return;
+  let n = anchor.parentElement.querySelector(".calc-restore-note");
+  if (!txt) { if (n) n.remove(); return; }
+  if (!n) {
+    n = document.createElement("div");
+    n.className = "calc-restore-note";
+    anchor.insertAdjacentElement("afterend", n);
+  }
+  n.textContent = txt;
+}
+
+function calcDropText(n) {
+  const sig = state.calcSaved && state.calcSaved.engine_sig;
+  const cur = state.result && state.result.engine_sig;
+  return n + " earlier choice" + (n === 1 ? "" : "s") + " no longer "
+    + (n === 1 ? "matches" : "match") + " this detection"
+    + (sig && cur && sig !== cur
+        ? " (the engine has changed since they were saved)" : "")
+    + " and " + (n === 1 ? "was" : "were") + " not applied.";
+}
+
+// Merge the saved earthwork inputs into the panel state ewBtn just built
+// from /earthwork/suggest. Chain-keyed values only where the chain still
+// exists; everything else counted into the panel note.
+function ewApplySaved() {
+  const saved = state.calcSaved || {};
+  const sv = saved.ew;
+  let dropped = 0, applied = 0;
+  const chains = new Map(state.result.chains.map(c => [c.chain_id, c]));
+  if (sv) {
+    const live = new Map(state.ew.rows.map(r => [r.chain_id, r]));
+    for (const r of (Array.isArray(sv.rows) ? sv.rows : [])) {
+      if (!r || typeof r.chain_id !== "number") continue;
+      const surf = (r.surface === "existing" || r.surface === "proposed") ? r.surface : null;
+      const row = live.get(r.chain_id);
+      const ch = chains.get(r.chain_id);
+      if (row) {
+        if (calcNum(r.z) !== null) row.z = r.z;
+        row.surface = surf;
+        // the saved record is the authority on provenance: a row the
+        // operator accepted as inferred keeps saying so
+        if (r.inferred) {
+          row.inferred = true;
+          if (r.inferred_why) row.inferredWhy = r.inferred_why;
+        }
+        applied++;
+      } else if (ch && !ch.custom) {
+        // usually a hand-added contour: its chain is still on the sheet
+        state.ew.rows.push({ chain_id: r.chain_id,
+          z: calcNum(r.z) !== null ? r.z : NaN,
+          width: calcNum(r.width) !== null ? r.width : (ch.width || 0),
+          dist: r.dist == null ? null : r.dist,
+          surface: surf, manual: !!r.manual,
+          ...(r.inferred ? { inferred: true,
+                             inferredWhy: r.inferred_why || "" } : {}) });
+        applied++;
+      } else dropped++;
+    }
+    if (Array.isArray(sv.removed) && sv.removed.length) {
+      // deletions the operator saved: drop what the fresh suggest re-seeded,
+      // except chains the saved rows themselves still carry (add > delete)
+      const savedIds = new Set((Array.isArray(sv.rows) ? sv.rows : [])
+        .filter(r => r && typeof r.chain_id === "number").map(r => r.chain_id));
+      const rm = new Set(sv.removed.filter(id => !savedIds.has(id)));
+      const n0 = state.ew.rows.length;
+      state.ew.rows = state.ew.rows.filter(r => !rm.has(r.chain_id));
+      state.ew.removed = sv.removed.slice();
+      applied += n0 - state.ew.rows.length;
+    }
+    if (sv.layers && Array.isArray(sv.layers.existing) && Array.isArray(sv.layers.proposed)) {
+      const lay = (l, ex) => Object.assign(
+        { name: String((l && l.name) || ""), thickness_in: calcNum(l && l.thickness_in) || 0 },
+        ex ? { reuse_pct: calcNum(l && l.reuse_pct),
+               respread_pct: calcNum(l && l.respread_pct),
+               destination: (l && l.destination !== undefined) ? l.destination : "on site" } : {});
+      state.ew.layers = { existing: sv.layers.existing.map(l => lay(l, true)),
+                          proposed: sv.layers.proposed.map(l => lay(l, false)) };
+    }
+    if (sv.spotOn && typeof sv.spotOn === "object") state.ew.spotOn = Object.assign({}, sv.spotOn);
+    if (sv.spotSide === "existing" || sv.spotSide === "proposed") state.ew.spotSide = sv.spotSide;
+    if (calcNum(sv.spotDatum) !== null) state.ew.spotDatum = sv.spotDatum;
+    if (calcNum(sv.areaSf) !== null && sv.areaSf > 0) state.ew.areaSf = sv.areaSf;
+    state.ew.added = !!sv.added;
+  }
+  const bd = saved.ew_bound;
+  if (bd && Array.isArray(bd.pts) && bd.pts.length >= 3 && !state.ewBound) {
+    if (ewBoundSet(bd.pts, "drawn outline")) {
+      state.ewBound.seed = null;
+      applied++;
+    } else dropped++;
+  } else if (bd && typeof bd.chain_id === "number" && !state.ewBound) {
+    const ch = chains.get(bd.chain_id);
+    const st = ch ? ewBoundStitch(ch) : null;
+    if (st && ewBoundSet(st.pts, st.n > 1
+          ? `${st.n} lines stitched (${(ch.layer || "style " + ch.style_id).split("|").pop()})`
+          : "chain " + ch.chain_id)) {
+      state.ewBound.seed = ch.chain_id;
+      applied++;
+    }
+    else dropped++;
+  }
+  calcNotePut("ewHint", dropped ? calcDropText(dropped) : "");
+  if (applied) setStatus("earthwork inputs restored from this page's saved record "
+    + '\u2014' + " press Calculate to recompute");
+  return dropped;
+}
+
+function trApplySaved() {
+  const sv = (state.calcSaved || {}).tr;
+  let dropped = 0;
+  if (sv) {
+    const t = state.tr;
+    if (typeof sv.style_id === "number") {
+      if (state.result.styles.some(s => s.style_id === sv.style_id)) t.style_id = sv.style_id;
+      else dropped++;   // style ids renumber on a re-detect, like chain ids
+    }
+    if (calcNum(sv.od_in) !== null) t.od_in = sv.od_in;
+    if (calcNum(sv.d0_ft) !== null) t.d0_ft = sv.d0_ft;
+    if (calcNum(sv.d1_ft) !== null) t.d1_ft = sv.d1_ft;
+    if (Array.isArray(sv.rules) && sv.rules.length)
+      t.rules = sv.rules.map(r => ({
+        to_ft: calcNum(r && r.to_ft) !== null ? r.to_ft : 99,
+        clr_in: calcNum(r && r.clr_in) !== null ? r.clr_in : 6 }));
+    setStatus("trench inputs restored from this page's saved record "
+      + '\u2014' + " press Calculate to recompute");
+  }
+  calcNotePut("trHint", dropped ? calcDropText(dropped) : "");
+  return dropped;
+}
+
+// Structure outlines are geometry in page pt, not chain references, so they
+// survive a re-detect intact. Their bid-sheet rows are re-DERIVED (stCalc at
+// the scale in force), never restored as stored numbers - and they were all
+// behind an explicit "Add to takeoff" when they were saved, so re-deriving
+// them into the takeoff honours a consent that was actually given.
+function stApplySaved() {
+  if (state.calcStApplied || !state.calcSavedLoaded) return;
+  if (!state.st || state.st.result !== state.result) return;
+  state.calcStApplied = true;
+  const sv = (state.calcSaved || {}).st;
+  if (!sv) return;
+  const st = state.st;
+  if (Array.isArray(sv.items) && !st.items.length) {
+    for (const it of sv.items) {
+      if (!it || !Array.isArray(it.pts)) continue;
+      const pts = it.pts
+        .filter(p => Array.isArray(p) && calcNum(p[0]) !== null && calcNum(p[1]) !== null)
+        .map(p => [p[0], p[1]]);
+      if (pts.length < 3) continue;
+      st.items.push({
+        name: String(it.name || ("Structure " + (st.items.length + 1))), pts,
+        source: it.source === "line" ? "line" : "drawn",
+        chain_id: typeof it.chain_id === "number" ? it.chain_id : null,
+        gap_pt: calcNum(it.gap_pt) || 0,
+        depth_ft: calcNum(it.depth_ft) !== null ? it.depth_ft : 8,
+        layback_ft: calcNum(it.layback_ft) !== null ? it.layback_ft : 4,
+        footing_ft: calcNum(it.footing_ft) !== null ? it.footing_ft : 0,
+      });
+    }
+  }
+  if (calcNum(sv.seq) !== null) st.seq = sv.seq;
+  if (calcNum(sv.depth_ft) !== null) st.depth_ft = sv.depth_ft;
+  if (calcNum(sv.layback_ft) !== null) st.layback_ft = sv.layback_ft;
+  if (calcNum(sv.footing_ft) !== null) st.footing_ft = sv.footing_ft;
+  if (st.items.length && stFtPerPt()) {
+    stApplyItems();
+    if (!$("stPanel").hidden) renderSt();
+    setStatus(st.items.length + " structure outline" + (st.items.length === 1 ? "" : "s")
+      + " restored from this page's saved record");
+  }
+}
+
+// Any input or click inside a calculator panel may be an input edit; the
+// 1s debounce collapses bursts, and an identical blob is never re-sent.
+// Delegation instead of per-field hooks so a field added later cannot be
+// forgotten. Edits made on the CANVAS (limit-of-work pick, + Add contour)
+// call calcStateDirty at their own mutation sites.
+for (const pid of ["ewPanel", "trPanel", "stPanel"]) {
+  const el = $(pid);
+  if (el) {
+    el.addEventListener("input", calcStateDirty);
+    el.addEventListener("click", calcStateDirty);
+  }
+}
+
 function ovKey(label, unit) {
   return docKey() + "::p" + state.page + "::ov:" + unit + ":"
        + label.trim().toUpperCase();
@@ -3777,6 +6472,10 @@ function docKey() {
 function sigKey() {
   return (state.result && state.result.engine_sig) || "nosig";
 }
+// SET-DECISIONS-BEGIN
+// Everything from here to SET-DECISIONS-END is kept pure (no DOM, no
+// state.*, no store.*) so tests/test_set_decisions.js can eval the block
+// alone - the same technique as the TRENCH-MATH block.
 // chain._weight_class (chain.py:3310), ported verbatim: hairline / light /
 // medium / heavy / extra. Kept as a five-line duplicate rather than a new
 // server field because the fix is then one file and no engine_sig moves;
@@ -3855,6 +6554,663 @@ function styleFp(st) {
   return [st.class, "w" + weightClass(st.width || 0), rawColor(st.color),
           st.signature, "L=" + (st.layer || "")].join("|");
 }
+// ---------- set-level decisions (EXCAVATION-PLAN §7 item 5) ----------
+// An include/exclude the operator makes BY HAND on one style row is also
+// recorded against the whole document, so excluding the title-block style
+// on sheet 1 holds on sheets 2-48. Three rules, ranked:
+//   1. the page's own record (includeKey) ALWAYS outranks the set-level
+//      one - the page-level override the operator sees is just the same
+//      checkbox, and it keeps winning on that page forever;
+//   2. only styles with a CAD layer participate (setDecEligible). The
+//      styleFp comment above documents the residue: rows with NO layer on
+//      DIFFERENT pages are indistinguishable under every key this file can
+//      build, and a label that travels wrongly is a visible typo while an
+//      EXCLUSION that travels wrongly is silently deleted footage. So
+//      no-layer rows abstain and keep their per-page seeds - 529/2,664
+//      rows (19.9%) on Barn, 103/1,059 (9.7%) on Kayden, 22/22 on the
+//      ellis sheet, where the whole feature therefore stays inert;
+//   3. only the row's own checkbox writes the set-level record. Bulk
+//      gestures (all / none / color chips / AI apply / scope filter) stay
+//      page-scoped: "none" on sheet 1 must not empty sheets 2-48.
+//
+// MEASURED 2026-08-30, before building, offline detect_page on this tree:
+// Barn 15 pages / 2,664 style rows, Kayden 12-page spread / 1,059 rows,
+// plus cached Kayden p38-39 (327) and ellis p42 (22). A candidate key of
+// (layer LEAF, class, signature rounded to 1 pt) fuses rows the engine
+// split ON THE SAME PAGE - different-looking styles by construction - for
+// 714/2,664 rows (26.8%) on Barn and 262/1,059 (24.7%) on Kayden, worst
+// group 14 rows, and 7 Kayden groups put 54,985 pt of real linework under
+// an annotation row's key: an exclusion there deletes footage silently,
+// so leaf-keyed inheritance is dead on arrival. styleFp collides on
+// 0/2,664, 0/1,059, 0/327 and 0/22 (the theorem above, re-measured
+// anyway). Coverage under styleFp with this eligibility rule: 948/2,067
+// eligible later-page rows (45.9%) already have a key on an earlier page
+// on Barn, 495/956 (51.8%) on Kayden - the misses are mostly dash-cadence
+// jitter (of 6,581 Barn cross-page pairs matched on layer+class+weight+
+// colour, 3,328 = 50.6% agree on cadence too), which fails SAFE: the row
+// keeps its seed and its checkbox. The headline case holds: excluding
+// C3.0's four G-ANNO-TTLB title-block styles reaches every TTLB row on
+// all 14 other Barn sheets (40/40). A rounded-signature styleFp variant
+// also measured 0 collisions and would add +84/+18 covered rows, but its
+// zero is a corpus fact, not a construction (Kayden p38 carries
+// 'd8.8 g4.5' and 'd9.1 g4.5' as two rows, kept apart only by the XREF
+// prefix in the full layer), and the label record travels on the exact
+// signature - one identity for both records, so exact it stays.
+function setDecEligible(st) {
+  return !!(st && (st.layer || "").trim());
+}
+// The record's identity = styleFp, the SAME fingerprint the label record
+// travels on: if the name typed on sheet 1 follows a row to sheet 40, the
+// exclusion clicked next to that name follows the same row - one identity
+// for both records, never two that can disagree.
+function setDecKey(docKeyStr, st) {
+  return docKeyStr + "::setinc::" + styleFp(st);
+}
+// Precedence, pure so the test can pin it. Records are the stored strings
+// ("1" / "0"), null or undefined = no record. Returns null (no decision -
+// the per-page seed stands) or {on, inherited}.
+function setDecResolve(pageRec, docRec, eligible) {
+  if (pageRec === "1" || pageRec === "0")
+    return { on: pageRec === "1", inherited: false };
+  if (eligible && (docRec === "1" || docRec === "0"))
+    return { on: docRec === "1", inherited: true };
+  return null;
+}
+// SET-DECISIONS-END
+
+// ======================= OPERATOR LINE COLOUR ============================
+// OWNER (2026-08-31): "lets also add the ability to change lines colors,
+// whether if its by family/style or when you select a line ... some have
+// color but some are black and white, I think it would be a good addition to
+// be able to change a color to red for like a fiber line, light yellow for
+// existing contour, on and on and be able to export it and add it to the line
+// family colors, it should be a recorded decision but it shouldnt be undoable
+// and it should override or add to a family color swatch, thats why we added
+// the individual line detector".
+//
+// So this is NOT an edit tool and NOT a paint program. It is the operator
+// giving a black-and-white sheet a READABLE VISUAL LANGUAGE - fiber red,
+// existing contour light yellow - so the sheet can be read, checked, and
+// handed to someone else. Three consequences shape every line below.
+//
+// 1. NOT UNDOABLE, ON PURPOSE. Colour belongs with the app's other
+//    DECISIONS - a family's name, its price, its trade, its include tick -
+//    none of which are on the undo stack. Ctrl+Z is about GEOMETRY. A colour
+//    change sitting on that stack would swallow an undo the operator meant
+//    for a line edit. Reversal is by setting it back, plus the explicit
+//    "reset to family" / "reset to detected" controls. See setFamColor /
+//    setLineColor: neither calls captureUndo, and the colour maps are
+//    deliberately NOT in UNDO_SMAPS. tests/test_line_colors.js pins both.
+// 2. RECORDED. It is a decision, so it persists in the same store as the
+//    labels and prices, and it is a ledger event at approve
+//    (server.py _ledger_approve -> style_color / chain_color, docs/LEDGER.md).
+// 3. IT OVERRIDES OR ADDS TO THE FAMILY SWATCH. A family colour drives the
+//    canvas, the row swatch, the mini legend, the colour chips, the report
+//    and the export; a per-line colour overrides its family for that one
+//    line. Both reach the export.
+//
+// COLOR-RULES-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_colors.js can eval
+// the block alone - the same technique as SET-DECISIONS / TRENCH-MATH /
+// UNDO-CORE / LINE-FAMILY.
+
+// The colours the CANVAS ALREADY SPEAKS IN. A family painted near one of
+// these makes every line of it look selected, or look like an armed tool, or
+// look like cut/fill on the earthwork volume map - so a pick that lands near
+// one is CALLED OUT at the moment of choosing. It is never refused: it is the
+// operator's sheet and there are legitimate reasons to want magenta linework.
+//
+// Exactly four, and the list is deliberately short. These are the colours
+// that paint OVER or BESIDE ordinary linework on the same canvas:
+//   CV_SELECT          the chain-selection magenta (app.js, PROTECTED)
+//   --t-select         the measure/armed-tool blue (CV_MEASURE, tokens.css)
+//   earthwork cut/fill the dz map tint, earthwork.py _dz_png:
+//                      rgba[cut] = (30,100,255)  rgba[fill] = (255,190,20)
+// The work-area green, grading-zone purple, symbol-count violet and vertex
+// yellow are NOT here: each is a region outline or a handle dot that exists
+// only while its own tool has been used, and none of them is ever mistaken
+// for a run of linework. Listing them would also block the owner's own
+// example - "light yellow for existing contour" sits 52 units from the
+// vertex-handle yellow - which is a false alarm on a 3.5 px dot.
+const RESERVED_COLORS = [
+  { hex: "#ff00cc", name: "the selection highlight",
+    why: "lines of this family would look permanently selected" },
+  { hex: "#58b7e6", name: "the measure / armed-tool blue",
+    why: "it reads as “a tool is running on this”" },
+  { hex: "#1e64ff", name: "CUT on the earthwork volume map",
+    why: "it reads as excavation when the volume map is on" },
+  { hex: "#ffbe14", name: "FILL on the earthwork volume map",
+    why: "it reads as embankment when the volume map is on" },
+];
+
+// The curated palette. Every entry clears every reserved colour by at least
+// 134 units under colorDist below (measured: min clearance 134, at light
+// yellow vs the earthwork FILL tint; the flag threshold is 110), and no two
+// entries are closer to each other than 69. Chosen to read BOTH on the white
+// sheet the linework is drawn on and on the dark UI where the swatch sits -
+// which is why there is no white, no pastel and no pure black in it.
+// The two the owner named by name lead their hues.
+const COLOR_PALETTE = [
+  { hex: "#e03131", name: "Red",          hint: "fiber, electric, alerts" },
+  { hex: "#d9480f", name: "Burnt orange", hint: "gas, hot utilities" },
+  { hex: "#ffe066", name: "Light yellow", hint: "existing contour" },
+  { hex: "#74b816", name: "Lime",         hint: "proposed grading" },
+  { hex: "#2f9e44", name: "Green",        hint: "landscape, erosion control" },
+  { hex: "#087f5b", name: "Deep teal",    hint: "sanitary sewer" },
+  { hex: "#00a3a3", name: "Teal",         hint: "storm drain" },
+  { hex: "#1864ab", name: "Deep blue",    hint: "water" },
+  { hex: "#5f3dc4", name: "Indigo",       hint: "communications" },
+  { hex: "#862e9c", name: "Purple",       hint: "reuse / irrigation" },
+  { hex: "#c2255c", name: "Crimson",      hint: "property line, easements" },
+  { hex: "#8b5a2b", name: "Brown",        hint: "earth, subgrade" },
+  { hex: "#7a8b99", name: "Slate",        hint: "demolition, existing" },
+  { hex: "#343a40", name: "Charcoal",     hint: "structures, curbs" },
+];
+
+// "#RRGGBB" lower case, or null when the input is not a colour. Accepts the
+// 3-digit short form because <input type="color"> is not the only writer -
+// an imported convention CSV is a human-typed file.
+function colorNorm(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim().toLowerCase();
+  let m = /^#?([0-9a-f]{6})$/.exec(s);
+  if (m) return "#" + m[1];
+  m = /^#?([0-9a-f]{3})$/.exec(s);
+  if (m) return "#" + m[1].split("").map(c => c + c).join("");
+  return null;
+}
+
+function colorRgb(hex) {
+  const h = colorNorm(hex);
+  if (!h) return null;
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16),
+          parseInt(h.slice(5, 7), 16)];
+}
+
+// Perceptual-ish distance, the "redmean" weighting (Compuphase). Plain
+// Euclidean RGB is not good enough for this job - it calls #ff00cc and
+// #cc00aa further apart than two greens nobody could tell apart - and a full
+// CIEDE2000 is a page of code for a warning label. Calibrated on this
+// palette: 19-42 = "the same colour", 63-102 = "same family, confusable on a
+// thin line", 130+ = plainly different.
+function colorDist(a, b) {
+  const A = colorRgb(a), B = colorRgb(b);
+  if (!A || !B) return Infinity;
+  const rm = (A[0] + B[0]) / 2;
+  const dr = A[0] - B[0], dg = A[1] - B[1], db = A[2] - B[2];
+  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg
+                   + (2 + (255 - rm) / 256) * db * db);
+}
+
+// 110: above the 102 that separates #ff00cc from #ff33cc (a shade an
+// operator would call "the same pink") and below the 134 of the closest
+// palette entry, so nothing curated ever trips its own warning.
+const COLOR_NEAR = 110;
+
+// The nearest reserved colour, when one is close enough to surprise the
+// operator; null otherwise. Reports rather than refuses - see the block
+// comment. `reserved`/`near` are injectable so the test can pin the rule
+// without pinning this file's palette.
+function colorNearReserved(hex, reserved, near) {
+  const list = reserved || RESERVED_COLORS;
+  const lim = Number.isFinite(near) ? near : COLOR_NEAR;
+  let best = null;
+  for (const r of list) {
+    const d = colorDist(hex, r.hex);
+    if (d < lim && (!best || d < best.dist))
+      best = { hex: r.hex, name: r.name, why: r.why, dist: d };
+  }
+  return best;
+}
+
+// THE RESOLUTION ORDER, in one place so it can be pinned and so the comment
+// at the mutation sites can point at it:
+//
+//     per-line  >  per-family (this document)  >  convention (by label,
+//                                                  every job)  >  engine
+//
+// Read it as "the more specific decision wins, and a measurement is what you
+// get when nobody decided". The convention sits UNDER the per-family record
+// on purpose: the company convention says what FIBER OPTIC looks like in
+// general, and a job where this particular fiber run must stand out is
+// exactly the case a per-family override exists for. Anything the operator
+// set on THIS document therefore beats the book, and the book beats the
+// detector. `engine` is already a CSS string (cssColor has its own rules
+// about invisible near-white ink); the three above it are "#rrggbb".
+//
+// Returns the colour AND where it came from, because every surface that
+// shows a colour also has to be able to say whether it is a decision or a
+// measurement - the same reason the style row carries an "engine id" chip.
+function colorResolve(v) {
+  const line = colorNorm(v && v.line);
+  if (line) return { css: line, src: "line" };
+  const fam = colorNorm(v && v.family);
+  if (fam) return { css: fam, src: "family" };
+  const conv = colorNorm(v && v.convention);
+  if (conv) return { css: conv, src: "convention" };
+  return { css: (v && v.engine) || null, src: "engine" };
+}
+
+// Where a colour DECISION came from, in the operator's words. "engine" is
+// not a decision and returns "".
+function colorSrcLabel(src) {
+  return src === "line" ? "this line"
+       : src === "family" ? "this family, on this document"
+       : src === "convention" ? "your colour convention for this name"
+       : "";
+}
+// COLOR-RULES-END
+
+// ---- the override layer's keys and readers (impure: state + store) -------
+// THREE RECORDS, THREE SCOPES, and the scope is the whole design. Each one
+// is keyed on the narrowest identity that is actually valid for it, which is
+// the lesson labelKey / includeKey below already paid for.
+//
+//   per-family : docKey + styleFp  - the SAME identity the label record
+//                travels on, so a family recoloured on sheet 1 is that
+//                colour on sheets 2-48 exactly as its typed name is.
+//   per-line   : docKey + page + engine_sig + chain_id - a chain id is an
+//                ordinal inside ONE page of ONE result, so the key names the
+//                only scope in which it means anything (see includeKey for
+//                the measurement behind that rule).
+//   convention : the bare label, upper-cased, no document in the key - the
+//                same road tradeKey and measure::<LABEL> already ride, so
+//                "FIBER OPTIC comes up red on the next job" needs no new
+//                mechanism and no server.
+function famColorKey(st) { return docKey() + "::famcolor::" + styleFp(st); }
+function lineColorKey(chainId) {
+  return docKey() + "::p" + state.page + "::" + sigKey()
+       + "::linecolor::" + chainId;
+}
+function colorConvKey(label) {
+  return "linecolor::" + String(label || "").trim().toUpperCase();
+}
+
+// The convention for a family, by the name it currently carries. Reads the
+// LIVE label, not the seed: renaming a row to FIBER OPTIC should make the
+// book apply, and renaming it away should stop it - the book is keyed on the
+// name, so it follows the name.
+function colorConvFor(sid) {
+  const lab = (state.labels.get(sid) || "").trim();
+  if (!lab) return null;
+  return colorNorm(store.getItem(colorConvKey(lab)));
+}
+
+// The engine's own colour for a style, as a CSS string - the fallback and
+// the evidence. Untouched by anything in this section.
+function engineCssFor(st) { return cssColor(st && st.color, st && st.width); }
+
+// Everything that PAINTS A FAMILY goes through here: the row swatch, the
+// mini legend, the colour chips, the canvas, the object boxes.
+//
+// MEMOISED, because draw() asks this once per CHAIN and a pan re-draws on
+// every mousemove: on a 2,000-chain sheet the unmemoised version does 2,000
+// store lookups and 2,000 string builds per frame. The memo is keyed on
+// style_id and thrown away whenever anything that feeds the answer moves -
+// a colour write, a label edit (the convention is keyed on the name), or a
+// new result. `colorBust()` is the ONE invalidator; call it from any future
+// writer rather than adding a second cache.
+let _colorMemo = new Map();
+function colorBust() { _colorMemo.clear(); }
+function styleColorInfo(st) {
+  if (!st) return { css: CV_FAM_UNKNOWN, src: "engine" };
+  const hit = _colorMemo.get(st.style_id);
+  if (hit) return hit;
+  const info = colorResolve({
+    family: state.famColor.get(st.style_id),
+    convention: colorConvFor(st.style_id),
+    engine: engineCssFor(st),
+  });
+  _colorMemo.set(st.style_id, info);
+  return info;
+}
+function styleCssColor(st) { return styleColorInfo(st).css; }
+
+// ...and everything that paints ONE LINE goes through here. `st` is the
+// chain's style row when the caller already has it (draw() does).
+function chainColorInfo(ch, st) {
+  const row = st || (state.result
+    && state.result.styles.find(x => x.style_id === (ch && ch.style_id)));
+  const eng = row ? engineCssFor(row) : cssColor(ch && ch.color, ch && ch.width);
+  return colorResolve({
+    line: ch && state.lineColor.get(ch.chain_id),
+    family: row && state.famColor.get(row.style_id),
+    convention: row && colorConvFor(row.style_id),
+    engine: eng,
+  });
+}
+function chainCssColor(ch, st) { return chainColorInfo(ch, st).css; }
+
+// ---- the writers. NO captureUndo. NO undo snapshot. ----------------------
+// DO NOT "helpfully" add captureUndo() here, and do not add famColor /
+// lineColor to UNDO_SMAPS. It is not an oversight, it is requirement 1 of
+// the block comment above: Ctrl+Z must stay about geometry, and a colour
+// change on that stack would eat the undo the operator meant for a line
+// edit. Reversal is famColorReset / lineColorReset, which are on the same
+// popover as the swatches. tests/test_line_colors.js fails if this changes.
+//
+// The engine's value is NOT touched here either: st.color and ch.color are
+// what styleFp() fingerprints the family by (and what chain.py measured), so
+// writing a decision into them would change the family's identity and
+// silently void the set-level include/exclude decisions the operator made on
+// every other sheet of the set. The override lives beside it, never over it.
+function setFamColor(st, hex) {
+  const h = colorNorm(hex);
+  if (!st || !h) return false;
+  state.famColor.set(st.style_id, h);
+  colorBust();
+  // Page state alone would be a decision that dies on the next page switch.
+  // Recorded against the same fingerprint the name travels on - EXCEPT for a
+  // family the operator invented, which has no CAD layer and no engine seed,
+  // so styleFp cannot tell two of them apart (the same abstention famIsMine
+  // already forces on memSave).
+  if (!famIsMine(st)) {
+    try { store.setItem(famColorKey(st), h); } catch (e) {}
+  }
+  return true;
+}
+function famColorReset(st) {
+  if (!st) return;
+  state.famColor.delete(st.style_id);
+  colorBust();
+  if (!famIsMine(st)) { try { store.removeItem(famColorKey(st)); } catch (e) {} }
+}
+function setLineColor(ch, hex) {
+  const h = colorNorm(hex);
+  if (!ch || !h) return false;
+  state.lineColor.set(ch.chain_id, h);
+  // Recorded only for chains the ENGINE produced. A chain created by an edit
+  // (split / draw / reclass) gets its id from state.nextChainId, which starts
+  // over every session - so a stored record for one would be read back onto a
+  // DIFFERENT line next time, which is a colour that lies. Those stay page
+  // state, exactly like the edit that made them.
+  if (!ch.custom) { try { store.setItem(lineColorKey(ch.chain_id), h); } catch (e) {} }
+  return true;
+}
+function lineColorReset(ch) {
+  if (!ch) return;
+  state.lineColor.delete(ch.chain_id);
+  if (!ch.custom) { try { store.removeItem(lineColorKey(ch.chain_id)); } catch (e) {} }
+}
+// THE BOOK: label -> colour, across every job. Same store, same shape and the
+// same "typed by a human" rule as tradeKey and measure::<LABEL>.
+function setColorConvention(label, hex) {
+  const lab = String(label || "").trim();
+  const h = colorNorm(hex);
+  if (!lab || !h) return false;
+  store.setItem(colorConvKey(lab), h);
+  colorBust();          // the book feeds styleColorInfo through the label
+  return true;
+}
+function clearColorConvention(label) {
+  const lab = String(label || "").trim();
+  if (lab) { store.removeItem(colorConvKey(lab)); colorBust(); }
+}
+// every convention on the book right now, [{label, hex}] - read off the same
+// sessionMem the store wrapper fronts, like svStoredPriceLabels
+function colorConventions() {
+  const out = [];
+  for (const k of sessionMem.keys()) {
+    if (!k.startsWith("linecolor::")) continue;
+    const hex = colorNorm(sessionMem.get(k));
+    if (hex) out.push({ label: k.slice("linecolor::".length), hex });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+// ---- the picker. ONE popover, both entry points --------------------------
+// The style row's swatch and the selection bar's colour button open the same
+// control, so "by family" and "by this line" are visibly the same gesture at
+// two scopes - which is how the owner described it ("whether if its by
+// family/style or when you select a line").
+//
+// It is a floating div on <body> rather than an inline block in the row: the
+// style list is a 330px column that scrolls, and a 14-swatch grid inline
+// would reflow every row under it on every open.
+let colorPop = null;
+function colorPopClose() {
+  if (!colorPop) return;
+  colorPop.remove();
+  colorPop = null;
+}
+addEventListener("keydown", (e) => {
+  if (colorPop && e.key === "Escape") { e.stopImmediatePropagation(); colorPopClose(); }
+}, true);
+// A click outside dismisses it - EXCEPT on the control it was opened from,
+// which must stay a toggle. Without the exception, mousedown closes the
+// popover and the click that follows reopens it, so clicking the swatch a
+// second time looks like nothing happened.
+addEventListener("mousedown", (e) => {
+  if (!colorPop) return;
+  if (colorPop.contains(e.target)) return;
+  if (colorPop._anchor && colorPop._anchor.contains(e.target)) return;
+  colorPopClose();
+}, true);
+
+// opt = { anchor, title, current, currentSrc, engineCss, convLabel,
+//         onPick(hex), onResetFamily?, onResetEngine, resetEngineText }
+function colorPopOpen(opt) {
+  // second click on the same control closes it (see the mousedown handler)
+  const again = colorPop && colorPop._anchor === opt.anchor;
+  colorPopClose();
+  if (again) return;
+  const pop = document.createElement("div");
+  pop.className = "color-pop";
+  pop._anchor = opt.anchor;
+  colorPop = pop;
+
+  const h = document.createElement("div");
+  h.className = "cp-head";
+  h.textContent = opt.title;
+  pop.appendChild(h);
+
+  const warn = document.createElement("div");
+  warn.className = "cp-warn";
+  warn.hidden = true;
+
+  // The reserved-colour check, at the MOMENT OF CHOOSING. It never refuses -
+  // it is the operator's sheet - it just refuses to let the choice surprise
+  // them. Shown for a custom pick and for a palette hover alike.
+  function sayNear(hex) {
+    const near = colorNearReserved(hex);
+    warn.hidden = !near;
+    if (near)
+      warn.textContent = "That is very close to " + near.name + " — "
+        + near.why + ". It will still be used if you pick it.";
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "cp-grid";
+  for (const p of COLOR_PALETTE) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "cp-sw" + (opt.current === p.hex ? " on" : "");
+    b.style.background = p.hex;
+    b.title = p.name + " — " + p.hint;
+    b.setAttribute("aria-label", p.name);
+    b.onclick = () => { opt.onPick(p.hex); colorPopClose(); };
+    grid.appendChild(b);
+  }
+  pop.appendChild(grid);
+
+  const cust = document.createElement("div");
+  cust.className = "cp-row";
+  const cl = document.createElement("span");
+  cl.className = "cp-lab"; cl.textContent = "custom";
+  const ci = document.createElement("input");
+  ci.type = "color";
+  ci.name = "cp-custom";
+  ci.value = colorNorm(opt.current) || colorNorm(opt.engineCss) || "#e03131";
+  ci.setAttribute("aria-label", "custom colour");
+  ci.oninput = () => sayNear(ci.value);
+  const capply = document.createElement("button");
+  capply.type = "button"; capply.className = "mini"; capply.textContent = "Use it";
+  capply.onclick = () => { opt.onPick(ci.value); colorPopClose(); };
+  cust.append(cl, ci, capply);
+  pop.append(cust, warn);
+  sayNear(ci.value);
+
+  // THE BOOK, offered where the decision is made. Only where the family has
+  // a name: the convention is keyed on the name, so an unnamed row has
+  // nothing to file it under and the tick would silently do nothing.
+  if (opt.convLabel) {
+    const cv = document.createElement("label");
+    cv.className = "cp-conv";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.name = "cp-conv";
+    cb.checked = !!colorNorm(store.getItem(colorConvKey(opt.convLabel)));
+    cb.onchange = () => {
+      if (cb.checked) {
+        const h2 = colorNorm(opt.current) || ci.value;
+        setColorConvention(opt.convLabel, h2);
+        setStatus("colour convention saved: “" + opt.convLabel + "” is "
+          + h2 + " on every job from now on — Pricing › Line colour "
+          + "conventions lists them all");
+      } else {
+        clearColorConvention(opt.convLabel);
+        setStatus("colour convention for “" + opt.convLabel + "” removed");
+      }
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    };
+    const t = document.createElement("span");
+    t.textContent = "use this colour for “" + opt.convLabel
+      + "” on every job";
+    cv.append(cb, t);
+    cv.title = "The company convention - fiber red, existing contour light "
+      + "yellow, on and on. Stored against the NAME, not this document, so "
+      + "the next job's " + opt.convLabel + " comes up this colour without "
+      + "being set again. Anything you set on a document still beats it.";
+    pop.appendChild(cv);
+  }
+
+  const rst = document.createElement("div");
+  rst.className = "cp-row cp-rst";
+  if (opt.onResetFamily) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mini"; b.textContent = "Reset to family";
+    b.title = "Drop this line's own colour and let its family decide again.";
+    b.onclick = () => { opt.onResetFamily(); colorPopClose(); };
+    rst.appendChild(b);
+  }
+  {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mini";
+    b.textContent = opt.resetEngineText || "Reset to detected";
+    b.title = "Drop the colour you chose and go back to the colour the "
+      + "detector measured off the sheet.";
+    b.onclick = () => { opt.onResetEngine(); colorPopClose(); };
+    rst.appendChild(b);
+  }
+  pop.appendChild(rst);
+
+  const ev = document.createElement("div");
+  ev.className = "cp-evid";
+  ev.textContent = "detector measured " + (opt.engineCss || "no colour")
+    + (opt.currentSrc && opt.currentSrc !== "engine"
+       ? "  ·  showing: " + colorSrcLabel(opt.currentSrc) : "");
+  ev.title = "The engine's own reading is kept exactly as measured and is "
+    + "what identifies this family across the sheets of a set. Your colour "
+    + "sits on top of it; it never replaces it.";
+  pop.appendChild(ev);
+
+  const fn = document.createElement("div");
+  fn.className = "cp-note";
+  fn.textContent = "Colour is a decision, like a name or a price — it is "
+    + "saved, it exports, and Ctrl+Z does not touch it. Use the reset "
+    + "buttons above.";
+  pop.appendChild(fn);
+
+  document.body.appendChild(pop);
+  // place under the anchor, nudged back inside the viewport
+  const r = opt.anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, hh = pop.offsetHeight;
+  let x = Math.min(r.left, innerWidth - w - 8);
+  let y = r.bottom + 6;
+  if (y + hh > innerHeight - 8) y = Math.max(8, r.top - hh - 6);
+  pop.style.left = Math.max(8, x) + "px";
+  pop.style.top = y + "px";
+}
+
+// entry point 1: the style row's swatch (the natural affordance - it is
+// already the family's colour, sitting on the family's row)
+function colorPopForStyle(st, anchor) {
+  const info = styleColorInfo(st);
+  const name = familyName(st) || "this line type";
+  colorPopOpen({
+    anchor,
+    title: "Colour for " + name,
+    current: colorNorm(info.css),
+    currentSrc: info.src,
+    engineCss: engineCssFor(st),
+    convLabel: (state.labels.get(st.style_id) || "").trim() || null,
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => {
+      if (!setFamColor(st, hex)) return;
+      const near = colorNearReserved(hex);
+      setStatus(name + " is now " + colorNorm(hex)
+        + " — every line of this family, the swatch, the legend and the "
+        + "export. Not undoable by Ctrl+Z; use Reset to detected."
+        + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    },
+    onResetEngine: () => {
+      famColorReset(st);
+      setStatus(name + " is back to the colour the detector measured"
+        + (colorConvFor(st.style_id)
+           ? " — your convention for this name still applies" : ""));
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    },
+  });
+}
+
+// entry point 2: the selection bar ("...or when you select a line"). This is
+// what the individual line detector bought - the app can address ONE line, so
+// one line can carry its own colour over its family's.
+function colorPopForChain(ch, anchor) {
+  const st = state.result.styles.find(s => s.style_id === ch.style_id);
+  const info = chainColorInfo(ch, st);
+  colorPopOpen({
+    anchor,
+    title: "Colour for this line",
+    current: colorNorm(info.css),
+    currentSrc: info.src,
+    engineCss: st ? engineCssFor(st) : cssColor(ch.color, ch.width),
+    convLabel: null,     // the book is keyed on a family name, not a line
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => {
+      if (!setLineColor(ch, hex)) return;
+      const near = colorNearReserved(hex);
+      setStatus("this line is now " + colorNorm(hex)
+        + ", overriding its family. Not undoable by Ctrl+Z; use Reset to "
+        + "family or Reset to detected."
+        + (ch.custom ? "  (A line you drew or split keeps this for the "
+            + "session only — its id is not stable across a reload.)" : "")
+        + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+      updateSelBar(ch); draw();
+    },
+    onResetFamily: () => {
+      lineColorReset(ch);
+      setStatus("this line follows its family's colour again");
+      updateSelBar(ch); draw();
+    },
+    onResetEngine: () => {
+      // "back to what the detector measured" for ONE line means: drop this
+      // line's override AND stop its family's override applying to it. There
+      // is no third record to write, so the honest thing is to drop the
+      // line's own and say what the family is still doing.
+      lineColorReset(ch);
+      if (st && (state.famColor.has(st.style_id) || colorConvFor(st.style_id)))
+        setStatus("this line's own colour is gone; its family is still "
+          + "recoloured, so it follows that. Reset the family from its "
+          + "swatch in the line-styles list to get back to the detector's "
+          + "colour everywhere.");
+      else setStatus("this line is back to the colour the detector measured");
+      updateSelBar(ch); draw();
+    },
+  });
+}
+// ===================== end OPERATOR LINE COLOUR ==========================
+
 // The label / EA record: keyed on the line type, doc-wide, so it travels
 // across pages. That is the capability; do not scope this one to a page.
 function labelKey(st) {
@@ -3889,10 +7245,25 @@ function includeKey(st) {
 // second half of the same bug - see includeKey.)
 function setInclude(sid, on) {
   state.include.set(sid, !!on);
+  // any page-level write supersedes an inherited tick for this row, so the
+  // disclosure line stops counting it the moment the operator overrides it
+  state.inheritedInc.delete(sid);
   const st = state.result && state.result.styles.find(x => x.style_id === sid);
   if (!st) return;                       // nothing to key the record on
   try { store.setItem(includeKey(st), on ? "1" : "0"); }
   catch (e) { /* private mode: the session still honours the click */ }
+}
+
+// The set-level twin of setInclude's record: called ONLY from the row's own
+// checkbox (rule 3 above), AFTER setInclude has kept the page record, and
+// never from bulk gestures or the scope filter's put-back branches. Writing
+// it is what makes the same hand decision hold on the sheets the operator
+// has not visited yet; their visited sheets keep their own page records,
+// which outrank this one.
+function setIncludeSetWide(st, on) {
+  if (!st || !setDecEligible(st)) return;
+  try { store.setItem(setDecKey(docKey(), st), on ? "1" : "0"); }
+  catch (e) { /* private mode: the page record already failed the same way */ }
 }
 
 // The scope filter's twin of setInclude, and the difference is the whole
@@ -3937,9 +7308,34 @@ function memSave(st, touchedMeasure) {
 }
 function memApply() {
   if (!state.result) return;
+  state.inheritedInc = new Map();
+  // OPERATOR LINE COLOUR, restored. Only the two RECORDS are read back here -
+  // the convention book is not, because it is resolved live by label in
+  // colorConvFor(): copying it into state.famColor would freeze a family at
+  // the colour its name had at load time and make a rename stop working.
+  state.famColor = new Map();
+  state.lineColor = new Map();
+  colorBust();      // style_id means something different on another page
   for (const st of state.result.styles) {
-    const inc = store.getItem(includeKey(st));
-    if (inc !== null) state.include.set(st.style_id, inc === "1");
+    const h = colorNorm(store.getItem(famColorKey(st)));
+    if (h) state.famColor.set(st.style_id, h);
+  }
+  for (const ch of state.result.chains) {
+    if (ch.custom) continue;   // see setLineColor: those ids are per-session
+    const h = colorNorm(store.getItem(lineColorKey(ch.chain_id)));
+    if (h) state.lineColor.set(ch.chain_id, h);
+  }
+  for (const st of state.result.styles) {
+    // page record first, set-level record second, seed otherwise - the
+    // ranking lives in setDecResolve so the test can pin it. Inherited
+    // applications are counted and DISCLOSED (renderStyles), never silent.
+    const dec = setDecResolve(store.getItem(includeKey(st)),
+                              store.getItem(setDecKey(docKey(), st)),
+                              setDecEligible(st));
+    if (dec) {
+      state.include.set(st.style_id, dec.on);
+      if (dec.inherited) state.inheritedInc.set(st.style_id, dec.on);
+    }
     // three states, not two: EA / explicitly-LF / never decided. The record
     // stores measure:"" for "the operator put this back to LF", and reading
     // that as "no opinion" let the label-level default below overrule it -
@@ -4037,12 +7433,19 @@ function unionStats(chains) {
   let sumPt = 0;
   for (let ci = 0; ci < chains.length; ci++) {
     const ch = chains[ci];
-    sumPt += ch.length_pt;
+    // work-area mask: the sum this function discloses against is the same
+    // zone-clipped sum every other reader shows, and each LEG is clipped
+    // the same way, so union <= sum still holds with zones on
+    sumPt += chainCountedPt(ch);
     const p = ch.points;
     if (!p || p.length < 2) continue;
+    const _r = axisRatio();
     for (let i = 1; i < p.length; i++) {
-      const d = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]);
+      let d = Math.hypot(p[i][0] - p[i - 1][0], (p[i][1] - p[i - 1][1]) * _r);
       if (d < 0.05) continue;   // same skip as tools/containment.py leg_index
+      if (wzActive())
+        d *= wzSegT(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1], state.workZones);
+      if (!(d > 0)) continue;   // leg entirely outside the work area
       const key = legKey(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]);
       const e = legs.get(key);
       if (e === undefined) legs.set(key, [1, d, ci]);
@@ -4063,6 +7466,686 @@ function unionStats(chains) {
 // One computation for the itemized panel AND the CSV export: totals per
 // label, object counts, overrides, prices, trade grouping. Items come back
 // grouped in TRADES order, each group sorted by quantity descending.
+// ---- two scales on one sheet ------------------------------------------
+// A sewer PROFILE prints a horizontal scale and a vertical one, deliberately
+// different - 1"=50' across, 1"=5' up - so the slope is legible. A single
+// sloped line therefore needs BOTH at once: its run measured at one scale, its
+// rise at the other. No per-page or per-region scale can express that, which
+// is why this could not just be another entry in the scale list.
+//
+// Rather than thread two factors through the seven-odd places that turn points
+// into feet, everything funnels through an EFFECTIVE pt length: scale the y
+// component by fy/fx, and the existing `pt / 72 * ftPerIn` conversion then
+// yields hypot(dx*fx, dy*fy) / 72, which is the right answer.
+//
+// With no vertical scale set the ratio is exactly 1 and chainLenPt returns the
+// engine's own length_pt UNTOUCHED - not recomputed and re-rounded, the same
+// number. Every single-scale sheet is provably unaffected.
+function axisRatio() {
+  const sc = state.result && state.result.scale;
+  const fx = sc ? sc.ft_per_paper_inch : null;
+  if (!fx || !state.vScale) return 1;
+  const r = state.vScale / fx;
+  return (isFinite(r) && r > 0) ? r : 1;
+}
+
+function chainLenPt(ch) {
+  const r = axisRatio();
+  if (r === 1) return ch.length_pt;
+  const p = ch.points;
+  if (!p || p.length < 2) return ch.length_pt;
+  // SCALE the engine's length, never replace it. length_pt is NOT the polyline
+  // length of `points`: a chain that picks up across a gap adds that gap to its
+  // length without adding a leg. Measured on Kayden Springs p39, 515 of 682
+  // chains differ, one by 17.8%. Recomputing from points would silently drop
+  // every one of those gaps the moment a vertical scale was switched on.
+  let plain = 0, axis = 0;
+  for (let i = 1; i < p.length; i++) {
+    const dx = p[i][0] - p[i - 1][0], dy = p[i][1] - p[i - 1][1];
+    plain += Math.hypot(dx, dy);
+    axis += Math.hypot(dx, dy * r);
+  }
+  if (!(plain > 0)) return ch.length_pt;
+  return ch.length_pt * (axis / plain);
+}
+
+// ==================== WORK AREA - quantity mask ==========================
+// The operator drags one or more rectangles; a chain COUNTS only by its
+// length inside the union. Detection is untouched - this masks what is
+// COUNTED, never what was found. Exact segment/rect clipping (Liang-Barsky
+// parameter intervals, merged across rectangles), not midpoint voting: a
+// contour that clips a corner of the legend box counts exactly the piece
+// that is inside, to float precision.
+//
+// tests/test_workzone_math.js evals ONLY the block between the WZ-MATH
+// markers - keep it pure (no DOM, no state.*), like the TRENCH-MATH block.
+// WZ-MATH-BEGIN
+
+// [[x0,y0,x1,y1],...] -> normalized rects; junk rows dropped, corners sorted
+function wzNorm(zones) {
+  const out = [];
+  for (const z of Array.isArray(zones) ? zones : []) {
+    if (!Array.isArray(z) || z.length < 4) continue;
+    const v = [+z[0], +z[1], +z[2], +z[3]];
+    if (!v.every(Number.isFinite)) continue;
+    const x0 = Math.min(v[0], v[2]), x1 = Math.max(v[0], v[2]);
+    const y0 = Math.min(v[1], v[3]), y1 = Math.max(v[1], v[3]);
+    if (x1 - x0 <= 0 || y1 - y0 <= 0) continue;   // a line is not an area
+    out.push([x0, y0, x1, y1]);
+  }
+  return out;
+}
+
+// boundary-inclusive: ink drawn exactly on the box edge counts
+function wzPtIn(x, y, zones) {
+  for (const z of zones)
+    if (x >= z[0] && x <= z[2] && y >= z[1] && y <= z[3]) return true;
+  return false;
+}
+
+// Fraction of segment a->b inside the UNION of rects, as summed merged
+// t-intervals in [0,1]. Per-rect clipping is the axis-aligned slab test
+// (exact); overlapping rects cannot double-count because the intervals are
+// MERGED before summing. A zero-length segment is scored by point-in-union.
+function wzSegT(ax, ay, bx, by, zones) {
+  const dx = bx - ax, dy = by - ay;
+  if (dx === 0 && dy === 0) return wzPtIn(ax, ay, zones) ? 1 : 0;
+  const iv = [];
+  for (const z of zones) {
+    let t0 = 0, t1 = 1;
+    if (dx === 0) {
+      if (ax < z[0] || ax > z[2]) continue;
+    } else {
+      let ta = (z[0] - ax) / dx, tb = (z[2] - ax) / dx;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+    }
+    if (dy === 0) {
+      if (ay < z[1] || ay > z[3]) continue;
+    } else {
+      let ta = (z[1] - ay) / dy, tb = (z[3] - ay) / dy;
+      if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      if (ta > t0) t0 = ta;
+      if (tb < t1) t1 = tb;
+    }
+    if (t1 > t0) iv.push([t0, t1]);
+  }
+  if (!iv.length) return 0;
+  iv.sort((p, q) => p[0] - q[0]);
+  let total = 0, s = iv[0][0], e = iv[0][1];
+  for (let i = 1; i < iv.length; i++) {
+    if (iv[i][0] <= e) { if (iv[i][1] > e) e = iv[i][1]; }
+    else { total += e - s; s = iv[i][0]; e = iv[i][1]; }
+  }
+  total += e - s;
+  return total;
+}
+
+// Inside vs total length of a polyline against the union. yScale carries
+// the vertical-scale ratio (axisRatio) so a profile sheet's mask uses the
+// same axis weighting as every other length in the app: the inside PORTION
+// is decided in true page space (t-intervals), the LENGTH it contributes is
+// axis-weighted, segment by segment.
+function wzPolyInsideLen(points, zones, yScale) {
+  const r = (Number.isFinite(yScale) && yScale > 0) ? yScale : 1;
+  let inside = 0, total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const ax = points[i - 1][0], ay = points[i - 1][1];
+    const bx = points[i][0], by = points[i][1];
+    const L = Math.hypot(bx - ax, (by - ay) * r);
+    if (!(L > 0)) continue;
+    total += L;
+    const t = wzSegT(ax, ay, bx, by, zones);
+    if (t > 0) inside += t * L;
+  }
+  return { inside, total };
+}
+
+// Disjoint rects covering [0,w]x[0,h] MINUS the union - for the canvas
+// wash over everything outside the work area. x-slab sweep: within one
+// vertical slab the union is a set of y-intervals; the complement of those
+// intervals is emitted as rects. Disjoint by construction, so the wash can
+// never double-paint (which would read as "more excluded" where two boxes
+// overlap).
+function wzComplementRects(zones, w, h) {
+  const zs = zones.filter(z => z[0] < w && z[2] > 0 && z[1] < h && z[3] > 0);
+  if (!zs.length) return [[0, 0, w, h]];
+  const xs = [0, w];
+  for (const z of zs) {
+    if (z[0] > 0 && z[0] < w) xs.push(z[0]);
+    if (z[2] > 0 && z[2] < w) xs.push(z[2]);
+  }
+  xs.sort((a, b) => a - b);
+  const out = [];
+  for (let i = 1; i < xs.length; i++) {
+    const xa = xs[i - 1], xb = xs[i];
+    if (!(xb > xa)) continue;
+    // y-intervals of zones covering this whole slab, merged
+    const iv = [];
+    for (const z of zs)
+      if (z[0] <= xa && z[2] >= xb)
+        iv.push([Math.max(0, z[1]), Math.min(h, z[3])]);
+    iv.sort((p, q) => p[0] - q[0]);
+    let y = 0;
+    for (const [a, b] of iv) {
+      if (a > y) out.push([xa, y, xb, a]);
+      if (b > y) y = b;
+    }
+    if (y < h) out.push([xa, y, xb, h]);
+  }
+  return out;
+}
+// WZ-MATH-END
+
+function wzActive() {
+  return !!(state.workZones && state.workZones.length);
+}
+
+// Per-chain inside fraction, memoised: renderStyles + renderItemized walk
+// every chain on the sheet on every repaint, and a heavy topo sheet carries
+// six figures of segments. Keyed on page generation, zone revision and the
+// axis ratio; afterEdit() bumps wzRev so a moved point or a merge cannot
+// serve a stale fraction.
+let _wzFrac = null, _wzFracKey = "";
+function wzChainFrac(ch) {
+  if (!wzActive()) return 1;
+  const key = state.gen + ":" + state.wzRev + ":" + axisRatio();
+  if (_wzFracKey !== key) { _wzFrac = new Map(); _wzFracKey = key; }
+  let f = _wzFrac.get(ch.chain_id);
+  if (f === undefined) {
+    const p = ch.points;
+    if (!p || !p.length) f = 0;
+    else if (p.length === 1) f = wzPtIn(p[0][0], p[0][1], state.workZones) ? 1 : 0;
+    else {
+      const m = wzPolyInsideLen(p, state.workZones, axisRatio());
+      f = m.total > 0 ? m.inside / m.total
+        : (wzPtIn(p[0][0], p[0][1], state.workZones) ? 1 : 0);
+    }
+    _wzFrac.set(ch.chain_id, f);
+  }
+  return f;
+}
+
+// What a chain CONTRIBUTES to any quantity: its engine length scaled by the
+// measured inside fraction of its polyline. SCALES chainLenPt rather than
+// summing clipped legs directly, for the same reason chainLenPt scales
+// length_pt: the engine length includes welded pickup gaps that are not
+// polyline legs, so a whole-sheet zone must return chainLenPt EXACTLY
+// (fraction 1 -> same number, bit for bit), never a re-measured one. The
+// welded gap is apportioned by the inside fraction - disclosed in the tally
+// tooltip, not hidden.
+function chainCountedPt(ch) {
+  const f = wzChainFrac(ch);
+  return f === 1 ? chainLenPt(ch) : chainLenPt(ch) * f;
+}
+// ================== end WORK AREA quantity mask ==========================
+
+// A STYLE's total, axis-aware. state.result.styles carries a length the engine
+// summed at detect time, which knows nothing about a second scale, so it has to
+// be re-summed from that style's chains. Memoised on (ratio, generation): the
+// sidebar redraws on every tick and this walks every chain on the sheet.
+let _styleLen = null, _styleLenKey = null;
+// What is actually LEFT on a style row, after the reviewer's deletions.
+//
+// st.length_pt and st.n are the ENGINE's totals. They are written once at
+// detection and cannot know that a reviewer erased a line, so every readout
+// built on them goes stale the moment somebody uses the trash tool. Measured
+// on Kayden engine page index 38 = printed sheet C5.1: deleting chain 2151
+// (107.7pt) moved the bid line 3,913.6 -> 3,838.8 ft and the count 79 -> 78,
+// while the style row went on reading "606 LF - 8 lines" with 764pt / 7 lines
+// remaining. The money was right; the panel the estimator reads while
+// DECIDING was not.
+//
+// Summed live rather than subtracted from the stored total, for two reasons.
+// A split excludes the original and adds custom chains that were never in
+// st.length_pt, so subtraction over-counts the removal. And computeTakeoffRows
+// already sums chainLenPt over live chains, so summing the same way is what
+// makes the row and the bid line agree - which is the whole point.
+//
+// Cost, measured with NOTHING deleted: the displayed text changes on 4 of 148
+// rows on sheet C5.2 (2.7%) and 3 of 179 on C5.1 (1.7%), worst underlying
+// difference 0.05 pt - about 0.035 ft at 1"=50', i.e. a rounding boundary in
+// fmtQty. The new figure is the more accurate one; the stored total is the
+// engine's rounded copy.
+let _liveLen = null, _liveN = null, _liveOut = null, _liveKey = "";
+
+function _liveStyleTotals() {
+  const key = state.gen + ":" + state.excluded.size + ":" + axisRatio()
+    + ":" + state.wzRev;
+  if (_liveKey !== key) {
+    _liveLen = new Map(); _liveN = new Map(); _liveOut = new Map();
+    for (const ch of (state.result ? state.result.chains : [])) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      // work-area mask: the row shows what COUNTS; what fell outside is
+      // tracked per style so the row can disclose its own loss
+      const full = chainLenPt(ch);
+      const counted = chainCountedPt(ch);
+      _liveLen.set(ch.style_id, (_liveLen.get(ch.style_id) || 0) + counted);
+      if (counted > 0 || !wzActive())
+        _liveN.set(ch.style_id, (_liveN.get(ch.style_id) || 0) + 1);
+      if (full - counted > 0)
+        _liveOut.set(ch.style_id,
+                     (_liveOut.get(ch.style_id) || 0) + (full - counted));
+    }
+    _liveKey = key;
+  }
+}
+
+// 0 is a real answer here: a row whose every chain the reviewer deleted holds
+// nothing, and must say so. Falling back to the engine's total in that case is
+// exactly the bug this replaces.
+function styleLiveLen(sid) {
+  if (!state.result) return 0;
+  _liveStyleTotals();
+  return _liveLen.get(sid) || 0;
+}
+
+function styleLiveCount(sid) {
+  if (!state.result) return 0;
+  _liveStyleTotals();
+  return _liveN.get(sid) || 0;
+}
+
+// Footage this style LOST to the work-area mask (0 when no zones, or when
+// every chain of the style is inside). The style row prints it compactly so
+// a row that shrank says why on its own line.
+function styleLiveOut(sid) {
+  if (!state.result || !wzActive()) return 0;
+  _liveStyleTotals();
+  return _liveOut.get(sid) || 0;
+}
+
+function styleLenPt(st) {
+  if (state.result) return styleLiveLen(st.style_id);
+  const r = axisRatio();
+  if (r === 1) return st.length_pt;          // exact no-op, same as chainLenPt
+  const key = r + "@" + state.gen;
+  if (_styleLenKey !== key) {
+    _styleLen = new Map();
+    for (const ch of (state.result ? state.result.chains : []))
+      _styleLen.set(ch.style_id, (_styleLen.get(ch.style_id) || 0) + chainLenPt(ch));
+    _styleLenKey = key;
+  }
+  const v = _styleLen.get(st.style_id);
+  return v === undefined ? st.length_pt : v;
+}
+
+// How much of this sheet's included length is NOT measured ink.
+//
+// Every chain now carries gap_pt (blank paper welded into it by a stitch, a
+// join, or the approach to a picked-up mark) and pickup_pt (ink taken from
+// elsewhere, which the chain it came from may still be counting). Neither was
+// knowable before 2026-08-27, so a quantity could never state its own
+// denominator - which the project's accuracy contract requires.
+//
+// Measured on Kayden sheet C5.1: 2.27% of the sheet is welded gap, and on its
+// billable layers C-U2-PROP-LOT carries 1,923 ft of blank paper (6.10% of
+// 31,497 ft) and C-U2-ROAD-DRWY 848 ft (4.90%). That is footage an estimator
+// would price and which is not on the drawing.
+function sheetOverCapture() {
+  if (!state.result) return null;
+  let len = 0, gap = 0, pick = 0;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    // work-area mask: the welded-gap ratio describes the footage that is
+    // COUNTED, so numerator and denominator are scaled by the same inside
+    // fraction (fr = 1 whenever no zones are drawn)
+    const fr = wzChainFrac(ch);
+    if (!(fr > 0)) continue;
+    len += ch.length_pt * fr;
+    gap += (ch.gap_pt || 0) * fr;
+    pick += (ch.pickup_pt || 0) * fr;
+  }
+  return len > 0 ? { len, gap, pick } : null;
+}
+
+// ================= SUB-ITEMS - operator-declared components ===============
+// An estimator does not bid a measured line; they bid a measured line plus
+// what it carries. A concrete flatwork item carries rebar, mesh, forms,
+// finishing and control joints - each with its own unit, quantity and price -
+// and the item's cost is its own plus its components'. This is that.
+//
+// THREE THINGS THIS BLOCK EXISTS TO GUARANTEE, in the order they can hurt:
+//
+//  1. COUNTED EXACTLY ONCE. A component reaches the takeoff total through its
+//     parent's rolled-up cost and through no other path. Two takeoff rows can
+//     normalise to the same parent key (two labels differing only in case), so
+//     subRollupItems names ONE owner by an explicit ranking and hands every
+//     other claimant `dupOf` to print, rather than attaching the same
+//     components to both and doubling the money in silence.
+//  2. NEVER MISTAKEN FOR A MEASUREMENT. A component is typed, not detected.
+//     It carries the app's existing provenance word - "reviewer", the same
+//     token server.py writes as `qty_set_by` (_BY_REVIEWER) - into the panel,
+//     the bid view, the CSV and the approve payload. No second vocabulary.
+//  3. A FACTOR THAT MOVES SAYS SO. A per-parent-unit component recomputes the
+//     moment the measured parent quantity changes. subRecomputed compares the
+//     parent quantity the row last followed with the one in force now and
+//     hands back both, so the change is disclosed at the moment it happens
+//     instead of a number quietly becoming a different number.
+//
+// tests/test_subitems.js evals ONLY the block between the SUBITEM-PURE
+// markers - keep it pure (no DOM, no state.*, no store.*), the same technique
+// as UNDO-CORE / WZ-MATH / TRENCH-MATH / BIDVIEW-RULES.
+// SUBITEM-PURE-BEGIN
+
+const SUB_MAX = 40;        // components per parent - a bid line, not a BOM
+const SUB_NAME_MAX = 60;
+const SUB_UNIT_MAX = 8;    // server.py approve caps a unit at 8 too
+// The provenance word. Deliberately the string server.py already writes as
+// _BY_REVIEWER / qty_set_by, so the panel, the CSV, the export and the report
+// all say the same thing about who produced the number.
+const SUB_SET_BY = "reviewer";
+
+// The parent key for a takeoff row: trim + uppercase, the SAME normalisation
+// tradeKey() and bidKey() use. A component therefore follows its label from
+// sheet to sheet exactly as that label's price, trade and bid bucket already
+// do - which is the whole reason a sub-item is filed per document-item and
+// not per page-geometry.
+function subParentKey(label) {
+  return String(label == null ? "" : label).trim().toUpperCase();
+}
+
+function subNum(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// One stored record, cleaned. Anything unusable comes back null rather than
+// letting a NaN reach a dollar figure: a blank-rendering undefined still adds
+// NaN to a total, and a total that reads NaN is the GOOD case - the bad case
+// is a component silently worth zero inside a bid.
+function subClean(rec) {
+  if (!rec || typeof rec !== "object") return null;
+  const name = String(rec.name == null ? "" : rec.name).trim().slice(0, SUB_NAME_MAX);
+  if (!name) return null;
+  const unit = (String(rec.unit == null ? "" : rec.unit).trim() || "EA")
+    .slice(0, SUB_UNIT_MAX);
+  const mode = rec.mode === "factor" ? "factor" : "fixed";
+  const qty = subNum(rec.qty), factor = subNum(rec.factor), price = subNum(rec.price);
+  if (mode === "factor" ? !(factor > 0) : !(qty > 0)) return null;
+  return {
+    id: String(rec.id == null ? "" : rec.id),
+    name, unit, mode,
+    qty: mode === "fixed" ? qty : null,
+    factor: mode === "factor" ? factor : null,
+    price: price !== null && price > 0 ? price : null,
+    // the parent quantity this row last followed; null on a fixed row and on
+    // a factor row that has not yet been rendered against a measurement
+    base: mode === "factor" ? subNum(rec.base) : null,
+  };
+}
+
+function subCleanList(list) {
+  const out = [];
+  for (const r of Array.isArray(list) ? list : []) {
+    const c = subClean(r);
+    if (c) out.push(c);
+    if (out.length >= SUB_MAX) break;
+  }
+  return out;
+}
+
+// The component's quantity. FIXED is what the operator typed. FACTOR is a
+// rate against the parent's own quantity in the parent's own unit ("1.15 lb
+// of rebar per SF of slab", "1 LF of form per LF of edge"), so it moves the
+// moment the measurement does.
+function subQtyOf(rec, parentQty) {
+  if (!rec) return null;
+  if (rec.mode !== "factor") return rec.qty;
+  if (!Number.isFinite(parentQty)) return null;
+  return rec.factor * parentQty;
+}
+
+// One decimal, because that is already this app's canonical precision in four
+// independent places: takeoffCsv's toFixed(1), q1() in dupNote, qtyBoxValue(),
+// and server.py's round(x, 1). What the panel prints, what the CSV carries and
+// what the row is priced on are ONE number - there is no more precise figure
+// hiding behind the display.
+function subRound(v) {
+  return Number.isFinite(v) ? Math.round(v * 10) / 10 : null;
+}
+
+function subExtOf(rec, parentQty) {
+  const q = subRound(subQtyOf(rec, parentQty));
+  if (!Number.isFinite(q) || !rec || !rec.price) return null;
+  return q * rec.price;
+}
+
+// Did this factor row's parent quantity move since the row last followed it?
+// A non-null answer means the component's quantity RECOMPUTED, and the caller
+// MUST say so on screen - never change a quantity in silence.
+function subRecomputed(rec, parentQty) {
+  if (!rec || rec.mode !== "factor") return null;
+  if (!Number.isFinite(parentQty) || !Number.isFinite(rec.base)) return null;
+  if (subRound(rec.base) === subRound(parentQty)) return null;
+  return { from: rec.base, to: parentQty,
+           wasQty: subRound(rec.factor * rec.base),
+           nowQty: subRound(rec.factor * parentQty) };
+}
+
+// THE ROLL-UP. The one place the counted-exactly-once invariant lives.
+//
+//   items    [{key, qty, ext}] - every takeoff row, FLAT, in display order.
+//            `ext` is the row's OWN extended cost (its quantity x its own
+//            price), exactly what computeTakeoffRows already computed.
+//   subsFor  (key) -> the cleaned records filed under that parent key.
+//
+// Returns one row per item, in the same order, plus three totals with the
+// invariant total === ownTotal + subTotal === the sum of every row's rowExt.
+//
+// OWNERSHIP. Two labels can normalise to one key. Attaching the components to
+// both rows would double the money with no symptom - the shape CLAUDE.md
+// section 5 exists to stop - so exactly one row owns them, chosen by an
+// EXPLICIT ranking (largest quantity first, ties broken by first appearance:
+// deterministic, and the dominant row is the one an estimator is looking at),
+// and every other claimant gets `dupOf` naming the owner, so the panel can say
+// where its components went instead of showing none and explaining nothing.
+function subRollupItems(items, subsFor) {
+  const list = Array.isArray(items) ? items : [];
+  const owner = new Map();
+  list.forEach((it, i) => {
+    const k = subParentKey(it.key);
+    const q = Number.isFinite(it.qty) ? it.qty : -Infinity;
+    const cur = owner.get(k);
+    if (!cur || q > cur.q) owner.set(k, { i, q });
+  });
+  const rows = [];
+  let ownTotal = 0, subTotal = 0;
+  list.forEach((it, i) => {
+    const k = subParentKey(it.key);
+    const own = Number.isFinite(it.ext) ? it.ext : 0;
+    const owns = owner.get(k).i === i;
+    const mine = owns ? (subsFor(k) || []) : [];
+    const subs = [];
+    let sx = 0;
+    for (const rec of mine) {
+      const ext = subExtOf(rec, it.qty);
+      if (Number.isFinite(ext)) sx += ext;
+      subs.push({ rec, qty: subRound(subQtyOf(rec, it.qty)),
+                  ext: Number.isFinite(ext) ? ext : null,
+                  recomputed: subRecomputed(rec, it.qty) });
+    }
+    ownTotal += own; subTotal += sx;
+    rows.push({ key: k, ownExt: own, subs, subExt: sx, rowExt: own + sx,
+                dupOf: owns ? null : list[owner.get(k).i].key });
+  });
+  return { rows, ownTotal, subTotal, total: ownTotal + subTotal };
+}
+
+// Deleting a parent takes its components with it. `all` is keyed by the
+// NORMALISED parent key. Returns the surviving map and the keys dropped, so
+// the caller can say how many typed rows it just destroyed - a cascade that
+// reports nothing is a cascade that ate work.
+function subCascade(all, keys) {
+  const drop = new Set((keys || []).map(subParentKey));
+  const kept = {}, dropped = [];
+  for (const k of Object.keys(all || {})) {
+    if (drop.has(k)) { dropped.push(k); continue; }
+    kept[k] = all[k];
+  }
+  return { kept, dropped: dropped.sort() };
+}
+
+// Stored keys with no row in the takeoff currently on screen. They are NOT
+// deleted - a label lives on other sheets of the same document, and a page
+// flick must not eat an evening of typing - but they are counted and named,
+// because a component that is stored and not counted must never be invisible.
+function subDormantKeys(all, liveKeys) {
+  const live = new Set((liveKeys || []).map(subParentKey));
+  return Object.keys(all || {})
+    .filter((k) => !live.has(k) && (all[k] || []).length)
+    .sort();
+}
+
+// The label a component travels under in the approve payload. server.py's
+// item builder copies a FIXED set of fields out of each extra_item, so a
+// structured parent link does not survive it; the link therefore goes in the
+// NAME, which does survive, capped at the server's own 80-character label
+// limit (approve: raw_label[:80]). The PARENT is what gets trimmed, never the
+// component name - the component is the row's own identity.
+function subExportLabel(parentLabel, name, cap) {
+  const lim = cap > 0 ? cap : 80;
+  const n = String(name == null ? "" : name).trim();
+  const p = String(parentLabel == null ? "" : parentLabel).trim();
+  const open = " (sub-item of ", close = ")";
+  const room = lim - n.length - open.length - close.length;
+  if (room < 4) return n.slice(0, lim);
+  return n + open + (p.length <= room ? p : p.slice(0, room - 1) + "…") + close;
+}
+
+// One CSV line for a component, in the column order takeoffCsv() writes.
+// Kept here, beside the roll-up, so the export SHAPE is pinned by the same
+// test as the arithmetic: a component that loses its provenance column on the
+// way to a spreadsheet is a typed number wearing a measured number's clothes.
+function subCsvCells(parentLabel, trade, s, unitCol) {
+  const q = Number.isFinite(s.qty) ? s.qty : null;
+  return [
+    "  ↳ " + s.rec.name,                            // label, visibly nested
+    trade || "",                                         // the PARENT's trade
+    q === null ? "" : q.toFixed(1) + " " + s.rec.unit,   // count/EA column
+    "",                          // feet column: never - this was not measured
+    s.rec.price === null ? "" : s.rec.price,             // $/ft column
+    Number.isFinite(s.ext) ? s.ext.toFixed(2) : "",      // ext $
+    "", "",                                              // union / drawn twice
+    SUB_SET_BY,                                          // qty set by
+    parentLabel,                                         // sub-item of
+  ];
+}
+// SUBITEM-PURE-END
+
+// ---- where a sub-item lives -------------------------------------------
+// PERSISTENCE, and why it is `store` and not the calcstate sidecar.
+//
+// Two records already exist for a takeoff row, and they are scoped
+// differently on purpose. priceKey()/tradeKey() are label-keyed and page-free
+// (a rate is a rate on every sheet); the calcstate sidecar is
+// /page/{page}/calcstate and holds the INPUTS behind a calculator - surfaces,
+// elevations, outlines - things that only mean something against THIS page's
+// geometry.
+//
+// A sub-item is the first kind, not the second. "This concrete carries #4
+// rebar at 1.15 lb/SF" is a statement about the ITEM, and it must be the same
+// statement on sheet 3 and sheet 7 of the same document; filing it per page
+// would give the same concrete a different rebar spec on every sheet, which
+// is the lost-prune bug in reverse. So: `store`, doc-scoped, label-keyed,
+// page-free - the exact scoping bidKey() uses, and it therefore also inherits
+// the Saved-work button's count, its tooltip and its "forget" paths for free.
+//
+// It is NOT priceKey's scoping (bare, global across documents): a component
+// list is far more document-specific than a unit rate, and one job's rebar
+// schedule appearing on the next job's concrete would be worse than retyping.
+function subKey(label) { return docKey() + "::sub::" + subParentKey(label); }
+const SUB_PREFIX_TAIL = "::sub::";
+
+function subLoad(label) {
+  try { return subCleanList(JSON.parse(store.getItem(subKey(label)) || "[]")); }
+  catch (e) { return []; }          // corrupt entry: no components, not a throw
+}
+
+function subSave(label, recs) {
+  const k = subKey(label);
+  if (recs && recs.length) store.setItem(k, JSON.stringify(recs));
+  else store.removeItem(k);
+}
+
+// Every component list stored for the OPEN DOCUMENT, keyed by parent key.
+// Read straight off sessionMem, which is the store's own mirror, so this sees
+// exactly what getItem would return key by key.
+function subAllForDoc() {
+  const pre = docKey() + SUB_PREFIX_TAIL;
+  const out = {};
+  for (const k of sessionMem.keys()) {
+    if (!k.startsWith(pre)) continue;
+    try {
+      const v = subCleanList(JSON.parse(sessionMem.get(k) || "[]"));
+      if (v.length) out[k.slice(pre.length)] = v;
+    } catch (e) { /* corrupt entry: not listed, not thrown */ }
+  }
+  return out;
+}
+
+// Recomputes still owed to the operator's eye: record id -> the move.
+// Session-only, and deliberately NOT stored - it is a notification, not a
+// decision, and a reload has already shown the new number as the number.
+const subMoved = new Map();
+
+// ids only have to be unique inside one parent's list
+let _subSeq = 0;
+function subNewId() { return "s" + (Date.now().toString(36)) + (_subSeq++).toString(36); }
+
+// A factor row followed a new parent quantity. Write the new baseline and say
+// so - ONE status line per repaint however many rows moved, because the
+// operator needs to know a number changed, not to read a list.
+//
+// Called from renderItemized only. computeTakeoffRows stays read-only: it is
+// also the CSV's and the approve payload's source, and a compute function
+// that writes storage would fire on an export.
+function subCommitRecompute(groups) {
+  const moved = [], seed = [];
+  for (const g of groups)
+    for (const it of g.items)
+      for (const s of (it.subs || [])) {
+        if (s.recomputed) moved.push({ label: it.label, s });
+        // A factor row with NO baseline yet - restored from an older record,
+        // or written by a path that did not know the parent quantity. Seed it
+        // from the measurement in force now, silently: nothing has moved, and
+        // announcing a change that did not happen is as bad as hiding one.
+        // Without this the row can never report a recompute at all, because
+        // subRecomputed has nothing to compare against.
+        else if (s.rec.mode === "factor" && !Number.isFinite(s.rec.base)
+                 && Number.isFinite(it.qty))
+          seed.push({ label: it.label, s, to: it.qty });
+      }
+  if (!moved.length && !seed.length) return;
+  const byLabel = new Map();
+  for (const m of moved.concat(seed)) {
+    if (!byLabel.has(m.label)) byLabel.set(m.label, subLoad(m.label));
+    for (const rec of byLabel.get(m.label))
+      if (rec.id === m.s.rec.id)
+        rec.base = m.recomputed ? m.recomputed.to
+          : (m.s.recomputed ? m.s.recomputed.to : m.to);
+  }
+  for (const [label, recs] of byLabel) subSave(label, recs);
+  if (!moved.length) return;      // seeding is not a change; say nothing
+  // The note has to OUTLIVE the repaint that discovered it. Committing the
+  // new baseline means the very next call to computeTakeoffRows compares
+  // 6,000 with 6,000 and reports no move - so a price keystroke two rows
+  // away would wipe the only visible record that a quantity changed, and the
+  // status line is gone by then too. Held here, per record, until the
+  // operator edits that row or dismisses the note.
+  for (const m of moved)
+    subMoved.set(m.s.rec.id,
+      Object.assign({ unit: m.s.rec.unit, name: m.s.rec.name }, m.s.recomputed));
+  const f = moved[0];
+  setStatus(moved.length + " sub-item quantit" + (moved.length === 1 ? "y" : "ies")
+    + " followed a changed parent quantity — e.g. “" + f.s.rec.name
+    + "” on " + f.label + ": " + f.s.recomputed.wasQty + " → "
+    + f.s.recomputed.nowQty + " " + f.s.rec.unit + " (parent "
+    + q1(f.s.recomputed.from) + " → " + q1(f.s.recomputed.to) + ")");
+}
+
 function computeTakeoffRows() {
   if (!state.result) return null;
   const sc = state.result.scale;
@@ -4072,11 +8155,18 @@ function computeTakeoffRows() {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
+    // WORK AREA quantity mask: a chain counts by its length INSIDE the
+    // drawn boxes. Fully outside = contributes nothing, not to footage and
+    // not to a count - the mask exists to keep the legend block and the
+    // NTS details out of these exact rows. Partially inside counts the
+    // exact clipped length and stays one line in the count.
+    const counted = chainCountedPt(ch);
+    if (wzActive() && !(counted > 0)) continue;
     const label = state.chainLabels.get(ch.chain_id) ||
       state.labels.get(ch.style_id) || "unlabeled";
     const t = totals.get(label) ||
       { count: 0, pt: 0, objects: 0, objSids: new Set(), chains: [] };
-    t.count += 1; t.pt += ch.length_pt; t.chains.push(ch);
+    t.count += 1; t.pt += counted; t.chains.push(ch);
     sheetChains.push(ch);
     if (state.measureMode.get(ch.style_id) === "object")
       t.objSids.add(ch.style_id);
@@ -4102,9 +8192,13 @@ function computeTakeoffRows() {
   // came to print (contour feet + cut CY + fill CY + slab SF) as one number
   // with "ft" after it: the subtotal test was `cnt === "EA"`, and "CY" is not
   // "EA". `cnt` is left alone so nothing downstream moves yet.
+  // sids: which style rows this item's chains came from. Additive, for the
+  // bid view's drill-down (isolate a member's linework) - the quantities
+  // above do not read it.
   const items = [...totals.entries()].map(([label, t]) => t.objects
     ? { label, cnt: "EA", unit: "EA", qty: t.objects,
         qtyText: String(t.objects), priced: true, isObj: true,
+        sids: [...new Set(t.chains.map(c => c.style_id))],
         ft: ftPerIn ? t.pt / 72 * ftPerIn : null }
     : { label, cnt: String(t.count), unit: ftPerIn ? "ft" : "pt",
         qty: pt2q(t.pt),
@@ -4112,6 +8206,7 @@ function computeTakeoffRows() {
         unionQty: pt2q(t.dup.unionPt),
         dupQty: pt2q(t.dup.excessPt),
         dupLegs: t.dup.sharedLegs,
+        sids: [...new Set(t.chains.map(c => c.style_id))],
         qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
     items.push({ label: it.label, cnt: it.unit, unit: it.unit, qty: it.qty,
@@ -4124,12 +8219,15 @@ function computeTakeoffRows() {
   }
   let grand = 0;
   const groups = [];
+  // PASS 1: overrides, price, own extended cost. Unchanged, except that the
+  // group subtotal is no longer accumulated here - it cannot be, because a
+  // row's cost is not final until its components are rolled into it, and the
+  // roll-up has to see EVERY row on the sheet at once to decide which row
+  // owns a parent key two labels both normalise to.
   for (const tr of TRADES) {
     const group = byTrade.get(tr);
     if (!group) continue;
     group.sort((a, b) => b.qty - a.qty);
-    let sub = 0, subQty = 0, subEa = 0;
-    const subByUnit = new Map();
     for (const it of group) {
       const ov = parseFloat(store.getItem(
         ovKey(it.label, it.unit)) || "");
@@ -4142,15 +8240,51 @@ function computeTakeoffRows() {
       it.price = price;
       it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
-      if (it.ext) sub += it.ext;
+    }
+    groups.push({ trade: tr, items: group });
+  }
+  // PASS 2: SUB-ITEMS. One roll-up over the flat list of every row, in
+  // display order, so the ownership ranking is decided once and a component
+  // can reach the total through exactly one row. `it.ext` stays the row's OWN
+  // money (nothing downstream that reads ext moves); `it.rowExt` is own +
+  // components, and that is what the subtotals and the grand total add.
+  const flat = [];
+  for (const g of groups) for (const it of g.items) flat.push(it);
+  const roll = subRollupItems(
+    flat.map((it) => ({ key: it.label, qty: it.qty, ext: it.ext })),
+    (k) => subLoad(k));
+  flat.forEach((it, i) => {
+    const r = roll.rows[i];
+    it.subs = r.subs; it.subExt = r.subExt; it.rowExt = r.rowExt;
+    it.subDupOf = r.dupOf;
+  });
+  // PASS 3: subtotals. Identical arithmetic to what stood here before for
+  // every sheet with no sub-items (rowExt === ext || 0, and `if (it.ext) sub
+  // += it.ext` and `sub += it.rowExt` agree on a null/0 ext), so a takeoff
+  // that has never used the feature reports the same numbers it always did.
+  for (const g of groups) {
+    let sub = 0, subQty = 0, subEa = 0;
+    const subByUnit = new Map();
+    for (const it of g.items) {
+      sub += it.rowExt;
+      // Component quantities are NOT added to the unit chips on the trade
+      // heading. They already cannot merge with the parent's unit, and the
+      // heading has no room to say which of two chips is measured and which
+      // is typed - so the heading keeps counting only what the sheet
+      // measured, and the components show up in its money, which is the one
+      // figure they legitimately belong in.
       subByUnit.set(it.unit, (subByUnit.get(it.unit) || 0) + it.qty);
       if (it.unit === "EA") subEa += it.qty;
       else if (it.unit === "ft" || it.unit === "pt") subQty += it.qty;
     }
+    g.sub = sub; g.subQty = subQty; g.subEa = subEa; g.subByUnit = subByUnit;
     grand += sub;
-    groups.push({ trade: tr, items: group, sub, subQty, subEa, subByUnit });
   }
-  return { groups, grand, ftPerIn, sheet };
+  return { groups, grand, ftPerIn, sheet,
+           // what of `grand` is operator-declared components, for the
+           // disclosure on the tally bar
+           subExt: roll.subTotal, subN: roll.rows.reduce(
+             (n, r) => n + r.subs.length, 0) };
 }
 
 // The disclosure line under an itemized row whose chains overlap each other.
@@ -4276,6 +8410,937 @@ function panelRefocus(root, f) {
     }
 }
 
+// ---------- bid view: the takeoff regrouped as a bid schedule -------------
+// EXCAVATION-PLAN.md section 7 item 1: "Organise the panel around a bid
+// schedule, not a style list. ~15 line items with quantities, not 280 rows.
+// The style list becomes the drill-down."
+//
+// This block is the deterministic rule table that files a takeoff row into
+// a bid-schedule bucket by keywords over the names the document and the
+// operator already gave it (legend/operator label first, CAD layer as the
+// tie-breaker). It is a REGROUPING only - no AI, no new quantity anywhere:
+// every bucket figure the panel shows is the sum of rows produced by the
+// same computeTakeoffRows() pass the itemized takeoff and the tally bar
+// read, so the three can never disagree. A row no rule names lands in
+// UNASSIGNED, with its count and footage said out loud, never silently.
+//
+// Kept pure (no DOM, no state.*) between the markers so
+// tests/test_bidview_rules.js can eval it standalone - same technique as
+// the TRENCH-MATH block below.
+// BIDVIEW-RULES-BEGIN
+
+// Bucket names, in DISPLAY order. The set is EXCAVATION-PLAN.md section 0's
+// excavator bid families (cut/fill CY, topsoil strip, trench by depth band,
+// pipe by size and material, structures EA, erosion control LF/EA,
+// aggregate/base) crossed with the line families the one estimate on disk
+// actually bills - Beaumont Estimate #853: nine per-LF utility lines
+// $224,200 (section 15 item 2), the topsoil family $88,815 (item 10),
+// Clear & Grub 224,058 SF (item 9), Perimeter Drain 3,395 LF (item 14),
+// Paths To Subgrade / Slab Prep by the SF (quoted at arData() above) - and
+// the Pierce transcript conventions (section 13: pipe separated by size,
+// sewer priced in 2-ft depth bands). Structures (manholes, inlets,
+// hydrants) ride their SYSTEM's bucket, which is how #853 bills them.
+// There is deliberately no dry-utilities bucket: gas/electric/telecom are
+// not in section 0's families, so they land in UNASSIGNED - which says so
+// - rather than being filed under a wet system by default.
+const BID_UNASSIGNED = "UNASSIGNED";
+const BID_BUCKETS = [
+  "Erosion & Sediment Control",
+  "Clearing/Limits",
+  "Earthwork",
+  "Storm Drainage",
+  "Sanitary Sewer",
+  "Water",
+  "Site Concrete/Paving",
+  "Walls",
+  "Landscape/Other",
+  BID_UNASSIGNED,
+];
+
+// The rule table. FIRST MATCH WINS, top to bottom, tokens tried in the
+// order written; display order above and rule order here differ where a
+// stated collision forces it. Token grammar (see bidTokenHit):
+//   - 3 characters or fewer: whole-word match over the normalised text
+//     ("SD" must never match inside "SDWK")
+//   - "=" prefix: whole-word match regardless of length ("=FILL" must not
+//     match inside "BACKFILL", which belongs to the trench rows)
+//   - otherwise: substring over the normalised text ("WALL" matches
+//     "A WALL" and "HEADWALL"; the ordering settles those collisions)
+// Normalisation uppercases and collapses every non-alphanumeric run to one
+// space, so hyphens and pipes in CAD layer paths split into words.
+// A rule may instead carry `re`, a regex over the RAW label - used only to
+// mirror label families this file itself emits.
+const BID_RULES = [
+  // 1. The earthwork calculator's own rows. Verbatim mirror of EW_ITEM_RE
+  //    (defined near ewClearItems below - keep the two identical; the node
+  //    test compares their sources) plus the structure panel's dig/backfill
+  //    labels (ST_LABELS). These names are emitted by this file, so they
+  //    are matched exactly rather than by keyword - and BEFORE everything
+  //    else, so "Export Asphalt" stays earthwork rather than paving.
+  { bucket: "Earthwork",
+    re: /^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Place |Export |Import Structural$|(Cut|Fill) \(earthwork\))/ },
+  { bucket: "Earthwork",
+    tokens: ["MASS EXCAVATION", "STRUCTURE EXCAVATION",
+             "STRUCTURE BACKFILL"] },
+  //    Slab Prep is billed as hardscape by the SF ("Slab Prep 9,237 SF",
+  //    Estimate #853, quoted at arData() above), not as dirt.
+  { bucket: "Site Concrete/Paving", tokens: ["SLAB PREP"] },
+  // 2. Erosion & sediment control - section 0's "erosion control LF/EA"
+  //    family. BEFORE Clearing/Limits and Landscape so SILT FENCE and TREE
+  //    PROTECTION never fall through to FENCE/TREE, and INLET PROTECTION
+  //    never reads as a storm INLET.
+  { bucket: "Erosion & Sediment Control",
+    tokens: ["SILT", "EROSION", "SWPPP", "SEDIMENT", "WATTLE",
+             "FIBER ROLL", "INLET PROTECTION", "CONSTRUCTION ENTRANCE",
+             "TREE PROTECTION", "RIPRAP", "ESC"] },
+  // 3. Clearing / limits - #853's own "Clear & Grub 224,058 SF" and Barn
+  //    C3.0's "BG-Limit of disturbance" layer (section 15 item 9).
+  { bucket: "Clearing/Limits",
+    tokens: ["LIMIT OF DISTURBANCE", "LIMITS OF DISTURBANCE",
+             "LIMIT OF WORK", "LIMITS OF WORK", "LOD", "CLEARING", "CLEAR",
+             "GRUB", "DEMOLITION", "DEMO"] },
+  // 4. Reference linework the sheet draws but nobody digs - property,
+  //    easement, right-of-way, setback, boundary, centerline. Filed under
+  //    Landscape/Other (the named-but-not-excavation catch-all) BEFORE the
+  //    system rules so a SEWER EASEMENT or a ROAD R.O.W. line reads as the
+  //    reference line it is, not as pipe or pavement. ESMT / BNDY /
+  //    PROP LOT are the Kayden p39 drafter's own abbreviations
+  //    (C-U2-ESMT-UTIL, C-U2-BNDY, C-U2-PROP-LOT).
+  { bucket: "Landscape/Other",
+    tokens: ["PROPERTY", "EASEMENT", "ESMT", "SETBACK", "RIGHT OF WAY",
+             "R O W", "ROW", "BOUNDARY", "BNDY", "LOT LINE", "PROP LOT",
+             "CENTERLINE", "CENTER LINE"] },
+  // 5. Earthwork keywords - contours are the grading surface source
+  //    (section 3); topsoil is #853's $88,815 family (section 15 item 10);
+  //    import/export/haul is section 0's haul-off family. "=CUT"/"=FILL"
+  //    are word-bound so BACKFILL stays with its trench run; "=GRADE" so
+  //    "PATHS TO SUBGRADE" (#853 hardscape) never reads as grading;
+  //    "=BERM" so BERMUDA sod never reads as a berm. EXCAVAT is
+  //    deliberately ABSENT: the trench tool emits "Trench excavation
+  //    (<run name>)" and that row must follow its run's system in rules
+  //    6-8 (an unnamed run still lands in Earthwork via rule 13, and the
+  //    structure panel's excavation rows matched exactly in rule 1).
+  { bucket: "Earthwork",
+    tokens: ["CONTOUR", "GRADING", "=GRADE", "TOPO", "TOPSOIL",
+             "EARTHWORK", "SLOPE", "SWALE", "DITCH", "=BERM", "=CUT",
+             "=FILL", "IMPORT", "EXPORT", "HAUL"] },
+  // 6. Storm drainage - #853's Perimeter Drain 3,395 LF is drawn as
+  //    FOUNDATION DRAIN / FOOTER DRAIN and the drafter's own typo FOTER
+  //    (section 15 item 14), so all three are tokens. BEFORE Sanitary so
+  //    STORM SEWER stays storm; BEFORE Walls so a HEADWALL stays a storm
+  //    structure. Bare DRAIN is the family's net and comes last. A bare
+  //    "CB" token was tried and WITHDRAWN: Barn's own xref namespace is
+  //    BG-SWCR-CB-MATERIALS / -CB-PLANTING, so one two-letter project code
+  //    read a whole planting plan as catch basins (caught by the node
+  //    test). Catch basins still arrive via CATCH BASIN and INLET.
+  { bucket: "Storm Drainage",
+    tokens: ["STORM", "SD", "RCP", "CMP", "CULVERT", "CATCH BASIN",
+             "INLET", "HEADWALL", "FES", "ROOF DRAIN", "DOWNSPOUT",
+             "UNDERDRAIN", "PERIMETER DRAIN", "FOUNDATION DRAIN",
+             "FOOTER DRAIN", "FOTER", "INFILTR", "DRAIN"] },
+  // 7. Sanitary sewer - "sanitary + storm + water + force main" are #853's
+  //    per-LF utility families (section 15 item 2); SSMH / MANHOLE per the
+  //    Kayden legend's SANITARY SEWER MANHOLE row (section 19); SSWR is
+  //    that drafter's layer abbreviation (C-U2-SSWR-PIPE); OWTS is an
+  //    onsite wastewater treatment system (septic - Barn's
+  //    SE-P-OWTS-PDchmbr-trench sys). A storm MANHOLE already matched
+  //    STORM above, so the bare word lands here.
+  { bucket: "Sanitary Sewer",
+    tokens: ["SANITARY", "SEWER", "SSWR", "SSMH", "SS", "FORCE MAIN",
+             "FORCEMAIN", "OWTS", "CLEANOUT", "MANHOLE", "MH"] },
+  // 8. Water - hydrants and gate valves are the Kayden legend's own water
+  //    rows (section 19); WATR is that drafter's layer abbreviation. "W"
+  //    is the lettered-run code (the dash-text class prints W for
+  //    waterline) and is tested against the LABEL only (BID_LABEL_ONLY),
+  //    so a layer path can never read as water by one letter.
+  { bucket: "Water",
+    tokens: ["WATER", "WATR", "HYDRANT", "GATE VALVE", "DOMESTIC",
+             "POTABLE", "FIRE LINE", "FIRELINE", "FIREWATER", "IRRIG",
+             "WM", "W"] },
+  // 9. Walls BEFORE concrete/paving, mirroring tradeFor()'s
+  //    footing-before-paving precedent: CONCRETE RETAINING WALL is a wall.
+  //    A-WALL is C4.3's own building-wall layer (section 15 item 14).
+  { bucket: "Walls",
+    tokens: ["RETAINING", "GABION", "MSE", "SCREEN WALL", "WALL"] },
+  //    The trench tool's bedding row for a run whose name matched nothing
+  //    above. BEFORE the aggregate GRAVEL token so "Bedding gravel (run)"
+  //    stays with its trench (a named run's bedding already matched its
+  //    system in rules 6-8, because the run name is inside the label).
+  { bucket: "Earthwork", tokens: ["BEDDING GRAVEL"] },
+  // 10. Site concrete / paving - #853 bills hardscape by the SF ("Paths To
+  //     Subgrade 22,796 SF", quoted at arData()); aggregate/base is
+  //     section 0's own family. GUT / FOC / BOC / SWLK / DRWY are the
+  //     Kayden road-layer abbreviations (gutter, face/back of curb,
+  //     sidewalk, driveway).
+  { bucket: "Site Concrete/Paving",
+    tokens: ["CURB", "GUTTER", "=GUT", "FOC", "BOC", "SIDEWALK", "SWLK",
+             "SDWK", "CROSSWALK", "PAVEMENT", "PAVING", "PAVER", "ASPHALT",
+             "CONCRETE", "CONC", "FLATWORK", "APRON", "DRIVEWAY", "DRWY",
+             "ROAD", "PARKING", "AGGREGATE", "BASE COURSE", "GRAVEL",
+             "EOP", "SLAB", "PATH", "STAIR"] },
+  // 11. Landscape / other named families. FENCE and RAIL sit here so a
+  //     PIPE RAIL never reads as pipe (the generic-pipe rule is below);
+  //     "=TREE" is word-bound so STREET never reads as a tree; PLNT /
+  //     EDGER / BOULDER are Barn's own planting-plan layer names.
+  { bucket: "Landscape/Other",
+    tokens: ["LANDSCAP", "=TREE", "TREES", "SHRUB", "PLNT", "PLANT",
+             "SOD", "SEED", "MULCH", "EDGER", "BOULDER", "POOL", "FENCE",
+             "RAIL", "=GATE", "BUILDING", "BLDG"] },
+  // 12. A pipe named only by its material. The one measured instance in
+  //     this corpus is storm - C4.3 style 106, PROPOSED PVC SURFACE STORM
+  //     DRAIN PIPE, 380.9 LF (the section 15 item 14 family) - so the
+  //     default is Storm Drainage. The material is genuinely ambiguous
+  //     (sanitary runs PVC too); the per-row override exists for exactly
+  //     this row, and the row is listed under the bucket, never hidden.
+  { bucket: "Storm Drainage",
+    tokens: ["PVC", "HDPE", "CPP", "DIP", "PIPE"] },
+  // 13. Trench tool rows whose run name matched nothing above - the dig
+  //     and backfill of an unnamed run is dirt work (section 0's "trench,
+  //     BY DEPTH BAND" family).
+  { bucket: "Earthwork", tokens: ["TRENCH", "BEDDING", "BACKFILL"] },
+];
+// Tokens matched against the LABEL alone, never the CAD layer: a single
+// letter is a line code only when the legend or the lettered-run
+// classifier wrote it; in a layer path it is noise.
+const BID_LABEL_ONLY = ["W"];
+
+// Uppercase, and collapse every non-alphanumeric run to one space, so
+// hyphenated CAD layer paths split into words. Padded with spaces so
+// whole-word tests are one indexOf.
+function bidNormText(s) {
+  return (" " + String(s == null ? "" : s).toUpperCase()
+    .replace(/[^A-Z0-9]+/g, " ").trim() + " ");
+}
+function bidTokenHit(norm, tok) {
+  const word = tok.charAt(0) === "=";
+  const t = word ? tok.slice(1) : tok;
+  if (word || t.length <= 3) return norm.indexOf(" " + t + " ") >= 0;
+  return norm.indexOf(t) >= 0;
+}
+// Two passes: the name the legend or the operator gave the row outranks
+// the CAD layer path (a FIRE HYDRANT filed on a PROP-LOT layer is a
+// hydrant). The layer is the tie-breaker for rows whose label matches
+// nothing (Kayden's garbled "$nWonLo (legend)" label on the
+// C-U2-ESMT-SSWR layer is an easement).
+function bidBucketFor(label, layer) {
+  const rawLabel = String(label == null ? "" : label);
+  const passes = [bidNormText(rawLabel),
+                  bidNormText(rawLabel + " "
+                    + String(layer == null ? "" : layer))];
+  for (let p = 0; p < passes.length; p++)
+    for (const r of BID_RULES) {
+      if (r.re) {
+        if (p === 0 && r.re.test(rawLabel))
+          return { bucket: r.bucket, token: "re" };
+        continue;
+      }
+      for (const tok of r.tokens) {
+        if (p === 1 && BID_LABEL_ONLY.indexOf(tok) >= 0) continue;
+        if (bidTokenHit(passes[p], tok))
+          return { bucket: r.bucket, token: tok };
+      }
+    }
+  return { bucket: BID_UNASSIGNED, token: null };
+}
+// A size token the LABEL itself carries - 8", 10'', 8IN, 12-INCH. Display
+// grouping only (Pierce, section 13: "Combined the 8\" and 12\" sewer line
+// into one item. It would be preferable if it was separated"). Nothing is
+// inferred: no token in the name, no size on the row. A bare "8 PVC" is
+// deliberately NOT read as a size - a number with no inch mark could be a
+// station, a count, or a type code.
+function bidSizeToken(label) {
+  const m = /(\d{1,3})\s*(?:"|”|''|[- ]?IN(?:CH)?\b)/i
+    .exec(String(label == null ? "" : label));
+  return m ? m[1] + '"' : null;
+}
+// The grouping. rows: [{label, layer, unit, qty, ...}] - the takeoff rows,
+// already filtered and override-adjusted by computeTakeoffRows, NEVER the
+// raw chains. ovFor(label) -> bucket name or null is the operator's
+// override; an unknown name is ignored (the rule bucket stands) rather
+// than inventing a bucket. Returns every bucket in display order; sums are
+// kept PER UNIT - ft, EA, CY, SF are never added together.
+function bidGroupRows(rows, ovFor) {
+  const byB = {};
+  for (const b of BID_BUCKETS)
+    byB[b] = { bucket: b, n: 0, byUnit: {}, members: [] };
+  for (const r of rows || []) {
+    const ruled = bidBucketFor(r.label, r.layer);
+    const ovRaw = ovFor ? ovFor(r.label) : null;
+    const ov = ovRaw && BID_BUCKETS.indexOf(ovRaw) >= 0 ? ovRaw : null;
+    const m = Object.assign({}, r, {
+      bucket: ov || ruled.bucket,
+      ruleBucket: ruled.bucket,
+      token: ruled.token,
+      via: ov ? "override" : "rule",
+      size: bidSizeToken(r.label),
+    });
+    const B = byB[m.bucket];
+    B.n += 1;
+    if (typeof m.qty === "number" && isFinite(m.qty))
+      B.byUnit[m.unit] = (B.byUnit[m.unit] || 0) + m.qty;
+    B.members.push(m);
+  }
+  for (const b of BID_BUCKETS)
+    byB[b].members.sort((x, y) => y.qty - x.qty);
+  return BID_BUCKETS.map((b) => byB[b]);
+}
+// Footage per size token within one bucket's members, for the Storm
+// Drainage sub-line (Pierce, section 13). Rows with no size token in their
+// own name are reported as such - never guessed into a size.
+function bidBySize(members, unit) {
+  const out = {};
+  for (const m of members) {
+    if (m.unit !== unit) continue;
+    const k = m.size || "no size in name";
+    out[k] = (out[k] || 0) + m.qty;
+  }
+  return out;
+}
+// BIDVIEW-RULES-END
+
+// The operator's bucket override for one takeoff row: doc-scoped and
+// label-keyed like the trade store (tradeKey), page-free on purpose - "this
+// document's THERMAL WELLS row bids as Water" holds on every sheet the
+// label appears on, exactly like a trade pick. Written with store.setItem
+// (a real decision: it persists and counts on the Saved-work button).
+function bidKey(label) {
+  return docKey() + "::bid::" + label.trim().toUpperCase();
+}
+// Which buckets stay expanded across repaints. Session-only, like the
+// collapsible sections.
+const bidOpen = new Set();
+
+// Isolate a bid member's linework on the canvas, reusing the style-row
+// isolation state (state.isolate + .iso on the style row + mini legend +
+// draw). A member can span several styles (the takeoff adds up by NAME);
+// repeated clicks cycle through them and then turn the isolate off, the
+// same gesture as the style list's item-split button.
+function bidIsolate(m, rowEl) {
+  const sids = m.sids || [];
+  if (!sids.length) return;
+  const cur = sids.indexOf(state.isolate);
+  const next = cur < 0 ? sids[0]
+    : (cur + 1 < sids.length ? sids[cur + 1] : null);
+  state.isolate = next;
+  const list = $("styleList");
+  for (const r of list.querySelectorAll(".style-row.iso"))
+    r.classList.remove("iso");
+  for (const r of $("bidBox").querySelectorAll(".bid-member.bid-iso"))
+    r.classList.remove("bid-iso");
+  if (next !== null) {
+    const t = list.querySelector('.style-row[data-sid="' + next + '"]');
+    if (t) { t.classList.add("iso"); t.scrollIntoView({ block: "nearest" }); }
+    if (rowEl) rowEl.classList.add("bid-iso");
+  }
+  setStatus(next === null ? "isolate off"
+    : "isolated: " + m.label
+      + (sids.length > 1
+        ? " — style " + (sids.indexOf(next) + 1) + " of " + sids.length
+          + ", click again for the next" : "")
+      + " — Esc shows everything again");
+  renderMiniLegend(); draw();
+}
+
+// Painted from the rows renderItemized just computed - one source, so the
+// bid view, the itemized takeoff and the tally can never disagree.
+function renderBidView(groups, ftPerIn) {
+  const head = $("bidHead"), box = $("bidBox");
+  if (!head || !box) return;
+  if (!groups) {
+    head.hidden = true; box.hidden = true; box.innerHTML = "";
+    return;
+  }
+  head.hidden = false;
+  box.hidden = head.classList.contains("closed");
+  box.innerHTML = "";
+  const u = ftPerIn ? "ft" : "pt";
+  // Flatten the trade groups back to plain rows: the bid view is a second
+  // GROUPING of the same items, never a second computation. it.qty here
+  // already carries the operator's quantity override, like every reader
+  // of computeTakeoffRows.
+  const rows = [];
+  for (const g of groups)
+    for (const it of g.items) {
+      const layers = [];
+      for (const sid of (it.sids || [])) {
+        const st = state.result.styles.find((s) => s.style_id === sid);
+        const lay = st && st.layer ? String(st.layer) : "";
+        if (lay && layers.indexOf(lay) < 0) layers.push(lay);
+      }
+      rows.push({ label: it.label, layer: layers.join(" | "),
+                  unit: it.unit === "pt" || it.unit === "ft" ? u : it.unit,
+                  qty: it.qty, cnt: it.cnt, sids: it.sids || [],
+                  isCalc: !!it.isCalc, ov: !!it.ov,
+                  // Components ride WITH their parent row into whichever bid
+                  // line the rule table (or the operator) files it under.
+                  // They are deliberately not run through bidBucketFor: a
+                  // component belongs to the bid line its parent is on, and
+                  // letting "#4 rebar" match a keyword of its own would file
+                  // a concrete component under Structures.
+                  subs: it.subs || [], subExt: it.subExt || 0 });
+    }
+  const buckets = bidGroupRows(rows, (label) => {
+    const v = store.getItem(bidKey(label));
+    return v && BID_BUCKETS.indexOf(v) >= 0 ? v : null;
+  });
+  const abbr = (v) => v >= 1000 ? (v / 1000).toFixed(1) + "k"
+    : String(Math.round(v * 10) / 10);
+  const unitOrder = (x) => x === "ft" || x === "pt" ? 0 : x === "EA" ? 1 : 2;
+  const chipText = (byUnit) => {
+    const parts = [];
+    for (const k of Object.keys(byUnit).sort(
+           (a, b) => unitOrder(a) - unitOrder(b) || a.localeCompare(b)))
+      if (byUnit[k]) parts.push(abbr(byUnit[k]) + " " + k);
+    return parts.join(" · ");
+  };
+  let any = false;
+  for (const B of buckets) {
+    if (!B.n) continue;   // an empty bucket is not a bid line
+    any = true;
+    const un = B.bucket === BID_UNASSIGNED;
+    const d = document.createElement("details");
+    d.className = "bid-bucket" + (un ? " bid-unassigned" : "");
+    d.open = bidOpen.has(B.bucket);
+    d.addEventListener("toggle", () => {
+      if (d.open) bidOpen.add(B.bucket); else bidOpen.delete(B.bucket);
+    });
+    const sum = document.createElement("summary");
+    const nm = document.createElement("span");
+    nm.className = "bid-b-name"; nm.textContent = B.bucket;
+    const sub = document.createElement("span");
+    sub.className = "bid-b-sub";
+    // Declared components are counted SEPARATELY in the heading, never
+    // folded into the measured chips: the quantity chips on a bid line are
+    // what the sheet measured, and a typed component must never arrive
+    // inside one of them.
+    let bDecl = 0;
+    for (const m of B.members) bDecl += (m.subs || []).length;
+    const declTxt = bDecl
+      ? " · " + bDecl + " declared sub-item" + (bDecl === 1 ? "" : "s") : "";
+    sub.textContent = un
+      ? B.n + " row" + (B.n === 1 ? "" : "s") + " / "
+        + (chipText(B.byUnit) || "0 " + u)
+        + " not yet assigned — open the style list" + declTxt
+      : (chipText(B.byUnit) || "0") + " · " + B.n
+        + " row" + (B.n === 1 ? "" : "s") + declTxt;
+    sum.append(nm, sub);
+    sum.title = un
+      ? "No name rule matched these rows and no bucket was picked by hand. "
+        + "They are still measured and still in the takeoff - this line "
+        + "exists so they cannot vanish quietly. Expand to file each one, "
+        + "or open the style list below to work on them."
+      : "The sum of the measured takeoff rows filed under this bid line by "
+        + "the name rules (or by your own pick on a row). Same rows, same "
+        + "filters, same overrides as the itemized takeoff - regrouped, "
+        + "never recomputed. Expand for the rows; click a row to isolate "
+        + "its linework.";
+    d.appendChild(sum);
+    // Storm by size, when any member's own label carries a size token
+    // (Pierce: pipe separated by size).
+    if (B.bucket === "Storm Drainage") {
+      const bs = bidBySize(B.members, u);
+      const keys = Object.keys(bs);
+      if (keys.length > 1 || (keys.length === 1 && keys[0] !== "no size in name")) {
+        const line = document.createElement("div");
+        line.className = "bid-bysize";
+        line.textContent = "by size: " + keys.sort()
+          .map((k) => k + " " + abbr(bs[k]) + " " + u).join(" · ");
+        line.title = "Split by the size token in each row's own name. "
+          + "Rows with no size in the name are never guessed into one.";
+        d.appendChild(line);
+      }
+    }
+    for (const m of B.members) {
+      const row = document.createElement("div");
+      row.className = "bid-member" + (m.sids.length ? "" : " nogeom")
+        + (m.sids.indexOf(state.isolate) >= 0 ? " bid-iso" : "");
+      const lab = document.createElement("span");
+      lab.className = "bm-label";
+      lab.textContent = m.label;
+      lab.title = m.label + (m.layer ? "\nCAD layer: " + m.layer : "")
+        + (m.sids.length
+          ? "\n\nClick to isolate this row's linework on the canvas."
+          : "\n\nA calculator row - no linework of its own to isolate.");
+      row.appendChild(lab);
+      if (m.size) {
+        const sz = document.createElement("span");
+        sz.className = "bm-size"; sz.textContent = m.size;
+        sz.title = "size token read from the row's own name";
+        row.appendChild(sz);
+      }
+      const q = document.createElement("span");
+      q.className = "bm-qty";
+      q.textContent = abbr(m.qty) + " " + m.unit
+        + (m.isCalc || m.unit === "EA" ? "" : " · " + m.cnt + " lines");
+      q.title = m.qty.toLocaleString(undefined,
+        { maximumFractionDigits: 1 }) + " " + m.unit
+        + (m.ov ? " (your override; the itemized row discloses the "
+                  + "detected figure)" : "");
+      row.appendChild(q);
+      const pick = document.createElement("select");
+      pick.className = "bid-pick" + (m.via === "override" ? " ov" : "");
+      pick.name = "bid-" + m.label;
+      const auto = document.createElement("option");
+      auto.value = "";
+      auto.textContent = "auto · " + m.ruleBucket;
+      auto.selected = m.via !== "override";
+      pick.appendChild(auto);
+      for (const b of BID_BUCKETS) {
+        const o = document.createElement("option");
+        o.value = b; o.textContent = b;
+        o.selected = m.via === "override" && m.bucket === b;
+        pick.appendChild(o);
+      }
+      pick.title = "Which bid line this row belongs to. “auto” is "
+        + "the name rule's filing; your pick overrides it for this document "
+        + "and is remembered.";
+      pick.onclick = (e) => e.stopPropagation();
+      pick.onchange = () => {
+        if (pick.value === "") store.removeItem(bidKey(m.label));
+        else store.setItem(bidKey(m.label), pick.value);
+        renderItemized();
+      };
+      row.appendChild(pick);
+      if (m.sids.length) {
+        row.onclick = () => bidIsolate(m, row);
+        // EVERY style pooled under this bid line, not m.sids[0]. See the
+        // state.hotStyle comment: highlighting one of three CAD layers and
+        // calling it the bid line was a display lie.
+        row.onmouseenter = () => hotFam(m.sids);
+        row.onmouseleave = () => hotFamOff();
+      }
+      d.appendChild(row);
+      // The components, nested under their parent and tagged. Read-only
+      // here: the itemized takeoff owns the editing, this view owns the
+      // grouping, and two editors for one record is how they drift.
+      for (const s of (m.subs || [])) {
+        const sr = document.createElement("div");
+        sr.className = "bid-member bid-sub nogeom";
+        const sl = document.createElement("span");
+        sl.className = "bm-label";
+        sl.textContent = "↳ " + s.rec.name;
+        sl.title = s.rec.name + "\n\nA sub-item of " + m.label
+          + " — operator-declared (qty set by: " + SUB_SET_BY + "), not "
+          + "measured by the engine. Edit it in the itemized takeoff.";
+        const st = subTagEl();
+        const sq = document.createElement("span");
+        sq.className = "bm-qty";
+        sq.textContent = abbr(s.qty || 0) + " " + s.rec.unit
+          + (Number.isFinite(s.ext) ? " · $" + s.ext.toFixed(0) : "");
+        sr.append(sl, st, sq);
+        d.appendChild(sr);
+      }
+    }
+    box.appendChild(d);
+  }
+  if (!any) {
+    const none = document.createElement("div");
+    none.className = "bid-none";
+    none.textContent = "nothing measured yet";
+    box.appendChild(none);
+  }
+}
+
+// ---- sub-items in the panel -------------------------------------------
+// The editor is OPEN-STATE, not DOM state: renderItemized() rebuilds the
+// whole panel with innerHTML = "" from about thirty call sites, so an editor
+// held only as a node would vanish under a price keystroke elsewhere. The
+// open parent and the half-typed draft live here and are re-rendered.
+let subEditFor = null;        // parent label whose "+ add sub-item" is open
+let subDraft = null;          // {name, mode, qty, factor, unit, price}
+// One-deep, session-only undo of a removal, per parent. A component is typed
+// work; deleting it with nothing but a status line to show for it is how an
+// evening disappears. The put-it-back button renders at the site of the edit,
+// where the operator is already looking.
+const subUndo = new Map();
+
+function subFmtQ(v) {
+  return Number.isFinite(v)
+    ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—";
+}
+
+// The chip that says a number was typed, not detected. Same word the export
+// and the CSV use, so a reviewer sees one vocabulary in three places.
+function subTagEl() {
+  const t = document.createElement("span");
+  t.className = "sub-tag";
+  t.textContent = "declared";
+  t.title = "Operator-declared: this quantity was typed, not measured by the "
+    + "engine. It travels tagged “qty set by: " + SUB_SET_BY + "” in the "
+    + "CSV, the bid view and the approve export - the same word server.py "
+    + "already writes for a quantity a reviewer set.";
+  return t;
+}
+
+// The roll-up sentence under a parent that carries components: its own money,
+// the components' money, and the sum - which is the figure in its ext cell.
+function subRollNote(it) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note";
+  const own = Number.isFinite(it.ext) ? it.ext : 0;
+  const t = document.createElement("span");
+  t.innerHTML = "rolls up: own <b>$" + own.toFixed(0) + "</b> + "
+    + it.subs.length + " component" + (it.subs.length === 1 ? "" : "s")
+    + " <b>$" + it.subExt.toFixed(0) + "</b> = <b>$"
+    + it.rowExt.toFixed(0) + "</b>";
+  t.title = "The ext $ cell on this row is the roll-up. The takeoff TOTAL "
+    + "adds this row once, so each component is counted exactly once - it is "
+    + "not also added as a row of its own.";
+  n.appendChild(t);
+  return n;
+}
+
+// Two takeoff rows normalised to one parent key. The components are on the
+// other row; say which, rather than showing none.
+function subDupNote(it) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note sub-dup";
+  const t = document.createElement("span");
+  t.textContent = "sub-items for this name are shown on “" + it.subDupOf
+    + "” (the larger row) and are counted there, once.";
+  t.title = "Two rows on this sheet have names that differ only in case or "
+    + "spacing, so they share one component list. Counting it on both would "
+    + "double the money with no symptom, so exactly one row carries it.";
+  n.appendChild(t);
+  return n;
+}
+
+// One component, as a nested row in the same grid as its parent.
+function subRowEl(it, s, u) {
+  const rec = s.rec;
+  const row = document.createElement("div");
+  row.className = "item-row sub-row";
+  const lab = document.createElement("div");
+  lab.className = "lab sub-lab";
+  const nm = document.createElement("span");
+  nm.className = "sub-name";
+  nm.textContent = "↳ " + rec.name;
+  lab.append(nm, subTagEl());
+  const del = document.createElement("button");
+  del.className = "mini sub-del";
+  del.textContent = "×";
+  del.title = "Remove this component. One click puts it back.";
+  del.onclick = () => {
+    const recs = subLoad(it.label).filter((r) => r.id !== rec.id);
+    subMoved.delete(rec.id);     // the row is gone; its notice goes with it
+    subUndo.set(subParentKey(it.label), rec);
+    subSave(it.label, recs);
+    setStatus("removed sub-item “" + rec.name + "” from " + it.label
+      + (Number.isFinite(s.ext) ? " — $" + s.ext.toFixed(0)
+         + " off this row" : "") + " — “put it back” is on the row.");
+    renderItemized(); renderChips();
+  };
+  lab.appendChild(del);
+  const cnt = document.createElement("div");
+  cnt.textContent = rec.unit;
+  cnt.title = "The component's own unit. It is never added to the parent's "
+    + "unit - a pound of rebar is not a foot of edge.";
+  // FIXED -> the box holds the quantity. FACTOR -> the box holds the RATE and
+  // the quantity is derived; the basis line under the row prints the
+  // multiplication in full so the derived figure is never a bare number.
+  const q = document.createElement("input");
+  q.type = "number"; q.step = "0.01";
+  q.className = "qty-in sub-qty" + (rec.mode === "factor" ? " sub-factor" : "");
+  q.name = "subq-" + it.label + "|" + rec.id;
+  q.value = rec.mode === "factor" ? String(rec.factor) : String(rec.qty);
+  q.title = rec.mode === "factor"
+    ? "RATE: " + rec.unit + " of this component per " + it.unit
+      + " of the parent. The quantity follows the measurement."
+    : "FIXED quantity in " + rec.unit + ". It does not follow the parent.";
+  q.addEventListener("wheel",
+    (ev) => { if (document.activeElement === q) ev.preventDefault(); },
+    { passive: false });
+  q.onchange = () => {
+    const v = parseFloat(q.value);
+    if (!Number.isFinite(v) || v <= 0) { renderItemized(); return; }
+    const recs = subLoad(it.label);
+    for (const r of recs) if (r.id === rec.id) {
+      if (r.mode === "factor") { r.factor = v; r.base = it.qty; }
+      else r.qty = v;
+    }
+    subSave(it.label, recs);
+    subMoved.delete(rec.id);   // editing the row IS seeing it
+    setStatus((rec.mode === "factor" ? "rate" : "quantity") + " for “"
+      + rec.name + "” on " + it.label + " set to " + v
+      + (rec.mode === "factor" ? " " + rec.unit + " per " + it.unit
+                               : " " + rec.unit));
+    renderItemized(); renderChips();
+  };
+  const pin = document.createElement("input");
+  pin.type = "number"; pin.step = "0.01"; pin.placeholder = "set";
+  pin.className = "sub-price";
+  pin.name = "subp-" + it.label + "|" + rec.id;
+  if (rec.price) pin.value = rec.price;
+  pin.title = "Unit price for this component, in $/" + rec.unit + ".";
+  pin.addEventListener("wheel",
+    (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+    { passive: false });
+  pin.onchange = () => {
+    const v = parseFloat(pin.value);
+    const recs = subLoad(it.label);
+    for (const r of recs) if (r.id === rec.id) r.price = v > 0 ? v : null;
+    subSave(it.label, recs);
+    renderItemized(); renderChips();
+  };
+  const ex = document.createElement("div");
+  ex.textContent = Number.isFinite(s.ext) ? s.ext.toFixed(0) : "—";
+  row.append(lab, cnt, q, pin, ex);
+  return row;
+}
+
+// How this component's quantity was arrived at, written out. A derived number
+// with no visible basis is exactly the thing this project does not ship.
+function subBasisEl(it, s, u) {
+  const rec = s.rec;
+  const n = document.createElement("div");
+  n.className = "dup-note sub-basis";
+  const t = document.createElement("span");
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  if (rec.mode === "factor")
+    t.innerHTML = "<b>" + rec.factor + "</b> " + rec.unit + " per " + pu
+      + " × <b>" + subFmtQ(it.qty) + "</b> " + pu + " measured = <b>"
+      + subFmtQ(s.qty) + "</b> " + rec.unit + " — follows the parent";
+  else
+    t.innerHTML = "<b>" + subFmtQ(s.qty) + "</b> " + rec.unit
+      + " — fixed; does not follow the parent";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = rec.mode === "factor" ? "make fixed" : "per parent unit";
+  b.title = rec.mode === "factor"
+    ? "Freeze the current quantity so it stops following the measurement."
+    : "Turn this quantity into a rate against the parent's measured quantity, "
+      + "so it recomputes when the measurement changes.";
+  b.onclick = () => {
+    const recs = subLoad(it.label);
+    let msg = "";
+    for (const r of recs) if (r.id === rec.id) {
+      if (r.mode === "factor") {
+        r.mode = "fixed"; r.qty = s.qty; r.factor = null; r.base = null;
+        msg = "“" + rec.name + "” is now FIXED at " + subFmtQ(s.qty)
+          + " " + rec.unit + " and no longer follows " + it.label + ".";
+      } else if (Number.isFinite(it.qty) && it.qty > 0) {
+        r.mode = "factor"; r.factor = Math.round(r.qty / it.qty * 10000) / 10000;
+        r.base = it.qty; r.qty = null;
+        msg = "“" + rec.name + "” now follows " + it.label + " at "
+          + r.factor + " " + rec.unit + " per " + pu
+          + " — same quantity today, and it will move when the "
+          + "measurement does.";
+      }
+    }
+    if (!msg) return setStatus("this row has no measured quantity to follow, "
+      + "so a per-parent rate cannot be formed", "err");
+    subSave(it.label, recs);
+    setStatus(msg);
+    renderItemized(); renderChips();
+  };
+  n.appendChild(b);
+  return n;
+}
+
+// It moved. Say so where it moved, not only in the status line - a status
+// line is gone by the time the estimator reads the row, and the baseline is
+// committed the instant the move is detected, so the NEXT repaint would
+// otherwise find nothing to report. `r` therefore comes from the live compare
+// when there is one and from subMoved (the standing notice) when there is not.
+function subRecalcEl(it, s, u, r) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-recalc";
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  const t = document.createElement("span");
+  t.innerHTML = "<b>recomputed</b> — the parent moved " + q1(r.from)
+    + " → " + q1(r.to) + " " + pu + ", so this went <b>" + subFmtQ(r.wasQty)
+    + "</b> → <b>" + subFmtQ(r.nowQty) + "</b> " + s.rec.unit;
+  t.title = "A per-parent-unit component recomputes whenever the measured "
+    + "parent quantity changes. Nothing was typed; the rate was applied to "
+    + "the new measurement. This notice stays until you dismiss it, so a "
+    + "repaint cannot carry it off before you have seen it.";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "seen";
+  b.title = "Clear this notice. The quantity is unchanged either way.";
+  b.onclick = () => { subMoved.delete(s.rec.id); renderItemized(); };
+  n.appendChild(b);
+  return n;
+}
+
+// "put it back" for the last component removed from this parent.
+function subUndoEl(it) {
+  const rec = subUndo.get(subParentKey(it.label));
+  if (!rec) return null;
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note sub-undo";
+  const t = document.createElement("span");
+  t.textContent = "removed “" + rec.name + "” from this row";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "put it back";
+  b.onclick = () => {
+    const recs = subLoad(it.label);
+    if (recs.length < SUB_MAX) recs.push(rec);
+    subUndo.delete(subParentKey(it.label));
+    subSave(it.label, recs);
+    setStatus("restored sub-item “" + rec.name + "” on " + it.label);
+    renderItemized(); renderChips();
+  };
+  n.appendChild(b);
+  return n;
+}
+
+// The "+ add sub-item" control, and the inline editor it opens.
+function subAddEl(it, u) {
+  const wrap = document.createElement("div");
+  wrap.className = "sub-add-line";
+  if (subEditFor !== it.label) {
+    const b = document.createElement("button");
+    b.className = "mini sub-add";
+    b.textContent = "+ add sub-item";
+    b.title = "Add a component this line item carries - rebar, mesh, forms, "
+      + "finishing. It nests under this row, rolls into its cost, and is "
+      + "tagged as declared everywhere it travels.";
+    b.onclick = () => {
+      subEditFor = it.label;
+      subDraft = { name: "", mode: "factor", qty: "", factor: "",
+                   unit: "EA", price: "" };
+      renderItemized();
+      const f = $("itemized").querySelector(".sub-edit input");
+      if (f) f.focus();
+    };
+    wrap.appendChild(b);
+    return wrap;
+  }
+  const d = subDraft || (subDraft = { name: "", mode: "factor", qty: "",
+                                      factor: "", unit: "EA", price: "" });
+  wrap.classList.add("open");
+  const ed = document.createElement("div");
+  ed.className = "sub-edit";
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  const mk = (key, ph, title, cls, type) => {
+    const i = document.createElement("input");
+    i.type = type || "text"; i.placeholder = ph; i.title = title;
+    i.className = cls || ""; i.name = "subnew-" + key + "-" + it.label;
+    i.value = d[key];
+    if (type === "number") i.step = "0.01";
+    i.oninput = () => { d[key] = i.value; };
+    return i;
+  };
+  const name = mk("name", "component (e.g. #4 rebar)",
+                  "What this line item carries.", "sub-e-name");
+  const mode = document.createElement("select");
+  mode.className = "sub-e-mode"; mode.name = "subnew-mode-" + it.label;
+  for (const [v, txt] of [["factor", "per " + pu + " of parent"],
+                          ["fixed", "fixed quantity"]]) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = txt; o.selected = d.mode === v;
+    mode.appendChild(o);
+  }
+  mode.title = "“per " + pu + " of parent” is a RATE: the quantity is "
+    + "the rate times the measured parent quantity and moves with it. "
+    + "“fixed” is a number you type and nothing changes it.";
+  mode.onchange = () => { d.mode = mode.value; renderItemized(); };
+  const num = mk(d.mode === "factor" ? "factor" : "qty",
+                 d.mode === "factor" ? "rate" : "qty",
+                 d.mode === "factor"
+                   ? "How many of the component per " + pu + " of parent."
+                   : "The component quantity.",
+                 "sub-e-num", "number");
+  const unit = mk("unit", "unit", "The component's own unit (LB, SF, EA, LF).",
+                  "sub-e-unit");
+  const price = mk("price", "$/unit", "Unit price for the component.",
+                   "sub-e-price", "number");
+  const add = document.createElement("button");
+  add.className = "mini sub-e-add"; add.textContent = "add";
+  add.onclick = () => {
+    const rec = subClean({ id: subNewId(), name: d.name, unit: d.unit,
+                           mode: d.mode, qty: d.qty, factor: d.factor,
+                           price: d.price, base: it.qty });
+    if (!rec) return setStatus("a sub-item needs a name and a "
+      + (d.mode === "factor" ? "rate" : "quantity") + " greater than zero", "err");
+    const recs = subLoad(it.label);
+    if (recs.length >= SUB_MAX)
+      return setStatus("this row already carries " + SUB_MAX
+        + " sub-items, which is the cap", "err");
+    recs.push(rec);
+    subSave(it.label, recs);
+    subEditFor = null; subDraft = null;
+    const q = subRound(subQtyOf(rec, it.qty));
+    const ex = subExtOf(rec, it.qty);
+    setStatus("sub-item “" + rec.name + "” added under " + it.label
+      + ": " + subFmtQ(q) + " " + rec.unit
+      + (Number.isFinite(ex) ? " · $" + ex.toFixed(0) : " · no price set")
+      + " — declared, not measured; it rolls into this row's cost.");
+    renderItemized(); renderChips();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini"; cancel.textContent = "cancel";
+  cancel.onclick = () => { subEditFor = null; subDraft = null; renderItemized(); };
+  ed.append(name, mode, num, unit, price, add, cancel);
+  wrap.appendChild(ed);
+  return wrap;
+}
+
+// Components stored against labels that produce no row on THIS sheet. Not
+// deleted - the label lives on other sheets of the document - but never
+// silent: they are counted, named, and there is one button that really does
+// destroy them (the delete-parent cascade), with a confirm on it.
+function subDormantEl(groups) {
+  const all = subAllForDoc();
+  const live = [];
+  for (const g of groups) for (const it of g.items) live.push(it.label);
+  const dormant = subDormantKeys(all, live);
+  if (!dormant.length) return null;
+  let n = 0;
+  for (const k of dormant) n += all[k].length;
+  const d = document.createElement("div");
+  d.className = "dup-note sub-note sub-dormant";
+  const t = document.createElement("span");
+  t.innerHTML = "<b>" + n + "</b> sub-item" + (n === 1 ? "" : "s") + " belong to "
+    + dormant.length + " label" + (dormant.length === 1 ? "" : "s")
+    + " with no row on this sheet — <b>not counted here</b>";
+  t.title = "These components are stored against " + dormant.join(", ")
+    + ". Those labels are not in this sheet's takeoff (deleted linework, an "
+    + "un-ticked style, a renamed row, or another sheet of this document), so "
+    + "nothing of theirs is in any figure on this page. They are kept because "
+    + "a label lives across sheets; discard removes them for good.";
+  d.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "discard " + n;
+  b.title = "Delete these component lists permanently. This is the "
+    + "delete-parent cascade: no component is ever left attached to a label "
+    + "that no longer exists.";
+  b.onclick = () => {
+    if (!confirm("Delete " + n + " sub-item(s) belonging to " + dormant.length
+      + " label(s) that have no row on this sheet?\n\n" + dormant.join("\n")
+      + "\n\nThis cannot be undone.")) return;
+    const res = subCascade(all, dormant);
+    for (const k of res.dropped) store.removeItem(docKey() + SUB_PREFIX_TAIL + k);
+    setStatus("discarded " + n + " sub-item(s) from " + res.dropped.length
+      + " label(s) with no row on this sheet");
+    renderItemized(); renderChips();
+  };
+  d.appendChild(b);
+  return d;
+}
+
+// Everything a parent row paints below itself. One call site in
+// renderItemized, so the order can never drift between rows.
+function subPaint(box, it, u) {
+  if (it.subDupOf) { box.appendChild(subDupNote(it)); return; }
+  for (const s of it.subs) {
+    box.appendChild(subRowEl(it, s, u));
+    box.appendChild(subBasisEl(it, s, u));
+    const rc = s.recomputed || subMoved.get(s.rec.id);
+    if (rc) box.appendChild(subRecalcEl(it, s, u, rc));
+  }
+  if (it.subs.length) box.appendChild(subRollNote(it));
+  const un = subUndoEl(it);
+  if (un) box.appendChild(un);
+  box.appendChild(subAddEl(it, u));
+}
+
 function renderItemized() {
   const box = $("itemized");
   const keepFocus = panelFocus(box);
@@ -4286,9 +9351,20 @@ function renderItemized() {
     // PREVIOUS sheet's "12.4k ft measured - $84320" sitting under it. A stale
     // number with no table under it reads as this sheet's total.
     $("tallyBar").textContent = "";
+    // ...and the bid view mirrors these rows, so it goes stale the same way
+    renderBidView(null);
     return;
   }
-  const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
+  const { groups, grand, ftPerIn, sheet, subExt, subN }
+    = computeTakeoffRows();
+  // A factor component whose parent quantity moved has ALREADY been
+  // recomputed by computeTakeoffRows (it is a pure function of the
+  // parent's current quantity). This writes the new baseline and says on
+  // the status line that it happened - the disclosure rule: never let a
+  // quantity become a different quantity in silence. Done here and not in
+  // computeTakeoffRows because that function is also the CSV's and the
+  // approve payload's source, and an export must not write storage.
+  subCommitRecompute(groups);
   const u = ftPerIn ? "ft" : "pt";
   const head = document.createElement("div");
   head.className = "item-row head";
@@ -4394,7 +9470,13 @@ function renderItemized() {
         renderItemized(); renderChips();
       };
       const pin = document.createElement("input");
-      pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+      // UI FIX 6: an empty rate cell used to be a bare em dash, which reads
+      // as "there is no rate for this" rather than "you have not set one".
+      // Under the column's own "$/ft" head the cell now says what to do.
+      // Same empty state, same key, same write - only the invitation is new.
+      pin.type = "number"; pin.step = "0.01"; pin.placeholder = "set";
+      pin.title = "Unit price for this row, in $/" + (it.unit === "pt" ? "pt" : it.unit)
+        + ". Empty means no rate is set, so this row carries no dollars.";
       pin.name = "price-" + it.label;
       if (it.price) pin.value = it.price;
       pin.oninput = () => {
@@ -4406,7 +9488,10 @@ function renderItemized() {
         // the TOTAL and the tally bar rebuild on blur - one blur behind, which
         // is the deliberate trade for not deleting the control being typed in.
         const pv = parseFloat(pin.value);
-        e.textContent = (it.priced && pv > 0) ? (it.qty * pv).toFixed(0) : "—";
+        // the cell shows own + components, so the live repaint must too
+        const _own = (it.priced && pv > 0) ? it.qty * pv : 0;
+        const _roll = _own + (it.subExt || 0);
+        e.textContent = _roll ? _roll.toFixed(0) : "—";
       };
       pin.onchange = () => {
         store.setItem(priceKey(it.label), pin.value);
@@ -4416,7 +9501,10 @@ function renderItemized() {
         (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
         { passive: false });
       const e = document.createElement("div");
-      e.textContent = it.ext ? it.ext.toFixed(0) : "—";
+      // The ROLL-UP: this row's own money plus its components'. With no
+      // components rowExt === (ext || 0), so a takeoff that has never used
+      // the feature prints exactly the character it always printed.
+      e.textContent = it.rowExt ? it.rowExt.toFixed(0) : "—";
       row.append(lab, cnt, q, pin, e);
       box.appendChild(row);
       // Both numbers, side by side, only where they differ. The row's own
@@ -4427,14 +9515,29 @@ function renderItemized() {
       // a screenshot review, a theme swap, or a colour-blind reader.
       if (it.ov) box.appendChild(ovNote(it, u));
       if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
+      // SUB-ITEMS: the components this line item carries, nested under it,
+      // each tagged declared, each rolled into the ext cell above.
+      subPaint(box, it, u);
     }
   }
-  // always-visible tally: sum of INCLUDED footage + priced total
-  let inkPt = 0;
+  // Components stored against labels with no row here - counted, named, and
+  // never in a figure on this page.
+  {
+    const _dm = subDormantEl(groups);
+    if (_dm) box.appendChild(_dm);
+  }
+  // always-visible tally: sum of INCLUDED footage + priced total.
+  // With a work area drawn, inkPt is what COUNTS and wzOutPt is what the
+  // mask set aside - both are printed, per the disclosure rule: a cap or
+  // mask states what it removed, never silently.
+  let inkPt = 0, wzOutPt = 0;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (!state.include.get(ch.style_id)) continue;
-    inkPt += ch.length_pt;
+    const full = chainLenPt(ch);
+    const counted = chainCountedPt(ch);
+    inkPt += counted;
+    wzOutPt += full - counted;
   }
   // What the sheet is BILLING, which is not always what the detector measured.
   // The tally used to print the raw chain sum beside a dollar figure that came
@@ -4458,24 +9561,106 @@ function renderItemized() {
   const uf = ftPerIn ? sheet.unionPt / 72 * ftPerIn : null;
   const tb = $("tallyBar");
   const abbrQ = (v) => (v >= 1000 ? (v/1000).toFixed(1) + "k" : v.toFixed(0)) + " " + u;
-  tb.textContent =
-    (ovRowN
-      ? abbrQ(billedQ) + " billed \u00b7 " + abbrQ(autoQ) + " measured"
-      : (tf !== null
-          ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
-          : fmtLen(inkPt) + " measured"))
+  // pt->display for the two work-area figures, in the sheet's own unit
+  const wzFmt = (ptv) => {
+    if (ftPerIn === null) return fmtLen(ptv);
+    const ftv = ptv / 72 * ftPerIn;
+    return (ftv >= 1000 ? (ftv / 1000).toFixed(1) + "k" : ftv.toFixed(0)) + " ft";
+  };
+  // UI FIX 6: the money reads like money. The sentence below is assembled
+  // from EXACTLY the same pieces, in exactly the same order, as before -
+  // nothing is dropped, reworded or recomputed. It is only split at one
+  // point so the leading quantity (what this sheet is billing) can be set
+  // at the 26px tabular figure and everything that qualifies it becomes the
+  // caption underneath, instead of all of it running as one 10.5px line.
+  //   tallyLead   the quantity, e.g. "67.8k ft"
+  //   tallyPre    "work area:" when a mask is drawn, else ""
+  //   tallyRest   the qualifier + union + welded + $ - the caption
+  let tallyPre = "", tallyLead, tallyRest;
+  if (wzActive()) {
+    tallyPre = "work area:";
+    tallyLead = wzFmt(inkPt);
+    tallyRest = "counted \u00b7 " + wzFmt(wzOutPt) + " outside excluded"
+      + (ovRowN ? " \u00b7 " + abbrQ(billedQ) + " billed" : "");
+  } else if (ovRowN) {
+    tallyLead = abbrQ(billedQ);
+    tallyRest = "billed \u00b7 " + abbrQ(autoQ) + " measured";
+  } else if (tf !== null) {
+    tallyLead = (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft";
+    tallyRest = "measured";
+  } else {
+    tallyLead = fmtLen(inkPt);
+    tallyRest = "measured";
+  }
+  tallyRest = tallyRest
     + (sheet.excessPt > 0.05
         ? " · union " + (uf !== null
             ? (uf >= 1000 ? (uf/1000).toFixed(1) + "k" : uf.toFixed(0)) + " ft"
             : fmtLen(sheet.unionPt))
         : "")
-    + (grand ? ` · $${grand.toFixed(0)}` : "");
+    + (() => {
+        // Stated once, on the sheet total, rather than on every row: a
+        // per-row threshold is a judgement about how much welded gap matters
+        // to a given trade, and that is the estimator's call, not this
+        // function's. Hidden under 0.5% only because a figure that small is
+        // rounding, not a finding.
+        const oc = sheetOverCapture();
+        if (!oc || oc.gap / oc.len <= 0.005) return "";
+        return ` · ${(100 * oc.gap / oc.len).toFixed(1)}% welded`;
+      })()
+    + (grand ? ` · $${grand.toFixed(0)}` : "")
+    // The money now includes components the operator typed. A dollar figure
+    // that silently mixes measured work with declared work is the same defect
+    // class as an undisclosed mask, so it says how much and how many.
+    + (subExt > 0.5
+        ? ` · incl $${subExt.toFixed(0)} in ${subN} declared sub-item`
+          + (subN === 1 ? "" : "s")
+        : "");
+  // Two spans, one sentence. Reading them end to end still gives exactly the
+  // string this bar has always printed: [pre ]lead + " " + rest.
+  tb.textContent = "";
+  const tallyBig = document.createElement("span");
+  tallyBig.className = "tally-big";
+  if (tallyPre) {
+    const pre = document.createElement("span");
+    pre.className = "tally-pre";
+    pre.textContent = tallyPre + " ";
+    tallyBig.appendChild(pre);
+  }
+  tallyBig.appendChild(document.createTextNode(tallyLead));
+  const tallyCap = document.createElement("span");
+  tallyCap.className = "tally-cap";
+  // leading space: collapsed away at the start of the caption line, but it
+  // keeps tallyBar.textContent character-for-character the string this bar
+  // printed before the split - so anything reading the bar as text (a
+  // screen reader, a copy-paste, a future test) sees no change at all.
+  tallyCap.textContent = " " + tallyRest;
+  tb.append(tallyBig, tallyCap);
+  const wzPrefix = wzActive()
+    ? `WORK AREA: ${state.workZones.length} box(es) drawn on the sheet. `
+      + `Every list here - the style rows, these itemized rows, the CSV and `
+      + `the approve export - counts only length inside the boxes; a line `
+      + `crossing an edge counts exactly its inside piece. Nothing is `
+      + `deleted: clear the work area and every number returns. Welded-gap `
+      + `footage inside a chain is apportioned by that chain's inside `
+      + `fraction. The earthwork and trench calculators keep their own `
+      + `boundary (the limit of work) and are NOT masked by the work area.\n\n`
+    : "";
+  const subPrefix = subN
+    ? `${subN} SUB-ITEM(S) are declared on this sheet - components an `
+      + `operator typed under a measured row (rebar under concrete, forms `
+      + `under an edge). They are NOT measured by the engine, they carry no `
+      + `footage of their own, and they are counted exactly once: through `
+      + `their parent row's rolled-up cost, worth $${subExt.toFixed(0)} of `
+      + `the total. Every quantity figure on this bar is measured length `
+      + `only and contains none of them.\n\n`
+    : "";
   const ovPrefix = ovRowN
     ? `${ovRowN} row(s) on this sheet carry a quantity YOU typed, so "billed" `
       + `is your figure and "measured" is the detector's. The dollar total `
       + `follows the billed figure.\n\n`
     : "";
-  tb.title = ovPrefix + (sheet.excessPt > 0.05
+  tb.title = wzPrefix + subPrefix + ovPrefix + (sheet.excessPt > 0.05
     ? `Sum adds every included chain's length. Union counts each polyline ` +
       `segment once: ${sheet.sharedLegs} segment(s) across ` +
       `${sheet.nChains} included chains are carried by two or more chains, ` +
@@ -4485,12 +9670,31 @@ function renderItemized() {
       `ways. Identical-geometry test, so it is a lower bound.`
     : `No included chain on this sheet shares a polyline segment with ` +
       `another, so the sum already counts each segment once.`);
+  const _oc = sheetOverCapture();
+  if (_oc && _oc.len > 0) {
+    tb.title += `
+
+Of the measured length, ${fmtLen(_oc.gap)} `
+      + `(${(100 * _oc.gap / _oc.len).toFixed(2)}%) is blank paper the tracer `
+      + `welded into a chain - a stitch across a gap, a join between two `
+      + `chains, or the approach to a mark it picked up. A further `
+      + `${fmtLen(_oc.pick)} (${(100 * _oc.pick / _oc.len).toFixed(2)}%) is `
+      + `ink picked up from elsewhere on the sheet, which the chain it came `
+      + `from may also still be counting.
+
+Both are included in every `
+      + `figure above. They are shown so the number can state what it is made `
+      + `of; nothing is removed.`;
+  }
   if (grand) {
     const row = document.createElement("div");
     row.className = "item-row total";
     row.innerHTML = `<div>TOTAL</div><div></div><div></div><div></div><div>${grand.toFixed(0)}</div>`;
     box.appendChild(row);
   }
+  // The bid view is the SAME rows regrouped, so it repaints wherever the
+  // itemized takeoff does - one call site, and the two cannot drift.
+  renderBidView(groups, ftPerIn);
   // The panel was torn down and rebuilt; put the operator's cursor back on the
   // same field. This covers the ~30 callers other than the price box, notably
   // the 350 ms label-typing timer and every spinner click on a quantity box.
@@ -4516,20 +9720,42 @@ async function loadBetaNotice() {
     if (r.ok) n = await r.json();
   } catch (e) { /* keep the built-in wording */ }
   if (n && n.long) BETA_CSV_TAIL = "\n\n" + n.long.replace(/"/g, '""') + "\n";
+  // #betaBanner is now the header's amber BETA chip rather than the
+  // full-width strip (UI FIX 1, approved by sight on the mocks). The
+  // server's sentence still lands on it verbatim - as the title, which is
+  // what the chip exists to point at - so the wording on screen, in the CSV
+  // tail and on the report stamp still cannot drift apart. The chip itself
+  // is non-dismissible and always mounted; the per-sheet CHECK FIRST card
+  // continues to carry the sheet-specific warning in full.
   const el = $("betaBanner");
-  if (el && n && n.short) el.textContent = n.short;
+  if (el && n && n.short) el.title = n.short;
 }
 loadBetaNotice();
 
 // Who is signed in, and a way to stop being signed in. A session cookie with
 // no sign-out is the same trap HTTP Basic was: a browser stuck with
 // credentials the user cannot clear.
+// The /api/me payload, held so the Settings page's Account section can say
+// what it is looking at instead of rendering an empty panel. Declared HERE,
+// beside its only writer, rather than down in the settings block: loadWhoami
+// runs during boot and a `let` further down the file would be in its
+// temporal dead zone. null means "never answered", which is a distinct state
+// from "answered, no accounts" and reads differently on the page.
+let svMe = null;
+// Every exit from loadWhoami goes through this, so the Account section can
+// never be left saying "asking the server…" forever.
+function svMeSet(me) {
+  svMe = me;
+  if (typeof renderSvAccount === "function" && !$("settingsView").hidden)
+    renderSvAccount();
+}
 async function loadWhoami() {
   let me = null;
   try {
     const r = await fetch("/api/me");
     if (r.ok) me = await r.json();
-  } catch (e) { return; }
+  } catch (e) { svMeSet(null); return; }
+  svMeSet(me);
   // The CSV button is decided BEFORE the early return. On a box with no
   // accounts (a laptop, or a freshly provisioned server) there is no user to
   // name, but whoever is sitting there is effectively staff and the export
@@ -4695,19 +9921,25 @@ $("fbExportBtn").onclick = () => { location.href = "/api/feedback.csv"; };
 function takeoffCsv() {
   const data = computeTakeoffRows();
   if (!data) return null;
-  const { groups, grand, ftPerIn, sheet } = data;
+  const { groups, grand, ftPerIn, sheet, subN } = data;
   const csc = (v) => {
     v = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
   const uq = (pt) => ftPerIn ? pt / 72 * ftPerIn : pt;
-  // Two columns appended, never substituted: the existing quantity column is
+  // Columns appended, never substituted: every existing column is
   // byte-for-byte what it was. "union" counts each polyline segment once;
   // "drawn twice" is what the sum counts more than once (sum - union).
+  // The last two are the PROVENANCE pair, added with sub-items: "qty set by"
+  // carries the same word server.py writes as qty_set_by (engine / reviewer),
+  // and "sub-item of" names the parent a component hangs from. A component
+  // that reached a spreadsheet without them would be a typed number wearing a
+  // measured number's clothes.
   const rows = [["label", "trade", "count/EA",
                  ftPerIn ? "feet" : "pt", "$/ft", "ext $",
                  ftPerIn ? "union feet" : "union pt",
-                 ftPerIn ? "drawn twice feet" : "drawn twice pt"]];
+                 ftPerIn ? "drawn twice feet" : "drawn twice pt",
+                 "qty set by", "sub-item of"]];
   for (const g of groups) {
     for (const it of g.items) {
       const isLf = !isNaN(parseFloat(it.cnt));   // plain line-count rows
@@ -4718,16 +9950,50 @@ function takeoffCsv() {
         isLf ? it.qty.toFixed(1)
              : (it.ft !== undefined && it.ft !== null ? it.ft.toFixed(1) : ""),
         it.price !== null && it.price !== undefined ? it.price : "",
+        // The row's OWN cost, as it always was. Its components are their own
+        // lines below it, so the ext column still sums to TOTAL exactly once
+        // - the panel's rolled-up cell is a display of these two added, not a
+        // third figure.
         it.ext ? it.ext.toFixed(2) : "",
         it.unionQty !== undefined ? it.unionQty.toFixed(1) : "",
         it.dupQty !== undefined ? it.dupQty.toFixed(1) : "",
+        it.ov ? SUB_SET_BY : "engine",
+        "",
       ]);
+      for (const s of (it.subs || []))
+        rows.push(subCsvCells(it.label, g.trade, s, ftPerIn ? "ft" : "pt"));
     }
   }
-  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2), "", ""]);
+  if (subN)
+    rows.push([`SUB-ITEMS: ${subN} row(s) above marked \u21b3 are components `
+               + `an operator DECLARED under the row they follow - not `
+               + `measured by the engine, no footage of their own. Each `
+               + `parent line above shows its OWN cost and each component `
+               + `its own, so the ext $ column adds every component exactly `
+               + `once into TOTAL.`, "", "", "", "", "", "", "",
+               SUB_SET_BY, ""]);
+  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2), "", "", "", ""]);
   rows.push(["SHEET TOTAL (every included line)", "", "",
              uq(sheet.sumPt).toFixed(1), "", "",
-             uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1)]);
+             uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1),
+             "engine", ""]);
+  // Disclosure travels WITH the numbers: a CSV opened next week must say
+  // that a mask was on and what it removed, or the clipped figures above
+  // read as the whole sheet. Two rows, same unit column as everything else.
+  if (wzActive()) {
+    let cIn = 0, cOut = 0;
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      if (!state.include.get(ch.style_id)) continue;
+      const full = chainLenPt(ch), counted = chainCountedPt(ch);
+      cIn += counted; cOut += full - counted;
+    }
+    rows.push([`WORK AREA counted (${state.workZones.length} box(es) drawn; `
+               + `quantities above count only length inside them)`,
+               "", "", uq(cIn).toFixed(1), "", "", "", "", "engine", ""]);
+    rows.push(["WORK AREA excluded (outside the boxes; not in any figure above)",
+               "", "", uq(cOut).toFixed(1), "", "", "", "", "engine", ""]);
+  }
   return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
 }
 $("csvBtn").onclick = () => {
@@ -4743,32 +10009,203 @@ $("csvBtn").onclick = () => {
 };
 
 // ---------- collapsible sidebar sections ----------
-// every section header toggles the elements listed for it; state is
-// per-session only (a refresh reopens everything)
+// every section header toggles the elements listed for it.
+//
+// FOLD_KEEP marks the sections whose folded state SURVIVES A RELOAD: the
+// standing cards, the ones the operator scrolls past every session. The tool
+// panels (ewHead / trHead / symHead / coHead) are deliberately NOT in it. A
+// tool panel is opened by an explicit press and a remembered fold inside one
+// would mean pressing EARTHWORK produced a bare header - which is the exact
+// symptom audit item 8 was raised for. Their folds stay per-session.
 const SECTIONS = [
+  // the Auto-detected card: one fold over BOTH the corroborated banner and the
+  // check queue. "Check these" keeps its own sub-fold below (ckHead), so the
+  // operator can put the queue away without losing what the engine confirmed.
+  ["autoHead", ["autoBody"]],
   ["legendHead", ["legendBox"]],
   ["arHead", ["arList", "arScale", "arUnmatched"]],
+  ["bidHead", ["bidBox"]],
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewLimit", "ewLayers", "ewActions",
               "ewBasis", "ewTake", "ewBalance"]],
-  ["trHead", ["trBody", "trHint", "trActions"]],
+  ["trHead", ["trBody", "trHint", "trBandBox", "trActions", "trTake"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
 ];
+const FOLD_KEEP = new Set(["autoHead", "legendHead", "arHead", "bidHead",
+                           "stylesHead", "takeoffHead"]);
+// same "core-" localStorage prefix the page strip, mini legend and theme use
+const foldKey = (headId) => "core-fold-" + headId;
+// The Auto-detected card holds two independently-hidden blocks. Neither the
+// card nor its head may show while both are silent - otherwise a sheet with
+// nothing to report grows an empty header. Called from both renderers; the
+// `.card:not(:has(...))` rule then folds the section away entirely.
+function syncAutoCard() {
+  const head = $("autoHead"), body = $("autoBody");
+  if (!head || !body) return;
+  const cb = $("confBanner"), ck = $("ckPanel");
+  const silent = (!cb || cb.hidden) && (!ck || ck.hidden);
+  // never fight the operator's fold: a folded card hides its body by design
+  const folded = head.classList.contains("closed");
+  head.hidden = silent;
+  body.hidden = silent || folded;
+}
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
   if (!head) continue;
   const h2 = head.querySelector("h2");
   if (!h2) continue;
-  h2.onclick = () => {
-    const closed = head.classList.toggle("closed");
+  const apply = (closed) => {
+    head.classList.toggle("closed", closed);
     for (const cid of contentIds) {
       const el = document.getElementById(cid);
       if (el) el.hidden = closed;
     }
   };
+  if (FOLD_KEEP.has(headId)) {
+    let saved = null;
+    try { saved = localStorage.getItem(foldKey(headId)); } catch (e) {}
+    if (saved === "closed") apply(true);
+  }
+  h2.onclick = () => {
+    const closed = !head.classList.contains("closed");
+    apply(closed);
+    if (!FOLD_KEEP.has(headId)) return;
+    try { localStorage.setItem(foldKey(headId), closed ? "closed" : "open"); }
+    catch (e) { /* private mode: the fold is then per-session, as before */ }
+  };
 }
+
+// ---------- SIDEBAR CHROME: width, fold, card counts (CRITIQUE fix 5) -----
+// Three pieces of state that belong to the column itself rather than to any
+// panel in it. All three persist in localStorage under the same "core-"
+// prefix the page strip, the mini legend and the theme already use - this
+// browser only, no new store, and every read/write is inside try/catch so a
+// storage-blocked browser degrades to per-session instead of throwing.
+const SIDE_W_DEFAULT = 400;   // the width the redesign was reviewed at
+const SIDE_W_MIN = 320;       // below this the 5-column money grid clips
+const sideWMax = () => Math.max(SIDE_W_MIN, Math.round(innerWidth * 0.40));
+function sideSetWidth(px, save) {
+  const w = Math.max(SIDE_W_MIN, Math.min(sideWMax(), Math.round(px)));
+  $("sidebar").style.setProperty("--side-w", w + "px");
+  if (save) { try { localStorage.setItem("core-sidebar-w", String(w)); } catch (e) {} }
+  // The canvas element is 100% of a stage that just changed width, so its
+  // backing buffer has to be reallocated. syncBuffer() does exactly that and
+  // redraws WITHOUT fitView(), so a drag never throws away the operator's
+  // pan and zoom the way a window resize does.
+  if (typeof syncBuffer === "function") requestAnimationFrame(syncBuffer);
+}
+function sideSetFolded(folded) {
+  $("sidebar").classList.toggle("side-folded", folded);
+  const b = $("sideFold");
+  if (b) {
+    b.setAttribute("aria-label", folded ? "Show the panel" : "Hide the panel");
+    b.title = folded
+      ? "Bring the panel back"
+      : "Hide the panel and give the sheet the width (click again to bring it back)";
+  }
+  try { localStorage.setItem("core-sidebar-fold", folded ? "off" : "on"); } catch (e) {}
+  if (typeof syncBuffer === "function") requestAnimationFrame(syncBuffer);
+}
+(function initSideChrome() {
+  const grip = $("sideGrip");
+  if (!grip) return;
+  let saved = null, savedFold = null;
+  try {
+    saved = parseInt(localStorage.getItem("core-sidebar-w"), 10);
+    savedFold = localStorage.getItem("core-sidebar-fold");
+  } catch (e) {}
+  sideSetWidth(Number.isFinite(saved) ? saved : SIDE_W_DEFAULT, false);
+  if (savedFold === "off") sideSetFolded(true);
+
+  let dragging = false;
+  grip.addEventListener("pointerdown", (ev) => {
+    if (ev.target.closest("#sideFold")) return;      // the chevron is a button
+    if ($("sidebar").classList.contains("side-folded")) return;
+    dragging = true;
+    grip.classList.add("dragging");
+    grip.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  grip.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    // the grip is the column's inner edge, so the width is simply the
+    // distance from the sidebar's left edge to the pointer
+    sideSetWidth(ev.clientX - $("sidebar").getBoundingClientRect().left, false);
+  });
+  const end = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove("dragging");
+    try { grip.releasePointerCapture(ev.pointerId); } catch (e) {}
+    sideSetWidth($("sidebar").getBoundingClientRect().width, true);
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("dblclick", () => sideSetWidth(SIDE_W_DEFAULT, true));
+  grip.addEventListener("keydown", (ev) => {
+    const step = ev.shiftKey ? 48 : 16;
+    const w = $("sidebar").getBoundingClientRect().width;
+    if (ev.key === "ArrowLeft") sideSetWidth(w - step, true);
+    else if (ev.key === "ArrowRight") sideSetWidth(w + step, true);
+    else if (ev.key === "Home") sideSetWidth(SIDE_W_DEFAULT, true);
+    else return;
+    ev.preventDefault();
+    ev.stopPropagation();          // never reaches the sheet's key handlers
+  });
+  $("sideFold").onclick = (ev) => {
+    ev.stopPropagation();
+    sideSetFolded(!$("sidebar").classList.contains("side-folded"));
+  };
+  // a narrower window can put the stored width past the 40vw ceiling
+  addEventListener("resize", () => {
+    const w = $("sidebar").getBoundingClientRect().width;
+    if (w > sideWMax()) sideSetWidth(sideWMax(), false);
+  });
+})();
+
+// CARD COUNTS. A list that scrolls inside its card no longer shows its own
+// end, so the header says how many rows are under it. Every figure here is
+// COUNTED FROM THE ROWS THE RENDER FUNCTIONS ALREADY BUILT - nothing is
+// computed, nothing is derived from engine data a second time, so a count
+// cannot disagree with the list it labels. Where a filter is hiding rows the
+// label says so ("12 of 65") rather than quietly reporting the smaller number.
+const CARD_COUNTS = [
+  ["stylesCount", "#styleList .style-row",
+   () => (state.result && state.result.styles) ? state.result.styles.length : 0],
+  ["takeoffCount", ".itemized .item-row:not(.head):not(.total)", null],
+  ["ewRowsCount", "#ewRows .ew-row", null],
+  ["legendCount", "#legendBox .legend-chip", null],
+  ["areasCount", "#arList .ar-row", null],
+  ["bidCount", "#bidBox .bid-bucket", null],
+  ["coCount", "#coRows .co-row", null],
+  ["symCount", "#symRows .sym-row", null],
+];
+function syncCardCounts() {
+  for (const [spanId, sel, totalFn] of CARD_COUNTS) {
+    const span = $(spanId);
+    if (!span) continue;
+    const shown = document.querySelectorAll(sel).length;
+    const total = totalFn ? totalFn() : shown;
+    span.textContent = !total ? ""
+      : (shown < total ? shown + " of " + total : String(total));
+  }
+}
+(function watchCardCounts() {
+  let queued = false;
+  const mo = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; syncCardCounts(); });
+  });
+  for (const id of ["styleList", "itemized", "ewRows", "legendBox", "arList",
+                    "bidBox", "coRows", "symRows"]) {
+    const el = $(id);
+    if (el) mo.observe(el, { childList: true, subtree: true });
+  }
+  syncCardCounts();
+})();
 
 // ---------- earthwork calculator ----------
 $("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; ewDisarmPick(); draw(); };
@@ -4776,15 +10213,44 @@ $("ewBtn").onclick = async () => {
   const panel = $("ewPanel");
   if (!panel.hidden) { panel.hidden = true; ewDisarmPick(); return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   // a page switch nulls state.tool without touching this button's class
   $("ewAddRow").classList.remove("active");
   $("ewBoundPick").classList.remove("active");
   renderEwBound();
   if (!state.ew) {
     $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
-    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
-    if (!r.ok) { $("ewRows").textContent = "run Detect first"; return; }
+    if (!await ewEnsure()) { $("ewRows").textContent = "run Detect first"; return; }
+  }
+  renderEw();
+  renderEwLayers();
+  renderEwSpots();
+  renderEwArea();
+  renderEwTake();
+  renderGz();
+  // Re-anchor AFTER the async suggest + renders: the CHECK FIRST banner
+  // above this panel grows when the datum note lands, which shoved the
+  // panel head 58px above the fold on C3.1 (measured) - the smooth scroll
+  // that ran at open had already finished aiming at the old layout.
+  panel.scrollIntoView({ block: "start" });
+  // the suggest payload carries the datum + spot facts the review queue
+  // reports (items 3 and 5), and ewApplySaved just settled the drop count
+  renderCheckQueue();
+};
+
+// Build state.ew from /earthwork/suggest. Extracted from the EARTHWORK
+// button so the grading-zone restore path can load the same rows without
+// the panel being open - a restored zone recomputes through the endpoint
+// and the endpoint takes the suggest-derived existing surface as input.
+// Returns false when the suggest fetch fails or the page changed under it.
+async function ewEnsure() {
+  if (state.ew) return true;
+  const gen = state.gen;
+  const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
+  if (!r.ok || gen !== state.gen) return false;
+  {
     const j = await r.json();
+    if (gen !== state.gen || state.ew) return false;
     const ws = j.suggestions.map(s => s.width || 0).sort((a, b) => a - b);
     const wmed = ws.length ? ws[Math.floor(ws.length / 2)] : 0;
     state.ew = {
@@ -4793,8 +10259,24 @@ $("ewBtn").onclick = async () => {
         // default split by stroke weight - existing plots lighter than
         // proposed on most grading sheets; every row is user-flippable
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
-      })),
+      })).map((row, i) => {
+        // INTERVAL-INFILL rows: an elevation nobody printed, worked out by
+        // counting the unlabelled contours between two labelled ones. It
+        // arrives on SKIP - it contributes no volume until the operator
+        // reads the sentence and clicks EXIST or PROP - and it carries
+        // that sentence so the check can be made without leaving the row.
+        const s = j.suggestions[i];
+        if (!s || !s.inferred) return row;
+        row.inferred = true;
+        row.inferredWhy = s.src || "";
+        row.inferredFor = s.for_surface || null;
+        row.surface = null;
+        return row;
+      }),
       result: null,
+      // suggest-seeded rows the operator deleted, BY chain id - persisted
+      // so a fresh suggest on the next visit cannot resurrect them
+      removed: [],
       // layer stacks (Beaumont workflow): what comes OFF the existing
       // ground before cut/fill starts (topsoil strip, old asphalt, road
       // base) and what gets BUILT on the proposed side (base, paving).
@@ -4805,7 +10287,15 @@ $("ewBtn").onclick = async () => {
       // one, and they are POINT elevations, not lines. Ground tags default ON;
       // structure tops (RIM, wall, step) are not ground and stay off.
       spots: j.spot_grades || [],
-      spotOn: { FG: true, ME: true, EG: true },
+      // How the truncated spot values were anchored, and whether the sheet's
+      // two sources disagreed: {declared, band_base, band_n, chosen,
+      // conflict}. On Barn C3.3 the legend note says 7600 while four printed
+      // contours say 7700 - the engine now resolves by band strength, but a
+      // disagreement like that must reach the operator's eyes either way.
+      datum: j.spot_datum || null,
+      spotOn: { FG: true, ME: true, EG: true, PE: true },  // PE = pad elevation, proposed ground.
+      // WSE deliberately NOT here: water surface, not ground (basin contours sit
+      // BELOW it) - its checkbox appears when the sheet prints one, default off.
       spotSide: "proposed",
       spotDatum: null,
       areaSf: null,
@@ -4817,13 +10307,15 @@ $("ewBtn").onclick = async () => {
       // Session-only and per detection result, like the rest of this panel.
       added: false,
     };
+    // the durable inputs for this page (server sidecar), applied before
+    // the panel's first paint; chain-keyed values only where the chain
+    // still exists - ewApplySaved counts and reports the rest
+    if (state.calcSavedLoaded) ewApplySaved();
+    else if (state.calcSaveBroken)
+      calcNotePut("ewHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
-  renderEw();
-  renderEwLayers();
-  renderEwSpots();
-  renderEwArea();
-  renderEwTake();
-};
+  return true;
+}
 
 // ---- manual contour rows (F57 OPEN item: C3.4 prints no elevations) ----
 // The estimator clicks a contour line and types the elevation they read
@@ -4848,11 +10340,80 @@ function ewBoundSet(pts, src) {
   const gap = Math.hypot(dx, dy);
   state.ewBound = { pts: p, src: src || "picked", gap };
   renderEwBound();
+  calcStateDirty();
   return true;
+}
+// A limit-of-work line is almost never ONE chain. Measured on Barn C3.0
+// (the audit's own example): the BG-Limit of disturbance layer is 10 open
+// chains across three styles - dash runs broken at labels and corners -
+// and picking the longest one alone gave 4,730 SF against the estimator's
+// own 224,058 SF Clear & Grub, a 47x under-read returned as a success.
+// Stitching the layer family end-to-end reads 312,044 SF, the right order
+// of magnitude, with every join on the record.
+//
+// Joins are tiered from the same measurement: real label/dash breaks on
+// C3.0 run 0-124 pt, the two genuine long bridges are 368 and 125 pt, and
+// nothing legitimate exceeded that - so joins up to EW_STITCH_MAX = 500 pt
+// are taken but every join >= 12 pt is REPORTED (count + the largest, in
+// feet when the scale is known), the closure gap is reported the same way,
+// and family chains further than the cap are left out LOUDLY. The operator
+// sees the ring and its SF on the panel and judges; nothing is silent.
+const EW_STITCH_MAX = 500;  // pt; > the largest genuine bridge measured (368)
+function ewBoundStitch(start) {
+  const fam = (start.layer
+    ? state.result.chains.filter(c => c.layer === start.layer)
+    : state.result.chains.filter(c => c.style_id === start.style_id))
+    .filter(c => !state.excluded.has(c.chain_id));
+  const own = Math.hypot(
+    start.points[0][0] - start.points[start.points.length-1][0],
+    start.points[0][1] - start.points[start.points.length-1][1]);
+  // already a ring, or nothing to stitch with: the chain speaks for itself
+  if (own < 2 || fam.length < 2)
+    return { pts: start.points.slice(), n: 1, joins: [], leftover: 0 };
+  const dist = (a, b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+  const used = new Set([start.chain_id]);
+  let poly = start.points.slice();
+  const joins = [];
+  for (;;) {
+    let best = null;
+    for (const endIdx of [0, 1]) {
+      const e = endIdx === 0 ? poly[poly.length-1] : poly[0];
+      for (const c of fam) {
+        if (used.has(c.chain_id)) continue;
+        const q = c.points;
+        for (const rev of [false, true]) {
+          const d = dist(e, rev ? q[q.length-1] : q[0]);
+          if (!best || d < best.d) best = { d, c, rev, endIdx };
+        }
+      }
+    }
+    if (!best || best.d > EW_STITCH_MAX) break;
+    let q = best.c.points.slice();
+    if (best.rev) q.reverse();
+    if (best.endIdx === 0) poly = poly.concat(q);
+    else poly = q.slice().reverse().concat(poly);
+    used.add(best.c.chain_id);
+    joins.push(best.d);
+  }
+  return { pts: poly, n: used.size, joins,
+           leftover: fam.length - used.size };
+}
+// One message covering what the stitcher did, in the operator's units.
+function ewStitchStatus(st) {
+  const ftPerPt = (state.result && state.result.scale
+    && state.result.scale.ft_per_paper_inch)
+    ? state.result.scale.ft_per_paper_inch / 72 : null;
+  const fmt = pt => ftPerPt ? Math.round(pt * ftPerPt) + " ft" : Math.round(pt) + " pt";
+  const big = st.joins.filter(j => j >= 12);
+  let m = st.n > 1 ? `limit of work stitched from ${st.n} lines` : "limit of work set";
+  if (big.length) m += ` ${'—'} ${big.length} gap${big.length>1?"s":""} bridged, largest ${fmt(Math.max(...big))}`;
+  if (st.leftover) m += ` ${'—'} ${st.leftover} line${st.leftover>1?"s":""} of this layer left OUT (further than ${fmt(EW_STITCH_MAX)})`;
+  return m + ` ${'—'} recalculate to apply`;
 }
 function ewBoundClear() {
   state.ewBound = null;
   renderEwBound();
+  calcStateDirty();
 }
 function renderEwBound() {
   const box = $("ewBound"), st = $("ewBoundState"), clr = $("ewBoundClear");
@@ -4911,9 +10472,16 @@ $("ewBoundPick").onclick = () => {
   if (state.tool === "ew-bound") { ewDisarmBound("limit of work cancelled"); return; }
   if (state.selected !== null) {
     const ch = chainById(state.selected);
-    if (ch && ewBoundSet(ch.points, "chain " + ch.chain_id)) {
-      setStatus("limit of work set from the selected line");
-      return;
+    if (ch) {
+      const st = ewBoundStitch(ch);
+      if (ewBoundSet(st.pts, st.n > 1
+            ? `${st.n} lines stitched (${(ch.layer || "style " + ch.style_id).split("|").pop()})`
+            : "chain " + ch.chain_id)) {
+        state.ewBound.seed = ch.chain_id;
+        calcStateDirty();
+        setStatus(ewStitchStatus(st));
+        return;
+      }
     }
   }
   state.tool = "ew-bound";
@@ -4921,6 +10489,69 @@ $("ewBoundPick").onclick = () => {
   setStatus("limit of work: click the grading-limit line on the sheet "
     + '—' + " Esc cancels", "busy");
 };
+// Hand-drawn limit of work (Jason Knudson's requirement, verbatim: "an
+// automatic boundary would be cool, but it would have to be editable" -
+// F145). A picked chain only works when the sheet draws ONE clean limit
+// line; Stice's Coral Mountain sheet fragments its GRADING LIMITS line and
+// the tract ring over-includes interior no-work areas. Drawing follows the
+// odd cuts a real site has. Same interaction grammar as the structure
+// outline (st-draw): click corners, Enter/double-click closes, Esc backs
+// up one corner then cancels.
+$("ewBoundDraw").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "ew-bound-draw") { ewBoundDrawCancel("limit of work: drawing cancelled"); return; }
+  state.tool = "ew-bound-draw";
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.add("active");
+  syncCursor();
+  setStatus("limit of work: click the corners of the graded area "
+    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+};
+function ewBoundDrawClick(px, py) {
+  const d = state.ewBoundDraft;
+  const last = d[d.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
+  d.push([px, py]);
+  const ftPerPt = (state.result && state.result.scale
+    && state.result.scale.ft_per_paper_inch)
+    ? state.result.scale.ft_per_paper_inch / 72 : null;
+  let live = "";
+  if (d.length >= 3 && ftPerPt) {
+    const sf = Math.abs(polyAreaPt(d)) * ftPerPt * ftPerPt;
+    live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
+  }
+  setStatus(`limit of work: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  draw();
+}
+function ewBoundDrawFinish() {
+  const pts = [];
+  for (const q of state.ewBoundDraft)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length-1][0], q[1] - pts[pts.length-1][1]) > 0.5)
+      pts.push(q);
+  if (pts.length < 3) {
+    return ewBoundDrawCancel("limit of work: a boundary needs at least 3 corners "
+      + '—' + " drawing cancelled");
+  }
+  state.tool = null;
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.remove("active");
+  syncCursor();
+  if (ewBoundSet(pts, "drawn outline")) {
+    state.ewBound.seed = null;        // persisted by its points, not a chain
+    calcStateDirty();
+    setStatus(`limit of work drawn ${'—'} ${pts.length} corners ${'—'} recalculate to apply`);
+  }
+  draw();
+}
+function ewBoundDrawCancel(msg) {
+  state.tool = null;
+  state.ewBoundDraft = [];
+  $("ewBoundDraw").classList.remove("active");
+  syncCursor();
+  if (msg) setStatus(msg);
+  draw();
+}
+
 function ewDisarmBound(msg) {
   if (state.tool !== "ew-bound") return;
   state.tool = null;
@@ -4942,8 +10573,14 @@ function ewBoundAt(px, py) {
   if (!best)
     return setStatus("no line there " + '—' + " click closer to the grading-limit line, or Esc", "err");
   ewDisarmBound(undefined);
-  if (ewBoundSet(best.points, "chain " + best.chain_id))
-    setStatus("limit of work set " + '—' + " recalculate to apply it");
+  const st = ewBoundStitch(best);
+  if (ewBoundSet(st.pts, st.n > 1
+        ? `${st.n} lines stitched (${(best.layer || "style " + best.style_id).split("|").pop()})`
+        : "chain " + best.chain_id)) {
+    state.ewBound.seed = best.chain_id;
+    calcStateDirty();
+    setStatus(ewStitchStatus(st));
+  }
 }
 const _ewBoundClickBefore = handleCanvasClick;
 handleCanvasClick = function (e) {
@@ -4982,12 +10619,14 @@ function ewAppendRow(cid) {
   }
   state.ew.rows.push({ chain_id: cid, z: NaN, width: ch.width || 0, dist: null,
                        surface: null, manual: true });
+  if (state.ew.removed) state.ew.removed = state.ew.removed.filter(id => id !== cid);
   state.hotChain = cid;
   renderEw();
   draw();
   const inp = $("ewRows").querySelector(`input[name="ew-z-${cid}"]`);
   if (inp) inp.focus();
   setStatus(`chain ${cid} added — type its elevation, then EXIST or PROP`);
+  calcStateDirty();
 }
 $("ewAddRow").onclick = () => {
   if (!state.ew) return setStatus("run Detect first", "err");
@@ -5113,7 +10752,7 @@ function ewDispRow(lay, i) {
     const r = isFinite(lay.reuse_pct) ? lay.reuse_pct : 0;
     const s = isFinite(lay.respread_pct) ? lay.respread_pct : 0;
     exp.textContent = `${Math.max(100 - r - s, 0)}% export`;
-    exp.style.color = (r + s > 100) ? "var(--bad, #c0483c)" : "";
+    exp.style.color = (r + s > 100) ? "var(--t-stop)" : "";
   }
   paint();
   const span = (cls, txt) => {
@@ -5129,11 +10768,16 @@ function ewDispRow(lay, i) {
 
 $("ewStrip").onclick = () => {
   if (!state.ew) return;
-  // Topsoil is stripped first on every job; 12" is a placeholder for the
-  // soils-report thickness (Beaumont quoted 12"; their Barn bid works out
-  // to ~8.3") - editable like any other row
+  // Topsoil comes off first on every job. Default thickness is the LOCAL
+  // prior: Beaumont Estimate #853's own arithmetic is 8.29 in (5,730 CY
+  // strip x 27 / 224,058 SF clear-and-grub), inside the national 4-8 in
+  // band (NRCS IL Urban Manual spec 752; MS DEQ) - see
+  // webui/ew_defaults.js and docs/earthwork-defaults-research.json.
+  // Editable like any other row; the soils report outranks every default.
   if (!state.ew.layers.existing.some(l => /topsoil/i.test(l.name)))
-    state.ew.layers.existing.unshift({ name: "Topsoil", thickness_in: 12,
+    state.ew.layers.existing.unshift({ name: "Topsoil",
+      thickness_in: (typeof EW_RESEARCH !== "undefined"
+                     ? EW_RESEARCH.strip_depth_in.value : 8),
       ...EW_DISP_DEFAULT });
   renderEwLayers();
 };
@@ -5172,6 +10816,9 @@ function ewBody() {
     proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
       .map(r => ({ chain_id: r.chain_id, z: r.z })),
     cell_ft: 2.0,
+    // Which surface runs between the contours. Sent every time so the
+    // request records the choice; the answer names the model it used.
+    surface_model: ($("ewModelSel") && $("ewModelSel").value) || "auto",
     // The limit of work, if the operator set one. Omitted when they have not,
     // so the server takes the original path and every existing number stands.
     boundary: state.ewBound ? state.ewBound.pts : null,
@@ -5197,6 +10844,33 @@ function ewBody() {
 // in-place yards between the two surfaces, and #853 applies no swell,
 // shrink or compaction factor anywhere, so 1.0 is the evidenced default;
 // these fields exist only for a job that needs one.
+// Material presets fill the two factor boxes from the researched table in
+// webui/ew_defaults.js - export rides bank->loose (dug yards swell into the
+// truck), import rides 1/bank->compacted (buying enough bank yards that the
+// compacted fill measures out). Defaults stay 1.0 until the operator picks
+// one - #853 applies no factor anywhere and that evidence stands - and the
+// boxes remain editable after; picking a preset is a suggestion accepted,
+// not a lock. The title carries the citation so the operator can see WHERE
+// the number came from before pricing on it.
+(function ewWireMatPresets() {
+  const sel = $("ewMatPreset");
+  if (!sel || typeof EW_RESEARCH === "undefined") return;
+  for (const name of Object.keys(EW_RESEARCH.materials)) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    sel.append(o);
+  }
+  sel.onchange = () => {
+    const m = EW_RESEARCH.materials[sel.value];
+    if (!m) { sel.title = ""; return; }
+    $("ewFacExp").value = m.b2l.toFixed(2);
+    $("ewFacImp").value = (1 / m.b2c).toFixed(2);
+    sel.title = m.src;
+    $("ewFacExp").dispatchEvent(new Event("input", { bubbles: true }));
+    $("ewFacImp").dispatchEvent(new Event("input", { bubbles: true }));
+  };
+})();
+
 function ewFactor(id) {
   const el = $(id);
   const v = el ? parseFloat(el.value) : NaN;
@@ -5207,12 +10881,28 @@ function ewFactor(id) {
 // sheet gave us no contour label to anchor them against
 function ewActiveSpots() {
   if (!state.ew || !state.ew.spots) return [];
-  const base = state.ew.spotDatum;
+  // Number.isFinite, NEVER bare isFinite: isFinite(null) is TRUE in JS
+  // (null coerces to 0), so the fresh-open default spotDatum: null acted
+  // as a TYPED DATUM OF ZERO and every truncated spot served raw 29-49 ft
+  // values - resolved 7,7xx elevations destroyed until the operator
+  // touched the box. The "0.0 is not None" trap (CLAUDE.md section 5),
+  // JavaScript edition. Caught live 2026-08-30 during the joint UI pass.
+  const base = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : NaN;
   return state.ew.spots
     .filter(g => state.ew.spotOn[g.tag])
     .map(g => {
+      // A typed datum outranks the engine's resolution for every TRUNCATED
+      // value - resolved ones included. The old order (resolved wins, datum
+      // only fills the unresolved) made the override useless on the sheet
+      // that needs it most: a bogus legend note resolves everything, so a
+      // correct typed 7700 changed nothing. Authority is human > sheet note
+      // > consensus band. Values printed in full (>= 1000) keep their
+      // printed elevation - the datum is the hundreds the sheet OMITTED,
+      // and nothing was omitted from those.
+      if (Number.isFinite(base) && g.value < 100.0)
+        return { ...g, z: base + g.value };
       if (g.resolved && isFinite(g.z)) return g;
-      if (!isFinite(base)) return null;
+      if (!Number.isFinite(base)) return null;
       return { ...g, z: base + g.value };   // datum = the hundreds the sheet omitted
     })
     .filter(g => g && isFinite(g.z));
@@ -5252,13 +10942,42 @@ function renderEwSpots() {
     tags.appendChild(l);
   }
   box.appendChild(tags);
-  if (!sp.some(g => g.resolved)) {
+  // The override box shows when nothing resolved (nothing to anchor to) OR
+  // when the sheet's two datum sources DISAGREE. The old gate was
+  // resolved-only, which is precisely how Barn C3.3 shipped 171 grades
+  // 100 ft low with the override hidden: a bogus legend note resolved
+  // everything, so the one control that could fix it never rendered.
+  // Wrong-and-visible is survivable; wrong-and-green-with-no-override is
+  // what loses a client.
+  const dat = state.ew.datum;
+  if (dat && dat.conflict) {
+    const d = document.createElement("div");
+    d.className = "sp-datum sp-conflict";
+    const chose = dat.chosen === "band" ? dat.band_base : dat.declared;
+    const msg = document.createElement("div");
+    msg.innerHTML = `<b>This sheet disagrees with itself about the datum.</b> `
+      + `Its legend note reads <b>${dat.declared}</b>; its own printed `
+      + `elevations (${dat.band_n} of them) sit in the <b>${dat.band_base}</b> `
+      + `band. Using <b>${chose}</b> — ${dat.chosen === "band"
+          ? `${dat.band_n} full elevations printed on the drawing outrank one `
+            + `boilerplate legend sentence`
+          : `a ${dat.band_n}-label band is the shape the legend's own sample `
+            + `text produces, so the note stands`}. `
+      + `If the sheet means the other one, type it:`;
+    d.appendChild(msg);
+    const i = document.createElement("input");
+    i.type = "number"; i.step = "100"; i.placeholder = String(chose);
+    i.value = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
+    d.appendChild(i);
+    box.appendChild(d);
+  } else if (!sp.some(g => g.resolved)) {
     const d = document.createElement("div");
     d.className = "sp-datum";
     d.append(document.createTextNode("No contour label on this sheet to anchor them. Datum:"));
     const i = document.createElement("input");
     i.type = "number"; i.step = "100"; i.placeholder = "7700";
-    i.value = isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
+    i.value = Number.isFinite(state.ew.spotDatum) ? state.ew.spotDatum : "";
     i.oninput = () => { state.ew.spotDatum = parseFloat(i.value); renderEwSpots(); };
     d.appendChild(i);
     box.appendChild(d);
@@ -5341,7 +11060,25 @@ function renderEw() {
     meta.className = "ew-meta";
     meta.textContent = row.manual
       ? `chain ${row.chain_id} · w ${row.width} · manual`
+      : row.inferred
+      ? `chain ${row.chain_id} · w ${row.width} · elevation INFERRED, not printed`
       : `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
+    if (row.inferred) {
+      // The badge and the sentence, on the row, not in a tooltip: an
+      // inferred elevation must never be able to pass for a read one.
+      div.classList.add("ew-inferred");
+      z.classList.add("inferred");
+      const tag = document.createElement("span");
+      tag.className = "ew-inf-tag";
+      tag.textContent = "inferred";
+      meta.prepend(tag);
+      if (row.inferredWhy) {
+        const why = document.createElement("div");
+        why.className = "ew-inf-why";
+        why.textContent = row.inferredWhy;
+        meta.appendChild(why);
+      }
+    }
     const seg = document.createElement("div");
     seg.className = "seg";
     for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"], [null, "skip"]]) {
@@ -5349,7 +11086,7 @@ function renderEw() {
       b.textContent = lab;
       if (row.surface === key) b.className = key === "existing" ? "on-ex" : key === "proposed" ? "on-pr" : "";
       if (row.surface === key && key === null) b.style.opacity = "1";
-      b.onclick = () => { row.surface = key; renderEw(); };
+      b.onclick = () => { row.surface = key; renderEw(); calcStateDirty(); };
       seg.appendChild(b);
     }
     const x = document.createElement("button");
@@ -5357,9 +11094,13 @@ function renderEw() {
     x.title = "remove this contour from the calculation";
     x.onclick = () => {
       state.ew.rows = state.ew.rows.filter(r => r !== row);
+      // remember the deletion: restore merges saved rows into a FRESH
+      // suggest, and without this list the suggest re-seeds deleted rows
+      (state.ew.removed = state.ew.removed || []).push(row.chain_id);
       if (state.hotChain === row.chain_id) state.hotChain = null;
       renderEw();
       draw();
+      calcStateDirty();
     };
     div.append(z, meta, seg, x);
     div.onmouseenter = () => { state.hotChain = row.chain_id; draw(); };
@@ -5390,10 +11131,20 @@ $("ewCalc").onclick = async () => {
   const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
   renderEwStale();
   renderEwBound();
-  $("ewResult").innerHTML =
-    `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
-    ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
-    (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
+  // Layers-only (audit item 10): a clearing sheet has no cut/fill TIN, but
+  // stripping is area x depth. The failure is stated, never zeroed - a
+  // printed "cut 0 CY" on a sheet nobody graded is a confident wrong number.
+  $("ewResult").innerHTML = j.layers_only
+    ? `<b>no cut/fill:</b> ${j.cut_fill_error} ` +
+      `<br><span class="ew-meta">layer volumes below still compute ` +
+      `(${Number(j.layer_area_sf).toLocaleString()} SF from the ${j.area_source})</span>`
+    : `<b>cut ${ewCY(cutQ)} CY</b> · <b>fill ${ewCY(fillQ)} CY</b>` +
+      ` · net ${ewCY(j.net_yd3)} CY over ${Number(j.area_sf).toLocaleString()} SF` +
+      (j.max_cut_ft || j.max_fill_ft
+        ? `<br><span class="ew-meta">deepest cut ${j.max_cut_ft} ft · ` +
+          `deepest fill ${j.max_fill_ft} ft — eyeball these against the ` +
+          `contours; a peak that surprises you is a row to check</span>` : "") +
+      (off.length ? `<br><span class="ew-meta">surfaces lowered: ${off.join(", ")}</span>` : "");
   // per-layer slabs: area x thickness, shown under the stacks
   const out = $("ewLayerOut");
   out.innerHTML = "";
@@ -5526,8 +11277,10 @@ function renderEwTake() {
 function renderEwBasis(j, body) {
   const box = $("ewBasis");
   if (!box) return;
-  box.classList.toggle("off", !j);
-  if (!j) return;
+  // a layers-only answer has no interpolation to describe
+  const show = j && !j.layers_only;
+  box.classList.toggle("off", !show);
+  if (!show) return;
   const ex = j.existing_contours, pr = j.proposed_contours;
   const nPts = ((body && body.existing_points) || []).length
              + ((body && body.proposed_points) || []).length;
@@ -5548,17 +11301,92 @@ function renderEwBasis(j, body) {
     + "contours — so it cuts across every notch in the real limit of "
     + "disturbance. No input on this panel can bound it.");
   u.className = "unbounded";
+  // WHICH SURFACE PRODUCED THIS NUMBER. The two models differ by tens of
+  // percent on a sparse sheet, so the model rides beside the volume and
+  // not in a tooltip: an operator must never be unable to tell which one
+  // ran, or that it was picked for them.
+  if (j.surface_model) {
+    const m = line(`Between the contours: <b>${ewModelName(j.surface_model)}</b>`
+      + ` — ${esc(j.surface_model_source || "")}.`
+      + (j.surface_model_why ? ` ${esc(j.surface_model_why)}.` : "")
+      + (j.label_band_ft == null ? "" :
+        ` Measured label sparsity ${j.label_band_ft} ft`
+        + ` (existing ${j.label_band_existing_ft}, proposed `
+        + `${j.label_band_proposed_ft}).`));
+    m.className = "ew-basis-model";
+  }
+  renderEwModelNote(j);
+}
+
+// How many INFERRED elevations the operator actually accepted into a
+// surface. Counted off the live rows, not off the suggest payload: a row
+// the operator left on SKIP or deleted contributes nothing and must not be
+// disclosed as if it did.
+function ewInferredAccepted() {
+  const rows = (state.ew && state.ew.rows) || [];
+  return rows.filter(r => r.inferred && isFinite(r.z)
+    && (r.surface === "existing" || r.surface === "proposed")).length;
+}
+
+// The two names the operator sees, used everywhere a model is named so the
+// control, the basis line and the printed report cannot drift apart.
+function ewModelName(m) {
+  return m === "clamped_ct" ? "smooth surface, clamped to the contours"
+       : m === "linear" ? "linear TIN"
+       : String(m || "");
+}
+
+// Live note beside the picker: after a Calculate, say what AUTO decided and
+// on what measurement, so choosing "Auto" is not choosing blind.
+function renderEwModelNote(j) {
+  const n = $("ewModelNote");
+  if (!n) return;
+  if (!j || !j.surface_model) { n.textContent = ""; return; }
+  const sel = $("ewModelSel");
+  const chosen = sel ? sel.value : "auto";
+  n.textContent = chosen === "auto"
+    ? `auto picked ${ewModelName(j.surface_model)}`
+      + (j.label_band_ft == null ? "" : ` (labels ${j.label_band_ft} ft apart)`)
+    : `using ${ewModelName(j.surface_model)}`;
 }
 
 // The lines the approve payload carries onto the printed report, so a reader
 // of the PDF who never saw this panel learns the same three things. Empty
 // unless the estimator actually added earthwork - no earthwork row, no note.
+// Every free-text note the export carries, in priority order, plus the ONE
+// place that knows the server's cap. server.py `approve` keeps
+// `body.notes[:6]`; anything past that is dropped with no message, so the
+// count is checked here and disclosed on the status line rather than
+// discovered later on a report that is missing its caveat.
+const APPROVE_NOTES_MAX = 6;   // mirrors server.py approve(): body.notes[:6]
+function approveNotes() {
+  return [...famApproveNotes(), ...ewApproveNotes()];
+}
+function approveNotesDropped() {
+  return Math.max(0, approveNotes().length - APPROVE_NOTES_MAX);
+}
+
 function ewApproveNotes() {
   const j = state.ew && state.ew.added && state.ew.result;
   if (!j) return [];
+  // Which surface produced the number, on the face of the report. A reader
+  // of the printed PDF never saw the panel, and the two models differ by
+  // tens of percent on a sparse sheet - so the model, WHY it was chosen and
+  // the measurement behind the choice travel with the volume. Inferred
+  // elevations get their own line only when some were actually accepted.
+  const nInf = ewInferredAccepted();
   return [
     "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
     + "rows) is a contour interpolation, not a measured volume.",
+    `Surface between the contours: ${ewModelName(j.surface_model)}`
+    + ` — ${j.surface_model_source || "default"}.`
+    + (j.surface_model_why ? ` ${j.surface_model_why}.` : "")
+    + (j.label_band_ft == null ? "" :
+      ` Measured label sparsity ${j.label_band_ft} ft.`),
+    ...(nInf ? [`${nInf} of the contour elevations in this volume were `
+      + "INFERRED by counting unlabelled contours between two labelled "
+      + "ones at the sheet's contour interval, not read from a printed "
+      + "label, and were accepted by the reviewer."] : []),
     `Interpolated from ${j.existing_contours} existing and `
     + `${j.proposed_contours} proposed contours over `
     + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `
@@ -5652,12 +11480,21 @@ async function ewFetchMap() {
   const img = await createImageBitmap(blob);
   if (!state.ew) return;
   state.ew.map = { img, bbox, refDz: refDz ? parseFloat(refDz) : null };
+  // the legend makes the ramp readable: full color = the ref depth
+  const leg = $("ewMapLegend");
+  if (leg) {
+    const r = refDz ? parseFloat(refDz) : null;
+    leg.hidden = false;
+    leg.querySelector(".eml-txt").textContent = r
+      ? `cut −${r.toFixed(1)} ft … +${r.toFixed(1)} ft fill (full color)`
+      : "cut blue · fill orange";
+  }
   draw();
 }
 $("ewMap").onchange = async () => {
   if (!state.ew) { $("ewMap").checked = false; return; }
   if ($("ewMap").checked) await ewFetchMap();
-  else { state.ew.map = null; draw(); }
+  else { state.ew.map = null; $("ewMapLegend").hidden = true; draw(); }
 };
 
 // ---------- pipe trench calculator ----------
@@ -5675,13 +11512,18 @@ $("trBtn").onclick = () => {
   const panel = $("trPanel");
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   if (!state.tr) {
     state.tr = {
       style_id: null, od_in: 6, d0_ft: 2, d1_ft: 8,
       rules: TR_DEFAULT_RULES.map(r => ({ ...r })),
     };
+    if (state.calcSavedLoaded) trApplySaved();
+    else if (state.calcSaveBroken)
+      calcNotePut("trHint", "This page's saved calculator inputs could not be read when it loaded, and edits here are NOT being saved. Reload to retry.");
   }
   renderTr();
+  renderCheckQueue();   // trApplySaved may have settled a stale-input entry
 };
 
 function renderTr() {
@@ -5740,6 +11582,166 @@ function renderTr() {
   });
 }
 
+// ---------- trench math (pure) -------------------------------------------
+// No DOM and no state.* in this block: tests/test_trench_math.js slices the
+// file between the TRENCH-MATH markers and evals it standalone, so keep it
+// self-contained.
+// TRENCH-MATH-BEGIN
+
+// Rules normalised for arithmetic: junk rows dropped, sorted ascending by
+// depth edge, clearances in feet. Sorted on purpose - trClrAt takes the
+// FIRST band the depth fits, and the panel lets the operator reorder rows,
+// so an out-of-order table must not hand a 1-ft-deep pipe the 99-ft band.
+// An empty table falls back to 6 in everywhere, as before.
+function trNormRules(rules) {
+  const rs = (rules || [])
+    .filter(r => r && isFinite(r.to_ft) && r.to_ft > 0
+                   && isFinite(r.clr_in) && r.clr_in >= 0)
+    .map(r => ({ to: +r.to_ft, clr: r.clr_in / 12.0 }))
+    .sort((a, b) => a.to - b.to);
+  return rs.length ? rs : [{ to: Infinity, clr: 0.5 }];
+}
+
+// Clearance (ft) for a pipe whose invert sits at depth d. Depths past the
+// last edge keep the last band's clearance - unchanged semantics.
+function trClrAt(rs, d) {
+  for (const r of rs) if (d <= r.to) return r.clr;
+  return rs[rs.length - 1].clr;
+}
+
+// Hole cross-section (sf) at invert depth d: FULL BOTTOM WIDTH for the
+// whole column, A(d) = (OD + 2 x clearance(d)) x d. The builder agent
+// proposed integrating band by band down the wall instead (each depth
+// band at its own rule width), which makes A(d) continuous - but that
+// hole is NARROWER ABOVE THAN BELOW whenever clearance grows with depth,
+// which no excavation can be, and it reads LOW against any physical
+// trench (-20% at a constant 4 ft with a 6-in pipe). A low dig number
+// reaching a bid is the expensive direction, so the full-width neat-line
+// convention stands (CONVENTION: trench pay width = pipe OD + a
+// clearance set by the trench's depth class, applied full depth - the
+// vertical-wall / trench-box reading, the MINIMUM physical cut; source:
+// general practice for neat-line trench payment, and it is how this
+// calculator always read). The consequence is embraced, not hidden:
+// crossing a rule edge re-prices the whole column, so 4.00 -> 4.01 ft
+// with the default table steps +40% BY DESIGN - a depth-class boundary
+// is a price step, the same shape as Pierce's 2-ft pricing bands. What
+// WAS a bug is fixed downstream: along a sloped run each slice is split
+// at rule-edge crossings (trRunVolumes), so the integral is exact for a
+// linear profile instead of whole slices snapping with their midpoints.
+function trHoleArea(rs, odFt, d) {
+  if (!(d > 0)) return 0;
+  return (odFt + 2 * trClrAt(rs, d)) * d;
+}
+
+// Bedding-envelope cross-section (sf): the pipe zone - a square of side
+// (OD + 2 x clearance) at the trench bottom - taken as a z-sub-range of
+// the hole itself, at the hole's own width. min(h, d) is what makes the
+// audit-6a clamp structural: a sub-range of the hole cannot out-measure
+// the hole, so bedding can never again exceed the dig (the shipped 6a
+// defect had bedding at 137% of the dig on a 1-ft-deep run).
+function trEnvArea(rs, odFt, d) {
+  if (!(d > 0)) return 0;
+  const w = odFt + 2 * trClrAt(rs, d);
+  return w * Math.min(w, d);
+}
+
+// One run: lenFt of pipe, invert depth linear d0 -> d1 along it. N slices
+// along the run as before (N = 60, set at the call site); WITHIN each
+// slice the depth interval is split at every rule edge it crosses, and
+// each sub-piece is evaluated at its MIDPOINT. Between edges both
+// trHoleArea (w x d, w constant in-band) and trEnvArea are linear in d,
+// so midpoint x length is the exact integral on every piece; a piece
+// endpoint sitting exactly ON an edge would sample the wrong band, which
+// is why midpoints and not trapezoid endpoints. Net: exact for a linear
+// profile under the full-width model - the old code let whole slices
+// snap with their midpoint sample, a genuine staircase error on sloped
+// runs, which is the part of audit 6b that was a bug.
+function trRunVolumes(rs, odFt, lenFt, d0, d1, N) {
+  const a0 = Math.max(isFinite(d0) ? d0 : 0, 0);
+  const a1 = Math.max(isFinite(d1) ? d1 : 0, 0);
+  let dig = 0, env = 0;
+  const dL = lenFt / N;
+  for (let i = 0; i < N; i++) {
+    const dA = a0 + (a1 - a0) * (i / N);
+    const dB = a0 + (a1 - a0) * ((i + 1) / N);
+    const lo = Math.min(dA, dB), hi = Math.max(dA, dB), span = hi - lo;
+    if (span <= 0) {  // level slice: nothing to split
+      dig += trHoleArea(rs, odFt, dA) * dL;
+      env += trEnvArea(rs, odFt, dA) * dL;
+      continue;
+    }
+    const cuts = [lo];
+    for (const r of rs) if (r.to > lo && r.to < hi) cuts.push(r.to);
+    cuts.push(hi);
+    cuts.sort((x, y) => x - y);
+    for (let k = 0; k + 1 < cuts.length; k++) {
+      const u1 = cuts[k], u2 = cuts[k + 1], f = (u2 - u1) / span;
+      if (!(f > 0)) continue;
+      const dm = (u1 + u2) / 2;
+      dig += trHoleArea(rs, odFt, dm) * f * dL;
+      env += trEnvArea(rs, odFt, dm) * f * dL;
+    }
+  }
+  return { dig, env };
+}
+
+// Whole-run totals with the audit-6a INVARIANT enforced and stated:
+//   bed + backfill + pipe <= dig, always; and whenever the pipe actually
+//   fits its hole (pipeVol <= dig), the three parts sum to dig EXACTLY.
+// env <= dig holds structurally (see trEnvArea) - the min() mops up float
+// noise only. bed and backfill floor at 0: a pipe that cannot fit its own
+// trench (OD deeper than the invert) yields zeros, never negatives.
+// Before this, 100 LF at 1.0 ft returned bedding = 137% of its own hole.
+function trTotals(dig, env, pipeVol) {
+  env = Math.min(env, dig);
+  const bed = Math.max(env - pipeVol, 0);
+  const backfill = Math.max(dig - bed - pipeVol, 0);
+  return { dig, bed, backfill, pipeVol };
+}
+
+// Display rounding for trench volumes, unchanged: 0.1 CY.
+function trCY(v) { return Math.round(v / 27 * 10) / 10; }
+
+// LF per depth band from the TYPED d0/d1 linear profile. Rick, Pierce Site
+// Work (transcript 2026-08-27): "we price by the foot to install pipe...
+// it's a two-ft interval. So within 8-in sewer main we need to know how
+// much of it is 0 to six feet deep, how much is 6 to 8, how much is 8 to
+// 10, and so on. Sometimes we're up to 24 feet deep." First edge and step
+// are arguments (panel defaults 6 and 2 = his convention, in writing at
+// EXCAVATION-PLAN.md section 16), so the bands run [0,F], (F,F+S], ... out
+// to the deepest typed invert. A run sitting exactly ON an edge counts in
+// the SHALLOWER band - the same convention as the bedding rules' d <= to.
+//
+// TYPED DEPTHS ONLY - DO NOT WIRE PROFILE-DERIVED DEPTHS IN HERE. Deriving
+// depth from INV/RIM text is forbidden until the datum work (commit
+// 5390b3f, the abstain rule) is wired into profile reading: 81.9% of spot
+// grades on the Barn set come back with the hundreds digit unresolved, and
+// differencing truncated elevations puts a confident wrong number in a
+// priced band. EXCAVATION-PLAN.md section 16 is the binding instruction.
+function trDepthBands(runFt, d0, d1, firstEdge, step, maxRows) {
+  const F = +firstEdge, S = +step;
+  if (!(F > 0) || !(S > 0) || !(runFt > 0)) return null;
+  const a0 = Math.max(isFinite(d0) ? d0 : 0, 0);
+  const a1 = Math.max(isFinite(d1) ? d1 : 0, 0);
+  const dmin = Math.min(a0, a1), dmax = Math.max(a0, a1);
+  // measure of the run at depth <= d; the profile is linear, so exact
+  const fracLE = (d) => d >= dmax ? 1
+    : (d < dmin || dmax === dmin) ? 0
+    : (d - dmin) / (dmax - dmin);
+  const rows = [];
+  let lo = 0, hi = F, truncated = false;
+  for (;;) {
+    // the first band's floor is 0 outright, so a run typed at 0 ft still
+    // lands in [0,F] instead of vanishing between two edges
+    rows.push({ lo, hi, lf: runFt * (fracLE(hi) - (lo === 0 ? 0 : fracLE(lo))) });
+    if (hi >= dmax) break;
+    if (rows.length >= (maxRows || 64)) { truncated = true; break; }
+    lo = hi; hi = lo + S;
+  }
+  return { rows, truncated };
+}
+// TRENCH-MATH-END
+
 $("trCalc").onclick = () => {
   const t = state.tr;
   if (!t || t.style_id === null) { $("trResult").textContent = "pick the pipe run first"; return; }
@@ -5750,42 +11752,137 @@ $("trCalc").onclick = () => {
     c.style_id === t.style_id && !state.excluded.has(c.chain_id));
   if (!chains.length) { $("trResult").textContent = "that style has no lines"; return; }
   const odFt = t.od_in / 12.0;
-  const clrFt = (d) => {
-    for (const r of t.rules) if (d <= r.to_ft) return r.clr_in / 12.0;
-    return t.rules.length ? t.rules[t.rules.length - 1].clr_in / 12.0 : 0.5;
-  };
-  const N = 60;  // integration steps along each run
-  let dig = 0, bed = 0, runFt = 0;
+  if (!(odFt > 0)) { $("trResult").textContent = "pipe OD must be a positive number"; return; }
+  if (!isFinite(t.d0_ft) || !isFinite(t.d1_ft)) { $("trResult").textContent = "type both invert depths"; return; }
+  const rs = trNormRules(t.rules);
+  const N = 60;  // slices along each run, as before; rule-edge splits happen inside
+  let digRaw = 0, envRaw = 0, runFt = 0;
   for (const c of chains) {
-    const L = c.length_pt * ftPerPt;
+    const L = chainLenPt(c) * ftPerPt;
     runFt += L;
-    for (let i = 0; i < N; i++) {
-      const x = (i + 0.5) / N;
-      const d = t.d0_ft + (t.d1_ft - t.d0_ft) * x;   // invert depth here
-      const w = odFt + 2 * clrFt(d);                  // trench width here
-      dig += w * Math.max(d, 0) * (L / N);            // dig surface->invert
-      bed += w * (odFt + 2 * clrFt(d)) * (L / N);     // envelope around pipe
-    }
+    const v = trRunVolumes(rs, odFt, L, t.d0_ft, t.d1_ft, N);
+    digRaw += v.dig; envRaw += v.env;
   }
   const pipeVol = Math.PI * (odFt / 2) ** 2 * runFt;
-  bed = Math.max(bed - pipeVol, 0);
-  const backfill = Math.max(dig - bed - pipeVol, 0);
-  const cy = (v) => Math.round(v / 27 * 10) / 10;
+  const { dig, bed, backfill } = trTotals(digRaw, envRaw, pipeVol);
   $("trResult").innerHTML =
-    `<b>dig ${cy(dig).toLocaleString()} CY</b> · <b>bedding ${cy(bed).toLocaleString()} CY</b>` +
-    ` · backfill ${cy(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
+    `<b>dig ${trCY(dig).toLocaleString()} CY</b> · <b>bedding ${trCY(bed).toLocaleString()} CY</b>` +
+    ` · backfill ${trCY(backfill).toLocaleString()} CY · ${Math.round(runFt).toLocaleString()} LF of pipe`;
   const name = (state.labels.get(t.style_id) || "pipe").slice(0, 40);
-  state.extraItems = state.extraItems.filter(it => !it.label.startsWith("Trench") && !it.label.startsWith("Bedding") && !it.label.startsWith("Backfill") && !it.label.endsWith("(run)"));
+  // Consent is per system: recalculating the SAME style while its rows are
+  // added refreshes them in place - consent was given for THIS calculation,
+  // and a superseded number left priced is its own silent lie (same rule as
+  // ewCalc). Switching styles starts the new system un-added; the previous
+  // system's consented rows stay, and the exact-label filter in
+  // trClearItems scopes every apply/remove to one system's four rows.
+  if (t.added && t.result && t.result.style_id !== t.style_id) t.added = false;
+  t.result = { style_id: t.style_id, name, runFt, dig, bed, backfill };
+  t.calc = { runFt, d0: t.d0_ft, d1: t.d1_ft };  // the band table reads THIS snapshot
+  // Audit item 5, the consent gate: Calculate only LOOKS. Rows reach
+  // state.extraItems - and through it the priced report - only via the
+  // "Add to takeoff" button (trAdd, below).
+  if (t.added) trApplyItems(t.result);
+  renderTrTake();
+  renderTrBands();
+  renderItemized();
+};
+
+// Replace only THIS system's four rows. A prefix filter here once removed
+// every row starting Trench/Bedding/Backfill or ending (run), so
+// calculating a second pipe system silently deleted the first - a job with
+// sanitary + storm + water + force main could only ever hold one of the
+// four. Matching the exact labels this calculation regenerates (the style's
+// name is embedded in all four) scopes the replacement to one system.
+// Label-based on purpose: calcSave strips rows to {label, qty, unit}, so a
+// hidden style-id tag would not survive a session restore and restored rows
+// would stop being replaced. Trade-off accepted: renaming a style between
+// calculates leaves the old name's rows behind - visible and deletable,
+// which beats the silent deletion this replaces.
+function trClearItems(res) {
+  const mine = new Set([`${res.name} (run)`, `Trench excavation (${res.name})`,
+                        `Bedding gravel (${res.name})`, `Backfill (${res.name})`]);
+  state.extraItems = state.extraItems.filter(it => !mine.has(it.label));
+}
+
+function trApplyItems(res) {
+  trClearItems(res);
   // The FOOTAGE is the line item an excavator actually bids. Every utility
   // row on Beaumont's Estimate #853 is priced per LF - the perimeter drain
   // alone is 3,395 LF / $105,245 - while the CY volumes below are the
   // supporting math. Emit the run first so it leads the group.
-  if (runFt > 0) state.extraItems.push({ label: `${name} (run)`, qty: Math.round(runFt * 10) / 10, unit: "LF" });
-  if (dig > 0) state.extraItems.push({ label: `Trench excavation (${name})`, qty: cy(dig), unit: "CY" });
-  if (bed > 0) state.extraItems.push({ label: `Bedding gravel (${name})`, qty: cy(bed), unit: "CY" });
-  if (backfill > 0) state.extraItems.push({ label: `Backfill (${name})`, qty: cy(backfill), unit: "CY" });
+  if (res.runFt > 0) state.extraItems.push({ label: `${res.name} (run)`, qty: Math.round(res.runFt * 10) / 10, unit: "LF" });
+  if (res.dig > 0) state.extraItems.push({ label: `Trench excavation (${res.name})`, qty: trCY(res.dig), unit: "CY" });
+  if (res.bed > 0) state.extraItems.push({ label: `Bedding gravel (${res.name})`, qty: trCY(res.bed), unit: "CY" });
+  if (res.backfill > 0) state.extraItems.push({ label: `Backfill (${res.name})`, qty: trCY(res.backfill), unit: "CY" });
+}
+
+// Audit item 5: the same consent earthwork and structures already require.
+// Calculating is looking; this button is the decision.
+$("trAdd").onclick = () => {
+  if (!state.tr || !state.tr.result) return;
+  state.tr.added = !state.tr.added;
+  if (state.tr.added) trApplyItems(state.tr.result);
+  else trClearItems(state.tr.result);
+  renderTrTake();
   renderItemized();
+  setStatus(state.tr.added
+    ? "trench rows added to the takeoff — they will price, export and print like any other row"
+    : "trench rows removed from the takeoff");
 };
+
+function renderTrTake() {
+  const box = $("trTake"), btn = $("trAdd"), note = $("trTakeNote");
+  if (!box || !btn || !note) return;
+  const res = state.tr && state.tr.result;
+  box.classList.toggle("off", !res);
+  if (!res) return;
+  btn.textContent = state.tr.added ? "Remove from takeoff" : "Add to takeoff";
+  btn.classList.toggle("on", !!state.tr.added);
+  note.textContent = state.tr.added
+    ? `${res.name}: in the itemized takeoff. Recalculating this style refreshes its rows in place; other systems' rows are never touched.`
+    : "Not in the takeoff. Calculate only shows the numbers — press this to bid them.";
+}
+
+// The Pierce band table. Reads the snapshot taken at Calculate (state.tr
+// .calc), so its rows always describe the run and profile the volumes above
+// came from; editing d0/d1 after Calculate changes nothing here until the
+// next Calculate. The edge inputs re-render live - they re-slice the same
+// snapshot, which is safe because bands are read-only and never touch
+// state.extraItems.
+function renderTrBands() {
+  const box = $("trBandBox"), out = $("trBandRows");
+  if (!box || !out) return;
+  const c = state.tr && state.tr.calc;
+  box.classList.toggle("off", !c);
+  if (!c) return;
+  out.innerHTML = "";
+  const bt = trDepthBands(c.runFt, c.d0, c.d1,
+                          parseFloat($("trBandEdge").value),
+                          parseFloat($("trBandStep").value), 64);
+  if (!bt) {
+    out.innerHTML = '<div class="tr-bands-note">first edge and step must be positive numbers</div>';
+    return;
+  }
+  const fmtE = (v) => (Math.round(v * 100) / 100).toLocaleString();
+  for (const b of bt.rows) {
+    const row = document.createElement("div");
+    row.className = "tr-band-row";
+    const lab = document.createElement("span");
+    lab.textContent = `${fmtE(b.lo)}–${fmtE(b.hi)} ft deep`;
+    const q = document.createElement("b");
+    q.textContent = `${Math.round(b.lf).toLocaleString()} LF`;
+    row.append(lab, q);
+    out.appendChild(row);
+  }
+  if (bt.truncated) {
+    const d = document.createElement("div");
+    d.className = "tr-bands-note";
+    d.textContent = "stopped at 64 bands — widen the step to cover the full depth";
+    out.appendChild(d);
+  }
+}
+$("trBandEdge").oninput = renderTrBands;
+$("trBandStep").oninput = renderTrBands;
 
 // ---------- symbol counter ----------
 $("symClose").onclick = () => { $("symPanel").hidden = true; state.symMarks = null; draw(); };
@@ -6102,6 +12199,17 @@ function renderSym() {
   box.innerHTML = "";
   renderSymScope();   // sets g._scope on every group; must run before the rows
 
+  // groups beyond the response cap exist but are not in this list - say so
+  // (the count implies completeness otherwise; audit B3)
+  if (info.groups_total > (state.sym || []).length) {
+    const d = document.createElement("div");
+    d.className = "ew-hint";
+    d.textContent = `showing ${state.sym.length} of ${info.groups_total} `
+      + `repeated-symbol groups - the smallest ${info.groups_total - state.sym.length} `
+      + `are not listed or counted here`;
+    box.appendChild(d);
+  }
+
   // what the sheet's own schedule says, and where it was read from - the
   // estimator needs to know whether the cross-check column is trustworthy
   const sb = $("symSched");
@@ -6213,10 +12321,30 @@ function centerOn(xPt, yPt) {
   state.view.y = cv.clientHeight / 2 - yPt * f * k;
   draw();
 }
+
+// SELECT + CENTRE, one path. The callout list already did select-then-centre
+// by hand; the per-family line list needs exactly the same gesture, so it is
+// this function rather than a second copy that can drift.
+//   atPt  centre here instead of on the chain (the callout list centres on
+//         the leader's glyph, which is what the operator clicked).
+// Returns false when the chain is gone (deleted, or consumed by an edit).
+function revealChain(cid, atPt) {
+  if (cid === null || cid === undefined || !state.result) return false;
+  const ch = chainById(cid);
+  if (!ch) return false;
+  state.selected = cid;
+  state.selPt = null;
+  updateSelBar(ch);
+  const p = atPt || (ch.points && ch.points.length
+    ? ch.points[Math.floor(ch.points.length / 2)] : null);
+  if (p) centerOn(p[0], p[1]); else draw();
+  return true;
+}
 $("coBtn").onclick = async () => {
   const panel = $("coPanel");
   if (!panel.hidden) { panel.hidden = true; return; }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   if (!state.co) {
     $("coRows").innerHTML = '<div class="ew-hint">reading callouts… (first run OCRs the sheet, ~10-30s)</div>';
     const r = await fetch(`/api/job/${state.job}/page/${state.page}/callouts`);
@@ -6255,11 +12383,10 @@ function renderCo() {
     };
     div.onmouseleave = () => { state.hotChain = null; state.symMarks = null; draw(); };
     div.onclick = () => {
-      if (c.target_chain_id !== null) {
-        state.selected = c.target_chain_id;
-        updateSelBar(chainById(c.target_chain_id));
-      }
-      centerOn(c.gx, c.gy);
+      // same select-then-centre-on-the-glyph it always did, through the
+      // shared path now (revealChain falls through to the bare centre when
+      // the leader points at no line)
+      if (!revealChain(c.target_chain_id, [c.gx, c.gy])) centerOn(c.gx, c.gy);
     };
     box.appendChild(div);
   }
@@ -6368,7 +12495,7 @@ function aiDismissBtn() {
   x.title = "Hide this analysis (the Analyze button brings it back on this page)";
   x.onclick = () => {
     state.aiHidden = true;
-    $("aiBtn").textContent = "Analyze ▾";
+    toolRowLabel("aiBtn", "Analyze ▾");
     renderAiBanner();
   };
   return x;
@@ -6468,7 +12595,7 @@ function aiGradeChip(g) {
 function renderAiBanner() {
   const banner = $("aiBanner"), j = state.ai;
   if (!j || state.aiHidden) { banner.hidden = true; return; }
-  $("aiBtn").textContent = "Analyze";
+  toolRowLabel("aiBtn", "Analyze");
   banner.hidden = false;
   banner.classList.remove("slim");
   banner.innerHTML = "";
@@ -6565,7 +12692,7 @@ function renderAiBanner() {
                         + `no new information)</span>`;
     }
     if (p.kind === "off")
-      what += ` <span class="ai-warn">removes ${esc(aiQty(p.st.length_pt))}`
+      what += ` <span class="ai-warn">removes ${esc(aiQty(styleLenPt(p.st)))}`
             + ` from the takeoff</span>`;
     const txt = document.createElement("span");
     txt.className = "ai-prop-txt";
@@ -6683,8 +12810,53 @@ function renderAiBanner() {
   banner.appendChild(foot);
 }
 
+// ---- what an approve carries, and what it honestly cannot ---------------
+// THE SERVER STORY, stated plainly because the alternative is a silent drop.
+//
+// server.py's approve builder copies a FIXED set of keys out of each
+// extra_item (label, qty, unit, unit_price) into the export's item list, so a
+// structured `parent_label` / `declared` pair does NOT survive the trip - it
+// would need a server change, and this lands without one. So:
+//
+//   * the MONEY is exactly right. Each component goes as its own extra_item
+//     with its own quantity and price, the parent row goes with its OWN cost
+//     as it always did, and the server's page total therefore adds each
+//     component exactly once - the same total the panel shows.
+//   * the PARENT LINK survives in the NAME (subExportLabel), because the
+//     label does survive, capped to the server's own 80 characters.
+//   * the PROVENANCE survives as the existing extra_item lane: an item with
+//     `unit` + `qty` and no `count`/`length_ft` is how this app has always
+//     said "not measured linework". The structured keys are sent anyway
+//     (`declared`, `parent_label`, `set_by`) so a later server change can
+//     read them without the client moving; today they are dropped, and the
+//     UI says so rather than implying a fidelity that is not there.
+//
+// The CSV is the full-fidelity export: it carries the nesting, the provenance
+// column and the parent column. That difference is disclosed on the approve
+// status line, not buried here.
+function subExportRows() {
+  const d = computeTakeoffRows();
+  const out = [];
+  for (const g of (d ? d.groups : []))
+    for (const it of g.items)
+      for (const s of (it.subs || [])) {
+        if (!Number.isFinite(s.qty) || s.qty <= 0) continue;
+        out.push({
+          label: subExportLabel(it.label, s.rec.name, 80),
+          qty: s.qty, unit: s.rec.unit, unit_price: s.rec.price,
+          // structured, for a server that learns to read it; harmless now
+          declared: true, set_by: SUB_SET_BY, parent_label: it.label,
+          basis: s.rec.mode === "factor"
+            ? { factor: s.rec.factor, per_unit: it.unit } : { fixed: s.qty },
+          trade: g.trade,
+        });
+      }
+  return out;
+}
+
 $("approveBtn").onclick = async () => {
   const labels = {};
+  const subRows = subExportRows();
   for (const [sid, inc] of state.include) if (inc) labels[sid] = state.labels.get(sid) || "unlabeled";
   // The scale the estimator is LOOKING AT. Send it or the server recomputes
   // every length from the engine's own pick, and a sheet where he switched
@@ -6718,7 +12890,9 @@ $("approveBtn").onclick = async () => {
   const scaleOnScreen = (scOn && +scOn.ft_per_paper_inch > 0)
     ? { ft_per_paper_inch: +scOn.ft_per_paper_inch,
         text: scOn.text || null,
-        picked_by_reviewer: !!scOn.picked_by_reviewer }
+        picked_by_reviewer: !!scOn.picked_by_reviewer,
+        // the second axis, so the report cannot disagree with this panel
+        v_ft_per_paper_inch: state.vScale || null }
     : null;
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -6735,10 +12909,16 @@ $("approveBtn").onclick = async () => {
         (ovSrc ? ovSrc.groups : []).flatMap(g => g.items)
           .filter(it => it.isObj)
           .map(it => [it.label, it.ov && Number.isFinite(it.auto) ? it.auto : it.qty])),
-      trades: Object.fromEntries(
-        [...new Set([...Object.values(labels), ...state.chainLabels.values(),
-                     ...state.extraItems.map(i => i.label)])]
-          .filter(Boolean).map(l => [l, tradeFor(l)])),
+      trades: Object.fromEntries([
+        ...[...new Set([...Object.values(labels), ...state.chainLabels.values(),
+                        ...state.extraItems.map(i => i.label)])]
+          .filter(Boolean).map(l => [l, tradeFor(l)]),
+        // A component takes its PARENT's trade, never tradeFor() on its own
+        // name: "#4 rebar" run through the keyword table lands in General
+        // while the concrete it belongs to is Paving & Concrete, and the
+        // report would then group the two apart.
+        ...subRows.map(s => [s.label, s.trade]),
+      ]),
       excluded_chain_ids: [...state.excluded],
       added_chains: state.result.chains
         .filter(c => c.custom && !state.excluded.has(c.chain_id))
@@ -6758,15 +12938,67 @@ $("approveBtn").onclick = async () => {
           !state.excluded.has(id) && state.include.get(sid.get(id)));
       })()),
       quantity_overrides: ovRows,
-      extra_items: state.extraItems.map(it => ({
-        ...it,
-        unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
-      })),
+      // OPERATOR LINE COLOUR -> the export. Resolved HERE, on the client,
+      // because the client is the only place that knows the convention book:
+      // it lives in this browser's saved work beside the prices and trades
+      // and never reached the server (see MEM_V). What the server receives is
+      // therefore the colour that was ON SCREEN, already ranked - the same
+      // discipline quantity_overrides follows. Only rows carrying an actual
+      // decision are sent, so a sheet nobody recoloured produces a payload
+      // and an export byte-for-byte identical to before.
+      style_colors: Object.fromEntries((() => {
+        const out = [];
+        for (const [sid, inc] of state.include) {
+          if (!inc) continue;
+          const st = state.result.styles.find(s => s.style_id === sid);
+          if (!st) continue;
+          const info = styleColorInfo(st);
+          if (info.src !== "engine") out.push([sid, info.css]);
+        }
+        return out;
+      })()),
+      // The SAME gate chain_labels applies: a line the operator coloured and
+      // then erased, or whose family is unticked, exports nothing, so its
+      // colour must not travel either.
+      chain_colors: Object.fromEntries((() => {
+        const sidOf = new Map(state.result.chains.map(c => [c.chain_id, c.style_id]));
+        return [...state.lineColor].filter(([id, hex]) =>
+          !state.excluded.has(id) && state.include.get(sidOf.get(id))
+          && !!colorNorm(hex));
+      })()),
+      // THE MACHINE-READABLE PROVENANCE. Until now the one fact that a HUMAN
+      // invented a family survived export only as English inside `notes`, so
+      // a downstream reader had to parse prose to tell an operator's family
+      // from a detected one. The note stays (a person reading the report
+      // deserves it too) - this is its typed twin, exactly the way
+      // export.scale carries `setBy: "reviewer"` beside the sentence in
+      // `name`. Same source of truth as the note: famMineExportStyles().
+      operator_created_style_ids: famMineExportStyles().map(s => s.style_id),
+      // The work-area quantity mask, so the export's per-label footage is
+      // computed the same zone-clipped way the panel shows it. The server
+      // clips with the same segment/rect math (mirrored in _wz_frac) and
+      // states counted/excluded in the export - a mask the tally respects
+      // but the export ignores would be a silent wrong number.
+      work_zones: wzActive() ? state.workZones.map(z => z.slice()) : null,
+      extra_items: [
+        ...state.extraItems.map(it => ({
+          ...it,
+          unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
+        })),
+        // Sub-items ride the extra_items lane: they are quantities that are
+        // not measured linework, which is exactly what that lane is for. See
+        // subExportRows() for what survives the server and what does not.
+        ...subRows,
+      ],
       // free-text lines printed on the face of the report, under the scale
       // statement. Earthwork is the only writer today: a CY figure that is
       // an interpolation has to say so where it is READ, not only in the
       // panel where it was computed. Empty when no earthwork was added.
-      notes: ewApproveNotes(),
+      // Operator-created families go FIRST: `approve` keeps only the first
+      // six notes, and a provenance statement that gets trimmed is worse
+      // than one that displaces a caveat the panel also prints on screen.
+      // approveNotesDropped() below reports the trim if one happens.
+      notes: approveNotes(),
       prices: Object.fromEntries(
         [...Object.values(labels), ...state.chainLabels.values()]
           .map(l => [l, parseFloat(store.getItem(priceKey(l)) || "") || 0])
@@ -6797,15 +13029,28 @@ $("approveBtn").onclick = async () => {
   // row turns the line red rather than passing unmentioned.
   const ovN = (j.overrides || []).length;
   const ovW = j.override_warnings || [];
+  const nDropped = approveNotesDropped();
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : "") +
+    // Disclosure, not a boast: the export carries the components' money and
+    // their parent's name, but the server drops the structured parent link,
+    // so say which export is the full-fidelity one instead of letting a
+    // reviewer assume this one is.
+    (subRows.length
+      ? ` · ${subRows.length} declared sub-item(s) exported as their own`
+        + ` priced rows, parent named in the row's title; the CSV is the`
+        + ` export that carries the nesting and the provenance columns`
+      : "") +
     (ovN ? ` · ${ovN} quantity you typed ${ovN === 1 ? "is" : "are"} in the export`
          + ` and marked * on the report` : "") +
     (j.scale && j.scale.setBy === "reviewer"
       ? " · footage computed from the scale YOU set, not the engine's"
       : "") +
-    (ovW.length ? " — " + ovW.join("  ") : ""),
-    ovW.length ? "err" : undefined);
+    (ovW.length ? " — " + ovW.join("  ") : "") +
+    (nDropped ? ` — ${nDropped} disclosure note${nDropped === 1 ? "" : "s"}`
+       + ` did NOT fit the export (the server keeps ${APPROVE_NOTES_MAX});`
+       + ` they are still on screen` : ""),
+    (ovW.length || nDropped) ? "err" : undefined);
   const a = $("dlLink");
   a.href = url(`/api/job/${state.job}/page/${state.page}/elements`);
   a.hidden = false;
@@ -6844,13 +13089,31 @@ $("legendBtn").onclick = () => {
 };
 
 // ---------- theme ----------
-document.documentElement.dataset.theme =
-  localStorage.getItem("core-theme") || "dark";
-$("themeBtn").onclick = () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+// ONE store, TWO controls. `core-theme` in localStorage is the value; the
+// masthead button and the Appearance radios on the Settings page both go
+// through coreThemeSet(), so neither can hold a stale idea of the theme.
+// themeNormalize/themeToggleNext live in the SETTINGS-PURE block (they are
+// the part a test can run) - this pair is the DOM side.
+const CORE_THEME_KEY = "core-theme";
+function coreTheme() {
+  let v = null;
+  try { v = localStorage.getItem(CORE_THEME_KEY); } catch (e) { /* private mode */ }
+  return themeNormalize(v || document.documentElement.dataset.theme);
+}
+function coreThemeSet(next) {
+  next = themeNormalize(next);
   document.documentElement.dataset.theme = next;
-  localStorage.setItem("core-theme", next);
-};
+  try { localStorage.setItem(CORE_THEME_KEY, next); } catch (e) { /* private mode */ }
+  // the Settings radios must follow the masthead button, and only exist
+  // after the settings block has run
+  if (typeof renderSvTheme === "function" && !$("settingsView").hidden)
+    renderSvTheme();
+}
+try {
+  document.documentElement.dataset.theme =
+    themeNormalize(localStorage.getItem(CORE_THEME_KEY));
+} catch (e) { document.documentElement.dataset.theme = "dark"; }
+$("themeBtn").onclick = () => coreThemeSet(themeToggleNext(coreTheme()));
 
 // ---------- canvas ----------
 const cv = $("view"), ctx = cv.getContext("2d");
@@ -6893,6 +13156,59 @@ function fitView() {
   state.view.y = (cv.clientHeight - state.img.height * state.view.k) / 2;
 }
 
+/* ---- canvas paint, in one place ----------------------------------------
+   Every colour the sheet is drawn with used to be a hex literal buried in
+   draw(). They are named constants now, so a palette change is one edit and
+   so the CSS chrome that echoes a canvas colour can be pinned to it by name.
+
+   PROTECTED - unchanged in value AND in meaning by the 2026-08-31 token pass:
+     CV_SELECT      the chain-selection magenta. Multi-select paints the same
+                    hue a step thinner (see draw()), which is the existing
+                    contract; it must stay unmistakable against every family
+                    colour and against CV_MEASURE. style.css `.multi-bar`
+                    carries this literal to match - change both or neither.
+     CV_GZ_CUT_LAB / CV_GZ_FILL_LAB
+                    red = cut, blue = fill on the per-cell dz numbers. That is
+                    deliberately the OPPOSITE hue for cut from the map tint
+                    underneath (whose convention is cut = BLUE): it follows the
+                    reference aerial's label convention, and the zone row's
+                    title says which is which. Do not "fix" it.
+     AR_COLOR / AR_HOT, ST_COLOR - declared with their own features, untouched.
+
+   RETINTED by that pass (the only colour changes in this file):
+     CV_MEASURE       #b3369a -> #58b7e6, matching --t-select, which is what
+                      #measureBtn.active and #measureInfo now use.
+     ST_DRAFT_COLOR   #00a8e8 -> #58b7e6, same reason (.st-modes button.active
+                      and .st-draft moved to --t-select).
+   ------------------------------------------------------------------------ */
+const CV_SHEET        = "#fff";              // the paper under the linework
+const CV_SELECT       = "#ff00cc";           // PROTECTED - see above
+const CV_MARQUEE_FILL = "rgba(255,0,204,0.07)";
+const CV_VERTEX       = "#ffffff";           // vertex handle fill
+const CV_VERTEX_ON    = "#ffd400";           // the vertex under the cursor
+const CV_VERTEX_ON_RG = "#8a6d00";           // ...and its ring
+const CV_MEASURE      = "#58b7e6";           // RETINTED - was #b3369a
+const CV_CUTSPAN      = "#e0245e";           // cut-span first anchor
+const CV_WORKZONE     = "#0e8a5f";           // work-zone drag rectangle
+const CV_EWBOUND      = "rgba(67,160,71,.95)";  // limit-of-work, in flight
+const CV_EWBOUND_DOT  = "#43a047";
+const CV_GZONE        = "#8e24aa";           // grading zone (purple: cannot be
+const CV_GZONE_DRAFT  = "rgba(142,36,170,.95)";  // confused with the green
+const CV_GZONE_SAVED  = "rgba(142,36,170,.9)";   // limit-of-work draft)
+const CV_GZ_CUT_LAB   = "#c62828";           // PROTECTED - see above
+const CV_GZ_FILL_LAB  = "#1565c0";           // PROTECTED - see above
+const CV_GZ_ZERO_LAB  = "#5f6a63";
+const CV_GZ_BADGE_BG  = "rgba(20,24,20,.85)";
+const CV_GZ_BADGE_ERR = "rgba(122,74,10,.9)";
+const CV_GZ_BADGE_TXT = "#fff";
+const CV_LABEL_HALO   = "rgba(255,255,255,.85)";
+const CV_SYMBOL       = "#a64dff";           // Count panel instance rings
+const CV_OPENING      = "rgba(160,120,40,.55)";  // door/opening exclusion ring
+const CV_WZ_MASK      = "rgba(255,255,255,0.62)";  // outside the work area
+const CV_WZ_EDGE      = "rgba(14,138,95,0.85)";    // a committed work-area box
+const CV_FAM_UNKNOWN  = "#8f959e";           // a family the engine gave no colour
+const CV_FAM_NEARWHITE = "#a7adb6";          // ...or gave one that is invisible
+
 function draw() {
   // buffer may lag the element across browser zoom - resync before painting
   const bw = Math.round(cv.clientWidth * devicePixelRatio);
@@ -6904,11 +13220,15 @@ function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   $("hint").style.display = state.img ? "none" : "";
+  // the status bar's zoom readout follows the view, so it is painted here
+  // (before the no-image early return, which is also when it must clear).
+  // renderZoomFact() no-ops unless the rounded percentage actually moved.
+  renderZoomFact();
   if (!state.img) return;
   const { x, y, k } = state.view;
   ctx.save();
   ctx.translate(x, y); ctx.scale(k, k);
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = CV_SHEET;
   ctx.fillRect(0, 0, state.img.width, state.img.height);
   ctx.drawImage(state.img, 0, 0);
   if (state.result) {
@@ -6956,6 +13276,29 @@ function draw() {
     ctx.drawImage(state.ew.map.img, bx0 * fm, by0 * fm, (bx1 - bx0) * fm, (by1 - by0) * fm);
     ctx.globalAlpha = 1.0;
   }
+  // GRADING ZONES: each saved zone's dz map, clipped to its own polygon so
+  // the tint reads as the zone, not the zone's bounding box. Same result
+  // gate as the ew map above: a stale zone image must not survive a page
+  // switch (gzPageReset clears them at both chokepoints anyway).
+  if (state.result && state.gzones.length) {
+    const fg = IMG_DPI / 72;
+    for (const z of state.gzones) {
+      if (!z.img || !z.result || !z.result.bbox) continue;
+      const [zx0, zy0, zx1, zy1] = z.result.bbox;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(z.polygon[0][0] * fg, z.polygon[0][1] * fg);
+      for (let i = 1; i < z.polygon.length; i++)
+        ctx.lineTo(z.polygon[i][0] * fg, z.polygon[i][1] * fg);
+      ctx.closePath();
+      ctx.clip();
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(z.img, zx0 * fg, zy0 * fg,
+                    (zx1 - zx0) * fg, (zy1 - zy0) * fg);
+      ctx.restore();
+      ctx.globalAlpha = 1.0;
+    }
+  }
   if (state.result) {
     const f = IMG_DPI / 72; // pt -> image px
     for (const ch of state.result.chains) {
@@ -6963,17 +13306,52 @@ function draw() {
       if (state.excluded.has(ch.chain_id)) continue;
       if (state.isolate !== null && sid !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(sid)) continue;
-      const hot = state.hot === sid || state.hotChain === ch.chain_id;
+      const hot = (state.hotStyle !== null && state.hotStyle.has(sid))
+        || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
+      // marquee members light up in the same magenta family as the single
+      // selection, a step thinner so the picked line still reads apart
+      const msel = !sel && state.multiSel.size > 0 && state.multiSel.has(ch.chain_id);
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
     ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
-    ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
+      // OPERATOR LINE COLOUR: the override layer, consulted here and nowhere
+      // deeper. ch.color / st2.color still hold the engine's measurement -
+      // chainCssColor reads them as the LAST rank and never writes them, so
+      // the family's styleFp (and every set-level decision keyed on it) is
+      // untouched by a recolour. Precedence: per-line > per-family >
+      // convention > engine (colorResolve).
+    ctx.strokeStyle = (sel || msel) ? CV_SELECT : chainCssColor(ch, st2);
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
-      ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
+      ctx.lineWidth = sel ? 4.5 / k
+        : msel ? 3.2 / k
+        : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
       // selection recolors but keeps the true pattern - a solid magenta
       // overlay reads as "this line became solid", which it has not
       const pts = ch.points;
+      // FAMILY HOVER HALO. Doubling the stroke (lineWidth above) is what a
+      // hot chain used to get, and on a 0.35pt hairline in a crowded sheet
+      // that is invisible - which is the owner's complaint (2026-08-31:
+      // "when we hover over a line style it should highlight all lines of
+      // that family/style"). A hot chain now gets one extra pass first: a
+      // wide, SOLID, translucent ribbon in the family's OWN colour, under
+      // the real line. Solid on purpose, so a dashed family reads as one
+      // continuous run rather than as more dashes. No new colour constant is
+      // introduced and nothing about the measured line changes - the true
+      // pattern is still drawn on top, at its true weight.
+      if (hot && !sel && !msel) {
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.30;
+        ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.lineWidth = Math.max(wPt * 6, 10 / k);
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+        for (let i = 1; i < pts.length; i++)
+          ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+        ctx.stroke();
+        ctx.restore();
+      }
       // seg_counts partitions points into the SOURCE ink marks: draw each
       // mark as its own solid subpath so every dash lands exactly where
       // the sheet printed it. A repeating template can only approximate -
@@ -7030,10 +13408,10 @@ function draw() {
         if (!on && i !== 0 && i !== sel.points.length - 1 && i % step) return;
         ctx.beginPath();
         ctx.arc(q[0] * f2, q[1] * f2, on ? rad * 1.9 : rad, 0, Math.PI * 2);
-        ctx.fillStyle = on ? "#ffd400" : "#ffffff";
+        ctx.fillStyle = on ? CV_VERTEX_ON : CV_VERTEX;
         ctx.fill();
         ctx.lineWidth = 1.2 / k;
-        ctx.strokeStyle = on ? "#8a6d00" : "#ff00cc";
+        ctx.strokeStyle = on ? CV_VERTEX_ON_RG : CV_SELECT;
         ctx.stroke();
       });
     }
@@ -7051,11 +13429,13 @@ function draw() {
       if (state.isolate !== null && s2.style_id !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(s2.style_id)) continue;
       const lab = (state.labels.get(s2.style_id) || "#" + s2.style_id);
-      if (!pools.has(lab)) pools.set(lab, { color: s2.color, w: s2.width, sids: [] });
+      // the pool's box is drawn in the family's RESOLVED colour, so an
+      // object-mode family recoloured red boxes in red like it draws in red
+      if (!pools.has(lab)) pools.set(lab, { css: styleCssColor(s2), sids: [] });
       pools.get(lab).sids.push(s2.style_id);
     }
     for (const pool of pools.values()) {
-      ctx.strokeStyle = cssColor(pool.color, pool.w);
+      ctx.strokeStyle = pool.css;
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
       for (const comp of styleObjects(pool.sids)) {
@@ -7091,7 +13471,7 @@ function draw() {
     const opens2 = state.result.openings || [];
     if (opens2.length) {
       ctx.setLineDash([3 / k, 3 / k]);
-      ctx.strokeStyle = "rgba(160,120,40,.55)";
+      ctx.strokeStyle = CV_OPENING;
       ctx.lineWidth = 1 / k;
       for (const o of opens2) {
         ctx.beginPath();
@@ -7101,15 +13481,183 @@ function draw() {
       ctx.setLineDash([]);
     }
   }
+  // WORK AREA quantity mask: everything OUTSIDE the union of drawn boxes
+  // washes toward paper - same treatment the sheet raster already gets so
+  // detected ink pops - and the boxes themselves draw as faint outlines.
+  // Painted AFTER the linework so outside-zone lines read dimmed the way
+  // texture/annotation styles do; nothing is removed from the canvas, only
+  // muted, because the mask changes what COUNTS, not what was detected.
+  if (state.result && (wzActive() || state.wzDrag)) {
+    const fz = IMG_DPI / 72;
+    if (wzActive()) {
+      const zonesPx = state.workZones.map(
+        z => [z[0] * fz, z[1] * fz, z[2] * fz, z[3] * fz]);
+      ctx.fillStyle = CV_WZ_MASK;
+      for (const rc of wzComplementRects(zonesPx, state.img.width, state.img.height))
+        ctx.fillRect(rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1]);
+      ctx.strokeStyle = CV_WZ_EDGE;
+      ctx.lineWidth = 1.6 / k;
+      ctx.setLineDash([7 / k, 5 / k]);
+      for (const z of zonesPx)
+        ctx.strokeRect(z[0], z[1], z[2] - z[0], z[3] - z[1]);
+      ctx.setLineDash([]);
+    }
+    if (state.wzDrag) {
+      const a = state.wzDrag.a, b = state.wzDrag.b;
+      ctx.strokeStyle = CV_WORKZONE;
+      ctx.lineWidth = 1.8 / k;
+      ctx.setLineDash([5 / k, 4 / k]);
+      ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
+                     Math.abs(b[0] - a[0]) * fz, Math.abs(b[1] - a[1]) * fz);
+      ctx.setLineDash([]);
+    }
+  }
+  // marquee multi-select box, while the Shift+drag is in flight
+  if (state.marquee) {
+    const fq = IMG_DPI / 72;
+    const a = state.marquee.a, b = state.marquee.b;
+    const rx = Math.min(a[0], b[0]) * fq, ry = Math.min(a[1], b[1]) * fq;
+    const rw = Math.abs(b[0] - a[0]) * fq, rh = Math.abs(b[1] - a[1]) * fq;
+    ctx.fillStyle = CV_MARQUEE_FILL;
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = CV_SELECT;
+    ctx.lineWidth = 1.6 / k;
+    ctx.setLineDash([6 / k, 4 / k]);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.setLineDash([]);
+  }
   // cut-span first anchor
   if (state.tool === "cutspan" && state.cutA) {
     const f2 = IMG_DPI / 72;
     ctx.beginPath();
     ctx.arc(state.cutA.q[0] * f2, state.cutA.q[1] * f2, 5 / k, 0, Math.PI * 2);
-    ctx.fillStyle = "#e0245e"; ctx.fill();
-    ctx.lineWidth = 1.5 / k; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+    ctx.fillStyle = CV_CUTSPAN; ctx.fill();
+    ctx.lineWidth = 1.5 / k; ctx.strokeStyle = CV_VERTEX; ctx.stroke();
   }
   // in-progress drawn line
+  if (state.tool === "ew-bound-draw" && state.ewBoundDraft.length) {
+    const f2b = IMG_DPI / 72;
+    ctx.save();
+    ctx.strokeStyle = CV_EWBOUND;
+    ctx.lineWidth = 2 / state.view.k;
+    ctx.setLineDash([8 / state.view.k, 5 / state.view.k]);
+    ctx.beginPath();
+    ctx.moveTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
+    for (let i = 1; i < state.ewBoundDraft.length; i++)
+      ctx.lineTo(state.ewBoundDraft[i][0] * f2b, state.ewBoundDraft[i][1] * f2b);
+    if (state.ewBoundHover && !panning)
+      ctx.lineTo(state.ewBoundHover[0] * f2b, state.ewBoundHover[1] * f2b);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of state.ewBoundDraft) {
+      ctx.beginPath();
+      ctx.arc(q[0] * f2b, q[1] * f2b, 4 / state.view.k, 0, Math.PI * 2);
+      ctx.fillStyle = CV_EWBOUND_DOT;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // grading zone: in-progress hand-drawn outline (same grammar as the
+  // limit of work above, purple so the two drafts cannot be confused)
+  if (state.tool === "gz-draw" && state.gzDraft.length) {
+    const fz = IMG_DPI / 72;
+    ctx.save();
+    ctx.strokeStyle = CV_GZONE_DRAFT;
+    ctx.lineWidth = 2 / k;
+    ctx.setLineDash([8 / k, 5 / k]);
+    ctx.beginPath();
+    ctx.moveTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
+    for (let i = 1; i < state.gzDraft.length; i++)
+      ctx.lineTo(state.gzDraft[i][0] * fz, state.gzDraft[i][1] * fz);
+    if (state.gzHover && !panning)
+      ctx.lineTo(state.gzHover[0] * fz, state.gzHover[1] * fz);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const q of state.gzDraft) {
+      ctx.beginPath();
+      ctx.arc(q[0] * fz, q[1] * fz, 4 / k, 0, Math.PI * 2);
+      ctx.fillStyle = CV_GZONE;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // grading zone: in-progress box drag
+  if (state.gzDrag) {
+    const fz = IMG_DPI / 72;
+    const a = state.gzDrag.a, b = state.gzDrag.b;
+    ctx.strokeStyle = CV_GZONE;
+    ctx.lineWidth = 1.8 / k;
+    ctx.setLineDash([5 / k, 4 / k]);
+    ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
+                   Math.abs(b[0] - a[0]) * fz, Math.abs(b[1] - a[1]) * fz);
+    ctx.setLineDash([]);
+  }
+  // saved grading zones: outline + centroid badge (+ per-cell dz numbers
+  // when the zone's "123" toggle is on). The badge rect is recorded on the
+  // zone in page pt so a plain canvas click can reopen its modal.
+  if (state.result && state.gzones.length) {
+    const fz = IMG_DPI / 72;
+    for (const z of state.gzones) {
+      const poly = z.polygon;
+      ctx.save();
+      ctx.strokeStyle = CV_GZONE_SAVED;
+      ctx.lineWidth = 2 / k;
+      ctx.setLineDash([9 / k, 5 / k]);
+      ctx.beginPath();
+      ctx.moveTo(poly[0][0] * fz, poly[0][1] * fz);
+      for (let i = 1; i < poly.length; i++)
+        ctx.lineTo(poly[i][0] * fz, poly[i][1] * fz);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // per-cell dz labels, styled like a grading plan: red = cut
+      // (negative), blue = fill (positive). NOTE this is the opposite hue
+      // for cut than the tint underneath (the client's map convention is
+      // cut BLUE) - the reference aerial's label convention, kept as
+      // specified; the panel row's title says which is which.
+      if (z.showNums && z.result && z.result.cell_labels
+          && z.result.cell_labels.length) {
+        const aPt2 = Math.abs(polyAreaPt(poly));
+        const bPt = Math.sqrt(aPt2 / z.result.cell_labels.length);
+        const fontPx = Math.max(bPt * fz * 0.30, 7 / k);
+        ctx.font = `600 ${fontPx}px "IBM Plex Sans", -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = fontPx / 5;
+        ctx.strokeStyle = CV_LABEL_HALO;
+        for (const c of z.result.cell_labels) {
+          const dzv = c.dz === 0 ? 0 : c.dz;   // -0.0 reads as a cut of nothing
+          const t = (dzv > 0 ? "+" : "") + dzv.toFixed(1);
+          ctx.fillStyle = dzv < 0 ? CV_GZ_CUT_LAB : dzv > 0 ? CV_GZ_FILL_LAB : CV_GZ_ZERO_LAB;
+          ctx.strokeText(t, c.x * fz, c.y * fz);
+          ctx.fillText(t, c.x * fz, c.y * fz);
+        }
+      }
+      // centroid badge: name + the two volumes an estimator scans for
+      const [cx, cy] = gzCentroid(poly);
+      const j = z.result;
+      const txt = z.err ? `${z.name} · ${z.err}`
+        : j ? `${z.name} · cut ${gzK(j.cut_yd3)} / fill ${gzK(j.fill_yd3)} CY`
+        : `${z.name} · computing…`;
+      const fpx = 12 / k;
+      ctx.font = `600 ${fpx}px "IBM Plex Sans", -apple-system, sans-serif`;
+      const w = ctx.measureText(txt).width + 12 / k;
+      const h = fpx + 10 / k;
+      const bx = cx * fz - w / 2, by = cy * fz - h / 2;
+      ctx.fillStyle = z.err ? CV_GZ_BADGE_ERR : CV_GZ_BADGE_BG;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, w, h, 4 / k);
+      else ctx.rect(bx, by, w, h);
+      ctx.fill();
+      ctx.fillStyle = CV_GZ_BADGE_TXT;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(txt, cx * fz, cy * fz);
+      // pt-space hit box for the click-to-reopen
+      z._badge = [bx / fz, by / fz, (bx + w) / fz, (by + h) / fz];
+      ctx.restore();
+    }
+  }
   if (state.tool === "drawline" && state.drawPts.length) {
     const f2 = IMG_DPI / 72;
     ctx.beginPath();
@@ -7119,20 +13667,63 @@ function draw() {
     if (state.hoverPt) ctx.lineTo(state.hoverPt[0] * f2, state.hoverPt[1] * f2);
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([6 / k, 4 / k]);
-    ctx.strokeStyle = "#ff00cc";
+    ctx.strokeStyle = CV_SELECT;
     ctx.stroke();
     ctx.setLineDash([]);
     for (const q of state.drawPts) {
       ctx.beginPath();
       ctx.arc(q[0] * f2, q[1] * f2, 3.5 / k, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff"; ctx.fill();
-      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = "#ff00cc"; ctx.stroke();
+      ctx.fillStyle = CV_VERTEX; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_SELECT; ctx.stroke();
+    }
+  }
+  // THE SNAP RING: where the next click will actually land. A hollow ring on
+  // a mid-segment snap, a filled dot on a VERTEX - the operator can see which
+  // of the two they are about to get before committing to it. Colour is the
+  // existing "under the cursor" yellow, so it reads as the same idea the
+  // vertex handles already use.
+  if (state.snapHit && SNAP_TOOLS.has(state.tool)) {
+    const fSn = IMG_DPI / 72;
+    const q = state.snapHit.point;
+    ctx.beginPath();
+    ctx.arc(q[0] * fSn, q[1] * fSn, 7 / k, 0, Math.PI * 2);
+    ctx.lineWidth = 2 / k;
+    ctx.strokeStyle = CV_VERTEX_ON;
+    ctx.stroke();
+    // The two states must be told apart AT A GLANCE, so they differ by
+    // presence, not by a 0.6 px stroke weight: a VERTEX snap fills the ring's
+    // centre, a mid-segment snap leaves it empty. (First cut drew a tiny
+    // stroked dot for "mid" and the two were indistinguishable at 400%.)
+    if (state.snapHit.isVertex) {
+      ctx.beginPath();
+      ctx.arc(q[0] * fSn, q[1] * fSn, 3.2 / k, 0, Math.PI * 2);
+      ctx.fillStyle = CV_VERTEX_ON; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_VERTEX_ON_RG; ctx.stroke();
+    }
+  }
+  // the spur anchor, once picked: the tee the branch will grow from
+  if (state.extendAnchor && state.tool === "extend") {
+    const fSa = IMG_DPI / 72;
+    const a = state.extendAnchor.point;
+    ctx.beginPath();
+    ctx.arc(a[0] * fSa, a[1] * fSa, 5 / k, 0, Math.PI * 2);
+    ctx.fillStyle = CV_SELECT; ctx.fill();
+    ctx.lineWidth = 1.4 / k; ctx.strokeStyle = CV_VERTEX; ctx.stroke();
+    if (state.snapHit) {
+      ctx.beginPath();
+      ctx.moveTo(a[0] * fSa, a[1] * fSa);
+      ctx.lineTo(state.snapHit.point[0] * fSa, state.snapHit.point[1] * fSa);
+      ctx.lineWidth = 2 / k;
+      ctx.setLineDash([6 / k, 4 / k]);
+      ctx.strokeStyle = CV_SELECT;
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
   // symbol-instance markers from the Count panel
   if (state.symMarks && state.symMarks.length) {
     const f3 = IMG_DPI / 72;
-    ctx.strokeStyle = "#a64dff";
+    ctx.strokeStyle = CV_SYMBOL;
     ctx.lineWidth = 2.2 / k;
     for (const c of state.symMarks) {
       ctx.beginPath();
@@ -7142,8 +13733,8 @@ function draw() {
   }
   if (state.measurePts.length) {
     const f = IMG_DPI / 72;
-    ctx.strokeStyle = "#b3369a";
-    ctx.fillStyle = "#b3369a";
+    ctx.strokeStyle = CV_MEASURE;
+    ctx.fillStyle = CV_MEASURE;
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([7 / k, 5 / k]);
     ctx.beginPath();
@@ -7195,16 +13786,14 @@ function dashArray(sig) {
   return out;
 }
 
-const styleColorCache = new Map();
-function styleColor(sid) {
-  if (!styleColorCache.has(sid)) {
-    const s = state.result.styles.find(s => s.style_id === sid);
-    styleColorCache.set(sid, s ? s.color : null);
-  }
-  return styleColorCache.get(sid);
-}
+// (styleColor / styleColorCache lived here. Its ONE caller was draw()'s
+// strokeStyle, which now goes through chainCssColor so the override layer is
+// consulted. Removed rather than left dead: the cache was keyed on style_id
+// with no invalidation on a page or document switch, so the next caller to
+// reach for it would have got another page's colour. cssColor below is
+// unchanged and is still the only place an engine colour becomes CSS.)
 function cssColor(c, w) {
-  if (!c) return "#8f959e";
+  if (!c) return CV_FAM_UNKNOWN;
   const [r, g, b] = c.map(v => Math.round(v * 255));
   // near-white linework draws as the faint grey it visually is on the
   // sheet - at EVERY weight. White ink is invisible on paper: rendering
@@ -7212,19 +13801,45 @@ function cssColor(c, w) {
   // rows and squiggles along the Oncor boundary, because the white w3.3
   // family there is plotter-invisible linework, NOT an outlined core.
   // The truly bold lines (property line) are black ink and need no help.
-  if (r > 225 && g > 225 && b > 225) return "#a7adb6";
+  if (r > 225 && g > 225 && b > 225) return CV_FAM_NEARWHITE;
   return `rgb(${r},${g},${b})`;
 }
 
 let panning = null;
 let downAt = null;
+let dragCap = false;   // one undo snapshot per point-drag, taken on first move
 cv.addEventListener("mousedown", (e) => {
+  // work-area tool: mousedown STARTS a box, it never pans - the whole
+  // gesture is the drag, so the generic pan below must not see it
+  if (state.tool === "wz-draw" && state.result) {
+    const p = ptFromEvent(e);
+    state.wzDrag = { a: p, b: p.slice() };
+    return;
+  }
+  // grading-zone box: same drag grammar as the work area
+  if (state.tool === "gz-box" && state.result) {
+    const p = ptFromEvent(e);
+    state.gzDrag = { a: p, b: p.slice() };
+    return;
+  }
+  // marquee multi-select: Shift+drag boxes whole lines into a selection
+  // set. Shift was free (pan never read it), and the gesture only arms when
+  // NO tool owns the canvas, so wz-draw/st-draw/gz-box/measure keep their drags.
+  if (e.shiftKey && !state.tool && state.result && state.img) {
+    const p = ptFromEvent(e);
+    state.marquee = { a: p, b: p.slice() };
+    return;
+  }
   // while a click-tool is armed, clicks land IN the tool - a click on a
-  // vertex dot is a cut/draw/measure anchor, never a point-drag
-  const v = state.tool ? null : vertexAt(e);
+  // vertex dot is a cut/draw/measure anchor, never a point-drag.
+  // Ctrl/Cmd is the multi-select modifier and must not grab a vertex handle
+  // either: a Ctrl+click that landed on the selected line's own dot would
+  // otherwise start a point-drag and never reach handleCanvasClick.
+  const v = (state.tool || e.ctrlKey || e.metaKey) ? null : vertexAt(e);
   if (v !== null) {           // grab the handle rather than pan the sheet
     state.selPt = v;
     state.dragPt = true;
+    dragCap = false;          // snapshot happens on the first actual move
     updateSelBar(chainById(state.selected));
     draw();
     return;
@@ -7234,9 +13849,28 @@ cv.addEventListener("mousedown", (e) => {
   cv.classList.add("panning");
 });
 addEventListener("mousemove", (e) => {
+  if (state.wzDrag) {
+    state.wzDrag.b = ptFromEvent(e);
+    draw();
+    return;
+  }
+  if (state.gzDrag) {
+    state.gzDrag.b = ptFromEvent(e);
+    draw();
+    return;
+  }
+  if (state.marquee) {
+    state.marquee.b = ptFromEvent(e);
+    draw();
+    return;
+  }
   if (state.dragPt) {
     const ch = chainById(state.selected);
     if (ch && state.selPt !== null) {
+      if (!dragCap) {   // BEFORE the first mutation of this drag, only once
+        captureUndo("point move", [ch.chain_id]);
+        dragCap = true;
+      }
       const m = ch.custom ? ch : materialize(ch);
       if (m !== ch) { state.selected = m.chain_id; }
       m.points[state.selPt] = ptFromEvent(e);
@@ -7244,8 +13878,10 @@ addEventListener("mousemove", (e) => {
     }
     return;
   }
-  if (state.tool === "drawline" && state.drawPts.length && !panning) {
-    state.hoverPt = ptFromEvent(e);
+  if (SNAP_TOOLS.has(state.tool) && !panning) {
+    const p = ptFromEvent(e);
+    if (state.tool === "drawline") state.hoverPt = p;
+    snapHover(p[0], p[1]);
     draw();
     return;
   }
@@ -7255,8 +13891,68 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 addEventListener("mouseup", (e) => {
+  if (state.gzDrag) {
+    const d = state.gzDrag;
+    state.gzDrag = null;
+    const x0 = Math.min(d.a[0], d.b[0]), x1 = Math.max(d.a[0], d.b[0]);
+    const y0 = Math.min(d.a[1], d.b[1]), y1 = Math.max(d.a[1], d.b[1]);
+    // a click is not a zone: same 2 pt floor as the work-area box
+    if (x1 - x0 < 2 || y1 - y0 < 2) {
+      setStatus("grading zone: DRAG a box (that was a click) — Esc exits the tool", "busy");
+      draw();
+      return;
+    }
+    state.tool = null;
+    syncCursor();
+    draw();
+    gzModalOpen(null, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+    return;
+  }
+  if (state.wzDrag) {
+    const d = state.wzDrag;
+    state.wzDrag = null;
+    const x0 = Math.min(d.a[0], d.b[0]), x1 = Math.max(d.a[0], d.b[0]);
+    const y0 = Math.min(d.a[1], d.b[1]), y1 = Math.max(d.a[1], d.b[1]);
+    // a click is not a box: 2 pt is ~1/36 inch of paper, below any
+    // plausible intended work area and above any mouse jitter
+    if (x1 - x0 < 2 || y1 - y0 < 2) {
+      setStatus("work area: DRAG a box (that was a click) — Esc exits the tool", "busy");
+      draw();
+      return;
+    }
+    state.workZones.push([x0, y0, x1, y1]);
+    wzChanged();
+    wzStatusAfterBox();
+    return;
+  }
+  if (state.marquee) {
+    const mq = state.marquee;
+    state.marquee = null;
+    const x0 = Math.min(mq.a[0], mq.b[0]), x1 = Math.max(mq.a[0], mq.b[0]);
+    const y0 = Math.min(mq.a[1], mq.b[1]), y1 = Math.max(mq.a[1], mq.b[1]);
+    // a click is not a box - same 2 pt rule as the work-area tool
+    if (x1 - x0 < 2 && y1 - y0 < 2) {
+      setStatus("multi-select: hold Shift and DRAG a box across the lines "
+        + "you want (that was a click)", "busy");
+      draw();
+      return;
+    }
+    let added = 0;
+    for (const ch of marqueePick([x0, y0, x1, y1]))
+      if (!state.multiSel.has(ch.chain_id)) { state.multiSel.add(ch.chain_id); added++; }
+    renderMultiBar();
+    if (!state.multiSel.size)
+      setStatus("nothing crossed that box — a line joins as soon as the box "
+        + "touches any part of it", "err");
+    else
+      setStatus(`${added} line(s) added — ${state.multiSel.size} selected `
+        + "(Shift+drag adds more, Esc clears)");
+    draw();
+    return;
+  }
   if (state.dragPt) {
     state.dragPt = false;
+    dragCap = false;
     const ch = chainById(state.selected);
     if (ch) {
       ch.length_pt = polyLen(ch.points);
@@ -7307,24 +14003,40 @@ function vertexAt(e) {
 // 205 ft of pipe, not 200 - the run continues under the label. Concatenating
 // without the gap would quietly under-measure every merge, so the span is
 // added and the status line says how much, every time.
+// JOIN AT THE CLICKED POINT. The operator's report: "if i did press join
+// right now our software will connect it to a beginning or end point not the
+// one we intended it to connect to." It now connects WHERE THE CLICK LANDED.
+//
+// Two outcomes, and the click - not a guess - picks between them:
+//
+//   * the snap lands on (or clamps past) an END of the target -> the click
+//     means end-to-end, and that is EXACTLY today's merge: two chains become
+//     one, the bridged span counts, the cross-family refusal still stands.
+//   * the snap lands mid-body -> a TEE. A polyline cannot fork, so this is a
+//     CONNECTION, not a merge: the two lines stay two lines, the selected
+//     one grows a connector to the clicked point, and the target gains a
+//     vertex there. Nothing moves between families, so this one is allowed
+//     across families (a lateral teeing into a main of a different family is
+//     an ordinary thing on a sheet) and the status line names both.
+//
+// The pick radius is the OLD merge radius (24 px), so a loose click still
+// finds the run it is aimed at; what changed is where it connects, not how
+// hard it is to hit.
 function mergeClick(px, py) {
-  const fR = IMG_DPI / 72;
-  const tolR = 6 / state.view.k / fR * 4 + 1.5;
-  let tgt = null, tgtD = tolR;
-  for (const ch of state.result.chains) {
-    if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
-    for (let i = 1; i < ch.points.length; i++) {
-      const d = distToSeg(px, py, ch.points[i - 1], ch.points[i]);
-      if (d < tgtD) { tgtD = d; tgt = ch; }
-    }
-  }
   const sel = chainById(state.selected);
-  if (!tgt || !sel) {
-    setStatus("merge: click the other half of the run", "err");
+  if (!sel) { cancelMerge(); return; }
+  const hit = snapToChain(px, py, state.selected);
+  const tgt = hit && chainById(hit.chain_id);
+  if (!tgt) {
+    setStatus("join: click the line you want to connect to", "err");
     return;
   }
+  if (!hit.isEnd) { connectToPoint(sel, hit); return; }
+  mergeEnds(sel, tgt);
+}
+
+// end-to-end, unchanged from the tool that shipped
+function mergeEnds(sel, tgt) {
   // Refuse across families rather than silently picking a winner: a merge
   // that moved footage from one priced item to another without saying so is
   // the kind of quiet wrong number this project keeps having to hunt down.
@@ -7364,6 +14076,8 @@ function mergeClick(px, py) {
     }
   }
 
+  captureUndo(`merge of 2 lines — ${fmtQty(combined + best.d)}`,
+    [sel.chain_id, tgt.chain_id]);
   const c = materialize(sel);
   const pa = c.points.map(p => p.slice());
   if (best.revA) pa.reverse();
@@ -7383,8 +14097,54 @@ function mergeClick(px, py) {
   renderStyles(); renderChips(); renderMiniLegend();
 }
 
+// A TEE. Decision, stated because the brief asked for one: the selected
+// line's nearer end does NOT move to the clicked point - a CONNECTOR is
+// added instead. Moving the end would silently delete whatever line lay
+// between the old end and the tee; appending a connector keeps every foot
+// the operator drew and adds exactly the bridge, which is the same rule
+// mergeEnds already follows for its bridged span ("THE BRIDGED SPAN
+// COUNTS", above). The delta is printed and one Ctrl+Z reverses it.
+function connectToPoint(sel, hit) {
+  const tgt = chainById(hit.chain_id);
+  const A = sel.points;
+  const dFirst = Math.hypot(hit.point[0] - A[0][0], hit.point[1] - A[0][1]);
+  const dLast = Math.hypot(hit.point[0] - A[A.length-1][0],
+                           hit.point[1] - A[A.length-1][1]);
+  const add = Math.min(dFirst, dLast);
+  // same "is this a mis-click?" gate the end-to-end merge uses, same reason
+  if (add > 20 && add > 0.2 * (sel.length_pt || 0)) {
+    if (!confirm(`The nearer end of this line is ${fmtLen(add)} from the point `
+      + `you clicked.\n\nConnecting adds that span to the measured length, `
+      + `because the line has to reach the connection. If that is not where `
+      + `you meant to tee in, cancel.\n\nConnect anyway?`)) {
+      setStatus("connection cancelled");
+      return;
+    }
+  }
+  const cross = tgt.style_id !== sel.style_id;
+  const famS = snapFam(sel);
+  captureUndo(`connect to a line \u2014 ${fmtQty(add)}`,
+    [sel.chain_id, tgt.chain_id]);
+  const c = materialize(sel);
+  if (add >= SNAP_EPS) {
+    if (dFirst < dLast) c.points.unshift(hit.point.slice());
+    else c.points.push(hit.point.slice());
+    c.length_pt += add;
+  }
+  const w = snapWeld(hit);
+  cancelMerge();
+  state.selected = c.chain_id;
+  state.selPt = null;
+  updateSelBar(c);
+  afterEdit(`chain ${c.chain_id} +${fmtQty(add)} to reach the connection \u2014 `
+    + `connected to${w.note}`
+    + (cross ? ` \u2014 the footage stays in ${famS}` : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
 function cancelMerge() {
   state.tool = null;
+  state.snapHit = null; state.snapMsg = "";
   $("mergeBtn").classList.remove("active");
 }
 
@@ -7395,13 +14155,53 @@ $("mergeBtn").onclick = () => {
   }
   state.tool = "merge";
   $("mergeBtn").classList.add("active");
-  setStatus("merge: click the other half of this run (Esc cancels)", "busy");
+  setStatus("join: click the other half of this run to merge end-to-end, or "
+    + "click anywhere on another line to tee into it (Esc cancels)", "busy");
+  draw();
 };
+
+// The line under the cursor, by the SAME visibility rules a plain click and
+// the marquee already use: an excluded, hidden or isolated-away line cannot
+// be picked. Extracted verbatim from handleCanvasClick's own fallback so the
+// plain click and the Ctrl+click can never disagree about what was hit.
+function chainHitAt(px, py) {
+  const f = IMG_DPI / 72;
+  const tolPt = 6 / state.view.k / f * 4 + 1.5; // generous when zoomed out
+  let best = null, bestD = tolPt;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
+    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
+    const pts = ch.points;
+    for (let i = 1; i < pts.length; i++) {
+      const d = distToSeg(px, py, pts[i-1], pts[i]);
+      if (d < bestD) { bestD = d; best = ch; }
+    }
+  }
+  return best;
+}
 
 function handleCanvasClick(e) {
   const [px, py] = ptFromEvent(e);
-  const { k } = state.view;
-  const f = IMG_DPI / 72;
+  // (the `k` / `f` locals that used to sit here fed the inline hit test at
+  // the foot of this function; that loop is chainHitAt() now, which reads
+  // state.view itself, and the reclass branch below has always used its own
+  // fR/tolR. Nothing else in here referenced them.)
+  // CTRL/CMD+CLICK: add or remove THIS line from the multi-selection. First,
+  // so it beats the vertex pick and the plain selection - but gated on
+  // `!state.tool`, exactly like the Shift+drag marquee, so an armed
+  // draw/measure/cut/join tool keeps every click it had.
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && !state.tool) {
+    const hit = chainHitAt(px, py);
+    if (!hit) {
+      setStatus("Ctrl+click a LINE to add it to the selection (nothing was "
+        + "under that click) — or Ctrl+click a row in LINE STYLES to add a "
+        + "whole family", "err");
+      return;
+    }
+    msPickChain(hit);
+    return;
+  }
   if (state.tool === "measure") {
     state.measurePts.push([px, py]);
     updateMeasureInfo();
@@ -7409,7 +14209,7 @@ function handleCanvasClick(e) {
     return;
   }
   if (state.tool === "extend" && state.selected !== null) {
-    extendTo(px, py);
+    extendClick(px, py);
     return;
   }
   if (state.tool === "cutspan" && state.selected !== null) {
@@ -7438,43 +14238,35 @@ function handleCanvasClick(e) {
     const sel = chainById(state.selected);
     if (!tgt || !sel) { setStatus("click a line of the family this one belongs to", "err"); return; }
     if (tgt.style_id === sel.style_id) { setStatus("already in that family"); state.tool = null; $("reclassBtn").classList.remove("active"); return; }
-    const c = materialize(sel);
-    c.style_id = tgt.style_id;
-    c.class = tgt.class; c.color = tgt.color; c.width = tgt.width;
-    c.dash_signature = tgt.dash_signature;
-    if (tgt.template) c.template = JSON.parse(JSON.stringify(tgt.template));
+    const lab = state.labels.get(tgt.style_id) || "its new family";
+    captureUndo(`reclass into ${lab} — ${fmtQty(chainLenPt(sel))}`, [sel.chain_id]);
+    const c = reclassCore(sel, tgt.style_id, tgt);
     state.tool = null;
     $("reclassBtn").classList.remove("active");
     state.selected = c.chain_id;
     updateSelBar(c);
-    const lab = state.labels.get(tgt.style_id) || "its new family";
     afterEdit(`moved ${fmtLen(c.length_pt)} into ${lab}`);
     renderStyles(); renderChips(); renderMiniLegend();
     return;
   }
   if (state.tool === "drawline") {
-    // clicking an existing line endpoint SNAPS there - and if the draw is
-    // already underway, it FINISHES the line at that point (the drawn run
-    // then fuses with the touched family line in finishDraw)
-    const fSnap = IMG_DPI / 72;
-    const tolSnap = 7 / state.view.k / fSnap + 1.5;
-    let snap = null;
-    for (const ch of state.result.chains) {
-      if (state.excluded.has(ch.chain_id)) continue;
-      if (state.isolate !== null ? ch.style_id !== state.isolate
-                                 : !state.include.get(ch.style_id)) continue;
-      for (const q of [ch.points[0], ch.points[ch.points.length - 1]]) {
-        const d = Math.hypot(px - q[0], py - q[1]);
-        if (snap === null || d < snap.d) snap = { d, q };
-      }
-    }
-    const pt = (snap && snap.d <= tolSnap) ? [snap.q[0], snap.q[1]] : [px, py];
+    // A click SNAPS to the nearest point on any visible line - ANYWHERE on
+    // it, not only its ends. Ends-only was the old rule and it is what made
+    // a tee impossible to draw. The drawn point takes the snapped coordinate
+    // exactly; finishDraw then either FUSES (a same-family end) or WELDS
+    // (anywhere else), so the two lines genuinely meet.
+    const hit = snapToChain(px, py, null);
+    const pt = hit ? hit.point.slice() : [px, py];
     state.drawPts.push(pt);
-    if (snap && snap.d <= tolSnap && state.drawPts.length >= 2) {
+    state.drawSnaps.push(hit || null);
+    // an END of a line still FINISHES the run there, exactly as before
+    if (hit && hit.isEnd && state.drawPts.length >= 2) {
       finishDraw();
       return;
     }
-    setStatus(`draw: ${state.drawPts.length} point(s) — click a line end to finish there, or double-click/Enter`, "busy");
+    setStatus(`draw: ${state.drawPts.length} point(s)`
+      + (hit ? ` \u2014 last point sits on chain ${hit.chain_id}` : "")
+      + " \u2014 click a line end to finish there, or double-click/Enter", "busy");
     draw();
     return;
   }
@@ -7487,23 +14279,303 @@ function handleCanvasClick(e) {
     draw();
     return;
   }
-  const tolPt = 6 / k / f * 4 + 1.5; // generous when zoomed out
-  let best = null, bestD = tolPt;
-  for (const ch of state.result.chains) {
-    if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
-    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
-    const pts = ch.points;
-    for (let i = 1; i < pts.length; i++) {
-      const d = distToSeg(px, py, pts[i-1], pts[i]);
-      if (d < bestD) { bestD = d; best = ch; }
-    }
-  }
+  const best = chainHitAt(px, py);   // the same pick the Ctrl+click uses
   state.selected = best && state.selected !== best.chain_id ? best.chain_id : null;
   state.selPt = null;
   state.clickPt = state.selected !== null ? [px, py] : null;
   updateSelBar(best && state.selected !== null ? best : null);
   draw();
+}
+
+// ============== SNAP TO ANYWHERE ON A LINE (draw / extend / join) ==========
+// ONE helper behind all three tools: the nearest point ON any visible chain,
+// which is what makes a tee possible at all. Before this, every pick tool
+// reached for an ENDPOINT, so "join here" meant "join to whichever end of
+// that line happens to be nearest" - the operator's own report.
+//
+// Three rules the geometry has to keep straight:
+//
+//   * A VERTEX inside the (tighter) vertex tolerance beats the perpendicular
+//     foot, and then the returned point is that vertex EXACTLY. Corners are
+//     what an operator aims at, and a foot 0.3 pt off a corner leaves a
+//     hair-length stub nobody can see, select, or delete.
+//   * Inserting the snapped point into the target NEVER changes its measured
+//     length. The point is already on the target's polyline, so the split is
+//     length-neutral in exact arithmetic - and length_pt is NOT
+//     polyLen(points) (a chain that picks up across a gap carries that gap in
+//     its length; see chainLenPt), so recomputing it here would silently
+//     delete every one of those gaps. length_pt is left alone ON PURPOSE.
+//   * The CROSSING marquee and the WORK AREA mask must agree, to the ulp,
+//     about what "this segment meets this rectangle" means. snapTouchesRect
+//     therefore takes wzSegT / wzPtIn - the shipped exact Liang-Barsky slab
+//     clip from the WZ-MATH block - rather than carrying a second copy of it.
+//
+// tests/test_snap_geom.js evals ONLY the block between the SNAP-PURE markers
+// (plus WZ-MATH, for the functions above) - keep it pure: no DOM, no state.*,
+// like WZ-MATH, TRENCH-MATH and UNDO-CORE.
+// SNAP-PURE-BEGIN
+
+// two points are "the same point" below this. Well under a hairline's width
+// at any zoom, so it can only ever collapse a true duplicate.
+const SNAP_EPS = 1e-6;
+
+function snapPolyLen(ps) {
+  let L = 0;
+  for (let i = 1; i < ps.length; i++)
+    L += Math.hypot(ps[i][0] - ps[i - 1][0], ps[i][1] - ps[i - 1][1]);
+  return L;
+}
+
+// perpendicular foot of (px,py) on segment a->b, clamped to the segment
+function snapProject(px, py, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const L2 = dx * dx + dy * dy;
+  let t = L2 ? ((px - a[0]) * dx + (py - a[1]) * dy) / L2 : 0;
+  if (!(t > 0)) t = 0; else if (t > 1) t = 1;
+  const q = [a[0] + t * dx, a[1] + t * dy];
+  return { t, q, dist: Math.hypot(px - q[0], py - q[1]) };
+}
+
+// Nearest point ON one polyline.
+//   -> { segIndex, point, isVertex, vertexIndex, isEnd, t, dist } | null
+// segIndex is 1-based in the sense used by projectOnChain and every splice
+// site here: the point lies on points[segIndex-1] .. points[segIndex].
+// vtol > 0 lets a vertex win when the click is within vtol of it.
+function snapOnPolyline(px, py, points, vtol) {
+  const P = points;
+  if (!P || !P.length) return null;
+  if (P.length === 1)
+    return { segIndex: 1, point: P[0].slice(), isVertex: true, vertexIndex: 0,
+             isEnd: true, t: 0,
+             dist: Math.hypot(px - P[0][0], py - P[0][1]) };
+  // the vertex pass runs FIRST and wins outright inside vtol: aiming at a
+  // corner must land on the corner even when a shallow-angle leg passes
+  // marginally closer to the cursor
+  if (vtol > 0) {
+    let vi = -1, vd = vtol;
+    for (let i = 0; i < P.length; i++) {
+      const d = Math.hypot(px - P[i][0], py - P[i][1]);
+      if (d < vd) { vd = d; vi = i; }
+    }
+    if (vi >= 0)
+      return { segIndex: Math.max(1, vi), point: P[vi].slice(), isVertex: true,
+               vertexIndex: vi, isEnd: vi === 0 || vi === P.length - 1,
+               t: vi === 0 ? 0 : 1, dist: vd };
+  }
+  let best = null;
+  for (let i = 1; i < P.length; i++) {
+    const r = snapProject(px, py, P[i - 1], P[i]);
+    if (best === null || r.dist < best.dist)
+      best = { segIndex: i, point: r.q, isVertex: false, vertexIndex: -1,
+               isEnd: false, t: r.t, dist: r.dist };
+  }
+  // a foot that clamped onto a corner IS that corner - the click was past
+  // the end of the run, which is exactly what "join to the end" means
+  if (best.t <= 0) { best.isVertex = true; best.vertexIndex = best.segIndex - 1; }
+  else if (best.t >= 1) { best.isVertex = true; best.vertexIndex = best.segIndex; }
+  best.isEnd = best.isVertex &&
+    (best.vertexIndex === 0 || best.vertexIndex === P.length - 1);
+  return best;
+}
+
+// Best snap across many chains. `chains` is [{chain_id, points}] ALREADY
+// filtered by the caller's visibility rules - this helper knows nothing
+// about excluded / isolate / include, so every caller filters exactly the
+// way it filters for a plain click.
+function snapPickBest(px, py, chains, tol, vtol) {
+  let best = null;
+  for (const ch of chains) {
+    const r = snapOnPolyline(px, py, ch.points, vtol);
+    if (!r || !(r.dist <= tol)) continue;
+    if (best === null || r.dist < best.dist) { r.chain_id = ch.chain_id; best = r; }
+  }
+  return best;
+}
+
+// Insert `point` into `points` on segment segIndex, unless a vertex is
+// already there. IDEMPOTENT: a second call with the same point returns the
+// same list and inserted === false. Returns a NEW array; the caller owns it.
+function snapInsertVertex(points, segIndex, point, eps) {
+  const e = (eps > 0) ? eps : SNAP_EPS;
+  const P = points.map(p => p.slice());
+  for (let i = 0; i < P.length; i++)
+    if (Math.hypot(P[i][0] - point[0], P[i][1] - point[1]) <= e)
+      return { points: P, index: i, inserted: false };
+  const at = Math.min(Math.max(segIndex, 1), Math.max(P.length - 1, 1));
+  P.splice(at, 0, [point[0], point[1]]);
+  return { points: P, index: at, inserted: true };
+}
+
+// px of screen -> pt of page at zoom k. The +1.5 pt floor is the same one
+// every other pick in this file carries: zoomed right in, a snap still needs
+// a small absolute grab or it becomes unhittable. dpi is IMG_DPI, the raster
+// the canvas draws at; pt = px / k / (dpi/72).
+function snapTolFrom(px, k, dpi) {
+  return px / k / (dpi / 72) + 1.5;
+}
+
+// Does this polyline TOUCH the rect - any segment meeting it, or any vertex
+// inside it? THE CROSSING RULE, replacing the old fully-inside one. segT and
+// ptIn are wzSegT / wzPtIn; see the note above about why they are injected
+// rather than re-implemented.
+function snapTouchesRect(points, rect, segT, ptIn) {
+  const P = points;
+  if (!P || !P.length) return false;
+  const zs = [rect];
+  if (P.length === 1) return ptIn(P[0][0], P[0][1], zs);
+  for (let i = 1; i < P.length; i++)
+    if (segT(P[i - 1][0], P[i - 1][1], P[i][0], P[i][1], zs) > 0) return true;
+  // every segment degenerate (a repeated vertex) - segT scores those by
+  // point-in-rect already, but a 1-point run never reaches the loop above
+  return ptIn(P[0][0], P[0][1], zs);
+}
+// SNAP-PURE-END
+
+// ---- the app-side wrapper: visibility, zoom, and the on-screen budget ----
+
+// Screen-space tolerances, in PIXELS, converted to page pt at the live zoom.
+// draw/extend use a tight 9 px so a snap is deliberate. JOIN keeps the old
+// merge pick's generous reach (6/k/f*4 = 24 px) so a loose click still finds
+// the run it is aimed at - the difference is that it now connects WHERE the
+// click landed instead of at the nearest end.
+const SNAP_PX = 9;
+const SNAP_VERTEX_PX = 5;
+const SNAP_RADII = {              // tool -> [pick px, vertex px]
+  drawline: [SNAP_PX, SNAP_VERTEX_PX],
+  extend:   [SNAP_PX, SNAP_VERTEX_PX],
+  merge:    [24, 7],
+};
+const SNAP_TOOLS = new Set(Object.keys(SNAP_RADII));
+
+function snapTolPt(px) { return snapTolFrom(px, state.view.k, IMG_DPI); }
+
+// THE shared pick. Same visibility rules as a plain canvas click: excluded,
+// hidden and isolated-away lines cannot be snapped to. `skip` drops one
+// chain (normally the one being edited). Radii default to the armed tool's.
+function snapToChain(px, py, skip, pickPx, vtxPx) {
+  if (!state.result) return null;
+  const r = SNAP_RADII[state.tool] || [SNAP_PX, SNAP_VERTEX_PX];
+  const tol = snapTolPt(pickPx || r[0]);
+  const vtol = snapTolPt(vtxPx || r[1]);
+  const cands = [];
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (skip !== null && skip !== undefined && ch.chain_id === skip) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    if (!ch.points || !ch.points.length) continue;
+    cands.push(ch);
+  }
+  return snapPickBest(px, py, cands, tol, vtol);
+}
+
+// the family a chain belongs to, by the same familyName() rule the selection
+// bar and every picker in this file use
+function snapFam(ch) {
+  if (!ch || !state.result) return "that family";
+  return familyName(state.result.styles.find(s => s.style_id === ch.style_id))
+    || "that family";
+}
+
+// Give a snapped target a REAL vertex at the connection, so the two lines
+// genuinely meet instead of overlapping. Length-neutral by construction (see
+// the SNAP-PURE note): length_pt is not touched. The caller must have
+// captureUndo()'d hit.chain_id already - this materializes, which is an edit.
+//   -> { chain, note, added }
+function snapWeld(hit) {
+  const tgt = hit && chainById(hit.chain_id);
+  if (!tgt) return { chain: null, note: "", added: false };
+  const fam = snapFam(tgt);
+  if (hit.isVertex) {
+    // already a point on that line: nothing to insert, nothing to disclose
+    return { chain: tgt, note: ` chain ${tgt.chain_id} (${fam}) at its own point`,
+             added: false };
+  }
+  const m = materialize(tgt);
+  const r = snapInsertVertex(m.points, hit.segIndex, hit.point, SNAP_EPS);
+  if (r.inserted) {
+    m.points = r.points;
+    delete m.seg_counts; delete m._scOK;
+  }
+  return { chain: m, added: r.inserted,
+           note: ` chain ${m.chain_id} (${fam})`
+             + (r.inserted ? " \u2014 a point was added to it, its length unchanged"
+                           : " at its own point") };
+}
+
+// THE INDICATOR. "The operator must see the outcome before committing - this
+// is the difference between a tool and a trap." So while draw / extend / join
+// is armed, every mousemove resolves the SAME snap the click will use, parks
+// it on state.snapHit for the canvas ring, and names the outcome (with the
+// footage it will cost) in the status line. The hint is rewritten only when
+// its TEXT changes, so hovering does not thrash the status bar.
+function snapHover(px, py) {
+  const sel = state.selected !== null ? chainById(state.selected) : null;
+  // Each branch resolves the snap with EXACTLY the skip rule the click it
+  // previews will commit with - a ring the click would not honour is the
+  // trap this indicator exists to prevent.
+  let hit = null;
+  let msg = "";
+  if (state.tool === "drawline") {
+    hit = snapToChain(px, py, null);
+    if (hit)
+      msg = hit.isEnd
+        ? `snap: finish on the end of chain ${hit.chain_id} (${snapFam(chainById(hit.chain_id))})`
+        // a corner is already a point on that line - "a point is added" there
+        // would be a promise the weld does not keep (it is idempotent)
+        : hit.isVertex
+        ? `snap: connect to chain ${hit.chain_id} at its own corner \u2014 `
+          + `nothing is added to it`
+        : `snap: connect to chain ${hit.chain_id} here \u2014 `
+          + `a point is added to it, its length unchanged`;
+  } else if (state.tool === "extend" && sel) {
+    hit = snapToChain(px, py, sel.chain_id);
+    if (state.extendAnchor === null) {
+      const own = snapOnPolyline(px, py, sel.points, snapTolPt(SNAP_VERTEX_PX));
+      if (own && own.dist <= snapTolPt(SNAP_PX) && !own.isEnd) {
+        hit = Object.assign({}, own, { chain_id: sel.chain_id });
+        msg = `spur from chain ${sel.chain_id} here \u2014 a NEW line in the `
+            + `same family (${snapFam(sel)})`;
+      } else if (own && own.dist <= snapTolPt(SNAP_PX) && own.isEnd) {
+        hit = Object.assign({}, own, { chain_id: sel.chain_id });
+        msg = "that is this line's own end \u2014 click its middle for a spur";
+      } else {
+        const add = snapExtendAdd(sel, hit ? hit.point : [px, py]);
+        msg = hit
+          ? `extend to chain ${hit.chain_id} here \u2014 chain ${sel.chain_id} `
+            + `+${fmtQty(add)} to reach the connection`
+          : `extend \u2014 chain ${sel.chain_id} +${fmtQty(add)}`;
+      }
+    } else {
+      const anc = state.extendAnchor;
+      const dest = hit ? hit.point : [px, py];
+      const add = Math.hypot(dest[0] - anc.point[0], dest[1] - anc.point[1]);
+      msg = `spur \u2014 a new ${fmtQty(add)} line off chain ${anc.chain_id}`
+        + (hit ? `, joined to chain ${hit.chain_id} here` : "");
+    }
+  } else if (state.tool === "merge" && sel) {
+    hit = snapToChain(px, py, sel.chain_id);
+    if (hit) {
+      const add = snapExtendAdd(sel, hit.point);
+      msg = hit.isEnd
+        ? `join end-to-end with chain ${hit.chain_id} \u2014 the `
+          + `${fmtQty(add)} between them is added and the two become one line`
+        : `connect to chain ${hit.chain_id} here \u2014 chain ${sel.chain_id} `
+          + `+${fmtQty(add)} to reach the connection (they stay two lines)`;
+    }
+  }
+  state.snapHit = hit || null;
+  if (msg !== state.snapMsg) {
+    state.snapMsg = msg;
+    if (msg) setStatus(msg, "busy");
+  }
+}
+// how much the selected line grows to reach `dest` from its NEARER end -
+// the same arithmetic extendTo and connectToPoint commit
+function snapExtendAdd(sel, dest) {
+  const P = sel.points;
+  return Math.min(Math.hypot(dest[0] - P[0][0], dest[1] - P[0][1]),
+                  Math.hypot(dest[0] - P[P.length-1][0], dest[1] - P[P.length-1][1]));
 }
 
 // ---------- line toolkit: split / extend / separate / measure ----------
@@ -7534,8 +14606,14 @@ function materialize(ch) {
 }
 function afterEdit(msg) {
   $("restoreBtn").hidden = false;
+  // an edit can move a chain's geometry without changing its id (point
+  // drag, extend), so the work-area inside-fraction memo must not survive
+  // it; wzRev is part of that memo's key
+  state.wzRev++;
   setStatus(msg);
   renderItemized();
+  renderMultiBar();   // an edit can consume a multi-selected chain; the
+                      // bar's count and footage must not go stale
   draw();
 }
 
@@ -7558,6 +14636,7 @@ function splitSelected() {
   const ptsB = [bq].concat(pts.slice(bi));
   if (polyLen(ptsA) < 0.5 || polyLen(ptsB) < 0.5)
     return setStatus("click further from the end of the line to split it");
+  captureUndo(`split of a ${fmtQty(chainLenPt(ch))} line`, [ch.chain_id]);
   const full = polyLen(pts) || 1;
   const mk = (p) => {
     const c = JSON.parse(JSON.stringify(ch));
@@ -7585,19 +14664,121 @@ $("splitBtn").onclick = splitSelected;
 $("extendBtn").onclick = () => {
   if (state.selected === null) return;
   state.tool = "extend";
-  setStatus("click where the line should extend to (Esc cancels)", "busy");
+  state.extendAnchor = null;
+  setStatus("extend: click where the line should reach \u2014 or click a point "
+    + "on this line's own body to start a spur (Esc cancels)", "busy");
+  draw();
 };
-function extendTo(px, py) {
-  const ch = materialize(chainById(state.selected));
-  const pts = ch.points;
-  const dFirst = Math.hypot(px - pts[0][0], py - pts[0][1]);
-  const dLast = Math.hypot(px - pts[pts.length-1][0], py - pts[pts.length-1][1]);
-  if (dFirst < dLast) pts.unshift([px, py]); else pts.push([px, py]);
-  ch.length_pt += Math.min(dFirst, dLast);
-  state.selected = ch.chain_id;
+function cancelExtend() {
   state.tool = null;
+  state.extendAnchor = null;
+  state.snapHit = null; state.snapMsg = "";
+}
+
+// EXTEND has two meanings now, and the click decides which:
+//
+//   * click anywhere OFF the selected line  -> today's extend. The NEARER
+//     END grows to the click, exactly as before; the only change is that a
+//     destination inside snap range lands on the target EXACTLY and welds.
+//   * click a point on the selected line's own BODY -> a SPUR anchor.
+//
+// THE SPUR MODEL, stated plainly because it is a modelling decision and not
+// a detail: a polyline cannot fork. One chain is one ordered list of points,
+// so a branch off the middle of a run CANNOT be the same chain. The spur is
+// therefore a NEW chain in the SAME family, starting exactly at the anchor,
+// and the parent gets a vertex inserted at the anchor so the two genuinely
+// meet. That is the honest way to represent a tee here, and the status line
+// says so at the moment it happens.
+function extendClick(px, py) {
+  const sel = chainById(state.selected);
+  if (!sel) { cancelExtend(); return; }
+  if (state.extendAnchor === null) {
+    const own = snapOnPolyline(px, py, sel.points, snapTolPt(SNAP_VERTEX_PX));
+    if (own && own.dist <= snapTolPt(SNAP_PX)) {
+      if (own.isEnd) {
+        setStatus("that is this line's own end \u2014 click where it should "
+          + "reach, or click its middle to start a spur", "err");
+        return;
+      }
+      state.extendAnchor = { chain_id: sel.chain_id, segIndex: own.segIndex,
+                             point: own.point.slice(), isVertex: own.isVertex };
+      state.snapHit = null; state.snapMsg = "";
+      setStatus(`spur from chain ${sel.chain_id} \u2014 a new line in the same `
+        + `family (${snapFam(sel)}). Click where the spur goes (Esc cancels)`,
+        "busy");
+      draw();
+      return;
+    }
+    extendTo(px, py);
+    return;
+  }
+  spurTo(px, py);
+}
+
+function extendTo(px, py) {
+  const hit = snapToChain(px, py, state.selected);
+  const dest = hit ? hit.point.slice() : [px, py];
+  const ch0 = chainById(state.selected);
+  const p0 = ch0.points;
+  const dFirst = Math.hypot(dest[0] - p0[0][0], dest[1] - p0[0][1]);
+  const dLast = Math.hypot(dest[0] - p0[p0.length-1][0], dest[1] - p0[p0.length-1][1]);
+  const add = Math.min(dFirst, dLast);
+  captureUndo(`extend \u2014 ${fmtQty(add)}`,
+    [state.selected, hit ? hit.chain_id : null]);
+  const ch = materialize(ch0);
+  const pts = ch.points;
+  if (dFirst < dLast) pts.unshift(dest); else pts.push(dest);
+  ch.length_pt += add;
+  const w = hit ? snapWeld(hit) : null;
+  state.selected = ch.chain_id;
+  cancelExtend();
   updateSelBar(ch);
-  afterEdit(`extended by ${fmtLen(Math.min(dFirst, dLast))}`);
+  afterEdit(w
+    ? `chain ${ch.chain_id} +${fmtQty(add)} to reach the connection \u2014 `
+      + `connected to${w.note}`
+    : `chain ${ch.chain_id} +${fmtQty(add)} \u2014 now ${fmtQty(chainLenPt(ch))}`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// second click of a spur: the branch runs from the anchor to here
+function spurTo(px, py) {
+  const anc = state.extendAnchor;
+  const parent0 = chainById(anc.chain_id);
+  if (!parent0) { cancelExtend(); draw(); return; }
+  const hit = snapToChain(px, py, anc.chain_id);
+  const dest = hit ? hit.point.slice() : [px, py];
+  const add = Math.hypot(dest[0] - anc.point[0], dest[1] - anc.point[1]);
+  if (add < 0.5) {
+    setStatus("the spur has no length \u2014 click further from the anchor", "err");
+    return;
+  }
+  captureUndo(`spur off a line \u2014 ${fmtQty(add)}`,
+    [anc.chain_id, hit ? hit.chain_id : null]);
+  // 1. the parent gains a real vertex at the tee (length-neutral)
+  const pw = snapWeld({ chain_id: anc.chain_id, segIndex: anc.segIndex,
+                        point: anc.point, isVertex: anc.isVertex });
+  const parent = pw.chain || parent0;
+  // 2. the branch itself: a NEW chain, same family, styled off the parent.
+  //    It does NOT inherit the parent's separate-row label - a spur is new
+  //    footage and would otherwise land silently in someone else's priced
+  //    row; it joins the family's own row, where the operator can see it.
+  const c = JSON.parse(JSON.stringify(parent));
+  c.chain_id = state.nextChainId++;
+  c.custom = true;
+  delete c.seg_counts; delete c._scOK;
+  c.points = [anc.point.slice(), dest];
+  c.length_pt = add;
+  state.result.chains.push(c);
+  state.chainLabels.delete(c.chain_id);
+  // 3. the far end welds too, when it landed on another line
+  const dw = hit ? snapWeld(hit) : null;
+  state.selected = c.chain_id; state.selPt = null;
+  cancelExtend();
+  updateSelBar(c);
+  afterEdit(`spur from chain ${parent.chain_id} \u2014 new chain `
+    + `${c.chain_id}, +${fmtQty(add)} in ${snapFam(c)}`
+    + (dw ? `, joined to${dw.note}` : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
 }
 
 // nearest on-path position on a chain; snaps onto a vertex ("the dots")
@@ -7661,6 +14842,7 @@ function cutSpanClick(px, py) {
     cancelCut(); updateSelBar(ch); draw();
     return setStatus("those two points touch — nothing to cut", "err");
   }
+  captureUndo(`cut of ${fmtQty(removed)} out of a line`, [ch.chain_id]);
   const mk = (p) => {
     const c = JSON.parse(JSON.stringify(ch));
     c.chain_id = state.nextChainId++;
@@ -7683,38 +14865,202 @@ function cutSpanClick(px, py) {
   afterEdit(`cut ${fmtLen(removed)} out — ${sides.length} piece(s) remain`);
 }
 
+// DRAW ANYTIME. "users should be able to draw a line at any time" - so the
+// button no longer refuses without a selection. Two paths, and the fast one
+// is untouched:
+//
+//   * a line IS selected -> exactly today's behaviour. drawSrc is that line,
+//     the drawn run inherits its family, and finishing commits immediately.
+//   * nothing selected  -> drawSrc stays null and finishDraw ASKS where the
+//     footage goes before committing anything. A drawn line must never land
+//     in a family the operator did not pick, so there is no default, and
+//     cancelling throws the drawn geometry away rather than guessing.
 $("drawBtn").onclick = () => {
+  if (!state.result) return setStatus("detect lines first", "err");
+  if (state.tool === "drawline") {
+    cancelDraw(); setStatus("draw cancelled"); draw(); return;
+  }
   const ch = state.selected !== null && chainById(state.selected);
-  if (!ch)
-    return setStatus("select a line of the family to draw into, then hit draw", "err");
-  state.tool = "drawline"; state.drawPts = []; state.drawSrc = ch.chain_id;
-  state.hoverPt = null;
+  state.tool = "drawline"; state.drawPts = []; state.drawSnaps = [];
+  state.drawSrc = ch ? ch.chain_id : null;
+  state.hoverPt = null; state.snapHit = null; state.snapMsg = "";
   $("drawBtn").classList.add("active");
-  setStatus("draw: click points — double-click or Enter finishes, Esc backs up", "busy");
+  setStatus(ch
+    ? `draw into ${snapFam(ch)}: click points \u2014 double-click or Enter `
+      + "finishes, Esc backs up"
+    : "draw: click points \u2014 double-click or Enter finishes, then pick the "
+      + "family it belongs to (Esc backs up)", "busy");
+  draw();
 };
 function cancelDraw() {
-  state.tool = null; state.drawPts = []; state.drawSrc = null; state.hoverPt = null;
+  state.tool = null; state.drawPts = []; state.drawSnaps = [];
+  state.drawSrc = null; state.hoverPt = null;
+  state.snapHit = null; state.snapMsg = "";
   $("drawBtn").classList.remove("active");
 }
 function finishDraw() {
-  const src = chainById(state.drawSrc);
-  const pts = [];
-  for (const q of state.drawPts)
+  // dedupe points AND their snaps together, so head/tail keep their snap
+  const pts = [], sn = [];
+  for (let i = 0; i < state.drawPts.length; i++) {
+    const q = state.drawPts[i];
     if (!pts.length ||
-        Math.hypot(q[0]-pts[pts.length-1][0], q[1]-pts[pts.length-1][1]) > 0.5)
-      pts.push(q);
-  if (!src || pts.length < 2) {
-    cancelDraw(); draw();
-    return setStatus("draw cancelled — a line needs at least two points", "err");
+        Math.hypot(q[0]-pts[pts.length-1][0], q[1]-pts[pts.length-1][1]) > 0.5) {
+      pts.push(q); sn.push(state.drawSnaps[i] || null);
+    }
   }
-  // when an end of the drawn run lands on an endpoint of a same-family
-  // line, this is an EXTENSION: fuse into one line (either end works,
-  // and both ends can bridge two lines into one)
+  if (pts.length < 2) {
+    cancelDraw(); draw();
+    return setStatus("draw cancelled \u2014 a line needs at least two points", "err");
+  }
+  const pend = { pts, head: sn[0] || null, tail: sn[sn.length - 1] || null };
+  const src0 = state.drawSrc !== null ? chainById(state.drawSrc) : null;
+  if (src0) { commitDraw(pend, src0.style_id, src0); return; }
+  // Nothing selected: hold the geometry and ASK. Nothing is committed, no
+  // family is guessed, and cancelling discards the drawn run.
+  state.drawPend = pend;
+  const len = snapPolyLen(pts);
+  cancelDraw();
+  draw();
+  drawFamAsk(len);
+}
+
+// The family picker for a draw that started with nothing selected. Families
+// that EXIST on this page, sorted by live footage, labelled by familyName() -
+// the same rule the selection bar and every other picker in this file use.
+// There is deliberately no "(new family)" row: creating a style belongs to
+// another builder and nothing in this app creates one today (see
+// familySelect's note). If that action lands, defining window.drawNewFamily
+// (a function taking a callback that receives the new style_id) surfaces it
+// here without a second implementation of it.
+function drawFamAsk(lenPt) {
+  drawFamClose();
+  const wrap = document.createElement("div");
+  wrap.id = "drawFamModal";
+  wrap.className = "fp-modal";
+  const card = document.createElement("div");
+  card.className = "fp-card";
+  const h = document.createElement("h2");
+  h.textContent = "Where does this line go?";
+  const sub = document.createElement("p");
+  sub.className = "fp-sub";
+  sub.textContent = `${fmtQty(lenPt)} drawn. Pick the family it belongs to \u2014 `
+    + "nothing is added to the takeoff until you do.";
+  card.appendChild(h); card.appendChild(sub);
+  const list = document.createElement("div");
+  list.className = "fp-list";
+  const styles = [...state.result.styles]
+    .sort((a, b) => styleLenPt(b) - styleLenPt(a));
+  // Two families CAN carry the same familyName - a legend row that names
+  // several detected styles does exactly that (Oncor C-04 has three called
+  // "EXISTING CONTOUR (legend)"). Two identical rows in a picker whose whole
+  // job is "never land in a family the operator did not pick" is a trap, so
+  // where a name repeats, the pattern signature that distinguishes them is
+  // shown underneath it. Names that are already unique stay clean.
+  const nameCount = new Map();
+  for (const s of styles) {
+    const nm = familyName(s);
+    nameCount.set(nm, (nameCount.get(nm) || 0) + 1);
+  }
+  for (const s of styles) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fp-row";
+    b.dataset.sid = String(s.style_id);
+    const n = document.createElement("span");
+    n.className = "fp-name";
+    const nm = familyName(s);
+    n.textContent = nm;
+    if (nameCount.get(nm) > 1) {
+      const w = document.createElement("span");
+      w.className = "fp-sig";
+      w.textContent = `${s.class} · ${s.signature}`;
+      n.appendChild(w);
+    }
+    const q = document.createElement("span");
+    q.className = "fp-qty";
+    q.textContent = fmtQty(styleLenPt(s));
+    b.appendChild(n); b.appendChild(q);
+    b.onclick = () => { drawFamClose(); drawFamPick(s.style_id); };
+    list.appendChild(b);
+  }
+  if (typeof window.drawNewFamily === "function") {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fp-row fp-new";
+    b.dataset.sid = "new";
+    b.textContent = "New family";
+    b.onclick = () => {
+      drawFamClose();
+      window.drawNewFamily((sid) => drawFamPick(sid));
+    };
+    list.appendChild(b);
+  }
+  card.appendChild(list);
+  const acts = document.createElement("div");
+  acts.className = "fp-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "mini";
+  cancel.id = "drawFamCancel";
+  cancel.textContent = "Discard the line";
+  cancel.onclick = () => drawFamCancel();
+  acts.appendChild(cancel);
+  card.appendChild(acts);
+  wrap.appendChild(card);
+  // clicking the scrim does NOT discard: the drawn run is real work and a
+  // stray click must not throw it away. Esc and the button are the two ways.
+  document.body.appendChild(wrap);
+  const first = list.querySelector("button");
+  if (first) first.focus();
+  setStatus(`${fmtQty(lenPt)} drawn \u2014 pick the family it belongs to`, "busy");
+}
+function drawFamClose() {
+  const m = document.getElementById("drawFamModal");
+  if (m) m.remove();
+}
+function drawFamCancel() {
+  drawFamClose();
+  state.drawPend = null;
+  setStatus("drawn line discarded \u2014 nothing was added");
+}
+function drawFamPick(sid) {
+  const pend = state.drawPend;
+  state.drawPend = null;
+  if (!pend) return;
+  const donor = drawDonor(sid);
+  if (!donor) {
+    setStatus("that family has no line to copy a pattern from \u2014 the drawn "
+      + "line was discarded", "err");
+    return;
+  }
+  commitDraw(pend, sid, donor);
+}
+// a chain of that family to inherit class / colour / width / pattern from:
+// a live one first, an excluded one only as a fallback
+function drawDonor(sid) {
+  let dead = null;
+  for (const c of state.result.chains) {
+    if (c.style_id !== sid) continue;
+    if (!state.excluded.has(c.chain_id)) return c;
+    if (!dead) dead = c;
+  }
+  return dead;
+}
+
+// The commit. `sid` is the family the footage lands in - the selected line's
+// (fast path) or the one the operator just picked. Never inferred.
+function commitDraw(pend, sid, donorIn) {
+  const pts = pend.pts;
+  const src = donorIn || drawDonor(sid);
+  if (!src) {
+    cancelDraw(); draw();
+    return setStatus("draw cancelled \u2014 no line of that family to copy", "err");
+  }
   const fT = IMG_DPI / 72;
   const tolT = 7 / state.view.k / fT + 1.5;
   const endMatch = (pt, skip) => {
     for (const ch of state.result.chains) {
-      if (state.excluded.has(ch.chain_id) || ch.style_id !== src.style_id) continue;
+      if (state.excluded.has(ch.chain_id) || ch.style_id !== sid) continue;
       if (skip && ch.chain_id === skip) continue;
       const P = ch.points;
       if (Math.hypot(pt[0] - P[0][0], pt[1] - P[0][1]) <= tolT)
@@ -7726,6 +15072,27 @@ function finishDraw() {
   };
   const head = endMatch(pts[0], null);
   let tail = endMatch(pts[pts.length - 1], head ? head.ch.chain_id : null);
+  // A drawn end that SNAPPED onto a line but did NOT fuse with it (it landed
+  // mid-body, or on an end of another family) is a CONNECTION: the drawn
+  // point already sits on the target exactly, and the target gets a vertex
+  // there so the two genuinely meet rather than overlap. Both chains ride in
+  // the one undo entry below, so one Ctrl+Z reverses the whole thing.
+  const fusedIds = new Set(
+    [head && head.ch.chain_id, tail && tail.ch.chain_id].filter(x => x != null));
+  const weldOf = (snap, fused) => {
+    if (!snap || fused) return null;
+    // a chain about to be consumed by the fuse cannot also be welded to
+    if (fusedIds.has(snap.chain_id)) return null;
+    if (state.excluded.has(snap.chain_id)) return null;
+    return chainById(snap.chain_id) ? snap : null;
+  };
+  const wHead = weldOf(pend.head, head);
+  const wTail = weldOf(pend.tail, tail);
+  // BEFORE consume() excludes the fused ends; a plain draw touches no
+  // existing chain and snapshots nothing but the id counter
+  captureUndo(`drawn line \u2014 ${fmtQty(snapPolyLen(pts))}`,
+    [head ? head.ch.chain_id : null, tail ? tail.ch.chain_id : null,
+     wHead ? wHead.chain_id : null, wTail ? wTail.chain_id : null]);
   let merged = pts, label = null, fused = 0;
   const consume = (m) => {
     if (!m.ch.custom) state.excluded.add(m.ch.chain_id);
@@ -7746,17 +15113,28 @@ function finishDraw() {
   const c = JSON.parse(JSON.stringify(src));  // inherits the family's style/pattern
   c.chain_id = state.nextChainId++;
   c.custom = true;
+  c.style_id = sid;      // the picked family, never the donor's by accident
   delete c.seg_counts; delete c._scOK;
   c.points = merged;
   c.length_pt = polyLen(merged);
   if (label) state.chainLabels.set(c.chain_id, label);
   state.result.chains.push(c);
+  // weld AFTER the drawn chain exists, so undoing this one entry takes the
+  // inserted vertices with it
+  const notes = [];
+  for (const w of [wHead, wTail]) {
+    if (!w || state.excluded.has(w.chain_id)) continue;
+    const r = snapWeld(w);
+    if (r.chain) notes.push(r.note.trim());
+  }
   state.selected = c.chain_id; state.selPt = null;
   cancelDraw();
   updateSelBar(c);
-  afterEdit(fused
-    ? `extended the line — now ${fmtLen(c.length_pt)}`
-    : `drew ${fmtLen(c.length_pt)} into the family`);
+  const joinTxt = notes.length ? ` \u2014 connected to ${notes.join(" and ")}` : "";
+  afterEdit((fused
+    ? `extended the line \u2014 now ${fmtQty(chainLenPt(c))}`
+    : `drew ${fmtQty(chainLenPt(c))} into ${snapFam(c)}`) + joinTxt);
+  renderStyles(); renderChips(); renderMiniLegend();
 }
 
 $("reclassBtn").onclick = () => {
@@ -7765,8 +15143,14 @@ $("reclassBtn").onclick = () => {
     return setStatus("select the misclassified line first, then hit reclassify", "err");
   state.tool = state.tool === "reclass" ? null : "reclass";
   $("reclassBtn").classList.toggle("active", state.tool === "reclass");
+  // The pick-click can only target a family that EXISTS - you cannot click a
+  // line of a family with no lines in it. So the create affordance stays on
+  // the selection bar's picker, and the armed tool points at it rather than
+  // leaving the operator to discover it.
   setStatus(state.tool === "reclass"
-    ? "reclassify: click a line of the family this one SHOULD belong to (Esc cancels)"
+    ? "reclassify: click a line of the family this one SHOULD belong to "
+      + "(Esc cancels) — or pick “+ New family…” in the "
+      + "family box on the selection bar to make one"
     : "reclassify cancelled");
 };
 
@@ -7778,6 +15162,7 @@ $("sepBtn").onclick = () => {
   const name = prompt("Name for this line (its own row + price):",
     current ? current + " — separated" : "separated line");
   if (!name) return;
+  captureUndo(`separate as "${name.trim()}"`, [ch.chain_id]);
   state.chainLabels.set(ch.chain_id, name.trim());
   updateSelBar(ch);
   afterEdit(`"${name.trim()}" now has its own itemized row`);
@@ -7803,9 +15188,58 @@ function updateMeasureInfo() {
   if (state.measurePts.length < 2) { info.hidden = true; return; }
   const pt = polyLen(state.measurePts);
   const sc = state.result && state.result.scale;
-  info.textContent = sc
+  info.innerHTML = "";
+  const read = document.createElement("span");
+  read.textContent = sc
     ? `${(pt / 72 * sc.ft_per_paper_inch).toFixed(1)} ft`
     : fmtLen(pt);
+  info.appendChild(read);
+  // Calibrate the sheet from this line. Jeff Ellis (ECI Foundations,
+  // feedback 2026-08-27, BLOCKED): "The selected line should be 24' but is
+  // showing 9'. I wonder if you can make it so that the scale can be entered
+  // manually based on a selected line." The operator measures something whose
+  // true dimension they know, types that dimension, and the page scale is
+  // DERIVED: ft_per_paper_inch = true_feet / measured_inches. It commits
+  // through applyTypedScale - the same single path as the typed-scale box -
+  // so it records as reviewer-set, travels in the approve payload, and lands
+  // in the p<N>_scale.json sidecar like any other human scale decision.
+  if (state.result && pt > 1e-6) {
+    const sep = document.createElement("span");
+    sep.className = "cal-sep";
+    sep.textContent = " · should be ";
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = "any"; inp.min = "0";
+    inp.className = "cal-ft"; inp.name = "calibrate-ft";
+    inp.placeholder = "true ft";
+    const go = document.createElement("button");
+    go.className = "mini"; go.textContent = "set scale";
+    go.title = "Derive the page scale from this line: the feet you typed "
+      + "divided by the inches of paper the line spans.";
+    const commit = () => {
+      const trueFt = parseFloat(inp.value);
+      if (!(trueFt > 0)) { inp.focus(); return; }
+      const ft = trueFt / (pt / 72);
+      if (!scaleSane(ft)) {
+        setStatus(`refusing ${ft.toFixed(3)} ft per inch - outside the sane `
+          + `band (${SCALE_FT_MIN}-${SCALE_FT_MAX}). Check the line and the `
+          + `feet you typed.`);
+        return;
+      }
+      applyTypedScale(ft, `${trueFt}' over a measured line`);
+      setStatus(`scale CALIBRATED: this line = ${trueFt} ft, so 1 inch = `
+        + `${ft.toFixed(2)} ft. Every quantity on this sheet recalculated. `
+        + `The line now reads ${trueFt} ft - confirm that, then spot-check `
+        + `one other known dimension.`);
+      updateMeasureInfo();   // the reading flips to the typed feet - the
+                             // operator's own confirmation the math landed
+    };
+    go.onclick = commit;
+    inp.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      e.stopPropagation();   // keep review shortcuts off a focused input
+    };
+    info.append(sep, inp, document.createTextNode(" ft "), go);
+  }
   info.hidden = false;
 }
 
@@ -7834,8 +15268,12 @@ async function ensureElev() {
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
 function updateSelBar(ch) {
-  for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn", "drawBtn"])
+  for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
+  // DRAW is no longer a selection-only tool ("users should be able to draw a
+  // line at any time"). It needs a detected sheet, nothing more; with nothing
+  // selected, finishDraw asks which family the footage joins.
+  $("drawBtn").disabled = !state.result;
   $("removeBtn").disabled = !ch;
   if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
@@ -7847,7 +15285,65 @@ function updateSelBar(ch) {
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
   const el = z !== undefined ? ` · EL ${z}` : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(ch.length_pt)}${pt}${el}`;
+  // the length here is the line's GEOMETRY; when a work area is drawn and
+  // this line crosses its edge, say what part of it actually counts
+  const wf = wzChainFrac(ch);
+  const wz = (wzActive() && wf < 1)
+    ? (wf > 0 ? ` · ${fmtQty(chainCountedPt(ch))} in work area`
+              : " · outside work area (counts 0)")
+    : "";
+  const info = $("selInfo");
+  info.textContent = "";
+  const txt = document.createElement("span");
+  txt.className = "sel-txt";
+  txt.textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}${el}`;
+  info.appendChild(txt);
+  // family switcher, right on the bar: the SAME mutation the Reclassify
+  // tool ends in (reclassCore), without the pick-click trip across the
+  // canvas. Listed by footage so the family you want is near the top.
+  const fam = familySelect(ch.style_id, null, (sid) => familySwitch(sid),
+                           () => famNewFromSelection());
+  fam.title = "Move this line into another family — same edit as the "
+    + "Reclassify tool, and Ctrl+Z undoes it. “+ New family…” makes a family "
+    + "of your own, named by you, and puts this line in it.";
+  info.appendChild(fam);
+  // GO TO THIS LINE'S ROW. The owner: "can we have a way where if we click a
+  // line there is a way to quickly go to that line in the line style tab as
+  // well". This is the mirror of the per-family line list's click, which
+  // already goes list -> sheet through revealChain(); revealStyleRow() is the
+  // same gesture in the other direction and reports the same way when it
+  // cannot land (see its comment).
+  const goBtn = document.createElement("button");
+  goBtn.type = "button";
+  goBtn.className = "sel-goto";
+  goBtn.textContent = "in list";
+  goBtn.title = "Jump to this line's row in the Line styles list — opens "
+    + "its group if you closed it, scrolls to the row and flashes it. It "
+    + "changes nothing: no tick, no quantity, no colour.";
+  goBtn.onclick = (e) => {
+    e.stopPropagation();
+    revealStyleRow(ch.style_id, "line #" + ch.chain_id);
+  };
+  info.appendChild(goBtn);
+  // PER-LINE COLOUR, on the bar beside the family switch: the two controls
+  // are the same question at two scopes ("which family is this?" / "what
+  // colour is this one?"). The button IS the swatch - it wears the colour the
+  // line is currently drawn in.
+  const cinfo = chainColorInfo(ch, st);
+  const cbtn = document.createElement("button");
+  cbtn.type = "button";
+  cbtn.className = "sel-color" + (cinfo.src === "line" ? " own" : "");
+  cbtn.style.background = cinfo.css;
+  cbtn.setAttribute("aria-label", "colour of this line");
+  cbtn.title = (cinfo.src === "line"
+      ? "This line carries its own colour, overriding its family. "
+      : cinfo.src === "engine"
+        ? "This line is drawn in the colour the detector measured. "
+        : "This line follows " + colorSrcLabel(cinfo.src) + ". ")
+    + "Click to colour THIS line only — it overrides its family, it is "
+    + "saved, it exports, and Ctrl+Z does not undo it.";
+  cbtn.onclick = (e) => { e.stopPropagation(); colorPopForChain(ch, cbtn); };
+  info.appendChild(cbtn);
 }
 
 function deleteVertex() {
@@ -7857,6 +15353,7 @@ function deleteVertex() {
     setStatus("too few points left — remove the whole line instead", "err");
     return true;
   }
+  captureUndo("point delete", [ch.chain_id]);
   const m = materialize(ch);
   const before = polyLen(m.points);
   m.points.splice(state.selPt, 1);
@@ -7869,15 +15366,66 @@ function deleteVertex() {
   return true;
 }
 
+// Update the rows IN PLACE rather than calling renderStyles(). That function
+// does box.innerHTML = "" and rebuilds every row, which on a 280-row sheet
+// throws away the operator's scroll position under the cursor - the reason the
+// isolate handler already refuses to call it. Only two pieces of text on a row
+// can move when a line is deleted, so only those are rewritten.
+function refreshStyleRows() {
+  if (!state.result) return;
+  const byId = new Map(state.result.styles.map(s => [String(s.style_id), s]));
+  const splits = splitItems();
+  for (const row of document.querySelectorAll(".style-row")) {
+    const s = byId.get(row.dataset.sid);
+    if (!s) continue;
+    const meta = row.querySelector(".style-meta");
+    if (meta) {
+      meta.textContent = `${fmtQty(styleLenPt(s))} · `
+        + `${styleLiveCount(s.style_id)} lines · ${s.signature}`;
+      const wOut = styleLiveOut(s.style_id);
+      if (wOut > 0.05)
+        meta.textContent += ` · ${fmtQty(wOut)} outside work area`;
+    }
+    const chip = row.querySelector(".item-split .is-txt");
+    const sp = splits.get(s.style_id);
+    if (chip && sp)
+      chip.textContent = fmtQty(sp.total) + " total, from "
+        + sp.parts.length + " layers";
+    // The per-family list is a live view of the same chains this function is
+    // re-reading, so a delete/undo that moved the row's count must move the
+    // list too. Rebuilt in place, like everything else here - no renderStyles.
+    const ft = row.querySelector(".fam-toggle");
+    if (ft) {
+      const nLive = styleLiveCount(s.style_id);
+      ft.disabled = !nLive;
+      ft.title = nLive
+        ? `List the ${nLive} individual line${nLive === 1 ? "" : "s"} in this `
+          + "family \u2014 hover a row to light it on the sheet, click it to "
+          + "select and centre on it. Nothing in the list changes a quantity."
+        : "No lines in this family right now, so there is nothing to list.";
+    }
+    if (famOpen.has(s.style_id)) famRenderList(s);
+  }
+  // the group headers carry a live footage and a live count too
+  sgSyncHeads();
+}
+
 function removeSelected() {
   if (state.selected === null) return;
   if (deleteVertex()) return;   // a picked point goes first, not the line
+  const ch = chainById(state.selected);
+  captureUndo(`delete of 1 line — ${ch ? fmtQty(chainLenPt(ch)) : "?"}`,
+    [state.selected]);
   state.excluded.add(state.selected);
+  state.multiSel.delete(state.selected);   // it can no longer be bulk-acted on
   state.selected = null; state.selPt = null;
   updateSelBar(null);
-  setStatus(`${state.excluded.size} line(s) removed`);
+  setStatus(`${state.excluded.size} line(s) removed — Ctrl+Z restores`);
   $("restoreBtn").hidden = state.excluded.size === 0;
   renderItemized();
+  refreshStyleRows();   // the row's own footage and line count moved too
+  renderMiniLegend();
+  renderMultiBar();
   draw();
 }
 $("removeBtn").onclick = removeSelected;
@@ -7890,17 +15438,1372 @@ $("restoreBtn").onclick = () => {
     return;
   }
   state.excluded.clear();
+  // Reset is the bigger hammer and it wins: the undo stack's snapshots
+  // describe a history that no longer exists (the loadResult path above
+  // clears it the same way, inside loadResult)
+  undoClear(undoStack);
+  state.multiSel = new Set();
   $("restoreBtn").hidden = true;
   setStatus("removed lines restored");
   renderItemized();
+  refreshStyleRows();
+  renderMiniLegend();
+  renderMultiBar();
   draw();
 };
+// ==================== UNDO - the chain-edit undo stack ====================
+// Before this, the only recovery from a wrong edit was "Reset edits", which
+// nukes EVERY edit on the sheet to fix one. Ctrl+Z reverses just the last
+// chain edit: delete (line or point), split, extend, cut span, draw,
+// reclassify, merge, separate, and the bulk marquee actions.
+//
+// Design: every mutation site calls captureUndo() BEFORE it touches
+// anything, naming ONLY the chains it is about to touch - a snapshot is a
+// handful of deep-copied chain entries plus their membership in
+// state.excluded and state.chainLabels, never a copy of the whole sheet.
+// Measured on Barn C3.1 (1,638 chains): a single-chain snapshot is
+// 476 B min / 633 B median / 29.0 KB max (a 1,701-point contour), against
+// 1.49 MB for a whole-sheet copy per edit - the design this replaces.
+// Chains the edit CREATES need no listing: their ids are >= the snapshot's
+// nextChainId, and entries restore strictly LIFO, so at undo time any
+// higher id present belongs to exactly the edit being reversed.
+//
+// undoApply is its own inverse builder: applying an entry first captures
+// the current state of the same region, so undo and redo are one operation
+// walking two stacks. The stack dies with the page (chains are per page)
+// and with "Reset edits" (the bigger hammer wins).
+//
+// tests/test_undo_core.js evals ONLY the block between the UNDO-CORE
+// markers - keep it pure (no DOM, no state.*), like TRENCH-MATH/WZ-MATH.
+// UNDO-CORE-BEGIN
+
+const UNDO_DEPTH = 50;   // bounded: ~50 edits of history, oldest evicted
+
+function undoNewStack(depth) {
+  return { depth: depth > 0 ? depth : UNDO_DEPTH, undo: [], redo: [] };
+}
+
+function undoDeep(x) {
+  return x === undefined ? undefined : JSON.parse(JSON.stringify(x));
+}
+
+// Snapshot the named chain ids out of doc, plus the scalar bookkeeping.
+// doc = { chains: Array, excluded: Set, labels: Map(chain_id -> label),
+//         nextChainId, selected, selPt,
+//         styles?: Array, smaps?: Array<Map(style_id -> anything)> }
+// Taken BEFORE a mutation; ids lists every PRE-EXISTING chain the edit may
+// touch (mutate, exclude, splice, or relabel). null/undefined ids are
+// dropped so callers can pass optional participants straight through.
+//
+// STYLE REGION (added for operator-created line families). `sids` names the
+// style ROWS an edit may add, remove or rewrite, listed exactly the way ids
+// lists chains - including a row that does not exist yet, which snapshots as
+// present:false so undo removes it and redo puts it back. Every chain-only
+// edit passes nothing and the region is `[]`, so an ordinary snapshot pays
+// nothing (the 476 B median above is unchanged). doc.smaps is a FIXED-ORDER
+// list of per-style Maps that must travel with the row (labels, include,
+// measure mode, seed labels); the order is the caller's contract - see
+// undoDoc().
+function undoCapture(doc, ids, label, sids) {
+  const seen = new Set();
+  const chains = [], excluded = [], labels = [];
+  for (const id of ids) {
+    if (id === null || id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    const idx = doc.chains.findIndex(c => c.chain_id === id);
+    chains.push({ id, idx, present: idx >= 0,
+                  data: idx >= 0 ? undoDeep(doc.chains[idx]) : null });
+    excluded.push([id, doc.excluded.has(id)]);
+    labels.push([id, doc.labels.has(id), doc.labels.get(id)]);
+  }
+  const sseen = new Set();
+  const styles = [];
+  const smaps = doc.smaps || [];
+  for (const sid of (sids || [])) {
+    if (sid === null || sid === undefined || sseen.has(sid)) continue;
+    sseen.add(sid);
+    const arr = doc.styles || [];
+    const idx = arr.findIndex(s => s.style_id === sid);
+    styles.push({ sid, idx, present: idx >= 0,
+                  data: idx >= 0 ? undoDeep(arr[idx]) : null,
+                  maps: smaps.map(m => [m.has(sid), undoDeep(m.get(sid))]) });
+  }
+  return { label: label || "edit", nextChainId: doc.nextChainId,
+           selected: doc.selected, selPt: doc.selPt,
+           chains, excluded, labels, styles };
+}
+
+// Restore `entry` onto doc IN PLACE (arrays/sets/maps are mutated, scalars
+// are returned for the caller to write back) and return the inverse entry
+// that puts doc back to the moment before this call.
+function undoApply(doc, entry) {
+  // the full affected region: listed ids + everything the edit created
+  const ids = new Set(entry.chains.map(c => c.id));
+  for (const c of doc.chains)
+    if (c.chain_id >= entry.nextChainId) ids.add(c.chain_id);
+  for (const k of doc.labels.keys())
+    if (typeof k === "number" && k >= entry.nextChainId) ids.add(k);
+  const inverse = undoCapture(doc, [...ids], entry.label,
+                              (entry.styles || []).map(s => s.sid));
+  // 1. chains the edit created go away entirely (ids >= the pre-edit
+  //    counter can only have come from this edit - see LIFO note above)
+  for (let i = doc.chains.length - 1; i >= 0; i--)
+    if (doc.chains[i].chain_id >= entry.nextChainId) doc.chains.splice(i, 1);
+  for (const k of [...doc.labels.keys()])
+    if (typeof k === "number" && k >= entry.nextChainId) doc.labels.delete(k);
+  for (const id of [...doc.excluded])
+    if (id >= entry.nextChainId) doc.excluded.delete(id);
+  // 2. listed chains return to their snapshotted content and position
+  const order = [...entry.chains].sort((a, b) => a.idx - b.idx);
+  for (const c of order) {
+    const at = doc.chains.findIndex(x => x.chain_id === c.id);
+    if (c.present) {
+      const data = undoDeep(c.data);
+      if (at >= 0) doc.chains[at] = data;
+      else doc.chains.splice(Math.min(Math.max(c.idx, 0), doc.chains.length), 0, data);
+    } else if (at >= 0) {
+      doc.chains.splice(at, 1);
+    }
+  }
+  // 3. membership and labels exactly as recorded
+  for (const [id, wasIn] of entry.excluded) {
+    if (wasIn) doc.excluded.add(id); else doc.excluded.delete(id);
+  }
+  for (const [id, had, val] of entry.labels) {
+    if (had) doc.labels.set(id, val); else doc.labels.delete(id);
+  }
+  // 4. the STYLE region, restored exactly the way the chains were: listed
+  //    rows return to their snapshotted content and position, a row that was
+  //    absent is spliced out again, and every per-style map entry goes back
+  //    to had/value. Nothing here is derived - a family created by the edit
+  //    was captured as present:false, so this deletes it, and the inverse
+  //    built above captured it present, so redo puts it back byte-identical.
+  const sorder = [...(entry.styles || [])].sort((a, b) => a.idx - b.idx);
+  const smaps2 = doc.smaps || [];
+  for (const s of sorder) {
+    const arr = doc.styles || [];
+    const at = arr.findIndex(x => x.style_id === s.sid);
+    if (s.present) {
+      const data = undoDeep(s.data);
+      if (at >= 0) arr[at] = data;
+      else arr.splice(Math.min(Math.max(s.idx, 0), arr.length), 0, data);
+    } else if (at >= 0) {
+      arr.splice(at, 1);
+    }
+    smaps2.forEach((m, i) => {
+      const rec = s.maps && s.maps[i];
+      if (!rec) return;
+      if (rec[0]) m.set(s.sid, undoDeep(rec[1])); else m.delete(s.sid);
+    });
+  }
+  return { inverse, nextChainId: entry.nextChainId,
+           selected: entry.selected, selPt: entry.selPt,
+           nStyles: (entry.styles || []).length };
+}
+
+function undoPush(stack, entry) {
+  stack.undo.push(entry);
+  if (stack.undo.length > stack.depth) stack.undo.shift();
+  stack.redo.length = 0;   // a fresh edit forks history; the old future dies
+}
+
+// dir: "undo" | "redo". Applies the top entry of that stack onto doc and
+// pushes the inverse onto the other. Returns null when the stack is empty.
+function undoStep(stack, doc, dir) {
+  const from = dir === "redo" ? stack.redo : stack.undo;
+  const to = dir === "redo" ? stack.undo : stack.redo;
+  if (!from.length) return null;
+  const entry = from.pop();
+  const r = undoApply(doc, entry);
+  to.push(r.inverse);
+  return { label: entry.label, nextChainId: r.nextChainId,
+           selected: r.selected, selPt: r.selPt, nStyles: r.nStyles };
+}
+
+function undoClear(stack) { stack.undo.length = 0; stack.redo.length = 0; }
+
+// rough per-entry cost in bytes (serialized size of the snapshot)
+function undoEntryBytes(entry) { return JSON.stringify(entry).length; }
+// UNDO-CORE-END
+
+const undoStack = undoNewStack(UNDO_DEPTH);
+
+// smaps ORDER IS THE CONTRACT between this function and undoCapture: the
+// snapshot stores one [had, value] pair per map, positionally. Append only,
+// never reorder or remove - an entry captured before a reorder would restore
+// a label into the include map. (Entries die with the page, so the window is
+// one session, but the failure would be silent, which is worse than loud.)
+const UNDO_SMAPS = ["labels", "include", "measureMode", "seedLabels"];
+function undoDoc() {
+  return { chains: state.result.chains, excluded: state.excluded,
+           labels: state.chainLabels, nextChainId: state.nextChainId,
+           selected: state.selected, selPt: state.selPt,
+           styles: state.result.styles,
+           smaps: UNDO_SMAPS.map(k => state[k]) };
+}
+
+// `sids` is optional and only the family edits pass it (see famCreate): it
+// names the style ROWS the edit adds or rewrites, so one Ctrl+Z reverses the
+// row and the line move together rather than leaving an orphan family.
+function captureUndo(label, ids, sids) {
+  if (!state.result) return;
+  undoPush(undoStack, undoCapture(undoDoc(), ids, label, sids));
+}
+
+// A mid-gesture tool holds references into the chains an undo may remove
+// (cut anchors, merge/reclass sources, a draw's family line) - release the
+// chain-owning tools first, the same way stArm() does before arming.
+function undoDisarmTools() {
+  if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "merge") cancelMerge();
+  else if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "reclass") {
+    state.tool = null;
+    $("reclassBtn").classList.remove("active");
+  } else if (state.tool === "extend") cancelExtend();
+  // a pending family question holds geometry that is NOT in the document;
+  // an undo that walked past it would leave the modal describing a line
+  // nobody can commit any more
+  if (state.drawPend) { drawFamCancel(); }
+}
+
+function undoRedo(dir) {
+  if (!state.result) return;
+  if (!(dir === "redo" ? undoStack.redo : undoStack.undo).length) {
+    setStatus(dir === "redo" ? "nothing to redo" : "nothing to undo");
+    return;   // an empty stack must not disarm a tool as a side effect
+  }
+  undoDisarmTools();
+  const r = undoStep(undoStack, undoDoc(), dir);
+  if (!r) return;   // cannot happen after the length check; belt and braces
+  state.nextChainId = r.nextChainId;
+  state.selected = r.selected; state.selPt = r.selPt; state.clickPt = null;
+  const selCh = state.selected !== null ? chainById(state.selected) : null;
+  if (!selCh || state.excluded.has(state.selected)) {
+    state.selected = null; state.selPt = null;
+  }
+  // the set held ids from the state being stepped away from; keeping it
+  // would let a bulk action fire on chains the undo just replaced
+  state.multiSel = new Set();
+  state.wzRev++;   // geometry may have moved; the work-area memo must not survive
+  $("restoreBtn").hidden = !(state.excluded.size || state.chainLabels.size
+    || state.result.chains.some(c => c.custom));
+  updateSelBar(state.selected !== null ? chainById(state.selected) : null);
+  setStatus((dir === "redo" ? "redo: " : "undo: ") + r.label
+    + (dir === "redo" ? " — reapplied" : " — reversed"));
+  renderItemized();
+  // refreshStyleRows() only rewrites text on rows that already exist, so it
+  // cannot show a family this step just created or hide one it just removed.
+  // A step that carried a style region gets the full rebuild; every other
+  // step keeps the in-place update (and the operator's scroll position).
+  if (r.nStyles) { famPrune(); renderStyles(); } else refreshStyleRows();
+  renderChips();
+  renderMiniLegend();
+  renderMultiBar();
+  draw();
+}
+
+// =============== operator-created line families + per-family list ========
+// OWNER (2026-08-31): "missing the ability to label lines into its own line
+// style/family from the menu, I guess also can we get a drop down of each
+// line in each line style/family?"
+//
+// A previous builder deliberately refused to offer "(new family)" because
+// nothing in the app could create a style. This is that missing half. What a
+// created family IS, exactly:
+//
+//   * a real entry in state.result.styles, carrying the same fields the
+//     engine's rows carry, so every surface that walks styles (the list, the
+//     chips, the mini legend, splitItems, the itemized takeoff, the CSV, the
+//     approve payload) treats it like any other family with no special case;
+//   * marked `operator_created: true` - the row wears a "yours" tag and the
+//     export carries a disclosure note. It is never dressed up as detected;
+//   * counted and priced from its CHAINS, like every other row. styleLenPt /
+//     styleLiveCount read the live chains, so a fresh family is honestly
+//     0 lines / 0 ft until a line is moved into it;
+//   * page state, exactly like every other edit (added chains, exclusions,
+//     chain labels all die on a page switch or reload). It survives an
+//     Approve & export because the export is taken from what is on screen.
+//
+// EXPORT (measured against server.py, not assumed): `approve` builds each
+// element's label with `body.chain_labels.get(cid) or body.labels.get(sid)`,
+// a plain dict lookup over the style_id the client sent, and never consults
+// res["styles"]. Chains moved into a created family are `custom`, so they
+// travel in `added_chains` carrying the new style_id, and `labels` carries
+// that style_id because state.include has it ticked. So the NAME survives
+// export today with no server change. What does NOT survive is the
+// machine-readable fact that a human invented the family: ApproveBody has no
+// field for it. Rather than invent one, famApproveNotes() states it in
+// `notes` - the existing free-text channel the earthwork caveat already uses,
+// which the server copies verbatim into export["notes"] and prints on the
+// face of the report PDF. Listed as a followup, not faked here.
+//
+// LINE-FAMILY-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_family.js can eval
+// the block, like TRENCH-MATH / WZ-MATH / UNDO-CORE.
+
+// A style_id no row and no chain on this page is using. Style ids are
+// ordinals inside one page's style table, so "one past the highest in use"
+// is the only rule that cannot collide - and it must scan CHAINS too, not
+// just styles: an id present on a chain but not on a style row would
+// otherwise be handed out and silently relabel that chain on export.
+function famAllocStyleId(styles, chains) {
+  let hi = 0;
+  for (const s of styles || [])
+    if (Number.isFinite(s.style_id) && s.style_id > hi) hi = s.style_id;
+  for (const c of chains || [])
+    if (Number.isFinite(c.style_id) && c.style_id > hi) hi = c.style_id;
+  return hi + 1;
+}
+
+// The style row for a family the operator named. `donor` is the line that was
+// selected when they created it (or null): the new family inherits its
+// PATTERN - class, colour, width, dash signature - because those describe how
+// the linework is drawn, and the whole point is that these lines already look
+// alike and were filed wrong. length_pt/n are 0 because nothing is in it yet
+// and both are recomputed live from the chains anyway.
+function famNewStyle(styles, chains, name, donor) {
+  const d = donor || {};
+  return {
+    style_id: famAllocStyleId(styles, chains),
+    suggested_label: name,
+    length_pt: 0,
+    n: 0,
+    class: d.class || "solid",
+    color: d.color ? d.color.slice() : [0, 0, 0],
+    width: d.width || 0.5,
+    layer: "",                 // no drafter filed this; say so by absence
+    signature: d.dash_signature || d.signature || "solid",
+    texture: false,
+    operator_created: true,
+  };
+}
+
+// The per-family line list, BOUNDED. Longest first (an estimator scanning a
+// family wants the pieces that carry the footage), chain_id ascending as the
+// tiebreak so the order is deterministic across repaints.
+//
+// `cap` bounds what is BUILT, not what exists: the return states total and
+// hidden so the caller can print "showing 50 of 214" and offer more. Nothing
+// is ever dropped without a count.
+//   excluded: Set of chain_ids the reviewer deleted - they are not lines of
+//             this family any more and must not be listed.
+//   lenOf:    length accessor (the app passes chainLenPt, which honours a
+//             vertical-scale axis); defaults to the raw length_pt.
+function famLines(chains, sid, opt) {
+  const o = opt || {};
+  const cap = Number.isFinite(o.cap) && o.cap > 0 ? o.cap : 50;
+  const ex = o.excluded || null;
+  const lenOf = o.lenOf || (c => c.length_pt || 0);
+  const all = [];
+  for (const c of chains || []) {
+    if (c.style_id !== sid) continue;
+    if (ex && ex.has(c.chain_id)) continue;
+    all.push({ chain_id: c.chain_id, len: lenOf(c),
+               nPts: (c.points || []).length,
+               cls: c.class, custom: !!c.custom });
+  }
+  all.sort((a, b) => (b.len - a.len) || (a.chain_id - b.chain_id));
+  const rows = all.slice(0, cap);
+  return { rows, shown: rows.length, total: all.length,
+           hidden: all.length - rows.length,
+           totalLen: all.reduce((t, r) => t + r.len, 0) };
+}
+// LINE-FAMILY-END
+
+// live page state for the two surfaces above: which style rows are expanded,
+// and how many lines each expanded row is currently showing. Display only -
+// nothing here is ever read by an edit, a quantity or the export.
+const famOpen = new Map();          // style_id -> cap currently in force
+const FAM_PAGE = 50;                // rows added per "show more"
+
+// drop expansion state for rows that no longer exist (an undo can remove a
+// created family out from under an open list)
+function famPrune() {
+  if (!state.result) return;
+  const live = new Set(state.result.styles.map(s => s.style_id));
+  for (const sid of [...famOpen.keys()]) if (!live.has(sid)) famOpen.delete(sid);
+}
+
+// The ONLY writers of state.hotStyle. Display, never an edit: no captureUndo,
+// no afterEdit, no recompute - a repaint and nothing else. Kept as functions
+// so every hover surface (style row, legend chip, bid row) states the same
+// fact one way and a future family that spans styles needs no new plumbing.
+function hotFam(sids) {
+  const next = new Set((sids || []).filter(v => v !== null && v !== undefined));
+  if (!next.size) return hotFamOff();
+  // skip the repaint when nothing moved: mouseenter can fire repeatedly on a
+  // row whose children take the pointer, and draw() on a 2,000-chain sheet is
+  // not free
+  const cur = state.hotStyle;
+  if (cur && cur.size === next.size && [...next].every(v => cur.has(v))) return;
+  state.hotStyle = next;
+  draw();
+}
+function hotFamOff() {
+  if (state.hotStyle === null) return;
+  state.hotStyle = null;
+  draw();
+}
+
+// Create a family the operator named. ONE captureUndo entry covers the new
+// style ROW (listed in the `sids` region) AND every chain the caller is about
+// to move into it, so a single Ctrl+Z reverses the whole gesture and never
+// leaves an orphan empty family behind. The caller does the moves through
+// reclassCore - the same mutation the Reclassify tool, the selection-bar
+// switch and the bulk move already end in. There is no second reclass path.
+function famCreate(name, donor, undoLabel, moveIds) {
+  const nm = String(name || "").trim();
+  if (!state.result || !nm) return null;
+  const st = famNewStyle(state.result.styles, state.result.chains, nm, donor);
+  captureUndo(undoLabel || `new family "${nm}"`, moveIds || [], [st.style_id]);
+  state.result.styles.push(st);
+  state.labels.set(st.style_id, nm);
+  state.seedLabels.set(st.style_id, "");   // nothing seeded it; it was typed
+  // ticked ON: an operator who just named a family means to count it. Written
+  // straight into the map, NOT through setInclude - setInclude records the
+  // tick in the browser store against includeKey(st), and a per-page record
+  // for a style_id that only exists while this page is open would be read
+  // back by memApply on a LATER result that happens to reach the same id.
+  state.include.set(st.style_id, true);
+  return st;
+}
+
+function famIsMine(s) { return !!(s && s.operator_created); }
+
+// A family whose NAME already exists is legal and sometimes wanted, but the
+// takeoff adds up BY NAME (splitItems / computeTakeoffRows pool on the label),
+// so the two rows will total together in the itemized panel, the CSV and the
+// export. Say so at the moment it happens rather than let the operator find a
+// doubled figure later.
+function famNameClash(nm, skipSid) {
+  const want = nm.trim().toUpperCase();
+  if (!want || !state.result) return null;
+  for (const s of state.result.styles) {
+    if (s.style_id === skipSid) continue;
+    const have = (state.labels.get(s.style_id) || s.suggested_label || "").trim();
+    if (have.toUpperCase() === want) return s;
+  }
+  return null;
+}
+
+// The shared naming step for both entry points. Returns the trimmed name, or
+// null when the operator cancelled or typed nothing.
+function famAskName(promptText) {
+  const raw = prompt(promptText, "");
+  if (raw === null) return null;                       // cancelled
+  const nm = String(raw).trim();
+  if (!nm) { setStatus("a family needs a name — nothing was created"); return null; }
+  return nm;
+}
+
+// what the status line says after a family is created, including the
+// provenance and the export story, because both are decisions the operator
+// is entitled to see at the moment they are made
+// `mine` is the style_id of the family JUST created and must be excluded from
+// the clash test - without it the new row matches its own name and every
+// creation reported a collision with itself.
+function famCreatedMsg(nm, nLines, qty, mine) {
+  const clash = famNameClash(nm, mine);
+  return `new family "${nm}" — ${nLines} line${nLines === 1 ? "" : "s"}, `
+    + `${qty} moved into it. Marked as created by you, not detected: the `
+    + `export carries the name and a note saying a reviewer made it. `
+    + `Ctrl+Z reverses the family and the move together.`
+    + (clash ? `  NOTE: another line type is already called "${nm}" — the `
+        + `takeoff adds up by name, so the two will total together.` : "");
+}
+
+// SELECTION BAR: new family from the one selected line.
+function famNewFromSelection() {
+  const ch = state.selected !== null ? chainById(state.selected) : null;
+  if (!ch) return setStatus("select a line first — the new family starts with it", "err");
+  const nm = famAskName("Name the new line family. The selected line moves "
+    + "into it; other lines can be moved in after.");
+  if (nm === null) return;
+  const st = famCreate(nm, ch,
+    `new family "${nm}" — ${fmtQty(chainLenPt(ch))} moved into it`, [ch.chain_id]);
+  if (!st) return;
+  const qty = fmtQty(chainLenPt(ch));
+  const c = reclassCore(ch, st.style_id, null);
+  state.selected = c.chain_id;
+  updateSelBar(c);
+  famOpen.set(st.style_id, FAM_PAGE);   // open its line list, so the operator
+                                        // sees what landed in it
+  afterEdit(famCreatedMsg(nm, 1, qty, st.style_id));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// MARQUEE BAR: new family from every line in the marquee selection.
+function famNewFromMulti() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const nm = famAskName(`Name the new line family. All ${chs.length} selected `
+    + "lines move into it.");
+  if (nm === null) return;
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  const st = famCreate(nm, chs[0],
+    `new family "${nm}" — ${chs.length} line${chs.length === 1 ? "" : "s"}, `
+      + fmtQty(totalPt), chs.map(c => c.chain_id));
+  if (!st) return;
+  const newIds = [];
+  for (const c of chs) newIds.push(reclassCore(c, st.style_id, null).chain_id);
+  state.multiSel = new Set(newIds);   // members were re-materialized under new ids
+  if (state.selected !== null &&
+      (state.excluded.has(state.selected) || !chainById(state.selected))) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  famOpen.set(st.style_id, FAM_PAGE);
+  afterEdit(famCreatedMsg(nm, chs.length, fmtQty(totalPt), st.style_id));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// Every operator-created family that has anything in it. ONE definition,
+// shared by the human-readable note below and the MACHINE-READABLE
+// operator_created_style_ids in the approve payload, so the prose on the face
+// of the report and the field a downstream reader parses can never disagree
+// about which families a person invented.
+//
+// Empty families are left out on purpose: an empty family exports no
+// elements, so naming it in either channel is noise.
+function famMineExportStyles() {
+  if (!state.result) return [];
+  return state.result.styles.filter(s =>
+    famIsMine(s) && state.include.get(s.style_id) && styleLiveCount(s.style_id));
+}
+function famApproveNotes() {
+  const mine = famMineExportStyles().map(s =>
+    `"${state.labels.get(s.style_id) || s.suggested_label}" `
+    + `(${styleLiveCount(s.style_id)} line`
+    + `${styleLiveCount(s.style_id) === 1 ? "" : "s"}, ${fmtQty(styleLenPt(s))})`);
+  if (!mine.length) return [];
+  // ONE note line, whatever the count: `approve` keeps only the first 6 notes
+  // and earthwork already spends 3 of them.
+  return ["Line families created by the reviewer on this sheet (the detector "
+    + "did not find them as separate families; their lines were moved in by "
+    + "hand): " + mine.join("; ") + "."];
+}
+
+// ================== reclassify core + family switcher =====================
+// The one mutation that moves a line between families, shared by the
+// Reclassify pick-click, the selection-bar <select>, and the bulk "Move all
+// to family". donorChain is the exact chain the operator clicked when there
+// is one; otherwise a representative of the target family stands in, so the
+// moved line inherits the same class/color/width/pattern either way.
+function reclassCore(sel, targetSid, donorChain) {
+  const donor = donorChain
+    || state.result.chains.find(ch => ch.style_id === targetSid
+         && ch.chain_id !== sel.chain_id && !state.excluded.has(ch.chain_id))
+    || state.result.chains.find(ch => ch.style_id === targetSid
+         && ch.chain_id !== sel.chain_id)
+    || null;
+  const c = materialize(sel);
+  c.style_id = targetSid;
+  if (donor) {
+    c.class = donor.class; c.color = donor.color; c.width = donor.width;
+    c.dash_signature = donor.dash_signature;
+    if (donor.template) c.template = JSON.parse(JSON.stringify(donor.template));
+  } else {
+    // a family whose every chain is gone: fall back to the style row itself
+    const st = state.result.styles.find(s => s.style_id === targetSid);
+    if (st) {
+      c.class = st.class; c.color = st.color; c.width = st.width;
+      c.dash_signature = st.signature;
+      delete c.template;
+    }
+  }
+  return c;
+}
+
+// what a family is CALLED, one rule for every picker built here: the
+// reviewer's label, else the seeded suggestion, else the CAD layer leaf,
+// else the pattern itself
+function familyName(s) {
+  if (!s) return "";
+  return state.labels.get(s.style_id) || s.suggested_label
+    || ((s.layer || "").trim() ? layerSplit(String(s.layer).trim()).leaf : "")
+    || `${s.class} · ${s.signature}`;
+}
+
+// compact <select> over the page's families, footage-first. placeholder
+// non-null makes it an action picker (bulk move); null preselects
+// currentSid (single-line switcher).
+//
+// `onNew` is optional and, when passed, adds the "＋ New family…" entry the
+// owner asked for. The old comment here said there was no such option "on
+// purpose: nothing in the app creates a style today" - that is no longer
+// true (famCreate above), and the refusal only stood while it was.
+const FAM_NEW_OPT = "+new";   // sentinel option value; never a style_id
+function familySelect(currentSid, placeholder, onPick, onNew) {
+  const sel = document.createElement("select");
+  sel.className = "fam-sel";
+  sel.name = "family-switch";   // typing() sees SELECT focus; shortcuts pause
+  if (placeholder !== null) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = placeholder; o.selected = true;
+    sel.appendChild(o);
+  }
+  if (onNew) {
+    const o = document.createElement("option");
+    o.value = FAM_NEW_OPT;
+    o.textContent = "+ New family…";
+    sel.appendChild(o);
+  }
+  const styles = [...state.result.styles]
+    .sort((a, b) => styleLenPt(b) - styleLenPt(a));
+  for (const s of styles) {
+    const o = document.createElement("option");
+    o.value = String(s.style_id);
+    o.textContent = familyName(s) + (famIsMine(s) ? "  (yours)" : "");
+    if (placeholder === null && s.style_id === currentSid) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    const v = sel.value;
+    sel.blur();   // hand the keyboard back to the canvas shortcuts
+    if (v === FAM_NEW_OPT) {
+      // put the picker back where it was FIRST: naming can be cancelled, and
+      // a switcher left reading "＋ New family…" would assert an edit that
+      // did not happen. On success the caller re-renders this control anyway.
+      sel.value = placeholder !== null ? "" : String(currentSid);
+      onNew();
+      return;
+    }
+    if (v !== "") onPick(+v);
+  };
+  return sel;
+}
+
+// the selection-bar switch: same mutation, same undo, same status line as
+// the Reclassify tool's pick-click
+function familySwitch(sid) {
+  const sel0 = state.selected !== null ? chainById(state.selected) : null;
+  if (!sel0) return;
+  if (sel0.style_id === sid) { setStatus("already in that family"); return; }
+  const lab = familyName(state.result.styles.find(s => s.style_id === sid))
+    || "its new family";
+  captureUndo(`reclass into ${lab} — ${fmtQty(chainLenPt(sel0))}`, [sel0.chain_id]);
+  const c = reclassCore(sel0, sid, null);
+  state.selected = c.chain_id;
+  updateSelBar(c);
+  afterEdit(`moved ${fmtLen(c.length_pt)} into ${lab}`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// ================== marquee multi-select + bulk actions ===================
+// CROSSING SELECTION. The operator's report: "the drag and select isnt
+// detecting unless it has the whole line selected we need to make it where I
+// can just drag across a certain area and select the entire lines even if I
+// just grabbed the middle of those lines". So a line joins when the box
+// TOUCHES it - any segment meeting the box, or any vertex inside it - not
+// only when every vertex is inside.
+//
+// The per-segment test is wzSegT, the shipped exact Liang-Barsky slab clip
+// the WORK AREA mask already counts with, reached through snapTouchesRect.
+// One clip, two features: "this line crosses the box" and "this much of it
+// is inside the box" can never disagree.
+//
+// NOTE for the record: CAD's window-vs-crossing convention (drag left-to-
+// right = fully inside, right-to-left = touching) exists and is what an
+// AutoCAD user's hands expect. It is NOT shipped here. The owner asked for
+// touching, so touching is what BOTH directions do; adding the direction
+// rule would silently make half of today's drags behave differently, which
+// is a bigger change than it looks and belongs to its own decision.
+//
+// Same visibility rules as a plain canvas click: excluded / hidden /
+// isolated-away lines cannot join.
+function marqueePick(rect) {
+  const out = [];
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    if (snapTouchesRect(ch.points, rect, wzSegT, wzPtIn)) out.push(ch);
+  }
+  return out;
+}
+
+// ============ CTRL+CLICK MULTI-SELECT: the selection model ================
+// OWNER (2026-09-01): "holding ctrl to multi-select whethers its from line
+// styles or the lines themselves on the rendered page ... I should be able to
+// multi-select these lines and have a multi-toolkit option appear".
+//
+// WHY IT MATTERS. A CAD set routinely splits ONE real item across several
+// engine families - SE-P-UT-FIBER, C-FIBER and FO are one thing to an
+// estimator and three style rows here. The colour layer matches EXACTLY so
+// that fragmentation stays VISIBLE (one turns red, the others do not). This
+// is the tool that RESOLVES it, and the headline action is therefore not
+// "delete", it is "these five are one item".
+//
+// THE SELECTION MODEL - the decision, stated.
+//
+//   state.multiSel (a Set of chain_ids) stays the ONE canonical store. It is
+//   the shipped hook, the marquee already fills it, every bulk action already
+//   resolves through it, and draw() already highlights it. A Ctrl+click on a
+//   STYLE ROW does not store a style_id - it folds the family's live chain
+//   ids into that same set, and family membership is DERIVED back out of the
+//   set (msWholeFamilies) whenever anything is rendered.
+//
+//   The brief recommended storing style_ids alongside chain_ids. Overruled,
+//   with a reason: a STORED family record goes stale the instant one of its
+//   lines is deleted, moved to another family, or consumed by a split, and a
+//   family-level action reading that stale record would touch lines the
+//   operator did not pick - which is this codebase's "silent wrong number"
+//   shape exactly. Derived membership cannot go stale, needs no new state
+//   field, and gives the same two behaviours the brief asked for: every
+//   action resolves to a chain set, and family-level actions are offered
+//   when whole families are in it.
+//
+//   The one visible consequence, and it is a feature: Ctrl+click a family,
+//   Ctrl+click one of its lines to drop that line, then Ctrl+click the family
+//   row again - it COMPLETES the family rather than clearing it, because
+//   "add" is the only honest reading of a toggle on a partial set. The status
+//   line says which of the two happened, every time.
+//
+// MULTISEL-CORE-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_multiselect.js can eval
+// the block, like TRENCH-MATH / WZ-MATH / UNDO-CORE / LINE-FAMILY.
+
+// Ctrl+click a LINE. Returns "added" | "removed".
+function msToggleChain(sel, chainId) {
+  if (chainId === null || chainId === undefined) return "none";
+  if (sel.has(chainId)) { sel.delete(chainId); return "removed"; }
+  sel.add(chainId);
+  return "added";
+}
+
+// Ctrl+click a STYLE ROW. famIds is every live chain_id of that family.
+// Whole -> take them all out; partial or absent -> put them all in.
+// Returns "added" | "removed" | "empty".
+function msToggleFamily(sel, famIds) {
+  const ids = (famIds || []).filter(id => id !== null && id !== undefined);
+  if (!ids.length) return "empty";
+  const whole = ids.every(id => sel.has(id));
+  for (const id of ids) { if (whole) sel.delete(id); else sel.add(id); }
+  return whole ? "removed" : "added";
+}
+
+// The chain set every action resolves to: the stored ids, minus anything no
+// longer live. `liveIds` is the caller's set of ids that still exist and are
+// not excluded. Order follows `liveOrder` when given, so a bulk action walks
+// the sheet in a deterministic order rather than Set-insertion order.
+function msResolve(sel, liveIds, liveOrder) {
+  if (liveOrder) return liveOrder.filter(id => sel.has(id) && liveIds.has(id));
+  const out = [];
+  for (const id of sel) if (liveIds.has(id)) out.push(id);
+  return out;
+}
+
+// Which of the selected families are in the set WHOLE. rows is the resolved
+// selection as [{ chain_id, style_id, len }]; famLiveCount(sid) is how many
+// live lines that family has in total. A family with more live lines than
+// are selected is PARTIAL and must never be offered a family-level action.
+function msWholeFamilies(rows, famLiveCount) {
+  const bySid = new Map();
+  for (const r of rows || [])
+    bySid.set(r.style_id, (bySid.get(r.style_id) || 0) + 1);
+  const whole = [], partial = [];
+  for (const [sid, n] of bySid)
+    (n >= famLiveCount(sid) ? whole : partial).push(sid);
+  whole.sort((a, b) => a - b); partial.sort((a, b) => a - b);
+  return { whole, partial };
+}
+
+// Exactly what the bar prints, computed once: "5 families · 1,240 lines ·
+// 12.4k LF". `len` is summed in points here; the caller formats it.
+function msCounts(rows, famLiveCount) {
+  const w = msWholeFamilies(rows, famLiveCount);
+  let len = 0;
+  for (const r of rows || []) len += r.len || 0;
+  return { lines: (rows || []).length, len,
+           families: w.whole.length + w.partial.length,
+           whole: w.whole, partial: w.partial };
+}
+
+// The sentence the bar and every status line share, so the readout and the
+// disclosure can never disagree about scope. fmt turns points into the
+// sheet's own unit.
+function msScopeText(c, fmt) {
+  const f = c.families === 1 ? "1 family" : c.families + " families";
+  const l = c.lines === 1 ? "1 line" : c.lines.toLocaleString() + " lines";
+  return f + " · " + l + " · " + fmt(c.len);
+}
+// MULTISEL-CORE-END
+
+// the live members: ids still present and not excluded (an edit can consume
+// a member; the set self-prunes here rather than going stale)
+// SHEET ORDER, not pick order. Walking state.result.chains (rather than the
+// Set's insertion order) makes a bulk action's result independent of the
+// order the operator happened to build the selection in - the same
+// order-pinning the accept loops keep - and turns an O(n·m) chainById scan
+// into one O(n) pass. Membership and pruning are unchanged.
+function multiLive() {
+  if (!state.result || !state.multiSel || !state.multiSel.size) return [];
+  const out = [];
+  for (const ch of state.result.chains) {
+    if (!state.multiSel.has(ch.chain_id)) continue;
+    if (state.excluded.has(ch.chain_id)) continue;
+    out.push(ch);
+  }
+  return out;
+}
+
+// ---- the app-side half of the selection model ---------------------------
+// Every live (non-excluded) chain of one family, in sheet order. This is the
+// pick set for a Ctrl+click on a style row AND the denominator for "is this
+// family in the selection WHOLE?", deliberately the same predicate on both
+// sides so the two can never disagree. It is NOT styleLiveCount: that one
+// drops chains the work-area mask zeroes, which is a question about counted
+// footage, not about which lines exist to act on.
+function msFamIds(sid) {
+  if (!state.result) return [];
+  const out = [];
+  for (const ch of state.result.chains)
+    if (ch.style_id === sid && !state.excluded.has(ch.chain_id))
+      out.push(ch.chain_id);
+  return out;
+}
+
+// How many live lines EVERY family has, in ONE pass. Built fresh at each
+// call and never memoized: the obvious cache key (chain count + excluded
+// size) is restored to its old value by an undo while the style_ids under
+// it have changed, which is exactly the stale-memo shape that produces a
+// confident wrong number here. One O(n) pass per render is the cheap,
+// always-correct option.
+function msLiveByStyle() {
+  const m = new Map();
+  if (!state.result) return m;
+  for (const ch of state.result.chains)
+    if (!state.excluded.has(ch.chain_id))
+      m.set(ch.style_id, (m.get(ch.style_id) || 0) + 1);
+  return m;
+}
+function msFamLiveCount(sid) { return msLiveByStyle().get(sid) || 0; }
+
+// the resolved selection in the shape the pure block wants
+function msRows() {
+  return multiLive().map(c => ({ chain_id: c.chain_id, style_id: c.style_id,
+                                 len: chainLenPt(c) }));
+}
+function msScope() {
+  const m = msLiveByStyle();
+  return msCounts(msRows(), (sid) => m.get(sid) || 0);
+}
+
+// "5 families · 1,240 lines · 12.4k LF", one string, one owner
+function msScopeLine(c) { return msScopeText(c || msScope(), fmtQty); }
+
+// A family the takeoff will not count is a family whose footage will not
+// appear in the row this selection is about to create. Say so before, not
+// after. Returns the un-ticked style_ids inside the selection.
+function msUntickedSids(rows) {
+  const out = [];
+  for (const sid of new Set((rows || []).map(r => r.style_id)))
+    if (!state.include.get(sid)) out.push(sid);
+  return out;
+}
+
+// ---- Ctrl/Cmd+click entry points ----------------------------------------
+// A style row. The row's own click ISOLATES; this is the modified click, so
+// nothing about isolate changes.
+function msPickFamily(s) {
+  const ids = msFamIds(s.style_id);
+  const name = familyName(s) || "this line type";
+  const r = msToggleFamily(state.multiSel, ids);
+  if (r === "empty") {
+    setStatus(`"${name}" has no lines on this sheet right now — nothing to `
+      + "select", "err");
+    return;
+  }
+  const c = msScope();
+  setStatus((r === "added"
+      ? `added "${name}" (${ids.length} line${ids.length === 1 ? "" : "s"})`
+      : `removed "${name}" from the selection`)
+    + " — selected: " + msScopeLine(c)
+    + ". Ctrl+click another style row or another line to add it; Esc clears.");
+  renderMultiBar();
+  draw();
+}
+
+// A line on the canvas.
+function msPickChain(ch) {
+  const r = msToggleChain(state.multiSel, ch.chain_id);
+  const c = msScope();
+  const st = state.result.styles.find(x => x.style_id === ch.style_id);
+  const name = familyName(st) || "unnamed line type";
+  setStatus((r === "added" ? "added 1 line" : "removed 1 line")
+    + ` from "${name}" — selected: ` + msScopeLine(c)
+    + (c.lines ? ". Ctrl+click adds or removes one at a time; Esc clears."
+               : ". Selection empty — the normal toolkit is back."));
+  renderMultiBar();
+  draw();
+}
+
+// ---- the style rows' own marks -------------------------------------------
+// In place, never through renderStyles(): that rebuilds every row and throws
+// away the operator's scroll position on a 280-row sheet (the same reason
+// refreshStyleRows and the isolate handler already refuse to call it).
+function msMarkRows() {
+  const rows = msRows();
+  const live = msLiveByStyle();       // ONE pass, not one per row
+  const byS = new Map();
+  for (const r of rows) byS.set(r.style_id, (byS.get(r.style_id) || 0) + 1);
+  for (const row of document.querySelectorAll("#styleList .style-row")) {
+    const sid = +row.dataset.sid;
+    const n = byS.get(sid) || 0;
+    row.classList.remove("ms-on", "ms-part");
+    if (!n) { row.removeAttribute("data-ms"); continue; }
+    const total = live.get(sid) || 0;
+    const whole = n >= total;
+    row.classList.add(whole ? "ms-on" : "ms-part");
+    row.setAttribute("data-ms", whole
+      ? "SELECTED · " + n + (n === 1 ? " line" : " lines")
+      : "SELECTED · " + n + " of " + total);
+  }
+}
+
+// ---- THE TOOLKIT SWAP ----------------------------------------------------
+// One rail, two groups (see index.html). While a multi-selection exists the
+// single-line tools step aside for the multi-handle toolkit; the moment the
+// set empties they come back. Measure, work area, faithful rendering and the
+// keyboard map never leave the rail, so nothing becomes unreachable - and Esc
+// or Clear selection is always the way back.
+//
+// Every button's title is rewritten here with the LIVE scope, so a bulk
+// action states what it will touch BEFORE it is pressed. That is the same
+// discipline the shipped Delete all already keeps.
+function msSyncToolkit() {
+  const single = $("tkSingle"), multi = $("tkMulti");
+  if (!single || !multi) return;
+  const on = !!(state.multiSel && state.multiSel.size);
+  single.hidden = on;
+  multi.hidden = !on;
+  if (!on) return;
+  const c = msScope();
+  const scope = msScopeLine(c);
+  const back = " Esc (or Clear selection, at the foot of this rail) puts the "
+    + "normal draw / extend / split tools back.";
+  $("msNameBtn").title = "Name these as ONE item — " + scope + "."
+    + " Every selected line is given the same name, so the itemized takeoff "
+    + "pools them into ONE row carrying their combined footage. The "
+    + (c.families === 1 ? "family stays" : c.families + " style rows stay")
+    + " exactly as detected underneath, as evidence. One Ctrl+Z reverses the "
+    + "whole naming." + back;
+  $("msFamBtn").title = "Move all to a family — " + scope + "."
+    + " The heavier action: every selected line physically changes family, so "
+    + (c.families === 1 ? "the row" : "the " + c.families + " style rows")
+    + " you picked collapse into the one you choose. Prefer “Name these "
+    + "as one item” unless you really want one style row. One Ctrl+Z "
+    + "reverses the whole move." + back;
+  $("msColorBtn").title = "Change colour — " + scope + "."
+    + (c.partial.length
+        ? " " + c.partial.length + " of these families is only partly "
+          + "selected, so those lines get a PER-LINE colour and the rest of "
+          + "their family is left alone."
+        : " Every selected family is selected whole, so this sets the FAMILY "
+          + "colour on each of them.")
+    + " Colour is a recorded decision: it is saved, it exports, and Ctrl+Z "
+    + "does NOT undo it — the popover's reset buttons do.";
+  $("msDelBtn").title = "Delete all — " + scope
+    + " leave the takeoff. One Ctrl+Z brings every one of them back.";
+  $("msClearBtn").title = "Clear the selection — drops all " + c.lines
+    + " lines from the set and changes nothing on the sheet. Esc does the "
+    + "same, and the normal toolkit comes back.";
+}
+
+function renderMultiBar() {
+  const bar = $("multiBar");
+  if (!bar) return;
+  const chs = multiLive();
+  if (state.multiSel.size !== chs.length)
+    state.multiSel = new Set(chs.map(c => c.chain_id));
+  if (!chs.length) {
+    bar.hidden = true; bar.textContent = "";
+    msSyncToolkit(); msMarkRows();
+    return;
+  }
+  bar.hidden = false;
+  bar.textContent = "";
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  const c0 = msScope();
+  const txt = document.createElement("span");
+  txt.className = "sel-txt ms-scope";
+  // THE BAR SAYS WHAT IS SELECTED AND WHAT AN ACTION WILL TOUCH, in the
+  // owner's own words: "5 families · 1,240 lines · 12.4k LF". The family
+  // count is derived from the resolved chains, so it is what a family-level
+  // action would actually reach - never a stale record of what was clicked.
+  txt.textContent = msScopeLine(c0);
+  txt.title = "What this selection is, and exactly what every button on it "
+    + "will touch." + LF + LF
+    + c0.whole.length + " of the " + c0.families + " famil"
+    + (c0.families === 1 ? "y is" : "ies are") + " selected WHOLE"
+    + (c0.partial.length
+        ? "; " + c0.partial.length + " " + (c0.partial.length === 1
+            ? "is only partly in" : "are only partly in")
+          + " (some of their lines are not selected)."
+        : ".")
+    + LF + LF
+    + "Ctrl/Cmd+click a line on the sheet, or a row in LINE STYLES, to add "
+    + "or remove it. Shift+drag still boxes lines in. Esc clears.";
+  // THE HEADLINE ACTION, first on the bar and first on the rail. Naming is
+  // the non-destructive answer to a fragmented item; moving families is the
+  // heavier one and sits second.
+  const nameB = document.createElement("button");
+  nameB.className = "mini";
+  nameB.textContent = "Name as one item";
+  nameB.title = "Give every selected line the same name — the itemized "
+    + "takeoff pools by name, so these become ONE row carrying their "
+    + "combined footage. The style rows underneath are untouched. One "
+    + "Ctrl+Z reverses it.";
+  nameB.onclick = msNameAll;
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = "Delete all";
+  del.title = "Remove every selected line from the takeoff (" + msScopeLine(c0)
+    + ") — one Ctrl+Z brings them all back";
+  del.onclick = multiDeleteAll;
+  const move = familySelect(null, "Move all to family…", (sid) => multiMoveAll(sid),
+                            () => famNewFromMulti());
+  move.title = "Move every selected line into one family — same edit as "
+    + "Reclassify, one Ctrl+Z reverses the whole move. “+ New family…” makes "
+    + "a family of your own and puts all of them in it.";
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = "Clear";
+  clr.title = "Drop the selection (changes nothing on the sheet) — Esc does "
+    + "this too, and the normal toolkit comes back";
+  clr.onclick = msClearSel;
+  bar.append(txt, nameB, del, move, clr);
+  msSyncToolkit();
+  msMarkRows();
+}
+
+// ONE clear, shared by the bar button, the rail button and Esc, so the three
+// can never drift apart.
+function msClearSel() {
+  const n = state.multiSel ? state.multiSel.size : 0;
+  state.multiSel = new Set();
+  renderMultiBar();
+  setStatus(n
+    ? `selection cleared (${n} line${n === 1 ? "" : "s"} dropped from the `
+      + "set) — nothing on the sheet changed, and the normal toolkit is back"
+    : "selection cleared — nothing changed");
+  draw();
+}
+
+// ================= THE HEADLINE ACTION: name these as one item ============
+// The cheap, honest, non-destructive answer to a fragmented item.
+// computeTakeoffRows() pools its rows by LABEL:
+//     state.chainLabels.get(chain_id) || state.labels.get(style_id)
+// so giving five families the same NAME already makes them ONE itemized row,
+// while all five engine style rows survive underneath as evidence of what
+// was actually detected. That is strictly better than moving them into one
+// family, which destroys the evidence, and it is what this button does.
+//
+// It writes state.chainLabels - exactly the map the shipped Separate tool
+// writes, one chain at a time - so there is no second labelling path, and
+// captureUndo's `labels` region already snapshots that map per chain id.
+// ONE entry for the whole set: one Ctrl+Z reverses all of it.
+function msNameAll() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  const scope = msScopeLine(c);
+  // a sensible starting point: the longest selected family's name
+  const byLen = new Map();
+  for (const r of rows) byLen.set(r.style_id, (byLen.get(r.style_id) || 0) + r.len);
+  let bestSid = null, bestLen = -1;
+  for (const [sid, L] of byLen) if (L > bestLen) { bestLen = L; bestSid = sid; }
+  const seed = familyName(state.result.styles.find(s => s.style_id === bestSid));
+  const raw = prompt(
+    "Name these as ONE item.\n\n"
+    + scope + " will all carry this name, so the itemized takeoff pools them "
+    + "into ONE row with their combined footage.\n\n"
+    + "The " + c.families + " line " + (c.families === 1 ? "family" : "families")
+    + " below stay exactly as detected — nothing is merged, moved or "
+    + "deleted, and the evidence of what the engine found is kept.\n\n"
+    + "One Ctrl+Z reverses the whole naming.",
+    seed && !/^unnamed/i.test(seed) ? seed : "");
+  if (raw === null) { setStatus("nothing named — the selection is unchanged"); return; }
+  const nm = String(raw).trim();
+  if (!nm) { setStatus("an item needs a name — nothing was named"); return; }
+  // ONE undo entry for the whole set (the UNDO-CORE LIFO invariant: every
+  // pre-existing chain the edit touches is listed, and nothing else is)
+  captureUndo(`named ${c.lines} line${c.lines === 1 ? "" : "s"} as "${nm}" — `
+    + fmtQty(c.len), chs.map(ch => ch.chain_id));
+  for (const ch of chs) state.chainLabels.set(ch.chain_id, nm);
+  // DISCLOSURE, at the moment it happens, of the two things that could
+  // otherwise surprise: an un-ticked family contributes nothing to the row,
+  // and an existing row of the same name will absorb this footage too.
+  const unticked = msUntickedSids(rows);
+  const clash = famNameClash(nm, null);
+  const clashSelected = clash && byLen.has(clash.style_id);
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  afterEdit(`"${nm}" is now ONE itemized row — ${scope} pooled into it. `
+    + `The ${c.families} style row${c.families === 1 ? "" : "s"} below `
+    + `${c.families === 1 ? "is" : "are"} untouched and still `
+    + `${c.families === 1 ? "shows" : "show"} what the engine detected. `
+    + "Ctrl+Z reverses the whole naming."
+    + (unticked.length
+        ? `  NOTE: ${unticked.length} of these famil`
+          + (unticked.length === 1 ? "ies is" : "ies are")
+          + " un-ticked in LINE STYLES, so "
+          + (unticked.length === 1 ? "its" : "their")
+          + " footage is NOT in that row until you tick "
+          + (unticked.length === 1 ? "it" : "them") + "."
+        : "")
+    + (clash && !clashSelected
+        ? `  NOTE: a line type not in this selection is already called `
+          + `"${nm}" — the takeoff adds up by name, so its footage totals `
+          + "into this same row."
+        : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// ================= the rail's own anchored menus ==========================
+// A <select> cannot live in a 42px icon rail, so "Move all to a family" opens
+// the SAME familySelect the selection bar builds, in a popover beside the
+// button. No second picker, no second mutation - it calls multiMoveAll /
+// famNewFromMulti exactly as the bar does.
+let msPop = null;
+function msPopClose() { if (msPop) { msPop.remove(); msPop = null; } }
+addEventListener("mousedown", (e) => {
+  if (!msPop) return;
+  if (msPop.contains(e.target)) return;
+  if (msPop._anchor && msPop._anchor.contains(e.target)) return;
+  msPopClose();
+}, true);
+
+function msFamPop(anchor) {
+  const again = msPop && msPop._anchor === anchor;
+  msPopClose();
+  if (again) return;
+  const chs = multiLive();
+  if (!chs.length) return;
+  const c = msScope();
+  const pop = document.createElement("div");
+  pop.className = "ms-pop";
+  pop._anchor = anchor;
+  msPop = pop;
+  const h = document.createElement("div");
+  h.className = "ms-head";
+  h.textContent = "Move all to a family — " + msScopeLine(c);
+  pop.appendChild(h);
+  const sel = familySelect(null, "Choose the family…",
+    (sid) => { msPopClose(); multiMoveAll(sid); },
+    () => { msPopClose(); famNewFromMulti(); });
+  pop.appendChild(sel);
+  const note = document.createElement("div");
+  note.className = "ms-note";
+  note.textContent = "This is the HEAVIER action: the selected lines change "
+    + "family, so the "
+    + (c.families === 1 ? "row" : c.families + " rows")
+    + " you picked collapse into the one you choose and the evidence of what "
+    + "the engine detected goes with them. If all you want is one line on the "
+    + "takeoff, use “Name these as one item” instead — it pools them into one "
+    + "row and leaves every style row standing. One Ctrl+Z reverses either.";
+  pop.appendChild(note);
+  document.body.appendChild(pop);
+  msPopPlace(pop, anchor);
+}
+
+// same placement grammar as the colour popover: beside the anchor, clamped
+function msPopPlace(pop, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, hh = pop.offsetHeight;
+  let x = Math.min(r.right + 8, innerWidth - w - 8);
+  let y = Math.min(r.top, innerHeight - hh - 8);
+  pop.style.left = Math.max(8, x) + "px";
+  pop.style.top = Math.max(8, y) + "px";
+}
+
+// ================= bulk colour ============================================
+// THE COLOUR LAYER IS NOT AN EDIT. It is a recorded decision with its own
+// reset, exactly as it shipped, and NOTHING in this path may call
+// captureUndo - tests/test_line_colors.js and tests/test_multiselect.js both
+// scan the source for it, and they are right to.
+//
+// Per family or per line, to MATCH WHAT IS SELECTED: a family that is in the
+// selection WHOLE gets setFamColor (one record, and its future lines inherit
+// it); a family that is only partly selected gets setLineColor on the picked
+// lines only, because recolouring the whole family would repaint lines the
+// operator did not select.
+function msColorApply(hex) {
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  const whole = new Set(c.whole);
+  let nFam = 0, nLine = 0;
+  for (const sid of c.whole) {
+    const st = state.result.styles.find(s => s.style_id === sid);
+    if (st && setFamColor(st, hex)) nFam++;
+  }
+  for (const r of rows) {
+    if (whole.has(r.style_id)) continue;
+    const ch = chainById(r.chain_id);
+    if (ch && setLineColor(ch, hex)) nLine++;
+  }
+  const near = colorNearReserved(hex);
+  setStatus(colorNorm(hex) + " applied to " + msScopeLine(c) + " — "
+    + (nFam ? nFam + " famil" + (nFam === 1 ? "y" : "ies")
+        + " recoloured as a whole" : "")
+    + (nFam && nLine ? ", and " : "")
+    + (nLine ? nLine + " line" + (nLine === 1 ? "" : "s")
+        + " given their own colour (their families are only partly "
+        + "selected, so the rest of those families is untouched)" : "")
+    + ". Colour is a recorded decision: it is saved, it exports, and Ctrl+Z "
+    + "does NOT undo it — use the reset buttons in the picker."
+    + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+function msColorResetLines() {
+  const rows = msRows();
+  let n = 0;
+  for (const r of rows) {
+    const ch = chainById(r.chain_id);
+    if (!ch || !state.lineColor.has(ch.chain_id)) continue;
+    lineColorReset(ch); n++;
+  }
+  setStatus(n
+    ? n + " selected line" + (n === 1 ? "" : "s") + " dropped "
+      + (n === 1 ? "its" : "their") + " own colour and follow"
+      + (n === 1 ? "s" : "") + " the family again"
+    : "none of the selected lines carried a colour of its own");
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+function msColorResetAll() {
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  let nf = 0, nl = 0;
+  for (const sid of [...c.whole, ...c.partial]) {
+    const st = state.result.styles.find(s => s.style_id === sid);
+    if (st && state.famColor.has(sid)) { famColorReset(st); nf++; }
+  }
+  for (const r of rows) {
+    const ch = chainById(r.chain_id);
+    if (ch && state.lineColor.has(ch.chain_id)) { lineColorReset(ch); nl++; }
+  }
+  setStatus("back to the colours the detector measured — " + nf + " famil"
+    + (nf === 1 ? "y" : "ies") + " and " + nl + " line"
+    + (nl === 1 ? "" : "s") + " reset. A company colour CONVENTION saved "
+    + "against a name still applies; clear that in Pricing › Line colour "
+    + "conventions.");
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+// entry point 3 for the shipped picker (after the style row's swatch and the
+// selection bar's chip): a whole multi-selection at once
+function msColorPop(anchor) {
+  const rows = msRows();
+  if (!rows.length) return;
+  const c = msCounts(rows, msFamLiveCount);
+  const st0 = state.result.styles.find(s => s.style_id === rows[0].style_id);
+  colorPopOpen({
+    anchor,
+    title: "Colour for " + msScopeLine(c),
+    current: null,          // a set has no ONE current colour; assert none
+    currentSrc: null,
+    engineCss: st0 ? engineCssFor(st0) : "no colour",
+    convLabel: null,        // the book is keyed on ONE family name
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => msColorApply(hex),
+    onResetFamily: () => msColorResetLines(),
+    onResetEngine: () => msColorResetAll(),
+  });
+}
+
+function multiDeleteAll() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const nFam = new Set(chs.map(c => c.style_id)).size;
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  // ONE undo entry for the whole set, and the same per-chain mutation the
+  // trash button uses (exclude the id) - never a forked delete path
+  captureUndo(`delete of ${chs.length} line${chs.length === 1 ? "" : "s"} — ${fmtQty(totalPt)}`,
+    chs.map(c => c.chain_id));
+  for (const c of chs) state.excluded.add(c.chain_id);
+  if (state.selected !== null && state.excluded.has(state.selected)) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  state.multiSel = new Set();
+  setStatus(`${chs.length} line${chs.length === 1 ? "" : "s"} deleted across `
+    + `${nFam} famil${nFam === 1 ? "y" : "ies"} — ${fmtQty(totalPt)} out of `
+    + "the takeoff (Ctrl+Z restores all of them)");
+  $("restoreBtn").hidden = false;
+  renderItemized();
+  refreshStyleRows();
+  renderMiniLegend();
+  renderMultiBar();
+  draw();
+}
+
+function multiMoveAll(sid) {
+  const all = multiLive();
+  const chs = all.filter(c => c.style_id !== sid);
+  // lines already in the target are not moved - and must not silently fall
+  // OUT of the selection either, or the operator's next action would touch a
+  // smaller set than the bar said it would
+  const stay = all.filter(c => c.style_id === sid).map(c => c.chain_id);
+  if (!chs.length) { setStatus("every selected line is already in that family"); return; }
+  const nFamFrom = new Set(chs.map(c => c.style_id)).size;
+  const lab = familyName(state.result.styles.find(s => s.style_id === sid))
+    || "its new family";
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  // ONE undo entry; each line goes through the same reclassCore as the
+  // Reclassify tool and the selection-bar switch
+  captureUndo(`reclass of ${chs.length} line${chs.length === 1 ? "" : "s"} into ${lab}`,
+    chs.map(c => c.chain_id));
+  const newIds = [];
+  for (const c of chs) newIds.push(reclassCore(c, sid, null).chain_id);
+  state.multiSel = new Set(stay.concat(newIds));   // members were re-materialized under new ids
+  if (state.selected !== null &&
+      (state.excluded.has(state.selected) || !chainById(state.selected))) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  afterEdit(`moved ${chs.length} line${chs.length === 1 ? "" : "s"} — `
+    + `${fmtQty(totalPt)} — out of ${nFamFrom} famil`
+    + `${nFamFrom === 1 ? "y" : "ies"} into ${lab}`
+    + (stay.length ? `; ${stay.length} were already there` : "")
+    + `. Those ${nFamFrom} style row${nFamFrom === 1 ? "" : "s"} `
+    + `${nFamFrom === 1 ? "is" : "are"} now empty of the moved linework. `
+    + "(Ctrl+Z reverses the whole move)");
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// ---- the multi-handle rail's buttons ------------------------------------
+// Every one of them is a call into an action that already existed for the
+// selection bar. No second delete path, no second reclass path, no second
+// colour path - the rail is a second ADDRESS for the same five actions.
+$("msNameBtn").onclick = () => { msPopClose(); msNameAll(); };
+$("msFamBtn").onclick = (e) => { e.stopPropagation(); msFamPop($("msFamBtn")); };
+$("msColorBtn").onclick = (e) => { e.stopPropagation(); msPopClose();
+                                   msColorPop($("msColorBtn")); };
+$("msDelBtn").onclick = () => { msPopClose(); multiDeleteAll(); };
+$("msClearBtn").onclick = () => { msPopClose(); msClearSel(); };
+
 function typing() {
   const el = document.activeElement;
   return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
     || el.tagName === "SELECT" || el.isContentEditable);
 }
 addEventListener("keydown", (e) => {
+  // undo / redo. Ctrl+Z (Cmd+Z on a Mac); Ctrl+Shift+Z or Ctrl+Y redoes.
+  // Never while typing - a focused input keeps the browser's own text undo.
+  if (!typing() && (e.ctrlKey || e.metaKey) && !e.altKey) {
+    const kz = e.key.toLowerCase();
+    if (kz === "z" || kz === "y") {
+      e.preventDefault();
+      undoRedo((kz === "y" || e.shiftKey) ? "redo" : "undo");
+      return;
+    }
+  }
   // single-key review shortcuts; never while typing in a field
   if (!typing() && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const k = e.key.toLowerCase();
@@ -7918,11 +16821,12 @@ addEventListener("keydown", (e) => {
       renderMiniLegend();
       return;
     }
+    // D no longer needs a selection - it is the "draw at any time" tool
+    if (state.result && k === "d") { e.preventDefault(); $("drawBtn").click(); return; }
     if (state.result && state.selected !== null) {
       if (k === "s") { e.preventDefault(); $("splitBtn").click(); return; }
       if (k === "x") { e.preventDefault(); $("cutSpanBtn").click(); return; }
       if (k === "e") { e.preventDefault(); $("extendBtn").click(); return; }
-      if (k === "d") { e.preventDefault(); $("drawBtn").click(); return; }
       if (k === "i") {
         e.preventDefault();
         const ch = chainById(state.selected);
@@ -7936,7 +16840,10 @@ addEventListener("keydown", (e) => {
   }
   if ((e.key === "Delete" || e.key === "Backspace") && !typing()) {
     e.preventDefault();
-    removeSelected();
+    // a marquee selection outranks the single selection: the operator built
+    // the set on purpose, and the bar's Delete all is the same action
+    if (state.multiSel && state.multiSel.size) multiDeleteAll();
+    else removeSelected();
   }
   if ((e.key === "j" || e.key === "J") && !typing() && state.selected !== null) {
     e.preventDefault();
@@ -7953,7 +16860,20 @@ addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    // an open anchored menu is the shallowest layer of all - it is a menu,
+    // not a state, and dismissing it must not also spend the operator's Esc
+    // on the selection underneath it
+    if (msPop) { msPopClose(); return; }
     if (!$("kbdHelp").hidden) { $("kbdHelp").hidden = true; return; }
+    // the family question outranks everything: nothing is committed while
+    // it is up, and Esc is the same answer as "Discard the line"
+    if (document.getElementById("drawFamModal")) { drawFamCancel(); return; }
+    if (state.marquee) {   // a box mid-drag dies without selecting anything
+      state.marquee = null;
+      setStatus("multi-select cancelled");
+      draw();
+      return;
+    }
     if (state.tool === "cutspan") {
       cancelCut();
       setStatus("cut cancelled");
@@ -7973,7 +16893,12 @@ addEventListener("keydown", (e) => {
     }
     if (state.tool === "drawline") {
       if (state.drawPts.length) {
+        // drawSnaps is PARALLEL to drawPts - popping one without the other
+        // would hand finishDraw the wrong point's snap and weld the drawn
+        // end onto a chain the operator never touched
         state.drawPts.pop();
+        state.drawSnaps.pop();
+        state.snapHit = null; state.snapMsg = "";
         setStatus(state.drawPts.length
           ? `draw: ${state.drawPts.length} point(s) — Esc again removes another`
           : "all points removed — Esc again exits draw", "busy");
@@ -7990,8 +16915,25 @@ addEventListener("keydown", (e) => {
       $("measureInfo").hidden = true;
       setStatus("");
     } else if (state.tool === "extend") {
-      state.tool = null;
+      // one Esc drops the spur anchor and leaves extend armed; the next
+      // disarms the tool - the same back-up-one-step grammar as draw
+      if (state.extendAnchor) {
+        state.extendAnchor = null;
+        state.snapHit = null; state.snapMsg = "";
+        setStatus("spur anchor dropped — nothing changed", "busy");
+        draw();
+        return;
+      }
+      cancelExtend();
       setStatus("");
+    }
+    // the multi-selection clears one layer before the single selection -
+    // same tools-first grammar; the next Esc still reaches selPt/selected
+    // below. ONE press also restores the normal toolkit, because
+    // renderMultiBar -> msSyncToolkit is the only thing that swaps it.
+    if (state.multiSel && state.multiSel.size) {
+      msClearSel();
+      return;
     }
     if (state.selPt !== null) { state.selPt = null; updateSelBar(chainById(state.selected)); }
     else { state.selected = null; updateSelBar(null); }
@@ -8002,6 +16944,10 @@ addEventListener("keydown", (e) => {
     if (state.isolate !== null) {
       state.isolate = null;
       renderStyles(); renderMiniLegend();
+      // the bid view marks its member rows the same way the style rows are
+      // marked, so the same clear has to reach them
+      for (const r of document.querySelectorAll("#bidBox .bid-member.bid-iso"))
+        r.classList.remove("bid-iso");
       setStatus("isolate off");
     }
     draw();
@@ -8025,7 +16971,61 @@ cv.addEventListener("wheel", (e) => {
 function fmtLen(pt) {
   return pt > 8000 ? `${(pt / 1000).toFixed(1)}k pt` : `${Math.round(pt)} pt`;
 }
+// UNCHANGED CONTRACT, NEW ADDRESS. #status moved out of the masthead and
+// into #statusBar below <main> (index.html, CRITIQUE fix 4); this function
+// keeps its name, its (text, cls) signature and every one of its call sites.
+// Nothing here looks up a parent, so the move is invisible to all of them.
 function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.className = "status " + (cls || ""); }
+
+// ---------- the status bar's PERSISTENT half ------------------------------
+// The sheet facts used to be pushed through setStatus() by loadResult(), so
+// the sentence that says how many lines were found and - the part that
+// matters - WHERE THE SCALE CAME FROM survived only until the next transient
+// message overwrote it. It is its own element now and it stays put.
+//
+// sheetFactsText() is loadResult()'s old string, character for character:
+// same counts, same " · scale ", same source in parentheses, same
+// ", matches the drawn bar" / ", but the drawn bar says N ft/in" /
+// " · no scale found". Nothing is summarised away and nothing new is
+// asserted. The red "err" state for a contradiction moves with it, and now
+// persists instead of flashing once.
+function sheetFactsText() {
+  if (!state.result) return "";
+  const sc = state.result.scale;
+  return `${state.result.chains.length} lines in ${state.result.styles.length} styles`
+    + (sc ? ` · scale ${sc.text} (${sc.source}`
+        + (sc.agrees === true ? ", matches the drawn bar"
+          : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
+          : "") + ")"
+      : " · no scale found");
+}
+function renderSheetFacts() {
+  const el = $("sheetFacts"), seg = $("sbSheet");
+  if (!el || !seg) return;
+  const sc = state.result && state.result.scale;
+  seg.textContent = sheetFactsText();
+  // the same class setStatus() was given for this sentence, on the element
+  // that now carries it
+  el.className = "sb-facts" + (sc && sc.agrees === false ? " err" : "");
+  renderZoomFact();
+}
+// Zoom. state.view.k is the multiplier between the page raster's own pixels
+// and CSS pixels, so 100% is exactly one raster pixel per CSS pixel - which
+// is what the segment's title says out loud rather than implying a paper
+// "actual size" this app has no way to know. Presentation only: no quantity
+// anywhere reads it. Painted from draw(), so it follows every wheel and pan,
+// and only touched when the rounded number actually moved.
+let zoomShown = null;
+function renderZoomFact() {
+  const el = $("sbZoom");
+  if (!el) return;
+  const pct = (state.img && state.view.k > 0)
+    ? Math.round(state.view.k * 100) : null;
+  if (pct === zoomShown) return;
+  zoomShown = pct;
+  el.hidden = pct === null;
+  el.textContent = pct === null ? "" : `zoom ${pct}%`;
+}
 
 // ---------- structure calculator: footprint dig + perimeter layback ----------
 // The excavator's bid-sheet formulas (client_meet/beaumont, "Bid sheet" p1,
@@ -8051,7 +17051,10 @@ const ST_LABELS = ["Mass Excavation", "Structure Excavation", "Structure Backfil
 const ST_UNITS = { "Mass Excavation": "CY", "Structure Excavation": "CY",
                    "Structure Backfill": "CY", "Slab Prep": "SF" };
 const ST_COLOR = "#ff7a00";        // committed structures: outline + band
-const ST_DRAFT_COLOR = "#00a8e8";  // the one being outlined right now
+const ST_DRAFT_COLOR = "#58b7e6";  // the one being outlined right now.
+// RETINTED 2026-08-31 from #00a8e8 to --t-select, so the canvas outline
+// and its sidebar chrome (.st-modes button.active, .st-draft) agree.
+const ST_DRAFT_BAND = "rgba(88,183,230,.30)";
 const stR1 = (v) => Math.round(v * 10) / 10;
 const stFmt = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
 
@@ -8069,6 +17072,7 @@ function stSync() {
     if (state.tool === "st-pick" || state.tool === "st-draw") state.tool = null;
     $("stPanel").hidden = true;
     $("stResult").textContent = "";
+    stApplySaved();   // saved outlines for THIS page, once the sidecar answered
   }
   $("stBtn").hidden = !state.result;
   return state.st;
@@ -8246,6 +17250,45 @@ addEventListener("mousemove", (e) => {
   draw();
 });
 cv.addEventListener("dblclick", () => { if (state.tool === "st-draw") stFinishDraw(); });
+
+// same interception grammar for the hand-drawn limit of work
+const _ewbClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "ew-bound-draw") {
+    const [px, py] = ptFromEvent(e);
+    return ewBoundDrawClick(px, py);
+  }
+  return _ewbClickBefore(e);
+};
+cv.addEventListener("dblclick", () => {
+  if (state.tool === "ew-bound-draw") ewBoundDrawFinish();
+});
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "ew-bound-draw" || panning || !state.ewBoundDraft.length) return;
+  state.ewBoundHover = ptFromEvent(e);
+  draw();
+});
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "ew-bound-draw") return;
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    ewBoundDrawFinish();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (state.ewBoundDraft.length) {
+      state.ewBoundDraft.pop();
+      setStatus(state.ewBoundDraft.length
+        ? `limit of work: ${state.ewBoundDraft.length} corner(s) ` + '—' + " Esc again removes another"
+        : "all corners removed " + '—' + " Esc again exits", "busy");
+      draw();
+    } else {
+      ewBoundDrawCancel("limit of work: drawing cancelled");
+    }
+  }
+}, true);
 // capture phase so the generic Esc (clear selection) never sees these keys
 // while the structure tool owns them
 addEventListener("keydown", (e) => {
@@ -8283,6 +17326,7 @@ $("stBtn").onclick = () => {
     return;
   }
   panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
   renderSt(); draw();
 };
 $("stClose").onclick = () => {
@@ -8482,7 +17526,7 @@ function drawStructural(ctx, k) {
     }
   };
   st.items.forEach((it, i) => paint(it, ST_COLOR, "rgba(255,122,0,.30)", st.hot === i));
-  if (st.draft) paint(st.draft, ST_DRAFT_COLOR, "rgba(0,168,232,.30)", true);
+  if (st.draft) paint(st.draft, ST_DRAFT_COLOR, ST_DRAFT_BAND, true);
   // in-progress polygon while drawing
   if (state.tool === "st-draw" && st.drawPts.length) {
     const P = st.drawPts;
@@ -8499,10 +17543,3611 @@ function drawStructural(ctx, k) {
     for (const q of P) {
       ctx.beginPath();
       ctx.arc(q[0] * f, q[1] * f, 3.5 / k, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.fillStyle = CV_VERTEX; ctx.fill();
       ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
     }
   }
 }
 
+// ================= WORK AREA - operator controls ==========================
+// The arming/drag/disarm shape follows st-draw; the mask math lives beside
+// chainLenPt (WZ-MATH block above). Consent pattern: drawing a box is an
+// explicit operator action with a visible state (dimmed outside, dashed
+// outlines, tally disclosure), and CLEAR restores everything - detection
+// results are never touched, so there is nothing to recompute.
+
+function wzSyncUi() {
+  // the button's lit state is handled by syncCursor (the state.tool hook);
+  // this keeps the clear affordance in step with whether zones exist
+  const cb = $("wzClearBtn");
+  if (cb) cb.hidden = !wzActive();
+}
+
+// every reader of a length repaints; the sidecar records the change
+function wzChanged() {
+  state.wzRev++;
+  wzSyncUi();
+  calcStateDirty();
+  renderStyles(); renderChips(); renderItemized(); renderMiniLegend();
+  draw();
+}
+
+// after each box: say what now counts and what is out, in sheet units
+function wzStatusAfterBox() {
+  let cIn = 0, cOut = 0;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (!state.include.get(ch.style_id)) continue;
+    const full = chainLenPt(ch), counted = chainCountedPt(ch);
+    cIn += counted; cOut += full - counted;
+  }
+  const n = state.workZones.length;
+  setStatus(`work area: ${n} box${n === 1 ? "" : "es"} — ${fmtQty(cIn)} counted, `
+    + `${fmtQty(cOut)} outside excluded. Drag to add another box; Esc finishes.`,
+    "busy");
+}
+
+$("wzBtn").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "wz-draw") {
+    state.tool = null; state.wzDrag = null;
+    setStatus(wzActive()
+      ? `work area set: ${state.workZones.length} box(es) govern the takeoff lists`
+      : "work area tool off — no boxes drawn, everything counts");
+    draw();
+    return;
+  }
+  // release whatever click-tool was armed so its button does not stay lit
+  // (same block stArm uses)
+  if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "measure") $("measureBtn").click();
+  else if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "merge") cancelMerge();
+  else if (state.tool === "reclass") $("reclassBtn").onclick();
+  else if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
+  state.tool = "wz-draw";
+  setStatus("work area: drag a box around the part of the sheet that should "
+    + "count — the takeoff lists then count only length inside your boxes. "
+    + "Drag more boxes to add; Esc finishes. (Earthwork and trench keep "
+    + "their own limit-of-work boundary.)", "busy");
+};
+
+$("wzClearBtn").onclick = () => {
+  if (!wzActive()) return;
+  const n = state.workZones.length;
+  // measure what the clear puts BACK before dropping the zones, so the
+  // status line can state the restoration instead of just "cleared"
+  let backPt = 0;
+  if (state.result)
+    for (const ch of state.result.chains) {
+      if (state.excluded.has(ch.chain_id)) continue;
+      if (!state.include.get(ch.style_id)) continue;
+      backPt += chainLenPt(ch) - chainCountedPt(ch);
+    }
+  state.workZones = [];
+  state.wzDrag = null;
+  if (state.tool === "wz-draw") state.tool = null;
+  wzChanged();
+  setStatus(`work area cleared — ${n} box${n === 1 ? "" : "es"} removed, `
+    + `${fmtQty(backPt)} back in the count`);
+};
+
+// restore this page's boxes from the calcstate sidecar (additive key
+// "zones"). Rects are page geometry, not chain references, so they apply
+// to whatever the live detection holds - nothing can be orphaned by a
+// re-detect, and the counted lengths recompute from the current chains.
+function wzApplySaved() {
+  const saved = state.calcSaved || {};
+  state.workZones = wzNorm(saved.zones);
+  state.wzDrag = null;
+  state.wzRev++;
+  wzSyncUi();
+}
+
+// Esc while the tool is armed: abandon an in-progress drag first, then the
+// tool itself (boxes already drawn stay). Capture phase so the generic Esc
+// (clear selection / isolate) never fires underneath, same as st-draw.
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "wz-draw" && !state.wzDrag) return;
+  if (e.key !== "Escape") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (state.wzDrag) {
+    state.wzDrag = null;
+    setStatus("box abandoned — drag again, or Esc to finish", "busy");
+    draw();
+    return;
+  }
+  state.tool = null;
+  setStatus(wzActive()
+    ? `work area set: ${state.workZones.length} box(es) govern the takeoff lists`
+    : "work area: no boxes drawn, everything counts");
+  draw();
+}, true);
+// =============== end WORK AREA operator controls ==========================
+
+// =============== keyboard-map overlay: the mouse path =====================
+// The overlay itself (#kbdHelp, index.html KBD-MAP block) and its "?" key
+// toggle predate this: the single-key review handler owns the keyboard path
+// (search `e.key === "?"`) and its Esc cascade closes the overlay before
+// anything else. These two listeners add the discoverable mouse path - the
+// "?" button at the foot of the toolkit column, and click-outside-closes.
+// Kept at the END of the file on purpose: the overlay's HTML comments cite
+// app.js line numbers at this revision, and inserting code above the cited
+// handlers would shift every citation.
+$("kbdBtn").onclick = () => {
+  $("kbdHelp").hidden = !$("kbdHelp").hidden;
+};
+document.addEventListener("click", (e) => {
+  const kh = $("kbdHelp");
+  if (kh.hidden) return;
+  // the toggle button just handled this same click (its onclick ran before
+  // this bubble listener); a click inside the panel is reading, not closing
+  if (kh.contains(e.target) || (e.target.closest && e.target.closest("#kbdBtn"))) return;
+  kh.hidden = true;
+});
+// ====================== GRADING ZONES ======================================
+// Declared-design regions (F: EXCAVATION-PLAN.md section 25, the Stice
+// case): the sheet does not draw a full proposed surface, so the estimator
+// outlines a region and DECLARES its design - "pad at 2716.0", "1.5% plane
+// toward 90 deg", "balance it", "strip 8 inches" - and the engine computes
+// that declared design against the detected existing ground inside the
+// polygon only (POST /earthwork/zone). Reference UX: the AGTEK-style
+// region workflow - a per-cell dz aerial with a perimeter summary card.
+//
+// Consent is the app's standard one: the modal's live numbers are LOOKING;
+// a zone's rows reach the priced takeoff only through its own "Add to
+// takeoff" button (exact-label replacement, the trench pattern). Zones
+// persist through the calcstate sidecar (additive key "gzones") as INPUTS
+// only; every restore recomputes through the endpoint.
+
+// GZ-GEOM-BEGIN
+// Pure geometry (no DOM, no state.*) so tests/test_grading_zone_geom.js can
+// eval just this block - same discipline as WZ-MATH / TRENCH-MATH.
+
+// even-odd ray cast, the same rule the server's _points_in_poly applies -
+// the modal's "N contours + M spots in zone" line and the server's grid
+// must agree on what "inside" means
+function gzPtInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y)) {
+      const dy = (yj - yi) || 1e-12;
+      const xc = (xj - xi) * (y - yi) / dy + xi;
+      if (x < xc) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// area centroid (shoelace); vertex mean when the ring is degenerate.
+// Mirrors the server's _zone_centroid, which anchors the plane mode.
+function gzCentroid(poly) {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const cross = poly[j][0] * poly[i][1] - poly[i][0] * poly[j][1];
+    a += cross;
+    cx += (poly[j][0] + poly[i][0]) * cross;
+    cy += (poly[j][1] + poly[i][1]) * cross;
+  }
+  if (Math.abs(a) < 1e-9) {
+    let sx = 0, sy = 0;
+    for (const q of poly) { sx += q[0]; sy += q[1]; }
+    return [sx / poly.length, sy / poly.length];
+  }
+  return [cx / (3 * a), cy / (3 * a)];
+}
+
+// does any vertex of this polyline fall inside the polygon? Vertex test on
+// purpose: the summary line counts which assigned contours contribute
+// inside the zone, and a contour clipping a corner between two vertices is
+// a display nicety, not a volume input (the server samples the TIN, not
+// this list).
+function gzChainTouches(points, poly) {
+  for (const p of points) if (gzPtInPoly(p[0], p[1], poly)) return true;
+  return false;
+}
+// GZ-GEOM-END
+
+// 5,800 -> "5.8k": the badge has one line of room on the canvas
+function gzK(v) {
+  v = Math.round(Number(v) || 0);
+  if (Math.abs(v) >= 1000) {
+    const s = (v / 1000).toFixed(1).replace(/\.0$/, "");
+    return s + "k";
+  }
+  return v.toLocaleString();
+}
+
+var gzModalZone = null;   // the zone being edited, or null for a new one
+var gzModalPoly = null;   // the polygon under the modal
+var gzModalTimer = null;  // 400 ms debounce for the live result block
+var gzModalSeq = 0;       // drops stale live responses
+
+// both page-switch chokepoints call this (selectPage AND loadResult), like
+// ewBoundDraft: drafts, saved zones and the open modal all belong to ONE
+// sheet. The new page's own zones come back via gzApplySaved.
+function gzPageReset() {
+  state.gzones = [];
+  state.gzDraft = []; state.gzHover = null; state.gzDrag = null;
+  state.gzSeq = 1;
+  const m = $("gzModal");
+  if (m) m.hidden = true;
+  gzModalZone = null; gzModalPoly = null;
+  if (gzModalTimer) { clearTimeout(gzModalTimer); gzModalTimer = null; }
+  gzModalSeq++;
+  for (const id of ["gzDraw", "gzBox"]) {
+    const b = $(id);
+    if (b) b.classList.remove("active");
+  }
+  renderGz();
+}
+
+// the existing ground a zone computes against: exactly what the panel has
+// assigned to EXISTING (rows with a finite elevation), plus the active
+// spot grades when the panel sends those to the existing side - the same
+// split ewBody uses, so the zone and the whole-sheet calculator can never
+// disagree about what "existing" means
+function gzExistingRows() {
+  if (!state.ew) return [];
+  return state.ew.rows.filter(r => r.surface === "existing" && isFinite(r.z));
+}
+function gzExistingPoints() {
+  if (!state.ew || state.ew.spotSide !== "existing") return [];
+  return ewActiveSpots().map(g => ({ x: g.x, y: g.y, z: g.z }));
+}
+
+// client-side count for the modal header line: which of the assigned
+// existing rows/spots actually sit inside this polygon
+function gzZoneSummary(poly) {
+  let nC = 0, nS = 0;
+  const zs = [];
+  const chains = state.result
+    ? new Map(state.result.chains.map(c => [c.chain_id, c])) : new Map();
+  for (const r of gzExistingRows()) {
+    const ch = chains.get(r.chain_id);
+    if (ch && gzChainTouches(ch.points, poly)) { nC++; zs.push(r.z); }
+  }
+  for (const g of gzExistingPoints())
+    if (gzPtInPoly(g.x, g.y, poly)) { nS++; zs.push(g.z); }
+  const mean = zs.length ? zs.reduce((a, b) => a + b, 0) / zs.length : null;
+  return { nContours: nC, nSpots: nS, mean };
+}
+
+function gzBody(polygon, design, strip_in) {
+  return {
+    polygon: polygon.map(q => [q[0], q[1]]),
+    design: design,
+    strip_in: isFinite(strip_in) && strip_in > 0 ? strip_in : 0,
+    existing_rows: gzExistingRows().map(r => ({ chain_id: r.chain_id, z: r.z })),
+    existing_points: gzExistingPoints(),
+  };
+}
+
+// ---- compute (shared by save, edit and restore) --------------------------
+async function gzCompute(z, gen) {
+  if (gen == null) gen = state.gen;
+  z.err = null; z.result = null; z.img = null;
+  renderGz(); draw();
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/zone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gzBody(z.polygon, z.design, z.strip_in)),
+    });
+    if (gen !== state.gen) return;
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      if (gen !== state.gen) return;
+      z.err = e.detail || ("failed (" + r.status + ")");
+    } else {
+      const j = await r.json();
+      if (gen !== state.gen) return;
+      z.result = j;
+      const img = new Image();
+      img.onload = () => { if (gen === state.gen) { z.img = img; draw(); } };
+      img.src = "data:image/png;base64," + j.map_png_base64;
+      // consent already given for THIS zone: refresh its rows in place so a
+      // superseded number never stays priced (same rule as ewCalc)
+      if (z.added) { gzApplyItems(z); renderItemized(); }
+    }
+  } catch (err) {
+    if (gen !== state.gen) return;
+    z.err = "server unreachable";
+  }
+  renderGz(); draw();
+}
+
+// ---- restore from the calcstate sidecar ----------------------------------
+// Synchronous half: zones into state BEFORE the first snapshot, so the
+// payload round-trips. Results stay null here - they are never staged.
+function gzApplySaved() {
+  const saved = state.calcSaved || {};
+  state.gzones = [];
+  let seq = 1;
+  for (const s of (Array.isArray(saved.gzones) ? saved.gzones : [])) {
+    if (!s || !Array.isArray(s.polygon) || s.polygon.length < 3) continue;
+    const poly = s.polygon.filter(q => Array.isArray(q) && q.length >= 2)
+                          .map(q => [+q[0], +q[1]]);
+    if (poly.length < 3) continue;
+    state.gzones.push({
+      id: String(s.id || ("z" + seq)),
+      name: String(s.name || ("Zone " + seq)).slice(0, 40),
+      polygon: poly,
+      design: (s.design && typeof s.design === "object") ? s.design : { mode: "pad" },
+      strip_in: isFinite(+s.strip_in) ? Math.max(+s.strip_in, 0) : 0,
+      added: !!s.added, showNums: !!s.show_nums,
+      result: null, img: null, err: null,
+    });
+    seq++;
+  }
+  state.gzSeq = state.gzones.length + 1;
+  renderGz();
+}
+
+// Async half, AFTER the snapshot: every restored zone recomputes through
+// the endpoint. The endpoint takes the panel's existing rows as input, so
+// the suggest data loads first (ewEnsure) even when the panel is closed.
+async function gzRestoreCompute() {
+  if (!state.gzones.length) return;
+  const gen = state.gen;
+  if (!await ewEnsure()) {
+    if (gen !== state.gen) return;
+    for (const z of state.gzones) z.err = "run Detect first";
+    renderGz();
+    return;
+  }
+  if (gen !== state.gen) return;
+  for (const z of state.gzones) {
+    if (gen !== state.gen) return;
+    await gzCompute(z, gen);
+  }
+}
+
+// ---- takeoff rows (consent + exact-label replacement) ---------------------
+// Three rows per zone, named by the zone so several zones coexist: the
+// trench calculator's exact-label pattern, for the same reason (a prefix
+// filter once silently deleted another system's rows).
+function gzRowLabels(z) {
+  return [`${z.name} cut`, `${z.name} fill`, `${z.name} topsoil strip`];
+}
+function gzClearItems(z) {
+  const mine = new Set((z.labels && z.labels.length) ? z.labels : gzRowLabels(z));
+  state.extraItems = state.extraItems.filter(it => !mine.has(it.label));
+}
+function gzApplyItems(z) {
+  gzClearItems(z);
+  const j = z.result;
+  if (!j) return;
+  z.labels = gzRowLabels(z);
+  const rows = [];
+  if (j.cut_yd3 > 0) rows.push({ label: z.labels[0], qty: ewR(j.cut_yd3), unit: "CY" });
+  if (j.fill_yd3 > 0) rows.push({ label: z.labels[1], qty: ewR(j.fill_yd3), unit: "CY" });
+  if (j.strip_yd3 > 0) rows.push({ label: z.labels[2], qty: ewR(j.strip_yd3), unit: "CY" });
+  for (const r of rows) {
+    state.extraItems.push(r);
+    // tradeFor() would file "Zone 1 cut" under General; seed the trade the
+    // way the balance rows do - session default only, the reviewer's pick wins
+    if (!store.getItem(tradeKey(r.label)))
+      store.setSession(tradeKey(r.label), "Earthwork & Grading");
+  }
+}
+
+// ---- the panel list -------------------------------------------------------
+function renderGz() {
+  const box = $("gzRows"), tot = $("gzTotals"), st = $("gzState");
+  if (!box) return;
+  const zs = state.gzones || [];
+  if (st) st.textContent = zs.length
+    ? `${zs.length} zone${zs.length === 1 ? "" : "s"}` : "none";
+  const sec = $("gzSection");
+  if (sec) sec.classList.toggle("on", zs.length > 0);
+  box.innerHTML = "";
+  for (const z of zs) {
+    const row = document.createElement("div");
+    row.className = "gz-row" + (z.added ? " added" : "");
+    const name = document.createElement("input");
+    name.className = "gz-name";
+    name.value = z.name;
+    name.title = "zone name - its takeoff rows are named after it";
+    name.onchange = () => {
+      const v = name.value.trim().slice(0, 40) || z.name;
+      if (v === z.name) { name.value = z.name; return; }
+      // the old name's rows are cleared by their recorded labels, then the
+      // new name reapplies - rename can never leave orphan rows behind
+      if (z.added) gzClearItems(z);
+      z.name = v; z.labels = null;
+      if (z.added && z.result) gzApplyItems(z);
+      calcStateDirty(); renderGz(); renderItemized(); draw();
+    };
+    const sum = document.createElement("span");
+    sum.className = "gz-sum";
+    sum.textContent = gzDesignSummary(z);
+    const cyf = document.createElement("span");
+    cyf.className = "gz-cyf";
+    if (z.err) { cyf.innerHTML = `<span class="gz-err">${z.err}</span>`; }
+    else if (z.result) {
+      cyf.innerHTML = `cut <b>${ewCY(z.result.cut_yd3 > 0 ? z.result.cut_yd3 : 0)}</b>`
+        + ` · fill <b>${ewCY(z.result.fill_yd3 > 0 ? z.result.fill_yd3 : 0)}</b> CY`
+        + (z.result.strip_yd3 > 0 ? ` · strip ${ewCY(z.result.strip_yd3)} CY` : "");
+    } else cyf.textContent = "computing…";
+    const nums = document.createElement("button");
+    nums.className = "mini" + (z.showNums ? " on" : "");
+    nums.textContent = "123";
+    nums.title = "show the per-cell elevation change on the sheet "
+      + "(red = cut, blue = fill - note the tint underneath uses the map "
+      + "palette, cut blue / fill orange)";
+    nums.onclick = () => { z.showNums = !z.showNums; calcStateDirty(); renderGz(); draw(); };
+    const edit = document.createElement("button");
+    edit.className = "mini";
+    edit.textContent = "edit";
+    edit.title = "reopen this zone's design (clicking its badge on the sheet does the same)";
+    edit.onclick = () => gzModalOpen(z);
+    const add = document.createElement("button");
+    add.className = "mini" + (z.added ? " on" : "");
+    add.textContent = z.added ? "Remove from takeoff" : "Add to takeoff";
+    add.title = z.added
+      ? "remove this zone's rows from the itemized takeoff"
+      : "put this zone's cut / fill / strip rows in the itemized takeoff - "
+        + "nothing prices until this is pressed";
+    add.onclick = () => {
+      if (!z.added && !z.result) {
+        setStatus(z.err ? `${z.name}: ${z.err}` : `${z.name} is still computing — try again in a moment`, "err");
+        return;
+      }
+      z.added = !z.added;
+      if (z.added) gzApplyItems(z);
+      else gzClearItems(z);
+      calcStateDirty(); renderGz(); renderItemized();
+      setStatus(z.added
+        ? `${z.name} added to the takeoff — its rows price, export and print like any other`
+        : `${z.name} removed from the takeoff`);
+    };
+    const del = document.createElement("button");
+    del.className = "mini x";
+    del.textContent = "×";
+    del.title = "delete this zone" + (z.added ? " (its takeoff rows go with it)" : "");
+    del.onclick = () => {
+      const wasAdded = z.added;
+      if (wasAdded) gzClearItems(z);
+      state.gzones = state.gzones.filter(q => q !== z);
+      calcStateDirty(); renderGz(); renderItemized(); draw();
+      setStatus(wasAdded
+        ? `${z.name} deleted — its takeoff rows were removed with it`
+        : `${z.name} deleted`);
+    };
+    row.append(name, sum, cyf, nums, edit, add, del);
+    box.appendChild(row);
+  }
+  if (tot) {
+    const done = zs.filter(z => z.result);
+    if (done.length < 2) tot.hidden = true;
+    else {
+      tot.hidden = false;
+      const cut = done.reduce((a, z) => a + Math.max(z.result.cut_yd3, 0), 0);
+      const fill = done.reduce((a, z) => a + Math.max(z.result.fill_yd3, 0), 0);
+      const strip = done.reduce((a, z) => a + Math.max(z.result.strip_yd3, 0), 0);
+      tot.innerHTML = `<span>all zones:</span> <b>cut ${ewCY(cut)}</b>`
+        + ` · <b>fill ${ewCY(fill)}</b>`
+        + (strip > 0 ? ` · strip ${ewCY(strip)}` : "") + ` CY`
+        + (done.length < zs.length
+            ? ` <span class="gz-err">(${zs.length - done.length} zone${zs.length - done.length === 1 ? "" : "s"} not computed - not in these totals)</span>`
+            : "");
+    }
+  }
+}
+
+function gzDesignSummary(z) {
+  const d = z.design || {};
+  let s;
+  if (d.mode === "pad") s = `pad @ ${d.elev_ft}`;
+  else if (d.mode === "plane")
+    s = `plane ${d.slope_pct || 0}% @ ${d.azimuth_deg || 0}°, ${d.elev_ft} @ centre`;
+  else if (d.mode === "balance")
+    s = (z.result && z.result.balance_elev_ft !== undefined)
+      ? `balance @ ${z.result.balance_elev_ft}` : "balance";
+  else s = "strip only";
+  if (z.strip_in > 0) s += ` · strip ${z.strip_in}"`;
+  return s;
+}
+
+// ---- the two arming buttons ------------------------------------------------
+$("gzDraw").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (state.tool === "gz-draw") { gzDrawCancel("grading zone: drawing cancelled"); return; }
+  state.tool = "gz-draw";
+  state.gzDraft = [];
+  $("gzDraw").classList.add("active");
+  syncCursor();
+  setStatus("grading zone: click the corners of the region "
+    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+};
+$("gzBox").onclick = () => {
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (state.tool === "gz-box") {
+    state.tool = null; state.gzDrag = null;
+    $("gzBox").classList.remove("active");
+    syncCursor(); draw();
+    setStatus("grading zone: box cancelled");
+    return;
+  }
+  state.tool = "gz-box";
+  $("gzBox").classList.add("active");
+  syncCursor();
+  setStatus("grading zone: drag a box over the region " + '—' + " Esc cancels", "busy");
+};
+
+function gzDrawClick(px, py) {
+  const d = state.gzDraft;
+  const last = d[d.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return; // dblclick echo
+  d.push([px, py]);
+  const fpi = arFpi();
+  let live = "";
+  if (d.length >= 3 && fpi !== null) {
+    const sf = Math.abs(polyAreaPt(d)) * (fpi / 72) * (fpi / 72);
+    live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
+  }
+  setStatus(`grading zone: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  draw();
+}
+function gzDrawFinish() {
+  const pts = [];
+  for (const q of state.gzDraft)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length - 1][0], q[1] - pts[pts.length - 1][1]) > 0.5)
+      pts.push(q);
+  if (pts.length < 3) {
+    return gzDrawCancel("grading zone: a region needs at least 3 corners "
+      + '—' + " drawing cancelled");
+  }
+  state.tool = null;
+  state.gzDraft = []; state.gzHover = null;
+  $("gzDraw").classList.remove("active");
+  syncCursor();
+  draw();
+  gzModalOpen(null, pts);
+}
+function gzDrawCancel(msg) {
+  state.tool = null;
+  state.gzDraft = []; state.gzHover = null;
+  $("gzDraw").classList.remove("active");
+  syncCursor();
+  if (msg) setStatus(msg);
+  draw();
+}
+
+// clicks land in the zone tools while armed; a badge click (no tool armed)
+// reopens that zone's modal
+const _gzClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (state.tool === "gz-draw") {
+    const [px, py] = ptFromEvent(e);
+    return gzDrawClick(px, py);
+  }
+  if (!state.tool && state.gzones && state.gzones.length) {
+    const [px, py] = ptFromEvent(e);
+    for (const z of state.gzones) {
+      const b = z._badge;
+      if (b && px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3])
+        return gzModalOpen(z);
+    }
+  }
+  return _gzClickBefore(e);
+};
+cv.addEventListener("dblclick", () => { if (state.tool === "gz-draw") gzDrawFinish(); });
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "gz-draw" || panning || !state.gzDraft.length) return;
+  state.gzHover = ptFromEvent(e);
+  draw();
+});
+// capture phase, same Esc semantics as the limit-of-work draw: back up one
+// corner, then cancel; Enter closes
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "gz-draw") return;
+  if (e.key === "Enter") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    gzDrawFinish();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (state.gzDraft.length) {
+      state.gzDraft.pop();
+      setStatus(state.gzDraft.length
+        ? `grading zone: ${state.gzDraft.length} corner(s) ` + '—' + " Esc again removes another"
+        : "all corners removed " + '—' + " Esc again exits", "busy");
+      draw();
+    } else {
+      gzDrawCancel("grading zone: drawing cancelled");
+    }
+  }
+}, true);
+// Esc for the box tool: abandon an in-progress drag first, then the tool
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (state.tool !== "gz-box" && !state.gzDrag) return;
+  if (e.key !== "Escape") return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (state.gzDrag) {
+    state.gzDrag = null;
+    setStatus("box abandoned — drag again, or Esc to cancel the tool", "busy");
+    draw();
+    return;
+  }
+  state.tool = null;
+  $("gzBox").classList.remove("active");
+  syncCursor();
+  setStatus("grading zone: box cancelled");
+  draw();
+}, true);
+
+// ---- THE ZONE MODAL --------------------------------------------------------
+function gzModalOpen(zone, polygon) {
+  if (!state.ew) return setStatus("open the EARTHWORK panel first", "err");
+  gzModalZone = zone || null;
+  gzModalPoly = zone ? zone.polygon : polygon;
+  if (!gzModalPoly || gzModalPoly.length < 3) return;
+  $("gzBox").classList.remove("active");
+  const fpi = arFpi();
+  const sf = fpi === null ? null
+    : Math.abs(polyAreaPt(gzModalPoly)) * (fpi / 72) * (fpi / 72);
+  const name = zone ? zone.name : "Zone " + state.gzSeq;
+  $("gzMTitle").textContent = name + (sf !== null
+    ? ` — ${Math.round(sf).toLocaleString()} SF` : " — no scale set");
+  const s = gzZoneSummary(gzModalPoly);
+  $("gzMExist").innerHTML = (s.nContours + s.nSpots) > 0
+    ? `existing from the sheet: ${s.mean !== null ? `mean ${s.mean.toFixed(1)} ft, ` : ""}`
+      + `${s.nContours} contour${s.nContours === 1 ? "" : "s"} + `
+      + `${s.nSpots} spot${s.nSpots === 1 ? "" : "s"} in zone `
+      + `(rows the panel assigns to EXISTING)`
+    : `<span class="gz-warn">no EXISTING contour or spot inside this zone — `
+      + `the surface interpolates from the nearest assigned elevations `
+      + `outside it, or refuses if it cannot reach</span>`;
+  const d = (zone && zone.design) || {};
+  const mode = d.mode || "pad";
+  for (const r of document.querySelectorAll('input[name="gzMode"]'))
+    r.checked = r.value === mode;
+  // Number.isFinite, NEVER bare isFinite: isFinite(null) is TRUE in JS
+  // (the spotDatum defect, CLAUDE.md section 5 / ewActiveSpots)
+  const meanTxt = s.mean !== null ? String(Math.round(s.mean * 10) / 10) : "";
+  $("gzPadElev").value = (mode === "pad" && Number.isFinite(d.elev_ft)) ? d.elev_ft : meanTxt;
+  $("gzPlElev").value = (mode === "plane" && Number.isFinite(d.elev_ft)) ? d.elev_ft : meanTxt;
+  $("gzPlSlope").value = Number.isFinite(d.slope_pct) ? d.slope_pct : 1.0;
+  $("gzPlAz").value = Number.isFinite(d.azimuth_deg) ? d.azimuth_deg : 0;
+  // strip default from the researched table, citation on its face - the
+  // operator sees the number AND where it came from before it computes
+  const sd = (typeof EW_RESEARCH !== "undefined") ? EW_RESEARCH.strip_depth_in : null;
+  $("gzStrip").value = zone ? (Number.isFinite(zone.strip_in) ? zone.strip_in : 0)
+                            : (sd ? sd.value : 0);
+  $("gzStripWhy").textContent = sd
+    ? `default ${sd.value}" — ${sd.local}; national band ${sd.national[0]}–${sd.national[1]} in. `
+      + `Set 0 for no strip.`
+    : "";
+  gzModalSyncMode();
+  $("gzModal").hidden = false;
+  gzModalCalc();
+}
+
+function gzModalClose(msg) {
+  $("gzModal").hidden = true;
+  gzModalZone = null; gzModalPoly = null;
+  if (gzModalTimer) { clearTimeout(gzModalTimer); gzModalTimer = null; }
+  gzModalSeq++;
+  if (msg) setStatus(msg);
+}
+
+// enable only the inputs the picked mode reads, so a number in a greyed
+// box can never be silently part of the calculation
+function gzModalSyncMode() {
+  const mode = (document.querySelector('input[name="gzMode"]:checked') || {}).value || "pad";
+  $("gzPadElev").disabled = mode !== "pad";
+  $("gzPlElev").disabled = mode !== "plane";
+  $("gzPlSlope").disabled = mode !== "plane";
+  $("gzPlAz").disabled = mode !== "plane";
+}
+
+function gzModalCollect() {
+  const mode = (document.querySelector('input[name="gzMode"]:checked') || {}).value || "pad";
+  const sv = parseFloat($("gzStrip").value);
+  const strip_in = isFinite(sv) && sv > 0 ? sv : 0;
+  if (mode === "pad") {
+    const e = parseFloat($("gzPadElev").value);
+    if (!isFinite(e)) return { err: "type the pad elevation" };
+    return { design: { mode: "pad", elev_ft: e }, strip_in };
+  }
+  if (mode === "plane") {
+    const e = parseFloat($("gzPlElev").value);
+    if (!isFinite(e)) return { err: "type the plane's elevation at the zone centre" };
+    const sl = parseFloat($("gzPlSlope").value);
+    const az = parseFloat($("gzPlAz").value);
+    return { design: { mode: "plane", elev_ft: e,
+                       slope_pct: isFinite(sl) ? sl : 0,
+                       azimuth_deg: isFinite(az) ? az : 0 }, strip_in };
+  }
+  return { design: { mode }, strip_in };
+}
+
+function gzModalDirty() {
+  if ($("gzModal").hidden) return;
+  gzModalSyncMode();
+  if (gzModalTimer) clearTimeout(gzModalTimer);
+  gzModalTimer = setTimeout(gzModalCalc, 400);
+}
+
+async function gzModalCalc() {
+  if ($("gzModal").hidden || !gzModalPoly) return;
+  const live = $("gzMLive");
+  const c = gzModalCollect();
+  if (c.err) { live.innerHTML = `<span class="gz-warn">${c.err}</span>`; return; }
+  const seq = ++gzModalSeq;
+  const gen = state.gen;
+  live.innerHTML = '<span class="gz-meta">calculating…</span>';
+  let r;
+  try {
+    r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/zone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gzBody(gzModalPoly, c.design, c.strip_in)),
+    });
+  } catch (err) {
+    if (seq === gzModalSeq) live.innerHTML = '<span class="gz-warn">server unreachable</span>';
+    return;
+  }
+  if (seq !== gzModalSeq || gen !== state.gen) return;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    if (seq !== gzModalSeq) return;
+    live.innerHTML = `<span class="gz-warn">${e.detail || ("failed (" + r.status + ")")}</span>`;
+    return;
+  }
+  const j = await r.json();
+  if (seq !== gzModalSeq || gen !== state.gen) return;
+  const cutQ = j.cut_yd3 > 0 ? j.cut_yd3 : 0, fillQ = j.fill_yd3 > 0 ? j.fill_yd3 : 0;
+  let h = `<span class="gz-big">cut ${ewCY(cutQ)} CY · fill ${ewCY(fillQ)} CY</span>`
+    + ` · net ${ewCY(j.net_yd3)} CY`;
+  h += `<span class="gz-meta">over ${Number(j.area_sf).toLocaleString()} SF`
+    + (j.coverage < 0.999
+        ? ` <span class="gz-warn">— the existing surface reaches only `
+          + `${Math.round(j.coverage * 100)}% of this `
+          + `${Number(j.zone_area_sf).toLocaleString()} SF zone; the volumes `
+          + `cover that share only</span>`
+        : ` (the whole zone)`)
+    + `</span>`;
+  if (j.balance_elev_ft !== undefined) {
+    const bd = j.balance_delta_ft;
+    h += `<span class="gz-meta"><b>balances at ${j.balance_elev_ft.toFixed(2)} ft</b>`
+      + ` (${Math.abs(bd).toFixed(2)} ft ${bd < 0 ? "below" : "above"} the`
+      + ` existing mean ${j.existing_mean_ft.toFixed(2)} ft`
+      + (j.strip_in > 0 ? "; the strip is part of the balance" : "") + `)</span>`;
+  }
+  if (j.strip_yd3 > 0)
+    h += `<span class="gz-meta">topsoil strip ${j.strip_in}&Prime; over `
+      + `${Number(j.area_sf).toLocaleString()} SF = <b>${ewCY(j.strip_yd3)} CY</b>`
+      + (j.mode !== "strip_only"
+          ? " — the fill above already includes replacing that depth" : "")
+      + `</span>`;
+  h += `<span class="gz-meta">existing inside the zone: mean `
+    + `${j.existing_mean_ft.toFixed(2)} ft, sampled from the surface built on `
+    + `${j.existing_n_contours} contour row${j.existing_n_contours === 1 ? "" : "s"}`
+    + ` + ${j.existing_n_spots} spot grade${j.existing_n_spots === 1 ? "" : "s"}`
+    + ` (whole sheet)</span>`;
+  if (j.max_cut_ft || j.max_fill_ft)
+    h += `<span class="gz-meta">deepest cut ${j.max_cut_ft} ft · deepest fill `
+      + `${j.max_fill_ft} ft — eyeball these against the contours</span>`;
+  h += `<img class="gz-map" alt="zone cut/fill map" `
+    + `src="data:image/png;base64,${j.map_png_base64}">`;
+  h += `<span class="gz-meta">cut blue · fill orange — full colour = `
+    + `±${j.ref_dz} ft (the sheet map's own palette)</span>`;
+  live.innerHTML = h;
+}
+
+$("gzMSave").onclick = () => {
+  if (!gzModalPoly) return;
+  const c = gzModalCollect();
+  if (c.err) { setStatus("zone not saved — " + c.err, "err"); return; }
+  let z = gzModalZone;
+  if (!z) {
+    z = {
+      id: "z" + Math.random().toString(36).slice(2, 9),
+      name: "Zone " + state.gzSeq++,
+      polygon: gzModalPoly.map(q => [q[0], q[1]]),
+      design: c.design, strip_in: c.strip_in,
+      added: false, showNums: false,
+      result: null, img: null, err: null,
+    };
+    state.gzones.push(z);
+  } else {
+    z.design = c.design;
+    z.strip_in = c.strip_in;
+  }
+  const name = z.name;
+  gzModalClose();
+  calcStateDirty();
+  renderGz();
+  draw();
+  gzCompute(z);   // async; refreshes the zone's priced rows if it was added
+  setStatus(`${name} saved — computing its volumes; press its "Add to takeoff" to price them`);
+};
+$("gzMCancel").onclick = () => gzModalClose("zone not saved");
+$("gzMClose").onclick = () => gzModalClose("zone not saved");
+// Esc ALWAYS cancels the modal, typing or not - registered capture-phase so
+// nothing underneath sees the key while the modal is up
+addEventListener("keydown", (e) => {
+  const m = $("gzModal");
+  if (!m || m.hidden) return;
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    gzModalClose("zone not saved");
+  }
+}, true);
+(function gzWireModalInputs() {
+  for (const id of ["gzPadElev", "gzPlElev", "gzPlSlope", "gzPlAz", "gzStrip"]) {
+    const el = $(id);
+    if (el) el.addEventListener("input", gzModalDirty);
+  }
+  for (const r of document.querySelectorAll('input[name="gzMode"]'))
+    r.addEventListener("change", gzModalDirty);
+})();
+// =============== end GRADING ZONES ========================================
+
 resize();
+
+// =============== TOOLS MENU: one entry point in the header =================
+// The nine tool buttons (Analyze, Earthwork, Trench, Count, Whole job,
+// Across sheets, Callouts, Structure, Legend sheet) MOVED into #toolsMenu in
+// index.html with their ids, titles, and hidden attributes untouched, so
+// every handler attached above and every `$("ewBtn").hidden = ...` write in
+// loadResult() keeps working; this section only opens and closes the box
+// around them. DETECT LINES stays in the strip - it is the workflow, not a
+// tool.
+
+// TOOLS-MENU-BEGIN -----------------------------------------------------------
+// Pure block: no DOM, no state.*, so tests/test_tools_menu.js can run it
+// under node (same technique as TRENCH-MATH).
+//
+// [buttonId, panelId]. The panel's hidden state is the SOURCE OF TRUTH for
+// the "open right now" dot; null = the tool has no panel (the legend prompt).
+const TOOLS_MENU_ITEMS = [
+  ["aiBtn", "aiBanner"],
+  ["ewBtn", "ewPanel"],
+  ["trBtn", "trPanel"],
+  ["symBtn", "symPanel"],
+  ["rollBtn", "rollPanel"],
+  ["xsBtn", "xsPanel"],
+  ["coBtn", "coPanel"],
+  ["stBtn", "stPanel"],
+  ["legendBtn", null],
+];
+// rows: [{id, hidden, panelHidden|null}] ->
+//   {visible: [id...], dots: {id: bool}, note: bool}
+// A hidden button is an absent row (loadResult's bookkeeping IS the menu's);
+// a dot only for a panel that is actually open; the note explains the short
+// menu before any page has a detection.
+function toolsMenuModel(rows) {
+  const visible = [], dots = {};
+  for (const r of rows) {
+    if (!r.hidden) visible.push(r.id);
+    dots[r.id] = r.panelHidden === false;
+  }
+  return { visible, dots, note: visible.length < rows.length };
+}
+// wrap-around focus target for ArrowDown(+1)/ArrowUp(-1); -1 when empty.
+// i = -1 (focus outside the items) enters at the end the arrow points from.
+function toolsMenuNextIdx(n, i, delta) {
+  if (!n) return -1;
+  if (i < 0) return delta > 0 ? 0 : n - 1;
+  return ((i + delta) % n + n) % n;
+}
+// TOOLS-MENU-END -------------------------------------------------------------
+
+// A menu row is now icon + name + description + dot, so the row's NAME is a
+// span, not the button's whole text content. Every place that used to assign
+// the Analyze row's label directly onto the button has to write the span
+// instead, or it deletes the icon and the description along with it. This is
+// the one write-through point; the fallback keeps working if the span is
+// ever absent.
+function toolRowLabel(id, text) {
+  const b = $(id);
+  if (!b) return;
+  const nm = b.querySelector(".tm-nm");
+  if (nm) nm.textContent = text; else b.textContent = text;
+}
+
+// Each row's description is its own title attribute, read VERBATIM - the
+// title stays the single source of truth (and the accessible description),
+// so the one string can never drift from the one the hover shows.
+function toolsMenuDescribe() {
+  for (const [id] of TOOLS_MENU_ITEMS) {
+    const b = $(id);
+    if (!b) continue;
+    const ds = b.querySelector(".tm-ds");
+    if (ds) ds.textContent = b.getAttribute("title") || "";
+  }
+}
+
+function toolsMenuSync() {
+  const model = toolsMenuModel(TOOLS_MENU_ITEMS.map(([id, panel]) => ({
+    id,
+    hidden: $(id).hidden,
+    panelHidden: panel ? $(panel).hidden : null,
+  })));
+  for (const [id] of TOOLS_MENU_ITEMS)
+    $(id).classList.toggle("t-on", !!model.dots[id]);
+  toolsMenuDescribe();
+  $("toolsNote").hidden = !model.note;
+  return model;
+}
+function toolsMenuOpen() {
+  toolsMenuSync();               // dots read the panels at open, every open
+  const m = $("toolsMenu");
+  m.hidden = false;
+  m.classList.remove("flip");
+  $("toolsBtn").setAttribute("aria-expanded", "true");
+  // narrow windows: flip to right-anchored when the menu would run off
+  const r = m.getBoundingClientRect();
+  if (r.right > innerWidth - 8) m.classList.add("flip");
+}
+function toolsMenuClose(focusBack) {
+  const m = $("toolsMenu");
+  if (m.hidden) return;
+  m.hidden = true;
+  $("toolsBtn").setAttribute("aria-expanded", "false");
+  if (focusBack) $("toolsBtn").focus();
+}
+// fill the description spans once at boot as well as on every open, so the
+// rows are never briefly nameless on the first paint
+toolsMenuDescribe();
+$("toolsBtn").onclick = () => {
+  if ($("toolsMenu").hidden) toolsMenuOpen(); else toolsMenuClose();
+};
+// A click on any tool row closes the menu and the tool's own handler runs
+// untouched (bubble order: the button's onclick first, then this).
+$("toolsMenu").addEventListener("click", (e) => {
+  if (e.target.closest("button")) toolsMenuClose();
+});
+// click anywhere outside the wrap closes it
+addEventListener("click", (e) => {
+  if ($("toolsMenu").hidden) return;
+  if (!$("toolsWrap").contains(e.target)) toolsMenuClose();
+});
+// Esc closes the menu and must never fall through to the canvas Esc
+// (cancel tool / clear selection) - capture + stopImmediatePropagation,
+// the same pattern the st-draw and ew-bound-draw handlers use.
+addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("toolsMenu").hidden) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  toolsMenuClose(true);
+}, true);
+// arrows walk the visible rows, wrapping; ArrowDown on the closed button opens
+$("toolsWrap").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  if ($("toolsMenu").hidden) toolsMenuOpen();
+  // DOM order, not TOOLS_MENU_ITEMS order. The rows are now grouped
+  // Calculators / Counts / Document, so the registry order and the order a
+  // person SEES are no longer the same list - walking the registry made
+  // ArrowDown jump from the button to the bottom row. The arrow keys have to
+  // follow the eye, and the menu markup is the only thing that knows that
+  // order. (The wrap arithmetic in toolsMenuNextIdx is unchanged.)
+  const btns = [...$("toolsMenu").querySelectorAll("button")]
+    .filter(b => !b.hidden);
+  if (!btns.length) return;
+  const i = btns.indexOf(document.activeElement);
+  btns[toolsMenuNextIdx(btns.length, i, e.key === "ArrowDown" ? 1 : -1)].focus();
+});
+// =============== end TOOLS MENU ============================================
+
+// =============== MY PROJECTS: the landing page =============================
+// A card per plan set on this box, in place of the workbench, whenever no
+// document is open - and reachable any time from the "Projects" link on the
+// brand block. A pure VIEW toggle: one class on <main> hides the workbench
+// columns via CSS, so nothing here touches state.job, any panel's hidden
+// attribute, or a single counted quantity, and the workbench keeps its full
+// state (zoom, selection, edits) while out of sight. Opening a card goes
+// through the SAME server route and applyOpened() path the recents <select>
+// uses; the card's remove control reuses the DELETE /api/job flow behind
+// #docRemoveBtn, with the same confirm wording.
+
+// PROJECTS-PURE-BEGIN --------------------------------------------------------
+// Pure presentation helpers: no DOM, no state.*, no fetch, so
+// tests/test_projects_view.js can run them under node.
+function projMetaLine(pages, detected, approved) {
+  const p = pages + " page" + (pages === 1 ? "" : "s");
+  const d = pages && detected >= pages ? "all detected"
+    : detected ? detected + " detected" : "not detected";
+  const a = approved ? " · " + approved + " approved" : "";
+  return p + " · " + d + a;
+}
+// both arguments in unix SECONDS (the server sends st_mtime)
+function projAgo(nowS, whenS) {
+  const s = Math.max(0, nowS - whenS);
+  if (s < 90) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400 * 2) return Math.round(s / 3600) + " h ago";
+  if (s < 86400 * 60) return Math.round(s / 86400) + " d ago";
+  const dt = new Date(whenS * 1000);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return dt.getFullYear() + "-" + p2(dt.getMonth() + 1) + "-" + p2(dt.getDate());
+}
+// label shared demo plans only when the list also holds the user's own -
+// same rule as the recents <select> (one heading over one list is noise)
+function projShowsSharedBadge(rows) {
+  return rows.some(r => r.mine) && rows.some(r => r.shared);
+}
+
+// ---- THE TWO TABS ----------------------------------------------------------
+// "Demo plans" is THE MANIFEST, not this box's job rows: /api/demo-plans
+// answers from demo-plans.json alone, so the tab shows exactly those plans,
+// one card each, whether this box holds zero jobs for them or sixty-three.
+// "Your projects" is every /api/projects row this account may see that the
+// server did NOT flag demo:true. The split is still read off the server's
+// flag, never re-derived here from the name - a client who uploads a file
+// called C8.0-STORM-LAYOUT-Rev.1.pdf owns it, and it is not a demo.
+//
+// projTabRows is therefore about JOB rows only. Its "demo" branch returns the
+// demo-flagged rows and nothing paints them: they are the handles opened demo
+// documents are held by, on neither tab. The interim collapse-by-name that
+// lived here (keep the liveliest job per plan, so 140 cards became 7) is GONE
+// - it existed only because the tab was built from job rows, and nothing
+// builds it from job rows any more.
+const PROJ_TABS = ["demo", "mine"];
+function projIsDemo(row) { return !!(row && row.demo); }
+function projTabRows(rows, tab) {
+  const want = tab === "demo";
+  return (rows || []).filter(r => projIsDemo(r) === want);
+}
+
+// ---- THE DEMO CARDS --------------------------------------------------------
+// One card per manifest plan. `pages` may be null (the server prints it when
+// it is cheaply known), and `available` false is a plan whose PDF is not on
+// this box - which the card says in words rather than erroring or vanishing.
+//
+// THE RULE, said on every card and once under the controls: a demo opens
+// UNDETECTED. Opening one sweeps whatever the last run left behind, so the
+// visitor presses Detect and watches the engine work. A demo that opened
+// instantly because somebody detected it months ago would be a staged demo.
+const PROJ_DEMO_RULE =
+  "Demo plans open fresh, every time: opening one clears the previous run, "
+  + "so you press Detect and watch the engine work on it. Nothing here is "
+  + "pre-detected.";
+function projDemoAvailable(plan) { return !!(plan && plan.available); }
+// the card's second line. No "detected" count, ever - the honest answer is
+// always none, and printing "0 detected" would read as a failure rather than
+// as the point.
+function projDemoMeta(plan) {
+  if (!projDemoAvailable(plan)) return "not on this server";
+  const n = plan && plan.pages;
+  const p = Number.isInteger(n) && n > 0
+    ? n + " page" + (n === 1 ? "" : "s") + " · " : "";
+  return p + "opens undetected";
+}
+// ...and what an unavailable card says under its name. Honest degradation:
+// the plan is still listed, because it IS one of ours - this box just does
+// not have the drawing.
+function projDemoWhy(plan) {
+  return "This box does not have the PDF for this plan, so it cannot be "
+    + "opened here. A server gets the demo library by running seed-demo.sh "
+    + "against it.";
+}
+// What this tab's rows are CALLED, for the reach line. Two tabs over one
+// grid means the same sentence has to describe two populations, and calling
+// a demo plan "a plan on this server" is how that sentence starts lying.
+function projTabNoun(tab) {
+  return tab === "demo"
+    ? { one: "demo plan", many: "demo plans" }
+    : { one: "project", many: "projects" };
+}
+// Which tab to land on, given what is actually here. A visitor with nothing
+// of their own must not meet an empty page when there are demos to open; a
+// user with work in progress must not have to click past a demo tab to reach
+// it. So: your own projects win when you have any, demos otherwise.
+//
+// demoCount now comes from the MANIFEST (/api/demo-plans), because the demo
+// tab is no longer built from job rows. Omitting it falls back to counting
+// demo-flagged rows, which is what every caller did before the manifest
+// existed and is what the pure tests still exercise.
+function projDefaultTab(rows, demoCount) {
+  const mine = projTabRows(rows, "mine").length;
+  if (mine) return "mine";
+  const demos = Number.isInteger(demoCount)
+    ? demoCount : projTabRows(rows, "demo").length;
+  return demos ? "demo" : "mine";
+}
+// The tab's own label count. Demo rows are never capped by the server, so
+// the demo count is exact; "Your projects" can be showing the newest 200 of
+// more, and then says so rather than printing a number that is not the total.
+function projTabCount(loaded, total) {
+  if (!total) return "";
+  return total > loaded ? String(loaded) + " of " + total : String(total);
+}
+// What the empty "Your projects" tab says on a box where nobody has uploaded
+// anything yet. It is the first thing a new account sees, so it says the one
+// action that works and where else there is something to look at.
+function projEmptyMine(demoCount) {
+  const start = "Nothing here yet — every plan you upload lands on this tab. "
+    + "Use + New project, or drop a PDF anywhere on this window.";
+  return demoCount
+    ? start + " Nothing to bid on yet? Open one of the " + demoCount
+      + " demo plans to see what a finished takeoff looks like."
+    : start;
+}
+// ...and what the Demo tab says when the demo files are NOT on this box.
+// A hosted box gets the plan library by running seed-demo.sh; until then this
+// tab has to say that, because an empty tab reads as "this product has no
+// demos" rather than "this server was never seeded".
+function projEmptyDemo(expected, present, missing) {
+  if (!expected)
+    return "This server has no demo set configured (demo-plans.json is "
+      + "missing or empty), so there is nothing to show here. Your own "
+      + "plans are on the other tab.";
+  const head = "None of the " + expected + " demo plans are on this server "
+    + "yet. They are files, not fixtures: a box gets them by running "
+    + "seed-demo.sh against it, which uploads and pre-detects each one.";
+  const some = present + " of " + expected + " demo plans are on this "
+    + "server; the rest have not been uploaded to it yet.";
+  const names = (missing || []).length
+    ? " Missing: " + missing.join(", ") + "." : "";
+  return (present ? some : head) + names;
+}
+// the header line under the H1: silent below the cap, explicit above it
+function projCountLine(shown, total) {
+  if (!shown) return "";
+  return total > shown ? "showing " + shown + " of " + total : String(shown);
+}
+
+// ---- search + sort, both over the rows the SERVER ACTUALLY SENT ------------
+// /api/projects returns `projects: out[:200]` with `total` = the true count.
+// So the browser never holds more than 200 rows and a filter box can only
+// ever reach those 200. Saying "search 420 plans" over a 200-row array would
+// be the worst kind of lie this app can tell - "no match" would read as "not
+// on this server" for the 220 rows that were never sent. Every function
+// below is therefore explicit about `loaded` vs `total`.
+
+// case- and whitespace-insensitive substring on the plan name. Multi-word
+// queries match when EVERY word appears somewhere in the name, so
+// "oncor grading" finds "Oncor Cloudcrest ... Grading Plan" - a plain
+// substring test would not.
+function projMatches(row, q) {
+  const words = String(q == null ? "" : q).toLowerCase().split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return true;
+  const hay = String((row && row.name) || "").toLowerCase();
+  return words.every(w => hay.includes(w));
+}
+function projFilter(rows, q) {
+  return (rows || []).filter(r => projMatches(r, q));
+}
+
+// Sort modes offered by #pvSort. Every mode is TOTAL (it falls back to
+// last-activity, then to name) so the grid order is deterministic and two
+// equal rows never swap between renders.
+const PROJ_SORTS = ["when", "name", "pages", "detected"];
+function projSort(rows, mode) {
+  const byName = (a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""),
+                                       undefined, { sensitivity: "base" })
+    || String(a.name || "").localeCompare(String(b.name || ""));
+  const byWhen = (a, b) => (b.when || 0) - (a.when || 0) || byName(a, b);
+  const cmp = {
+    when: byWhen,
+    name: (a, b) => byName(a, b) || byWhen(a, b),
+    pages: (a, b) => (b.pages || 0) - (a.pages || 0) || byWhen(a, b),
+    detected: (a, b) => (b.detected || 0) - (a.detected || 0) || byWhen(a, b),
+  }[PROJ_SORTS.includes(mode) ? mode : "when"];
+  return [...(rows || [])].sort(cmp);
+}
+
+// The reach line under the controls. This is the sentence that keeps the
+// search box honest, so it always names BOTH numbers when they differ.
+//   loaded  = rows this browser holds FOR THE ACTIVE TAB (<= the 200 cap)
+//   total   = rows of that tab's kind that exist on the server
+//   matched = rows the current query kept
+//   q       = the query ("" when the box is empty)
+//   noun    = what this tab's rows are called, {one, many}. Optional, and
+//             defaulting to plan/plans - the wording before there were tabs.
+//             It is not decoration: with two tabs over one grid, "All 8
+//             plans on this server" said on the Demo tab of a box holding 12
+//             is a false sentence, and this line exists to not say those.
+const PROJ_NOUN = { one: "plan", many: "plans" };
+function projReachLine(matched, loaded, total, q, noun) {
+  const n = noun && noun.one && noun.many ? noun : PROJ_NOUN;
+  const capped = total > loaded;
+  const query = String(q == null ? "" : q).trim();
+  if (!query) {
+    if (!loaded) return "";
+    return capped
+      ? "Newest " + loaded + " of " + total + " " + n.many
+        + " — search and sort reach "
+        + "these " + loaded + ", not the other " + (total - loaded) + "."
+      : "All " + loaded + " " + (loaded === 1 ? n.one : n.many)
+        + " on this server — search and sort reach all of them.";
+  }
+  const head = matched + " of " + loaded + " match “" + query + "”";
+  return capped
+    ? head + " — searched the newest " + loaded + " of " + total
+      + " " + n.many + "; the other " + (total - loaded)
+      + " were never sent to this "
+      + "browser, so a " + n.one + " missing here may still be on the server."
+    : head + " — searched all " + loaded + " "
+      + (loaded === 1 ? n.one : n.many) + " on this server.";
+}
+
+// ---- MULTI-SELECT + BULK DELETE -------------------------------------------
+// The registry carries real duplicates - 15 rows for Oncor Cloudcrest, 14 for
+// Belle Farms Structural, all from a job-reuse bug that is now fixed - and
+// clearing them one ⋯-menu at a time is 29 confirms. This is the layer that
+// makes it one.
+//
+// THE SELECTION MODEL - the decision, stated.
+//
+//   pvSel is a Set of JOB_ID strings and nothing else. It is deliberately NOT
+//   state.multiSel: that set holds chain_ids on the canvas, and the two
+//   universes share no id space, no lifetime and no action. What they DO
+//   share is the gesture (Ctrl/Cmd+click toggles, Esc clears) and the shape
+//   of the toolkit - toggle / resolve / split / count / one scope sentence -
+//   so one idea still means one thing everywhere.
+//
+//   Membership is stored as ids and RESOLVED against the rows on screen at
+//   every use (pvSelResolve). A row that was deleted, filtered out by the
+//   search box or dropped by a refetch simply stops resolving; nothing here
+//   ever holds a stale copy of a row and then acts on it. That is the same
+//   derive-don't-store rule msWholeFamilies keeps, for the same reason.
+//
+//   TWO DIFFERENT ELIGIBILITIES, and conflating them is the bug this design
+//   exists to avoid:
+//     * pvSelectable(row) - may it be PICKED. Demo rows never are (see below).
+//     * row.deletable     - may the ACCOUNT delete it. The server decides,
+//                           per row, and a selection may legitimately hold
+//                           rows that fail this. They are excluded from the
+//                           action and COUNTED OUT LOUD, never silently
+//                           dropped and never silently failed.
+
+// A demo row is not selectable, on any tab, ever. The demo corpus is the
+// thing every visitor lands on, and DELETE /api/job refuses an owner-less row
+// to anyone who is not staff anyway - so a selection layer over demo cards
+// could only ever build a set whose action was a row of 403s. Gated on the
+// ROW's own server-sent flag rather than on which tab is showing, so it holds
+// even if the tab split is rewritten underneath it.
+function pvSelectable(row) {
+  return !!(row && row.job_id) && !projIsDemo(row);
+}
+
+// Ctrl/Cmd+click a card. Returns "added" | "removed" | "blocked".
+// "blocked" is a demo row: the caller says why rather than doing nothing.
+function pvSelToggle(sel, row) {
+  if (!pvSelectable(row)) return "blocked";
+  if (sel.has(row.job_id)) { sel.delete(row.job_id); return "removed"; }
+  sel.add(row.job_id);
+  return "added";
+}
+
+// Shift+click a card: the contiguous run from the anchor to it, IN THE ORDER
+// THE OPERATOR IS LOOKING AT (the sorted, filtered rows pvPaint drew), not in
+// registry order. Range always ADDS - it never removes - because a shift
+// range that could clear rows off the top of a grid is how an operator loses
+// a selection they cannot see the end of. Demo rows inside the span are
+// skipped and counted, not silently swallowed.
+// Returns { added, spanned, blocked }; a missing anchor or target spans 0.
+function pvSelRange(sel, rows, anchorId, toId) {
+  const list = rows || [];
+  const i = list.findIndex(r => r && r.job_id === anchorId);
+  const j = list.findIndex(r => r && r.job_id === toId);
+  if (i < 0 || j < 0) return { added: 0, spanned: 0, blocked: 0 };
+  const lo = Math.min(i, j), hi = Math.max(i, j);
+  let added = 0, blocked = 0;
+  for (let k = lo; k <= hi; k++) {
+    const r = list[k];
+    if (!pvSelectable(r)) { blocked++; continue; }
+    if (!sel.has(r.job_id)) { sel.add(r.job_id); added++; }
+  }
+  return { added, spanned: hi - lo + 1, blocked };
+}
+
+// The rows every action resolves to: selected ids that are still present,
+// in the order given (so a bulk action walks the grid the way it is drawn,
+// deterministically, rather than in Set-insertion order - the same
+// order-pinning the accept loops keep).
+function pvSelResolve(sel, rows) {
+  return (rows || []).filter(r => r && sel.has(r.job_id));
+}
+
+// Self-prune: the ids still backed by a row anywhere in `rows`. Called after
+// every refetch so a deleted project cannot linger in the set and inflate
+// the next confirm's count. `rows` here is the WHOLE cached list, not the
+// filtered view - a row hidden by the search box still exists.
+function pvSelPrune(sel, rows) {
+  const live = new Set((rows || []).map(r => r && r.job_id));
+  const out = new Set();
+  for (const id of sel) if (live.has(id)) out.add(id);
+  return out;
+}
+
+// Split a resolved selection into what the action will touch and what it
+// will not. `go` is what gets deleted; `blocked` is what the account may not
+// delete and which the confirm must therefore name a count for.
+function pvSelSplit(rows) {
+  const go = [], blocked = [];
+  for (const r of rows || []) (r.deletable ? go : blocked).push(r);
+  return { go, blocked };
+}
+
+// The aggregate arithmetic behind the confirm. Every number the single-row
+// confirm states, summed: projects, pages, pages already detected, approved
+// exports. `names` is display order, so "the first few" the confirm prints
+// are the first few on screen.
+function pvBulkStats(rows) {
+  const list = rows || [];
+  let pages = 0, detected = 0, approved = 0;
+  for (const r of list) {
+    pages += r.pages || 0;
+    // a stale extra result can push detected past pages; the card's meta line
+    // already reads that as "all detected", so the confirm must not print a
+    // detected count larger than the page count it is quoted against
+    detected += Math.min(r.detected || 0, r.pages || 0);
+    approved += r.approved || 0;
+  }
+  return { projects: list.length, pages, detected, approved,
+           names: list.map(r => r.name) };
+}
+
+// The selection bar's readout, in the shape msScopeText set: what is
+// selected, and - separately - what the action will actually touch.
+function pvBulkScopeLine(stats, blockedN) {
+  const p = stats.projects === 1 ? "1 project" : stats.projects + " projects";
+  const g = stats.pages === 1 ? "1 page" : stats.pages + " pages";
+  const d = stats.detected + " detected";
+  const a = stats.approved ? " · " + stats.approved + " approved" : "";
+  const b = blockedN ? " · " + blockedN + " not yours to delete" : "";
+  return p + " · " + g + " · " + d + a + b;
+}
+
+// How many names to print in the confirm before "…and N more". Enough that
+// an operator recognises a wrong pick; few enough that the dialog still fits.
+const PV_CONFIRM_NAMES = 5;
+
+// THE CONFIRM. One builder for one project and for forty, so there is one
+// deletion vocabulary rather than two: called with a single row it returns
+// the EXACT sentence pvRemove has always shown (pinned by the test), and
+// pvRemove now calls this rather than keeping its own copy.
+//
+// `go` is what will be deleted, `blocked` what the account may not. Both come
+// straight out of pvSelSplit, so the dialog can never disagree with the loop
+// that follows it about which rows are in scope.
+//
+// NO UNDO IS OFFERED OR IMPLIED. This is server-side permanent deletion, not
+// a canvas edit: there is no captureUndo behind it and the closing line says
+// so in the words the single delete already used.
+function pvBulkConfirm(go, blocked) {
+  const rows = go || [], out = blocked || [];
+  if (!rows.length) return "";
+  const s = pvBulkStats(rows);
+  const tail = out.length
+    ? LF + LF + out.length + " selected project"
+      + (out.length === 1 ? " is" : "s are") + " not yours to delete — "
+      + (out.length === 1 ? "it stays" : "they stay")
+      + " on this server, untouched."
+    : "";
+  if (rows.length === 1) {
+    // WORD FOR WORD what the ⋯ menu has always asked. Do not reflow this.
+    const r = rows[0];
+    return "Remove \"" + r.name + "\" from this server?" + LF + LF
+      + "This permanently deletes the uploaded PDF and everything detected "
+      + "from it — " + r.detected + " of " + r.pages + " page(s) already "
+      + "detected, plus any approved exports and report for it." + tail
+      + LF + LF + "This cannot be undone.";
+  }
+  const shown = s.names.slice(0, PV_CONFIRM_NAMES);
+  const more = s.names.length - shown.length;
+  const list = shown.map(n => "  • " + n).join(LF)
+    + (more ? LF + "  …and " + more + " more." : "");
+  return "Remove " + s.projects + " projects from this server?" + LF + LF
+    + "This permanently deletes " + s.projects + " uploaded PDFs and "
+    + "everything detected from them — " + s.detected + " of " + s.pages
+    + " page(s) already detected, plus any approved exports and reports for "
+    + "them"
+    + (s.approved ? " (" + s.approved + " approved page(s))" : "")
+    + "." + LF + LF + list + tail
+    + LF + LF + "This cannot be undone.";
+}
+
+// WHAT ACTUALLY HAPPENED. Forty projects is forty requests and some of them
+// will fail, so the outcome is reported from the RESULTS, never assumed from
+// the intent. `results` is [{ name, ok, why }] in the order they were tried.
+// Reasons are grouped with counts because forty rows of "unknown job" is not
+// a report. Nothing here says "removed" about a request that errored.
+//
+// `stillSel` is how many rows are ACTUALLY still selected when this sentence
+// is written - counted after the refetch has pruned the set, never assumed.
+// It has to be passed in because the two numbers come apart in the most
+// ordinary failure there is: a row that failed with "unknown job" is a row
+// the server no longer has, so the refetch drops it and it CANNOT be retried.
+// Measured live on 2026-09-01: the first cut of this function hard-coded the
+// retry clause and printed "the one that failed is still selected" over an
+// empty set. Saying a false thing about a permanent deletion is the exact
+// failure this whole feature is supposed to not have.
+function pvBulkReport(results, stillSel) {
+  const list = results || [];
+  const ok = list.filter(r => r.ok);
+  const bad = list.filter(r => !r.ok);
+  if (!list.length) return "nothing to remove";
+  if (!bad.length)
+    return "removed " + ok.length + " project"
+      + (ok.length === 1 ? "" : "s") + " — permanently";
+  const by = new Map();
+  for (const r of bad) {
+    const w = r.why || "no reason given";
+    by.set(w, (by.get(w) || 0) + 1);
+  }
+  const why = [...by.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .map(([w, n]) => (n > 1 ? n + " × " : "") + w)
+    .join("; ");
+  const head = ok.length
+    ? "removed " + ok.length + " of " + list.length + " — "
+    : "removed none of " + list.length + " — ";
+  const n = Math.max(0, stillSel | 0);
+  const tail = n
+    ? "; " + (n === 1 ? "the one still selected" : "the " + n
+              + " still selected") + " can be retried in one click"
+    : "; " + (bad.length === 1 ? "it is" : "they are")
+      + " no longer in the list, so there is nothing here to retry";
+  return head + bad.length + " failed (" + why + ")" + tail + ".";
+}
+
+// DUPLICATE SPOTTING, never duplicate GUESSING. The registry holds 15 rows
+// named "Oncor Cloudcrest Substation Civils - 20251212.pdf"; the operator
+// wants to see that on the card. This counts rows sharing a name AND a page
+// count - the pair, because two different revisions can share a filename and
+// are not the same document - and returns a per-job_id note for the ones in a
+// group larger than one. It NEVER selects anything: a similarity is evidence
+// for the operator, not a decision taken on their behalf.
+function pvDupeNotes(rows) {
+  const groups = new Map();
+  for (const r of rows || []) {
+    if (!pvSelectable(r)) continue;
+    const k = String(r.name) + "\x00" + (r.pages || 0);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  const notes = new Map();
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    // newest first, so "1 of 15" is the liveliest copy and the operator can
+    // keep that one and take the rest
+    const ord = [...g].sort((a, b) => (b.when || 0) - (a.when || 0));
+    ord.forEach((r, i) => notes.set(r.job_id,
+      (i + 1) + " of " + g.length + " with this name and page count"));
+  }
+  return notes;
+}
+// PROJECTS-PURE-END ----------------------------------------------------------
+
+function pvIsOpen() { return !$("projectsView").hidden; }
+
+function showProjects(on) {
+  on = !!on;
+  if (on === pvIsOpen()) {
+    if (on) loadProjects();          // already there: refresh the cards
+    return;
+  }
+  toolsMenuClose();                  // a floating menu belongs to no view
+  // the two full-screen views are exclusive: opening Projects closes the
+  // pricing settings page (svHide is the raw toggle - no history juggling,
+  // no buffer resync; the workbench stays hidden under pv-open anyway)
+  if (on && svIsOpen()) svHide();
+  $("projectsView").hidden = !on;
+  document.querySelector("main").classList.toggle("pv-open", on);
+  $("pvBack").hidden = !(on && state.job);
+  if (on) {
+    loadProjects();
+  } else {
+    // the canvas buffer went 0x0 while its column was display:none; resync
+    // it, and refit ONLY if the fit was never computed (image finished
+    // loading while hidden) - the operator's zoom and pan must survive the
+    // round trip untouched
+    syncBuffer();
+    if (state.img && !(state.view.k > 0)) { fitView(); draw(); }
+  }
+  try {
+    history.replaceState(null, "",
+      on ? "#projects" : location.pathname + location.search);
+  } catch (err) { /* the hash is a convenience, never a requirement */ }
+}
+
+async function loadProjects() {
+  let d = null;
+  // Two independent lists, fetched together: the job rows behind "Your
+  // projects", and the DEMO MANIFEST behind "Demo plans". They are separate
+  // routes because they are separate things - one is what this box happens to
+  // hold, the other is what we ship - and a box with no demo files still gets
+  // every demo card.
+  const demoP = fetch("/api/demo-plans")
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  try {
+    const r = await fetch("/api/projects");
+    if (r.ok) d = await r.json();
+  } catch (e) { /* reported below */ }
+  const dm = await demoP;
+  if (!pvIsOpen()) return;           // the operator moved on mid-fetch
+  // A demo list that failed to load leaves the tab EMPTY rather than
+  // pretending the manifest is short: projEmptyDemo(0,...) says "no demo set
+  // configured", which is the truthful reading of "the server did not answer
+  // about its demo set".
+  pvDemoPlans = dm && Array.isArray(dm.plans) ? dm.plans : [];
+  pvDemoInfo = {
+    expected: dm && typeof dm.expected === "number" ? dm.expected : 0,
+    present: dm && typeof dm.present === "number" ? dm.present : 0,
+    missing: dm && Array.isArray(dm.missing) ? dm.missing : [],
+  };
+  if (!d || !Array.isArray(d.projects)) {
+    $("pvGrid").innerHTML = "";
+    $("pvCount").textContent = "";
+    const empty = $("pvEmpty");
+    empty.hidden = false;
+    empty.textContent = "Could not load the plan list — reload to retry.";
+    return;
+  }
+  renderProjects(d);
+}
+
+// The rows the server sent, cached so search and sort are pure re-renders
+// and never a refetch. pvTotal is the server's TRUE count, which may be
+// larger than pvRows.length whenever the 200 cap bit.
+let pvRows = [];
+let pvTotal = 0;
+// THE DEMO TAB'S OWN POPULATION, from /api/demo-plans - the manifest, not
+// this box's job rows. One entry per plan we ship, always, each carrying
+// whether this box actually has the drawing.
+let pvDemoPlans = [];
+// The server's account of the demo SET (not of the rows): how many
+// demo-plans.json names, how many are actually here, which are not. This is
+// what lets the Demo tab say "this server was never seeded" instead of
+// drawing nothing. Defaults describe a server that never answered.
+let pvDemoInfo = { expected: 0, present: 0, missing: [] };
+// Which tab is showing. Null until the first render picks one from the data;
+// after that the operator's choice sticks across refreshes of the same view.
+let pvTab = null;
+
+function renderProjects(d) {
+  pvRows = d.projects || [];
+  pvTotal = typeof d.total === "number" ? d.total : pvRows.length;
+  // pvDemoInfo is filled by loadProjects() from /api/demo-plans, which is the
+  // manifest. /api/projects still reports its own view of the demo set's
+  // health and it is deliberately NOT read here: that block counts JOB ROWS
+  // present on this box, and the tab is now the manifest.
+  // These rows carry the same name/pages/detected/deletable the recents route
+  // returns, so folding them in keeps the header's Remove button correct for
+  // a document that is older than the newest 60 /api/recent sends.
+  for (const r of pvRows) if (!RECENT_META[r.job_id]) RECENT_META[r.job_id] = r;
+  if (!pvTab || !PROJ_TABS.includes(pvTab))
+    pvTab = projDefaultTab(pvRows, pvDemoPlans.length);
+  pvPaint();
+}
+
+// filter -> sort -> cards, WITHIN the active tab. Called by renderProjects,
+// by the two controls and by the tabs.
+function pvPaint() {
+  const grid = $("pvGrid"), empty = $("pvEmpty");
+  const q = $("pvSearch") ? $("pvSearch").value : "";
+  const mode = $("pvSort") ? $("pvSort").value : "when";
+  if (!pvTab) pvTab = projDefaultTab(pvRows, pvDemoPlans.length);
+
+  // Per-tab populations, and they come from two DIFFERENT sources now.
+  //   demo  = the manifest (/api/demo-plans). Complete by construction, so
+  //           loaded === total and the reach line can say "all of them"
+  //           without qualification.
+  //   mine  = /api/projects rows the server did not flag demo:true. Those can
+  //           be the newest 200 of more, which is what the cap disclosure in
+  //           the reach line is for.
+  // Demo-flagged JOB rows are on neither: they are the handles opened demo
+  // documents are held by, and a visitor has no business seeing them.
+  const demoRows = pvDemoPlans;
+  const mineRows = projTabRows(pvRows, "mine");
+  const demoTotal = demoRows.length;
+  const mineTotal = Math.max(mineRows.length,
+                             pvTotal - projTabRows(pvRows, "demo").length);
+
+  const rows = pvTab === "demo" ? demoRows : mineRows;
+  const total = pvTab === "demo" ? demoTotal : mineTotal;
+  const shown = projSort(projFilter(rows, q), mode);
+
+  pvSyncTabs(demoRows.length, demoTotal, mineRows.length, mineTotal);
+
+  // #pvCount sits beside the H1 "Projects" and so keeps describing the WHOLE
+  // page, unchanged: what the server sent against what it holds. Quoting the
+  // active tab's number there would read as the page's total and be wrong on
+  // both tabs. The per-tab numbers are on the tabs, and #pvReach - the line
+  // the search box is judged by - is per tab, in that tab's own noun.
+  $("pvCount").textContent = projCountLine(pvRows.length, pvTotal);
+  if ($("pvReach")) {
+    // The demo tab's line carries THE RULE as well as the reach: this is the
+    // one place a visitor is looking right before they click a demo card, so
+    // it is where "these open fresh, nothing is pre-detected" belongs.
+    const reach = projReachLine(shown.length, rows.length, total, q,
+                                projTabNoun(pvTab));
+    $("pvReach").textContent = pvTab === "demo"
+      ? (reach ? reach + " " + PROJ_DEMO_RULE : PROJ_DEMO_RULE)
+      : reach;
+  }
+
+  grid.innerHTML = "";
+  if (!rows.length) {
+    // An empty TAB is not an empty server, and the two tabs are empty for
+    // completely different reasons - one has had nothing uploaded, the other
+    // has not been seeded. Say which.
+    empty.hidden = false;
+    empty.textContent = pvTab === "demo"
+      ? projEmptyDemo(pvDemoInfo.expected, pvDemoInfo.present,
+                      pvDemoInfo.missing)
+      : projEmptyMine(demoTotal);
+    return;
+  }
+  if (!shown.length) {
+    // a query that matched nothing is NOT "no plans" - say which it is, and
+    // say the cap out loud so the operator knows where else to look
+    empty.hidden = false;
+    empty.textContent = total > rows.length
+      ? "No plan among the newest " + rows.length + " matches “"
+        + String(q).trim() + "”. " + (total - rows.length)
+        + " older plan(s) on this server were not sent to this browser and "
+        + "were not searched."
+      : "No plan matches “" + String(q).trim() + "”"
+        + (pvTab === "demo" ? " among the demo plans." : ".");
+    return;
+  }
+  empty.hidden = true;
+  if (pvTab === "demo") {
+    for (const p of shown) grid.appendChild(pvDemoCard(p));
+    return;
+  }
+  // The "shared demo" badge is redundant on a tab whose heading already says
+  // Demo plans, so it stays for the mixed "Your projects" list only - where a
+  // row can still be shared without being one of ours (anything registered
+  // before logins were switched on).
+  const badge = projShowsSharedBadge(pvRows);
+  const nowS = Date.now() / 1000;
+  for (const r of shown) grid.appendChild(pvCard(r, badge, nowS));
+  // The selection layer repaints itself over the cards that were just built
+  // (marks, duplicate notes, the bar). Deliberately the LAST thing here and
+  // deliberately ARGUMENT-FREE: it re-reads the grid it is looking at, so
+  // this stays a single line that cannot go out of step with whatever
+  // pvPaint decided to draw. See MULTI-SELECT + BULK DELETE.
+  pvSelSync();
+}
+
+// A DEMO CARD. Built from a manifest entry, not from a job row, so it carries
+// no detected count, no approved count and no "last activity" - a demo has no
+// history a visitor should care about, and printing one would be advertising
+// the very cache the open is about to throw away.
+function pvDemoCard(p) {
+  const here = projDemoAvailable(p);
+  const card = document.createElement("div");
+  card.className = "pv-card" + (here ? "" : " pv-away");
+  if (here) {
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.title = "Open " + p.name + " — fresh, undetected";
+  } else {
+    card.setAttribute("aria-disabled", "true");
+    card.title = p.name + " — not on this server";
+  }
+
+  const thumb = document.createElement("div");
+  thumb.className = "pv-thumb";
+  const ph = document.createElement("span");
+  ph.className = "pv-ph";
+  ph.textContent = here ? "page " + ((p.page || 0) + 1) : "not on this server";
+  thumb.appendChild(ph);
+  if (here) {
+    // A page RASTER, and only ever that. It is a picture of the PDF - the
+    // same thing any reader would draw - so rendering it ahead of time says
+    // nothing about what the engine found. A cached DETECTION is the one
+    // that would be dishonest, and that is exactly what the open sweeps.
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = url("/api/demo/" + encodeURIComponent(p.name) + "/thumb");
+    // a render that fails leaves the placeholder rather than a broken icon
+    img.onerror = () => img.remove();
+    img.onload = () => ph.remove();
+    thumb.appendChild(img);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "pv-name";
+  name.textContent = p.name;
+  name.title = p.name;
+  const meta = document.createElement("div");
+  meta.className = "pv-meta";
+  meta.textContent = projDemoMeta(p);
+  card.append(name, meta);
+
+  const shows = document.createElement("div");
+  shows.className = "pv-shows";
+  shows.textContent = here ? (p.shows || "") : projDemoWhy(p);
+  shows.title = shows.textContent;      // the clamp hides line 4+; hover has it
+  card.appendChild(shows);
+
+  if (here) {
+    card.onclick = () => pvOpenDemo(p);
+    card.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pvOpenDemo(p); }
+    };
+  }
+  return card;
+}
+
+// The tab strip: selected state, live counts, ARIA. Counts come from the
+// same two numbers pvPaint just used, so a tab label can never disagree with
+// the reach line under it.
+function pvSyncTabs(demoLoaded, demoTotal, mineLoaded, mineTotal) {
+  const set = (btn, on) => {
+    if (!btn) return;
+    btn.classList.toggle("pv-tab-on", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+    btn.tabIndex = on ? 0 : -1;
+  };
+  set($("pvTabDemo"), pvTab === "demo");
+  set($("pvTabMine"), pvTab === "mine");
+  if ($("pvTabDemoN"))
+    $("pvTabDemoN").textContent = projTabCount(demoLoaded, demoTotal);
+  if ($("pvTabMineN"))
+    $("pvTabMineN").textContent = projTabCount(mineLoaded, mineTotal);
+}
+
+// Switching tabs is a re-render over rows the browser already holds - no
+// refetch, and the search box is cleared because a query typed against one
+// population reads as a broken filter against the other.
+function pvSetTab(tab) {
+  if (!PROJ_TABS.includes(tab) || tab === pvTab) return;
+  pvTab = tab;
+  if ($("pvSearch")) $("pvSearch").value = "";
+  pvCloseMenus();
+  pvPaint();
+}
+
+function pvCard(r, sharedBadge, nowS) {
+  const card = document.createElement("div");
+  card.className = "pv-card" + (r.job_id === state.job ? " pv-current" : "");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.title = "Open " + r.name;
+  // THE ONE HOOK THE SELECTION LAYER NEEDS (see MULTI-SELECT + BULK DELETE).
+  // Set only on a SELECTABLE row, so the presence of data-job IS the
+  // predicate - a demo card carries none and can never be picked, whatever
+  // the tab split does. Everything else about selection (the click gesture,
+  // the .pv-picked class, the bar) is done by pvSelSync/pvSelClick over this
+  // attribute, so this function stays otherwise untouched.
+  if (pvSelectable(r)) card.dataset.job = r.job_id;
+
+  const thumb = document.createElement("div");
+  thumb.className = "pv-thumb";
+  if (r.has_thumb) {
+    // the page strip's own 28-dpi cache - the server serves the PNG it
+    // already has, so a page of cards costs no fresh renders
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    // r.thumb_page is the page the server CONFIRMED it has a 28-dpi cache
+    // for - page 0 for everything except a demo, which pictures its own
+    // sheet. Falling back to 0 keeps an older server (which sends no
+    // thumb_page) drawing exactly what it drew before.
+    img.src = url(`/api/job/${r.job_id}/page/`
+      + (Number.isInteger(r.thumb_page) ? r.thumb_page : 0) + `/image?dpi=28`);
+    thumb.appendChild(img);
+  } else {
+    // never rendered on this box: requesting the image would rasterize a
+    // page just to draw a card, so a quiet placeholder instead
+    const ph = document.createElement("span");
+    ph.className = "pv-ph";
+    ph.textContent = "not opened yet";
+    thumb.appendChild(ph);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "pv-name";
+  name.textContent = r.name;
+  name.title = r.name;
+  const meta = document.createElement("div");
+  meta.className = "pv-meta";
+  meta.textContent = projMetaLine(r.pages, r.detected, r.approved || 0);
+  const when = document.createElement("div");
+  when.className = "pv-when";
+  when.textContent = "last activity " + projAgo(nowS, r.when);
+  card.append(name, meta, when);
+
+  // WHAT THIS DEMO SHOWS. One line, written per plan in demo-plans.json and
+  // served with the row, because "Oncor Cloudcrest Substation Civils -
+  // 20251212.pdf_safe.pdf" tells a visitor nothing about why it is worth
+  // opening. Only demo rows carry one; the filename is left to speak for a
+  // plan the operator uploaded themselves, since they know what it is.
+  if (r.demo && r.demo_note) {
+    const shows = document.createElement("div");
+    shows.className = "pv-shows";
+    shows.textContent = r.demo_note;
+    shows.title = r.demo_note;      // the clamp hides line 4+; hover has it
+    card.appendChild(shows);
+  }
+
+  if (sharedBadge && r.shared) {
+    const b = document.createElement("span");
+    b.className = "pv-badge";
+    b.textContent = "shared demo";
+    card.appendChild(b);
+  }
+  if (r.deletable) {
+    // Delete is server-wide and permanent, so it does NOT sit armed on the
+    // face of every card any more (CRITIQUE fix 10). It lives one click in,
+    // behind a ⋯ that appears on hover/focus. pvRemove() and its confirm
+    // wording are untouched - same flow, same words, one more deliberate
+    // click in front of it.
+    const more = document.createElement("button");
+    more.className = "pv-more";
+    more.setAttribute("aria-haspopup", "true");
+    more.setAttribute("aria-expanded", "false");
+    more.title = "More actions for “" + r.name + "”";
+    more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+      + '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/>'
+      + '<circle cx="19" cy="12" r="1.4"/></svg>';
+
+    const menu = document.createElement("div");
+    menu.className = "pv-menu";
+    menu.hidden = true;
+    const del = document.createElement("button");
+    del.className = "pv-menu-del";
+    del.textContent = "Delete from this server…";
+    del.title = "Remove “" + r.name + "” from this server — "
+      + "the uploaded PDF and everything detected from it";
+    del.onclick = (e) => { e.stopPropagation(); pvCloseMenus(); pvRemove(r); };
+    const hint = document.createElement("div");
+    hint.className = "pv-menu-hint";
+    hint.textContent = "asks to confirm; removes the plan and everything "
+      + "detected from it, for every seat";
+    menu.append(del, hint);
+
+    more.onclick = (e) => {
+      e.stopPropagation();
+      const wasOpen = !menu.hidden;
+      pvCloseMenus();
+      if (wasOpen) return;
+      menu.hidden = false;
+      card.classList.add("pv-menu-open");
+      more.setAttribute("aria-expanded", "true");
+    };
+    // the card is itself a button; a click inside the popover must not open
+    // the plan underneath it
+    menu.onclick = (e) => e.stopPropagation();
+    card.append(more, menu);
+  }
+  card.onclick = () => pvOpenJob(r);
+  card.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pvOpenJob(r); }
+  };
+  return card;
+}
+
+async function pvOpenJob(r) {
+  if (r.job_id === state.job) {
+    // already the open document: a plain view switch, so in-progress review
+    // work (splits, exclusions, zoom) survives instead of being reloaded away
+    showProjects(false);
+    return;
+  }
+  setStatus("opening…", "busy");
+  try {
+    // the same route and the same applyOpened() the recents <select> uses
+    const resp = await fetch(`/api/job/${r.job_id}/open`);
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return setStatus(e.detail || `could not open (${resp.status})`, "err");
+    }
+    // applyOpened leaves the projects view. A demo opens on the sheet its
+    // card describes; anything else opens on page 0, as it always has.
+    applyOpened(await resp.json(),
+                r.demo ? r.demo_page : undefined);
+  } catch (e) {
+    setStatus("could not open — the server did not answer", "err");
+  }
+}
+
+// OPENING A DEMO IS ALWAYS FRESH.
+//
+// Not the /api/job/{id}/open route the cards above use - that one hands back
+// whatever this box already detected, which for a demo is a takeoff computed
+// weeks ago replayed as though it were live. POST /api/demo/{name}/open
+// sweeps everything derived from the PDF first and hands back an UNDETECTED
+// document, so the visitor presses Detect and watches the engine work.
+//
+// The registry does not grow: the server keeps exactly ONE job per demo plan
+// and reuses it (server.py _demo_job), so a second visitor opening the same
+// demo gets that job swept back to cold rather than a new row. Three opens
+// leave the registry exactly the size they found it.
+async function pvOpenDemo(p) {
+  if (!projDemoAvailable(p)) return;
+  setStatus("opening a fresh copy…", "busy");
+  let j;
+  try {
+    const resp = await fetch("/api/demo/" + encodeURIComponent(p.name) + "/open",
+                             { method: "POST" });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return setStatus(e.detail || `could not open (${resp.status})`, "err");
+    }
+    j = await resp.json();
+  } catch (e) {
+    return setStatus("could not open — the server did not answer", "err");
+  }
+  // The SERVER's cache is now cold; this BROWSER's is not. Labels, prices,
+  // ticks and scale picks are keyed on the document NAME and survive a reload
+  // in localStorage, so without this the second visitor on the same machine
+  // would meet the first one's labels already on screen over a detection that
+  // no longer exists - the screen disagreeing with the record. Same keys the
+  // Saved-work menu's "Reset this document" clears, and for the same reason.
+  // Shared prices and trade assignments are NOT doc-scoped and are left alone.
+  try {
+    for (const k of memKeysFor(j.name)) store.removeItem(k);
+  } catch (e) { /* a browser with no storage has nothing to forget */ }
+  applyOpened(j, Number.isInteger(j.demo_page) ? j.demo_page : 0);
+  // AFTER applyOpened, which writes "<n> pages" over whatever was there. Say
+  // what actually happened rather than assuming it: a sweep that half-failed
+  // and then replayed a cached sheet in front of a client is the whole reason
+  // this route reports its counts. The DURABLE statement is the header chip,
+  // which reads "not detected" until the visitor presses Detect; this line is
+  // the momentary one, and the kinds poll replaces it when it lands.
+  const f = j.fresh || {};
+  if (f.failed)
+    setStatus("opened, but the server could not clear " + f.failed
+      + " cached file(s) — a page may still show an earlier result", "err");
+  else
+    setStatus("fresh copy of " + j.name + " — nothing detected yet; press Detect");
+}
+
+// ONE server call for one deletion, used by the ⋯ menu AND by the bulk
+// action, so there is exactly one deletion path. Never throws and never
+// reports success for a request that errored: it RETURNS what happened,
+// { ok, name, why }, and the caller decides what to say. That return shape is
+// what makes pvBulkReport's "deleted N, failed M" arithmetic honest.
+async function pvDeleteOne(r) {
+  try {
+    const resp = await fetch("/api/job/" + r.job_id, { method: "DELETE" });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return { ok: false, name: r.name,
+               why: e.detail || ("HTTP " + resp.status) };
+    }
+    const j = await resp.json();
+    return { ok: true, name: j.name || r.name };
+  } catch (e) {
+    return { ok: false, name: r.name, why: "the server did not answer" };
+  }
+}
+
+async function pvRemove(r) {
+  // the same server flow and the same words as the header's "Remove from
+  // server" button - one deletion vocabulary, not two. The sentence now comes
+  // from pvBulkConfirm([r], []), which returns it verbatim (pinned by
+  // tests/test_projects_bulk_delete.js) so single and bulk cannot drift.
+  if (!confirm(pvBulkConfirm([r], []))) return;
+  setStatus("removing…", "busy");
+  const res = await pvDeleteOne(r);
+  if (!res.ok) return setStatus("could not remove it (" + res.why + ")", "err");
+  if (r.job_id === state.job) {
+    // the document on the hidden workbench no longer exists; a clean
+    // reload is the only honest state (same choice as #docRemoveBtn)
+    location.reload();
+    return;
+  }
+  pvSel.delete(r.job_id);            // it can no longer be bulk-acted on
+  setStatus("removed " + res.name);
+  loadProjects();
+  loadRecent();                      // the recents <select> lists it too
+}
+
+// close every open card overflow popover (only ever one, but the DOM is the
+// source of truth here rather than a variable that can go stale on a
+// re-render that throws the cards away)
+function pvCloseMenus() {
+  for (const m of document.querySelectorAll(".pv-menu")) m.hidden = true;
+  for (const c of document.querySelectorAll(".pv-menu-open"))
+    c.classList.remove("pv-menu-open");
+  for (const b of document.querySelectorAll(".pv-more"))
+    b.setAttribute("aria-expanded", "false");
+}
+// a click anywhere else dismisses it - same grammar as the Tools menu. The
+// pvIsOpen guard keeps this listener off the workbench's click path entirely:
+// the cards stay in the DOM while the view is hidden, and there is no reason
+// to walk them on every click on the sheet.
+addEventListener("click", (e) => {
+  if (!pvIsOpen()) return;
+  if (!e.target.closest || !e.target.closest(".pv-more, .pv-menu"))
+    pvCloseMenus();
+});
+
+// =============== MULTI-SELECT + BULK DELETE ================================
+// An ADDITIVE layer over the cards. It owns three things and touches nothing
+// else on this page: the set, the click gesture, and the bar. The card itself
+// is built by pvCard exactly as before and still opens on a plain click -
+// that is the primary action and it must never become a two-step.
+//
+// THE GESTURE, in the vocabulary this app already speaks:
+//   plain click        open the project            (unchanged)
+//   Ctrl/Cmd + click   toggle this card in the set (same as a style row,
+//                                                   same as a canvas line)
+//   Shift + click      add the run from the anchor to here, in the order
+//                      the grid is drawn
+//   Esc                clear the selection (and only then leave the page)
+//
+// The set is pvSel, a Set of job_ids. The pure half - toggle, range, resolve,
+// prune, split, the aggregate arithmetic and every sentence - is in the
+// PROJECTS-PURE block above and is tested under node with no DOM.
+let pvSel = new Set();
+// The last card picked with Ctrl/Cmd, which is what a Shift range measures
+// from. Null until something is picked, and cleared with the selection.
+let pvSelAnchor = null;
+
+// The rows on screen, in the order they are drawn. Read back out of the grid
+// rather than remembered from pvPaint: the DOM is what the operator is
+// looking at, so a Shift range over it is a range over what they can see,
+// and this layer cannot fall out of step with a re-render it did not cause.
+function pvVisibleRows() {
+  const grid = $("pvGrid");
+  if (!grid) return [];
+  const byId = new Map(pvRows.map(r => [r.job_id, r]));
+  const out = [];
+  for (const el of grid.querySelectorAll("[data-job]")) {
+    const r = byId.get(el.dataset.job);
+    if (r) out.push(r);
+  }
+  return out;
+}
+
+// Repaint the layer over whatever cards are currently in the grid: the picked
+// marks, the duplicate notes, and the bar. Argument-free and idempotent, so
+// pvPaint calls it once at its tail and every action here calls it again.
+function pvSelSync() {
+  // self-prune first: a project deleted (here or in another tab) must not
+  // linger in the set and inflate the next confirm's count
+  pvSel = pvSelPrune(pvSel, pvRows);
+  if (pvSelAnchor && !pvSel.has(pvSelAnchor)) pvSelAnchor = null;
+  const grid = $("pvGrid");
+  if (grid) {
+    const notes = pvDupeNotes(pvRows);
+    for (const el of grid.querySelectorAll("[data-job]")) {
+      const on = pvSel.has(el.dataset.job);
+      el.classList.toggle("pv-picked", on);
+      el.setAttribute("aria-pressed", on ? "true" : "false");
+      // the duplicate note: evidence for the operator, never a decision.
+      // Written into a node of our own so pvCard's markup is untouched.
+      const note = notes.get(el.dataset.job);
+      let n = el.querySelector(".pv-dupe");
+      if (note && !n) {
+        n = document.createElement("div");
+        n.className = "pv-dupe";
+        el.appendChild(n);
+      }
+      if (n) {
+        n.textContent = note || "";
+        n.hidden = !note;
+        n.title = note
+          ? "This server holds " + note.split(" of ")[1].split(" ")[0]
+            + " registry rows with this exact name and page count. They are "
+            + "usually leftovers from re-opening the same PDF. Nothing is "
+            + "selected for you — pick the ones you want gone."
+          : "";
+      }
+    }
+  }
+  pvRenderSelBar();
+}
+
+// THE BAR. Hidden while nothing is picked; it is the only new chrome on the
+// page and it never covers a card (it sits in the flow, above the grid).
+function pvRenderSelBar() {
+  const bar = $("pvSelBar");
+  if (!bar) return;
+  const picked = pvSelResolve(pvSel, pvRows);
+  if (!picked.length) { bar.hidden = true; bar.textContent = ""; return; }
+  const { go, blocked } = pvSelSplit(picked);
+  bar.hidden = false;
+  bar.textContent = "";
+
+  const txt = document.createElement("span");
+  txt.className = "pv-sel-txt";
+  txt.textContent = pvBulkScopeLine(pvBulkStats(picked), blocked.length);
+  txt.title = "What is selected, and exactly what Delete would touch." + LF + LF
+    + (blocked.length
+        ? blocked.length + " of these " + picked.length + " are not yours to "
+          + "delete (the server decides that per project). They are counted "
+          + "here so you can see them, and they are EXCLUDED from the "
+          + "delete — it would remove " + go.length + "."
+        : "All " + picked.length + " are yours to delete.")
+    + LF + LF
+    + "Ctrl/Cmd+click a card to add or remove it, Shift+click for a run. "
+    + "A plain click still opens the project. Esc clears.";
+
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = go.length === picked.length
+    ? "Delete " + go.length + "…"
+    : "Delete " + go.length + " of " + picked.length + "…";
+  del.disabled = !go.length;
+  del.title = go.length
+    ? "Permanently remove " + go.length + " project"
+      + (go.length === 1 ? "" : "s") + " from this server — the uploaded "
+      + "PDFs and everything detected from them. You are asked to confirm, "
+      + "with the full count and the names, first. This CANNOT be undone: it "
+      + "is a server-side deletion, not a canvas edit, and Ctrl+Z does not "
+      + "reach it."
+    : "None of the selected projects are yours to delete, so there is "
+      + "nothing this button could remove.";
+  del.onclick = pvBulkDelete;
+
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = "Clear";
+  clr.title = "Drop the selection — nothing is deleted and nothing on this "
+    + "server changes. Esc does the same.";
+  clr.onclick = () => pvSelClear(true);
+
+  bar.append(txt, del, clr);
+}
+
+function pvSelClear(say) {
+  const n = pvSel.size;
+  pvSel = new Set();
+  pvSelAnchor = null;
+  pvSelSync();
+  if (say)
+    setStatus(n
+      ? "selection cleared (" + n + " project" + (n === 1 ? "" : "s")
+        + " dropped from the set) — nothing was deleted"
+      : "selection cleared — nothing changed");
+}
+
+// The click gesture. Registered in the CAPTURE phase on #pvGrid so a modified
+// click is intercepted BEFORE pvCard's own onclick can open the project: a
+// Ctrl+click that also opened the plan would be the worst of both.
+$("pvGrid").addEventListener("click", (e) => {
+  const mod = e.ctrlKey || e.metaKey, range = e.shiftKey;
+  if (!mod && !range) return;               // plain click: open, as always
+  const card = e.target.closest && e.target.closest(".pv-card");
+  if (!card) return;
+  e.preventDefault();
+  e.stopPropagation();
+  // A card with no data-job is a card this layer refuses to select. Today
+  // that is exactly the demo cards, and saying so beats a dead gesture.
+  if (!card.dataset.job) {
+    setStatus("demo plans cannot be selected or bulk-deleted — they are the "
+      + "shared set every visitor lands on. Your own projects are on the "
+      + "other tab.", "warn");
+    return;
+  }
+  const rows = pvVisibleRows();
+  const row = rows.find(r => r.job_id === card.dataset.job);
+  if (!row) return;
+  if (range && pvSelAnchor) {
+    const g = pvSelRange(pvSel, rows, pvSelAnchor, row.job_id);
+    pvSelSync();
+    setStatus(g.added
+      ? "added " + g.added + " project" + (g.added === 1 ? "" : "s")
+        + " (" + g.spanned + " card" + (g.spanned === 1 ? "" : "s")
+        + " spanned) — " + pvSel.size + " selected"
+      : "those " + g.spanned + " were already selected — "
+        + pvSel.size + " selected");
+    return;
+  }
+  // Shift with no anchor behaves as a plain toggle and SETS the anchor, so
+  // the second Shift+click does what the operator expected the first to.
+  const what = pvSelToggle(pvSel, row);
+  if (what === "blocked") return;           // unreachable: gated on data-job
+  pvSelAnchor = what === "added" ? row.job_id : null;
+  pvSelSync();
+  setStatus(pvSel.size
+    ? what + " “" + row.name + "” — " + pvSel.size + " selected. "
+      + "Shift+click another card to take the run between them."
+    : "selection cleared — nothing was deleted");
+}, true);
+
+// THE BULK ACTION.
+//
+// Five things this is careful about, all of them learned from the brief:
+//   1. It deletes ONLY rows the server said are deletable. The rest are
+//      counted in the confirm and left alone - never silently dropped, never
+//      silently 403'd.
+//   2. The confirm is pvBulkConfirm: the aggregate of everything the single
+//      delete states, plus the first few names, plus "cannot be undone".
+//   3. Partial failure is the NORMAL case at 40 requests. Every result is
+//      recorded and the report is built from the results, so a request that
+//      errored is never reported as removed.
+//   4. Failures STAY SELECTED. pvSel is rebuilt from exactly the rows that
+//      did not delete, so a retry is one click on the same button.
+//   5. No undo, and nothing that implies one.
+//
+// Requests go one at a time, on purpose. Forty parallel DELETEs against a
+// registry behind a single lock is how you find out the hard way that
+// _save_registry() is not reentrant; serial is slower and boring and cannot
+// interleave two rewrites of the same file.
+let pvBulkBusy = false;
+async function pvBulkDelete() {
+  if (pvBulkBusy) return;
+  const picked = pvSelResolve(pvSel, pvRows);
+  const { go, blocked } = pvSelSplit(picked);
+  if (!go.length) {
+    setStatus(blocked.length
+      ? "none of the " + blocked.length + " selected project(s) are yours to "
+        + "delete — nothing was removed"
+      : "nothing selected", "warn");
+    return;
+  }
+  if (!confirm(pvBulkConfirm(go, blocked))) return;
+  pvBulkBusy = true;
+  const results = [];
+  const failed = new Set(blocked.map(r => r.job_id));  // never silently drop
+  // The blocked rows are IN `failed` because they stay selected, but they are
+  // not retryable - retrying a row the account may not delete just fails
+  // again. So the retry count is measured over this set only: rows that were
+  // actually attempted and actually errored.
+  const retryable = new Set();
+  let hitOpenDoc = false;
+  try {
+    for (let i = 0; i < go.length; i++) {
+      const r = go[i];
+      setStatus("removing " + (i + 1) + " of " + go.length + "…", "busy");
+      const res = await pvDeleteOne(r);      // eslint-disable-line no-await-in-loop
+      results.push(res);
+      if (res.ok) { if (r.job_id === state.job) hitOpenDoc = true; }
+      else { failed.add(r.job_id); retryable.add(r.job_id); }
+    }
+  } finally {
+    pvBulkBusy = false;
+  }
+  // the set now holds exactly what did NOT go: the blocked rows plus the
+  // failures, so the same button retries them and the readout stays true
+  pvSel = failed;
+  pvSelAnchor = null;
+  if (hitOpenDoc) {
+    // the document on the hidden workbench no longer exists - same choice
+    // pvRemove and #docRemoveBtn make. Say what happened before reloading,
+    // because the reload throws the status line away.
+    // 0 still selected: the reload below clears the set outright, so this
+    // sentence must not offer a retry that the reload is about to remove
+    alert(pvBulkReport(results, 0) + LF + LF
+      + "One of them was the document you had open, so this page will "
+      + "reload.");
+    location.reload();
+    return;
+  }
+  const anyBad = results.some(r => !r.ok);
+  // REPORT AFTER THE REFETCH, not before. loadProjects repaints and re-syncs
+  // this bar, and that sync prunes from the set every row the server no
+  // longer has - so only here is pvSel.size the true count of what is still
+  // selected and therefore still retryable. Reporting first would let the
+  // sentence promise a retry the prune had already taken away.
+  await loadProjects();
+  loadRecent();                              // the recents <select> lists them
+  let canRetry = 0;
+  for (const id of retryable) if (pvSel.has(id)) canRetry++;
+  setStatus(pvBulkReport(results, canRetry), anyBad ? "err" : "");
+}
+// =============== end MULTI-SELECT + BULK DELETE ============================
+
+// ---- search + sort controls ------------------------------------------------
+// Both are pure re-renders over the cached rows: no refetch, no server round
+// trip, and nothing about the open document is touched.
+$("pvSearch").addEventListener("input", pvPaint);
+// Esc inside the box clears it before the view-level Esc can leave the page
+$("pvSearch").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !$("pvSearch").value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  $("pvSearch").value = "";
+  pvPaint();
+});
+$("pvSort").addEventListener("change", pvPaint);
+
+// ---- the tabs --------------------------------------------------------------
+// Same grammar as the two controls above: a pure re-render over cached rows.
+// Arrow keys walk the strip because it is a role="tablist" and that is what a
+// screen reader user will try; the roving tabIndex is set by pvSyncTabs.
+$("pvTabDemo").onclick = () => pvSetTab("demo");
+$("pvTabMine").onclick = () => pvSetTab("mine");
+for (const id of ["pvTabDemo", "pvTabMine"]) {
+  $(id).addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const other = id === "pvTabDemo" ? "pvTabMine" : "pvTabDemo";
+    pvSetTab(other === "pvTabDemo" ? "demo" : "mine");
+    $(other).focus();
+  });
+}
+
+$("projectsLink").onclick = (e) => {
+  e.preventDefault();
+  if (pvIsOpen()) {
+    if (state.job) showProjects(false);   // second click toggles back
+    return;
+  }
+  showProjects(true);
+};
+$("pvBack").onclick = () => showProjects(false);
+
+// While the projects view is up the workbench is INVISIBLE, so none of its
+// single-key shortcuts may reach it - Delete on a forgotten selection would
+// remove a line nobody can see. Capture + stopImmediatePropagation, the same
+// pattern as the tool handlers; browser defaults are left alone. Esc is
+// repurposed: with a sheet open it returns to the sheet.
+const PV_SWALLOW_KEYS = new Set(["m", "f", "l", "s", "x", "e", "d", "i",
+                                 "j", "r", "?", "Delete", "Backspace"]);
+addEventListener("keydown", (e) => {
+  if (!pvIsOpen() || typing()) return;
+  if (e.key === "Escape") {
+    e.stopImmediatePropagation();
+    // A live card selection is the innermost thing Esc can dismiss, so it
+    // goes first - leaving the page with a selection still armed behind you
+    // is how the next visit deletes the wrong forty. Same precedence Esc
+    // already keeps on the sheet (clear the selection, then the tool).
+    if (pvSel.size) { e.preventDefault(); pvSelClear(true); return; }
+    if (state.job) { e.preventDefault(); showProjects(false); }
+    return;
+  }
+  if (PV_SWALLOW_KEYS.has(e.key) || PV_SWALLOW_KEYS.has(e.key.toLowerCase())
+      // undo/redo must not act on the hidden sheet while Projects is up
+      || ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")))
+    e.stopImmediatePropagation();
+}, true);
+
+// ---------- boot: land on Projects when nothing is open --------------------
+if (!state.job) showProjects(true);
+// =============== end MY PROJECTS ===========================================
+
+// =============== SETTINGS: one page, five groups ===========================
+// The second page in the projects shell. Same pure view toggle (one class on
+// <main>, CSS hides the three workbench columns), same capture-phase key
+// swallow, Esc returns to the sheet (or to Projects when no job is open).
+//
+// It began as the price book alone; the price book is now the PRICING group
+// and four groups joined it. What each group owns, and - the whole question
+// an operator has about a settings page - WHERE ITS VALUE LIVES:
+//
+//   COMPANY     the server (POST /api/branding -> branding.json, keyed on
+//               the signed-in account). The only server-stored setting here,
+//               because the only thing it changes is a PDF the server
+//               generates. See takeoff_engine/branding.py.
+//   APPEARANCE  localStorage `core-theme` - the SAME key #themeBtn writes.
+//               coreThemeSet() is the single writer; the masthead button and
+//               the radio group both call it and both re-read it, so the two
+//               controls cannot fork.
+//   SCOPE       localStorage `core-scope-default` - a STANDING DEFAULT, not
+//               a filter. See the long note above scopeDefaultTrades().
+//   PRICING     unchanged: priceKey() through `store` (tk1:: localStorage),
+//               the same store the itemized panel writes. Prices do NOT sync
+//               to the server; Export CSV is the backup path.
+//   ACCOUNT     nothing is stored. It reports /api/me and hosts the two
+//               MOVED nodes #whoami / #signOutBtn, still owned by
+//               loadWhoami().
+
+// SETTINGS-PURE-BEGIN --------------------------------------------------------
+// Pure book/CSV logic: no DOM, no state.*, no fetch, so
+// tests/test_settings_view.js can run it under node.
+
+// ---- the standing trade default, and how a document inherits it ------------
+// THE DISTINCTION THIS FUNCTION EXISTS TO PROTECT. There are two scopes and
+// they are not the same thing:
+//
+//   the PER-DOCUMENT declaration  the "Whose scope is this?" panel on the
+//     sheet. "On THIS job I am doing wet utilities." It is evidence-backed,
+//     it narrows this document's style list, and it is what the takeoff was
+//     built under. It is the winner, always.
+//   the STANDING DEFAULT          this Settings group. "I am a wet-utilities
+//     sub." It filters nothing by itself. Its only job is to be the value a
+//     document that has never been declared on STARTS with, so the operator
+//     stops retyping their own trade on every job.
+//
+// The failure mode to avoid is the default reaching back and overriding a
+// declaration already made. That is why the test is on the PRESENCE OF THE
+// RECORD, not on whether its trade list is empty: `scopeSetTrades([])` -
+// "show everything" - writes a record with an empty list, and an empty list
+// that was CHOSEN must not be re-seeded on the next render. A record that
+// exists always wins, blank included.
+//
+// `raw` is the stored JSON string for this document (null when absent).
+function scopeSeed(raw, defaults, valid) {
+  const okTrade = t => !valid || Object.prototype.hasOwnProperty.call(valid, t);
+  const def = (defaults || []).filter(okTrade);
+  if (raw == null || raw === "")
+    return { trades: def.slice(), showAside: false,
+             from: def.length ? "default" : "none" };
+  let r = null;
+  try { r = JSON.parse(raw); } catch (e) { r = null; }
+  if (!r || typeof r !== "object")
+    return { trades: def.slice(), showAside: false,
+             from: def.length ? "default" : "none" };
+  return { trades: (Array.isArray(r.trades) ? r.trades : []).filter(okTrade),
+           showAside: !!r.showAside, from: "document" };
+}
+
+// ---- the theme store, read as a value rather than poked at -----------------
+// Two callers (the masthead button, the Settings radios) and exactly one
+// stored key. Anything that is not "light" is dark, so a corrupt or absent
+// value lands on the shipped default instead of on undefined.
+const CORE_THEMES = ["dark", "light"];
+function themeNormalize(v) { return v === "light" ? "light" : "dark"; }
+function themeToggleNext(v) { return themeNormalize(v) === "light" ? "dark" : "light"; }
+
+// ---- what the Account section is allowed to claim --------------------------
+// Four states, and the two that are NOT "signed in as somebody" are the ones
+// that matter: a laptop dev box has no accounts at all, and an empty Account
+// panel there would read as "signed out" - which is the opposite of the
+// truth, because with no accounts configured there is no gate. Say so.
+//
+// `me` is the /api/me payload, or null when the fetch failed.
+function svAccountState(me) {
+  if (!me)
+    return { kind: "unreachable", controls: false,
+      text: "Could not reach the server to ask who you are. Nothing about "
+        + "this session has changed - reload the page to try again.",
+      foot: "" };
+  if (!me.accounts)
+    return { kind: "noaccounts", controls: false,
+      text: "No accounts are configured on this server, so there is nobody "
+        + "to be signed in as, and nothing to sign out of.",
+      foot: "This box is running in single-password mode: anyone who can "
+        + "reach this address and knows the site password can open every "
+        + "document on it. That is the intended setup for a laptop or a "
+        + "demo box, and the wrong one for a server holding more than one "
+        + "client's plans." };
+  if (!me.user)
+    return { kind: "anon", controls: false,
+      text: "Accounts are configured on this server, but this session is "
+        + "not signed in as one of them.",
+      foot: "Reload the page to be sent to the sign-in screen." };
+  return { kind: "user", controls: true,
+    text: "Signed in as " + me.user + (me.staff ? " (staff)" : "") + ".",
+    foot: me.staff
+      ? "This account is marked STAFF. It can open, export and delete EVERY "
+        + "document on this server, not only its own, and it sees the "
+        + "feedback CSV. That is a deliberate power for our own team; it is "
+        + "not what a client account should have."
+      : "This account sees its own documents plus the shared set. Signing "
+        + "out ends the session in this browser only - it does not sign out "
+        + "any other machine you are signed in on." };
+}
+
+// ---- where a Settings hash lands -------------------------------------------
+// `#pricing` is the hash this page has been writing since it was the price
+// book, so it must keep working: it now names the PRICING GROUP of the same
+// page rather than the whole page. Returns the element id to scroll to, or
+// "" for "open Settings, stay at the top", or null for "not ours".
+function svHashTarget(hash) {
+  const h = String(hash || "").replace(/^#/, "").toLowerCase();
+  if (h === "settings") return "";
+  const g = { company: "svGroupCompany", appearance: "svGroupAppearance",
+              theme: "svGroupAppearance", scope: "svGroupScope",
+              pricing: "svGroupPricing", account: "svGroupAccount" };
+  return Object.prototype.hasOwnProperty.call(g, h) ? g[h] : null;
+}
+
+// Merge the labels that hold a stored price with the labels on the open
+// document's itemized takeoff. Dedupe by exact label (the store's own key
+// is the exact label), keep the live row's unit when known, sort
+// case-insensitively so "silt fence" files beside "Silt Fence".
+function svBookRows(storedLabels, liveItems) {
+  const m = new Map();
+  for (const it of liveItems || []) {
+    if (!it || !it.label) continue;
+    const got = m.get(it.label);
+    if (!got) m.set(it.label, { label: it.label, unit: it.unit || "",
+                                inUse: true, stored: false });
+    else if (!got.unit && it.unit) got.unit = it.unit;
+  }
+  for (const lab of storedLabels || []) {
+    const got = m.get(lab);
+    if (got) got.stored = true;
+    else m.set(lab, { label: lab, unit: "", inUse: false, stored: true });
+  }
+  return [...m.values()].sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
+    || a.label.localeCompare(b.label));
+}
+
+// One CSV line -> fields, honouring quotes and "" escapes. Returns null on
+// an unclosed quote so the caller can report the line rather than guess.
+// (A quoted field spanning multiple lines lands here too - reported, never
+// silently dropped.)
+function svSplitCsvLine(line) {
+  const out = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += c;
+    } else if (c === '"' && cur === "") inQ = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  if (inQ) return null;
+  out.push(cur);
+  return out;
+}
+
+function svCsvField(s) {
+  s = String(s == null ? "" : s);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// rows: [{label, unit, price}] -> CSV text with the label,unit,price header.
+function svSerializeCSV(rows) {
+  const lines = ["label,unit,price"];
+  for (const r of rows)
+    lines.push([svCsvField(r.label), svCsvField(r.unit || ""),
+                String(r.price)].join(","));
+  return lines.join("\n") + "\n";
+}
+
+// CSV text -> { rows: [{label, unit, price}], bad: [{line, text, reason}] }.
+// Accepts label,unit,price or label,price; a leading header row is skipped.
+// Price accepts $ and thousands separators; anything else is listed as
+// unparseable with its 1-based line number - never silently dropped.
+function svParseCSV(text) {
+  const rows = [], bad = [];
+  const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
+  let first = true;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
+    const f = svSplitCsvLine(raw);
+    if (f === null) {
+      bad.push({ line: i + 1, text: raw, reason: "unclosed quote" });
+      first = false;
+      continue;
+    }
+    if (first) {
+      first = false;
+      const head = f.map(x => x.trim().toLowerCase()).join(",");
+      if (head === "label,unit,price" || head === "label,price") continue;
+    }
+    let label, unit, priceRaw;
+    if (f.length === 3) { label = f[0]; unit = f[1]; priceRaw = f[2]; }
+    else if (f.length === 2) { label = f[0]; unit = ""; priceRaw = f[1]; }
+    else {
+      bad.push({ line: i + 1, text: raw,
+                 reason: "expected label,unit,price (" + f.length + " field"
+                   + (f.length === 1 ? "" : "s") + ")" });
+      continue;
+    }
+    label = label.trim(); unit = unit.trim();
+    const cleaned = String(priceRaw).trim().replace(/^\$/, "").replace(/,/g, "");
+    const price = /^\d*\.?\d+$/.test(cleaned) ? parseFloat(cleaned) : NaN;
+    if (!label)
+      bad.push({ line: i + 1, text: raw, reason: "empty label" });
+    else if (!(isFinite(price) && price > 0))
+      bad.push({ line: i + 1, text: raw, reason: "price is not a number above 0" });
+    else rows.push({ label, unit, price });
+  }
+  return { rows, bad };
+}
+
+// Dry-run plan: which parsed rows ADD a label and which OVERWRITE one that
+// already holds a stored price. Duplicate labels inside the file collapse
+// to the last occurrence (the row that would win anyway), so the counts
+// shown are the counts applied.
+function svImportPlan(rows, storedLabels) {
+  const stored = new Set(storedLabels || []);
+  const byLabel = new Map();
+  for (const r of rows || []) byLabel.set(r.label, r);
+  const adds = [], overwrites = [];
+  for (const r of byLabel.values())
+    (stored.has(r.label) ? overwrites : adds).push(r);
+  return { adds, overwrites };
+}
+
+function svPreviewLine(nNew, nOver, nBad) {
+  return nNew + " new, " + nOver + " overwrite, " + nBad + " unparseable"
+    + (nBad ? " — shown below" : "");
+}
+// SETTINGS-PURE-END ----------------------------------------------------------
+
+function svIsOpen() { return !$("settingsView").hidden; }
+
+// raw toggle used by showProjects for view exclusivity: hide, nothing else
+function svHide() {
+  $("settingsView").hidden = true;
+  document.querySelector("main").classList.remove("sv-open");
+}
+
+function showSettings(on) {
+  on = !!on;
+  if (on === svIsOpen()) {
+    if (on) renderSettings();        // already there: refresh the book
+    return;
+  }
+  toolsMenuClose();                  // a floating menu belongs to no view
+  if (on && pvIsOpen()) showProjects(false);   // the two views are exclusive
+  $("settingsView").hidden = !on;
+  document.querySelector("main").classList.toggle("sv-open", on);
+  $("svBack").hidden = !(on && state.job);
+  if (on) {
+    // A failed branding read is retried on the next OPEN, not on every
+    // render: renderSettings() also runs on every price keystroke, and a
+    // dead endpoint must not become a fetch per character.
+    if (svBrand === null) svBrand = undefined;
+    renderSettings();
+  } else {
+    // same resync discipline as showProjects: the canvas buffer went 0x0
+    // while its column was display:none, and the operator's zoom must
+    // survive the round trip
+    syncBuffer();
+    if (state.img && !(state.view.k > 0)) { fitView(); draw(); }
+    // prices typed on the settings page must show on the itemized panel
+    // the moment it is back on screen - renderItemized re-reads the store
+    if (state.result) renderItemized();
+  }
+  try {
+    // `#settings` since the page became the whole settings page; `#pricing`
+    // still ARRIVES here (svHashTarget) and now lands on the price book, so
+    // an old bookmark is not broken by the rename.
+    history.replaceState(null, "",
+      on ? "#settings" : location.pathname + location.search);
+  } catch (err) { /* the hash is a convenience, never a requirement */ }
+}
+
+// labels that hold a stored price right now, from the SAME sessionMem the
+// store wrapper fronts - "price:" is priceKey()'s own prefix
+function svStoredPriceLabels() {
+  return [...sessionMem.keys()]
+    .filter(k => k.startsWith("price:"))
+    .map(k => k.slice("price:".length));
+}
+
+// the open document's itemized rows, label + unit, via the same
+// computeTakeoffRows() the itemized panel and the bid view render from
+function svLiveItems() {
+  if (!state.result) return [];
+  const t = computeTakeoffRows();
+  if (!t) return [];
+  const out = [];
+  for (const g of t.groups)
+    for (const it of g.items) out.push({ label: it.label, unit: it.unit });
+  return out;
+}
+
+function renderSettings() {
+  renderSvBrand();
+  renderSvTheme();
+  renderSvScope();
+  renderSvBook();
+  renderSvColors();
+  renderSvMaterials();
+  renderSvFoot();
+  renderSvAccount();
+}
+
+// ---------- COMPANY ---------------------------------------------------------
+// The only setting on this page that leaves the browser. Held here so the
+// inputs are not clobbered while the operator is typing: renderSettings runs
+// on every open and on every price edit, and re-filling a focused field from
+// the server would eat keystrokes.
+// THREE states, not two: `undefined` is "not asked yet", `null` is "asked
+// and the server did not answer". They read differently on the page, and
+// conflating them would print a failure message during a normal load.
+let svBrand;                 // last payload from /api/branding
+let svBrandDirty = false;    // the operator has typed since the last save
+
+async function loadSvBrand() {
+  try {
+    const r = await fetch("/api/branding");
+    svBrand = r.ok ? await r.json() : null;
+  } catch (e) { svBrand = null; }
+  svBrandDirty = false;
+  if (!$("settingsView").hidden) renderSvBrand();
+}
+
+function renderSvBrand() {
+  const note = $("svBrandNote"), co = $("svBrandCompany"),
+        ct = $("svBrandContact"), st = $("svBrandState");
+  if (!note) return;
+  if (svBrand === undefined) {
+    note.textContent = "Reading the company name from the server…";
+    co.disabled = ct.disabled = $("svBrandSave").disabled = true;
+    loadSvBrand();
+    return;
+  }
+  if (!svBrand) {
+    note.textContent = "Could not read the company name from the server. "
+      + "Nothing has been changed - leave this page and come back to try "
+      + "again. Any report generated meanwhile still carries whatever the "
+      + "server already had; this is a read that failed, not a reset.";
+    co.disabled = ct.disabled = $("svBrandSave").disabled = true;
+    return;
+  }
+  co.disabled = ct.disabled = $("svBrandSave").disabled = false;
+  // Never overwrite what is being typed.
+  if (!svBrandDirty && document.activeElement !== co && document.activeElement !== ct) {
+    co.value = svBrand.company || "";
+    ct.value = svBrand.contact || "";
+  }
+  // Two axes, and they are not the same question. `seat` is where a SAVE
+  // would land; `scope` is where the value being shown came from. They
+  // differ exactly once - a signed-in account that has never saved and is
+  // therefore reading the install default - and that is the case worth
+  // spelling out, because a name you did not type is about to go on your
+  // client's PDF. On a box with no accounts at all the two are the same
+  // thing, and saying "your account has not set one" there would name an
+  // account that does not exist.
+  const acct = svBrand.seat === "account";
+  const seat = acct
+    ? "your account on this server"
+    : "this server (no accounts are configured, so there is one shared brand)";
+  const where = svBrand.scope === "account" ? "set on your account"
+    : svBrand.scope === "install"
+      ? (acct ? "inherited from this server's own default, because your "
+                + "account has not set one"
+              : "set on this server")
+      : "not set";
+  note.innerHTML = "Stored on <b>the server</b>, not in this browser - it is "
+    + `${seat}, so every seat and every PDF agree. Currently <b>${where}</b>. `
+    + "Leave both boxes empty and the report prints exactly as it does today, "
+    + "with no letterhead at all.";
+  st.textContent = svBrandDirty ? "unsaved" : "";
+}
+
+$("svBrandCompany").oninput = $("svBrandContact").oninput = () => {
+  svBrandDirty = true;
+  $("svBrandState").textContent = "unsaved";
+};
+$("svBrandSave").onclick = async () => {
+  const body = { company: $("svBrandCompany").value,
+                 contact: $("svBrandContact").value };
+  $("svBrandSave").disabled = true;
+  $("svBrandState").textContent = "saving…";
+  try {
+    const r = await fetch("/api/branding", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    svBrand = await r.json();
+    svBrandDirty = false;
+    renderSvBrand();
+    setStatus(svBrand.company
+      ? "company saved — new report PDFs are stamped “" + svBrand.company + "”"
+      : "company cleared — new report PDFs carry no letterhead");
+  } catch (e) {
+    $("svBrandState").textContent = "not saved: " + e.message;
+    setStatus("the company name did not save — nothing on the server changed",
+              "err");
+  }
+  $("svBrandSave").disabled = false;
+};
+
+// ---------- APPEARANCE ------------------------------------------------------
+function renderSvTheme() {
+  const box = $("svThemeChoice");
+  if (!box) return;
+  box.innerHTML = "";
+  const cur = coreTheme();
+  const LABEL = { dark: ["Dark", "the working theme"],
+                  light: ["Paper", "closer to a printed sheet"] };
+  for (const t of CORE_THEMES) {
+    const lab = document.createElement("label");
+    lab.className = "sv-ch" + (cur === t ? " on" : "");
+    const rb = document.createElement("input");
+    rb.type = "radio"; rb.name = "svTheme"; rb.value = t;
+    rb.checked = cur === t;
+    // change, not click: this is the control, and it must also answer to a
+    // keyboard arrow inside the radio group
+    rb.onchange = () => { if (rb.checked) coreThemeSet(t); };
+    const txt = document.createElement("span");
+    txt.className = "sv-ch-t";
+    const nm = document.createElement("b");
+    nm.textContent = LABEL[t][0];
+    const ds = document.createElement("span");
+    ds.className = "sv-ch-d";
+    ds.textContent = LABEL[t][1];
+    txt.append(nm, ds);
+    lab.append(rb, txt);
+    box.appendChild(lab);
+  }
+}
+
+// ---------- SCOPE -----------------------------------------------------------
+function renderSvScope() {
+  const box = $("svScopeChips"), note = $("svScopeNote");
+  if (!box) return;
+  box.innerHTML = "";
+  const on = new Set(scopeDefaultTrades());
+  for (const tr of SCOPE_NAMES) {
+    const b = document.createElement("button");
+    b.className = "scope-chip" + (on.has(tr) ? " on" : "");
+    b.textContent = tr;
+    b.name = "sv-scope-" + tr;
+    b.setAttribute("aria-pressed", on.has(tr) ? "true" : "false");
+    b.title = "Tokens tested against the CAD layer: "
+      + ((SCOPE_TOKENS[tr].layer || []).join(", ") || "(none)")
+      + (SCOPE_TOKENS[tr].material.length
+        ? "\nTested against a schedule MATERIAL cell: "
+          + SCOPE_TOKENS[tr].material.join(", ") : "");
+    b.onclick = () => scopeSetDefaultTrades(
+      on.has(tr) ? [...on].filter(x => x !== tr) : [...on, tr]);
+    box.appendChild(b);
+  }
+  const n = on.size;
+  const doc = state.result ? scopeRec() : null;
+  // The distinction, in plain words, every time - not as a tooltip.
+  let s = "<b>This is a starting value, not a filter.</b> ";
+  s += n
+    ? `A document you have never declared a scope on will open counting for `
+      + `the ${n} trade${n === 1 ? "" : "s"} above. `
+    : "Nothing is picked, so a new document opens with nothing declared and "
+      + "nothing filtered - exactly as it does today. ";
+  s += "The declaration on a sheet&rsquo;s own <i>&ldquo;Whose scope is "
+    + "this?&rdquo;</i> panel is a different, stronger statement: it is what "
+    + "you are doing <b>on that job</b>, it is what the takeoff was built "
+    + "under, and it always wins. Once a document has one - including "
+    + "&ldquo;show everything&rdquo; - changing this default does not touch "
+    + "it. Nothing here ever deletes a row or changes a measured length.";
+  if (doc)
+    s += " <br><b>The open document:</b> "
+      + (doc.from === "document"
+        ? "has its own declaration ("
+          + (doc.trades.length ? doc.trades.join(", ") : "show everything")
+          + "), so this default is not affecting it."
+        : doc.trades.length
+          ? "has no declaration of its own and is currently seeded from this "
+            + "default (" + doc.trades.join(", ") + ")."
+          : "has no declaration of its own and nothing is declared here, so "
+            + "nothing is filtered.");
+  s += " Stored in this browser only (<code>core-scope-default</code> in "
+    + "localStorage); it is not sent to the server.";
+  note.innerHTML = s;
+}
+
+// ---------- ACCOUNT ---------------------------------------------------------
+// loadWhoami() owns #whoami and #signOutBtn and is the only thing that
+// touches them. This renders the SENTENCES around them, from the same
+// payload, via the pure svAccountState().
+// `svMe` is declared beside loadWhoami (see the note there) - it must exist
+// before boot calls loadWhoami, which is far above this block.
+function renderSvAccount() {
+  const note = $("svAccountNote");
+  if (!note) return;
+  const st = svAccountState(svMe);
+  note.textContent = st.text;
+  $("svAccountFoot").textContent = st.foot;
+  // The row holds the two moved nodes; with no account there is nothing in
+  // it and an empty bordered strip reads as a control that failed to load.
+  $("svAccountRow").hidden = !st.controls;
+}
+
+// ---- the colour convention book ------------------------------------------
+// The whole set of standing colour decisions, where the operator can see and
+// manage them - the owner's "on and on" made inspectable instead of scattered
+// across popovers on sheets he has closed.
+//
+// Rows are the union of (a) every convention stored and (b) every label on
+// the open document's itemized takeoff, exactly like the price book above, so
+// a name can be given its company colour before it is ever seen on a sheet.
+function renderSvColors() {
+  const box = $("svColorBox");
+  box.innerHTML = "";
+  const conv = new Map(colorConventions().map(c => [c.label, c.hex]));
+  const live = new Map();
+  for (const it of svLiveItems()) {
+    const k = (it.label || "").trim().toUpperCase();
+    if (k) live.set(k, it.label);
+  }
+  const labels = [...new Set([...conv.keys(), ...live.keys()])]
+    .sort((a, b) => a.localeCompare(b));
+  $("svColorNote").textContent = !labels.length
+    ? "No colour conventions yet and no document open — add one below, or "
+      + "set a colour from a line family's swatch on any sheet and tick "
+      + "“use this colour on every job”."
+    : conv.size + " convention(s) stored. A name listed here comes up in its "
+      + "colour on EVERY job. Precedence, strongest first: a colour you set "
+      + "on one line, then a colour you set on that family in that document, "
+      + "then this book, then the colour the detector measured — so a "
+      + "convention never overwrites a decision you made on a sheet.";
+  if (!labels.length) return;
+
+  const scroll = document.createElement("div");
+  scroll.className = "sv-book-scroll";
+  const table = document.createElement("table");
+  table.className = "sv-book-table";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const [h, cls] of [["label", ""], ["colour", ""], ["hex", ""],
+                          ["where", ""], ["", "sv-r"]]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (cls) th.className = cls;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const key of labels) {
+    const shown = live.get(key) || key;
+    const hex = conv.get(key) || null;
+    const tr = document.createElement("tr");
+
+    const lab = document.createElement("td");
+    lab.className = "sv-lab"; lab.textContent = shown; lab.title = shown;
+
+    const ctd = document.createElement("td");
+    // A row with NO convention must not wear a colour. `<input type="color">`
+    // has no empty state - it always renders SOME swatch - so an unset row
+    // showing a picker pre-loaded with the default red read as "everything is
+    // already red" (measured on this page: 11 of 13 rows). The unset row gets
+    // the same "set" affordance the price column uses instead, and the picker
+    // only appears once there is something to pick.
+    const commit = (val, el) => {
+      setColorConvention(key, val);
+      const near = colorNearReserved(val);
+      setStatus("“" + shown + "” is " + colorNorm(val)
+        + " on every job from now on"
+        + (near ? " — NOTE: close to " + near.name + ", " + near.why : ""));
+      renderSvColors();
+      if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+    };
+    if (hex) {
+      const pick = document.createElement("input");
+      pick.type = "color";
+      pick.className = "sv-colpick";
+      pick.name = "sv-color-" + key;
+      pick.setAttribute("aria-label", "colour for " + shown);
+      pick.value = hex;
+      pick.onchange = () => commit(pick.value, pick);
+      ctd.appendChild(pick);
+    } else {
+      const b = document.createElement("button");
+      b.className = "sv-colset";
+      b.textContent = "set";
+      b.title = "Pick the colour “" + shown + "” comes up in on every job.";
+      b.onclick = () => {
+        // swap in a real picker and open it, so it is one click, not two
+        const pick = document.createElement("input");
+        pick.type = "color";
+        pick.className = "sv-colpick";
+        pick.name = "sv-color-" + key;
+        pick.setAttribute("aria-label", "colour for " + shown);
+        pick.value = "#e03131";
+        pick.onchange = () => commit(pick.value, pick);
+        b.replaceWith(pick);
+        pick.click();
+      };
+      ctd.appendChild(b);
+    }
+
+    const htd = document.createElement("td");
+    htd.className = "sv-unit"; htd.textContent = hex || "—";
+
+    const where = document.createElement("td");
+    where.className = "sv-where" + (live.has(key) ? " sv-where-on" : "");
+    where.textContent = live.has(key)
+      ? (hex ? "on this sheet" : "on this sheet, no colour set")
+      : "stored only";
+
+    const xtd = document.createElement("td");
+    xtd.className = "sv-r";
+    const x = document.createElement("button");
+    x.className = "sv-x"; x.textContent = "×";
+    x.title = "Forget the colour convention for “" + shown + "”. "
+      + "Colours already set on a document are not touched.";
+    x.disabled = !hex;
+    x.onclick = () => {
+      clearColorConvention(key);
+      renderSvColors();
+      if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+    };
+    xtd.appendChild(x);
+
+    tr.append(lab, ctd, htd, where, xtd);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+
+  // the reserved-colour check, restated over the whole book: a convention set
+  // months ago on another sheet still has to be able to surprise nobody
+  const bad = [];
+  for (const [k, hex] of conv) {
+    const near = colorNearReserved(hex);
+    if (near) bad.push("“" + k + "” (" + hex + ") is close to "
+      + near.name + " — " + near.why);
+  }
+  const warn = $("svColorWarn");
+  warn.hidden = !bad.length;
+  warn.textContent = bad.length
+    ? "Heads up: " + bad.join("; ") + ". They still apply." : "";
+}
+
+$("svColorAdd").onclick = () => {
+  const label = $("svColorLabel").value.trim();
+  if (!label) return setStatus("give the convention a label first", "err");
+  if (!setColorConvention(label, $("svColorPick").value))
+    return setStatus("that is not a colour", "err");
+  $("svColorLabel").value = "";
+  const near = colorNearReserved($("svColorPick").value);
+  setStatus("“" + label + "” is " + colorNorm($("svColorPick").value)
+    + " on every job from now on"
+    + (near ? " — NOTE: close to " + near.name + ", " + near.why : ""));
+  renderSvColors();
+  if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+};
+
+function renderSvBook() {
+  const box = $("svBookTable");
+  box.innerHTML = "";
+  const live = svLiveItems();
+  const rows = svBookRows(svStoredPriceLabels(), live);
+  $("svBookNote").textContent = !rows.length
+    ? "No prices stored yet and no document open — add a line item below, "
+      + "import a CSV, or price rows on a sheet's itemized takeoff."
+    : rows.length + " label(s): every stored price plus every label on the "
+      + "open document's itemized takeoff. “on this sheet” = in the "
+      + "open takeoff; “stored only” = priced earlier, not on this "
+      + "sheet." + (live.length ? "" : " (No document open, so all rows are "
+      + "stored-only.)");
+  if (!rows.length) return;
+
+  // A real <table> inside its own scroller, so the head can be sticky and
+  // the rows can zebra (CRITIQUE fix 10). The ROWS are the same rows
+  // svBookRows() already returned and every write below is the same write
+  // as before - this is the frame, not the book.
+  //
+  // Two groups, and only two: "on this sheet" (r.inUse) and "stored only".
+  // The approved mock also split the on-sheet group into legend-named vs
+  // unnamed families. That split is NOT reproduced here on purpose: the
+  // price book only knows a label STRING, and the only way to guess which
+  // kind it is from a string is to sniff for a "(legend)" suffix - which
+  // would file a hand-typed trade name like "Silt Fence" under "Unnamed"
+  // and print an operator's own words as if they were an engine id. Where
+  // no honest ranking exists, abstain (CLAUDE.md §5) - the naming provenance
+  // lives on the style row, not on the label.
+  const groups = [
+    { key: "on", head: "On this sheet",
+      note: "in the open document's itemized takeoff",
+      rows: rows.filter(r => r.inUse) },
+    { key: "stored", head: "Stored only",
+      note: "priced earlier, not on this sheet",
+      rows: rows.filter(r => !r.inUse) },
+  ];
+
+  const scroll = document.createElement("div");
+  scroll.className = "sv-book-scroll";
+  const table = document.createElement("table");
+  table.className = "sv-book-table";
+
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const [h, cls] of [["label", ""], ["unit", ""], ["$ / unit", "sv-r"],
+                          ["where", ""], ["", "sv-r"]]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (cls) th.className = cls;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const g of groups) {
+    if (!g.rows.length && g.key === "on") continue;   // no document open
+    const gr = document.createElement("tr");
+    gr.className = "sv-grp";
+    const gd = document.createElement("td");
+    gd.colSpan = 5;
+    gd.textContent = g.head + " — " + g.note;
+    const cnt = document.createElement("span");
+    cnt.className = "sv-grp-n";
+    cnt.textContent = " · " + g.rows.length;
+    gd.appendChild(cnt);
+    gr.appendChild(gd);
+    tbody.appendChild(gr);
+
+    if (!g.rows.length) {
+      const er = document.createElement("tr");
+      er.className = "sv-grp-empty";
+      const ed = document.createElement("td");
+      ed.colSpan = 5;
+      ed.textContent = "nothing stored yet — prices typed above, or on any "
+        + "sheet's itemized takeoff, will appear here for the next document";
+      er.appendChild(ed);
+      tbody.appendChild(er);
+      continue;
+    }
+
+    for (const r of g.rows) {
+      const tr = document.createElement("tr");
+
+      const lab = document.createElement("td");
+      lab.className = "sv-lab"; lab.textContent = r.label; lab.title = r.label;
+
+      const unit = document.createElement("td");
+      unit.className = "sv-unit"; unit.textContent = r.unit || "";
+
+      const ptd = document.createElement("td");
+      ptd.className = "sv-r";
+      const pinWrap = document.createElement("span");
+      pinWrap.className = "sv-pin";
+      const cus = document.createElement("span");
+      cus.className = "sv-cur"; cus.textContent = "$";
+      const pin = document.createElement("input");
+      pin.type = "number"; pin.step = "0.01"; pin.min = "0"; pin.placeholder = "set";
+      pin.name = "sv-price-" + r.label;
+      pin.setAttribute("aria-label", "$ per unit for " + r.label);
+      const cur = store.getItem(priceKey(r.label));
+      if (cur !== null && cur !== "") pin.value = cur;
+      // the same write the itemized panel's price input does: store on every
+      // keystroke (the store itself drops no-change writes), full re-render
+      // only on blur so the control being typed in is never detached
+      pin.oninput = () => {
+        if (pin.value.trim() === "") store.removeItem(priceKey(r.label));
+        else store.setItem(priceKey(r.label), pin.value);
+      };
+      pin.onchange = () => { renderSvBook(); renderSvFoot(); };
+      pin.addEventListener("wheel",
+        (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+        { passive: false });
+      pinWrap.append(cus, pin);
+      ptd.appendChild(pinWrap);
+
+      const where = document.createElement("td");
+      where.className = "sv-where" + (r.inUse ? " sv-where-on" : "");
+      where.textContent = r.inUse ? "on this sheet" : "stored only";
+
+      const xtd = document.createElement("td");
+      xtd.className = "sv-r";
+      const x = document.createElement("button");
+      x.className = "sv-x"; x.textContent = "×";
+      x.title = "Clear the stored price for “" + r.label + "”";
+      x.disabled = !r.stored && !(cur !== null && cur !== "");
+      x.onclick = () => {
+        store.removeItem(priceKey(r.label));
+        renderSvBook(); renderSvFoot();
+      };
+      xtd.appendChild(x);
+
+      tr.append(lab, unit, ptd, where, xtd);
+      tbody.appendChild(tr);
+    }
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+}
+
+$("svAddBtn").onclick = () => {
+  const label = $("svAddLabel").value.trim();
+  const p = parseFloat($("svAddPrice").value);
+  if (!label) return setStatus("give the line item a label first", "err");
+  if (!(isFinite(p) && p > 0))
+    return setStatus("give it a $ / unit above 0", "err");
+  const had = store.getItem(priceKey(label)) !== null;
+  store.setItem(priceKey(label), String(p));
+  $("svAddLabel").value = ""; $("svAddPrice").value = "";
+  setStatus((had ? "updated" : "added") + " “" + label + "” at $"
+    + p + " per unit");
+  renderSvBook(); renderSvFoot();
+};
+
+// MATERIAL DEFAULTS - webui/ew_defaults.js rendered verbatim: name, default,
+// citation, and where the operator's override actually lives today. FOUND:
+// there is NO settings-scoped override store. The strip depth override is
+// the Topsoil layer row in the Earthwork panel (per sheet, saved to the
+// server in that page's calculator-inputs sidecar); the material factor
+// override is the panel's two factor boxes (#ewFacExp/#ewFacImp), which are
+// live inputs and are NOT saved across a reload. The inputs below edit
+// exactly those places - no second store is invented here.
+function renderSvMaterials() {
+  const box = $("svMatBox");
+  box.innerHTML = "";
+  if (typeof EW_RESEARCH === "undefined") {
+    box.textContent = "ew_defaults.js did not load — no defaults to show.";
+    return;
+  }
+  // --- strip depth ---------------------------------------------------------
+  const sd = EW_RESEARCH.strip_depth_in;
+  const sdRow = document.createElement("div");
+  sdRow.className = "sv-ovr";
+  const sdName = document.createElement("span");
+  sdName.textContent = "Topsoil strip depth — default " + sd.value
+    + " in (national band " + sd.national[0] + "–" + sd.national[1] + " in)";
+  sdRow.appendChild(sdName);
+  const topsoil = state.ew
+    && state.ew.layers.existing.find(l => /topsoil/i.test(l.name));
+  const sdIn = document.createElement("input");
+  sdIn.type = "number"; sdIn.step = "0.5"; sdIn.min = "0";
+  sdIn.name = "sv-strip-depth";
+  if (topsoil) {
+    sdIn.value = topsoil.thickness_in;
+    sdIn.oninput = () => {
+      topsoil.thickness_in = parseFloat(sdIn.value);
+      renderEwLayers();              // the panel's own row shows the same number
+      calcStateDirty();              // per-page sidecar, same as other calc edits
+    };
+  } else {
+    sdIn.disabled = true; sdIn.placeholder = "—";
+  }
+  const sdUnit = document.createElement("span");
+  sdUnit.textContent = "in";
+  sdRow.append(sdIn, sdUnit);
+  const sdWhere = document.createElement("span");
+  sdWhere.className = "sv-note";
+  sdWhere.textContent = topsoil
+    ? "edits the open sheet's Topsoil layer in the Earthwork panel (saved "
+      + "with that page's calculator inputs)"
+    : "override lives on the Earthwork panel's Topsoil layer row — open a "
+      + "sheet, open Earthwork, press “Strip topsoil”";
+  sdRow.appendChild(sdWhere);
+  box.appendChild(sdRow);
+  const sdCite = document.createElement("div");
+  sdCite.className = "sv-cite";
+  sdCite.textContent = "local prior: " + sd.local;
+  box.appendChild(sdCite);
+  // --- materials table -----------------------------------------------------
+  const grid = document.createElement("div");
+  grid.className = "sv-mat";
+  for (const h of ["material", "", "bank → loose", "bank → compacted"]) {
+    const th = document.createElement("div");
+    th.className = "sv-th"; th.textContent = h;
+    grid.appendChild(th);
+  }
+  for (const name of Object.keys(EW_RESEARCH.materials)) {
+    const m = EW_RESEARCH.materials[name];
+    const n = document.createElement("div"); n.textContent = name;
+    const sp = document.createElement("div");
+    const b2l = document.createElement("div");
+    b2l.textContent = "× " + m.b2l.toFixed(2);
+    const b2c = document.createElement("div");
+    b2c.textContent = "× " + m.b2c.toFixed(2);
+    grid.append(n, sp, b2l, b2c);
+    const cite = document.createElement("div");
+    cite.className = "sv-cite"; cite.textContent = m.src;
+    grid.appendChild(cite);
+  }
+  box.appendChild(grid);
+  // --- factor override: the SAME two live boxes the preset fills ------------
+  const fac = document.createElement("div");
+  fac.className = "sv-ovr";
+  const facName = document.createElement("span");
+  facName.textContent = "Override for the open sheet — export factor";
+  const mk = (srcId, nm) => {
+    const el = document.createElement("input");
+    el.type = "number"; el.min = "0"; el.step = "0.05";
+    el.name = nm;
+    const src = $(srcId);
+    el.value = src ? src.value : "";
+    el.oninput = () => {
+      const src2 = $(srcId);
+      if (!src2) return;
+      src2.value = el.value;
+      // the same event the material preset dispatches, so the Earthwork
+      // panel reacts exactly as if the box itself had been typed in
+      src2.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    return el;
+  };
+  const facImpName = document.createElement("span");
+  facImpName.textContent = "import factor";
+  fac.append(facName, mk("ewFacExp", "sv-fac-exp"),
+             facImpName, mk("ewFacImp", "sv-fac-imp"));
+  const facNote = document.createElement("span");
+  facNote.className = "sv-note";
+  facNote.textContent = "these ARE the Earthwork panel's factor boxes — "
+    + "applied on the sheet's next Calculate, defaulting to 1.0 (per #853), "
+    + "and not saved across a reload (existing behaviour, unchanged here)";
+  fac.appendChild(facNote);
+  box.appendChild(fac);
+}
+
+// persistence honesty, from what the store actually is: `store` fronts
+// sessionMem and mirrors to localStorage under tk1:: - this browser only
+function renderSvFoot() {
+  const n = svStoredPriceLabels().length;
+  $("svFoot").textContent = "Prices live in this browser (the same "
+    + "“Saved work” record as labels and trades — localStorage on "
+    + "this machine). They do not sync to the server or to other seats, so "
+    + "Export CSV is the backup and the way to move the book to another "
+    + "machine. " + n + " price(s) stored.";
+}
+
+// ---------- import / export -------------------------------------------------
+$("svExportBtn").onclick = () => {
+  const rows = [];
+  for (const r of svBookRows(svStoredPriceLabels(), svLiveItems())) {
+    const p = parseFloat(store.getItem(priceKey(r.label)) || "");
+    if (isFinite(p) && p > 0) rows.push({ label: r.label, unit: r.unit, price: p });
+  }
+  if (!rows.length) return setStatus("nothing to export — the book is empty", "err");
+  const blob = new Blob([svSerializeCSV(rows)], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "price-book.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  setStatus("exported " + rows.length + " price(s) to price-book.csv");
+};
+
+$("svImportBtn").onclick = () => { $("svImportFile").click(); };
+$("svImportFile").onchange = async () => {
+  const f = $("svImportFile").files[0];
+  $("svImportFile").value = "";      // same file can be picked again
+  if (!f) return;
+  let text = "";
+  try { text = await f.text(); }
+  catch (e) { return setStatus("could not read the file", "err"); }
+  const { rows, bad } = svParseCSV(text);
+  const plan = svImportPlan(rows, svStoredPriceLabels());
+  const box = $("svImportPreview");
+  box.innerHTML = ""; box.hidden = false;
+  const line = document.createElement("div");
+  line.textContent = f.name + ": "
+    + svPreviewLine(plan.adds.length, plan.overwrites.length, bad.length);
+  box.appendChild(line);
+  for (const b of bad) {
+    const d = document.createElement("div");
+    d.className = "sv-badline";
+    d.textContent = "line " + b.line + " (" + b.reason + "): " + b.text;
+    box.appendChild(d);
+  }
+  const apply = document.createElement("button");
+  apply.className = "mini";
+  apply.textContent = "Apply " + (plan.adds.length + plan.overwrites.length)
+    + " price(s)";
+  apply.disabled = !(plan.adds.length + plan.overwrites.length);
+  apply.onclick = () => {
+    if (plan.overwrites.length
+        && !confirm("Import from “" + f.name + "”?\n\n"
+          + plan.overwrites.length + " existing price(s) will be OVERWRITTEN ("
+          + plan.overwrites.map(r => r.label).slice(0, 12).join(", ")
+          + (plan.overwrites.length > 12 ? ", …" : "") + ")\n"
+          + plan.adds.length + " new label(s) will be added.\n\n"
+          + "The unit column is informational — prices key on the label alone."))
+      return;
+    for (const r of plan.adds) store.setItem(priceKey(r.label), String(r.price));
+    for (const r of plan.overwrites) store.setItem(priceKey(r.label), String(r.price));
+    box.hidden = true; box.innerHTML = "";
+    setStatus("imported " + (plan.adds.length + plan.overwrites.length)
+      + " price(s) — " + plan.adds.length + " new, "
+      + plan.overwrites.length + " overwritten"
+      + (bad.length ? "; " + bad.length + " line(s) were unparseable and "
+        + "were NOT imported" : ""));
+    renderSvBook(); renderSvFoot();
+    if (state.result) renderItemized();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => { box.hidden = true; box.innerHTML = ""; };
+  const btns = document.createElement("div");
+  btns.className = "sv-io";
+  btns.append(apply, cancel);
+  box.appendChild(btns);
+};
+
+// ---------- entry points ----------------------------------------------------
+$("settingsLink").onclick = (e) => {
+  e.preventDefault();
+  if (svIsOpen()) {
+    if (state.job) showSettings(false);   // second click toggles back
+    return;
+  }
+  showSettings(true);
+};
+$("svBack").onclick = () => showSettings(false);
+
+// THE HASHES. This page has written `#pricing` since it was the price book,
+// so that hash is a link somebody may have bookmarked or pasted. It still
+// works and now means the PRICING GROUP of this page - the nearest sensible
+// landing spot, rather than the top of a page whose first group is about
+// something else. `#settings` is the new whole-page hash and is what the
+// brand link points at. svHashTarget() (pure, tested) is the whole mapping.
+//
+// Nothing here reads `#projects`: that hash belongs to the projects view and
+// is not this page's to route.
+function svGoto(hash, opts) {
+  const id = svHashTarget(hash);
+  if (id === null) return false;
+  showSettings(true);
+  if (id) {
+    const el = $(id);
+    // The view is display:none until showSettings flips it, so the scroll
+    // has to wait a frame for the element to have a box to scroll to.
+    if (el) requestAnimationFrame(() =>
+      el.scrollIntoView({ block: "start",
+                          behavior: (opts && opts.smooth) ? "smooth" : "auto" }));
+  }
+  return true;
+}
+for (const a of $("svNav").querySelectorAll("a")) {
+  a.onclick = (e) => {
+    e.preventDefault();
+    const h = a.getAttribute("href");
+    svGoto(h, { smooth: true });
+    try { history.replaceState(null, "", h); } catch (err) { /* convenience */ }
+  };
+}
+addEventListener("hashchange", () => { svGoto(location.hash); });
+// Boot: an address that names this page opens it, AFTER the projects view's
+// own "land on Projects when nothing is open" line has already run - and on
+// BOOT_HASH, not location.hash, because that line has already overwritten
+// location.hash with "#projects" by the time this executes.
+svGoto(BOOT_HASH);
+
+// While the settings view is up the workbench is INVISIBLE, so none of its
+// single-key shortcuts may reach it - the same swallow discipline as the
+// projects view, Ctrl+Z / Ctrl+Y included (undo must not act on the hidden
+// sheet). Esc returns to the sheet, or to Projects when no job is open.
+const SV_SWALLOW_KEYS = new Set(["m", "f", "l", "s", "x", "e", "d", "i",
+                                 "j", "r", "?", "Delete", "Backspace"]);
+addEventListener("keydown", (e) => {
+  if (!svIsOpen() || typing()) return;
+  if (e.key === "Escape") {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    showSettings(false);
+    if (!state.job) showProjects(true);
+    return;
+  }
+  if (SV_SWALLOW_KEYS.has(e.key) || SV_SWALLOW_KEYS.has(e.key.toLowerCase())
+      || ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")))
+    e.stopImmediatePropagation();
+}, true);
+// =============== end SETTINGS ==============================================
+
+// =============== toolkit rich hover demos (TIPVID) =========================
+// The Photoshop rich-tooltip pattern on the toolkit rail: rest the pointer
+// on a tool button for 600ms and a small popover opens beside the rail with
+// a short SILENT looping clip of that tool doing its real work (recorded
+// live on Barn C3.0 - files and captions in webui/tooldemos/manifest.json),
+// the button's own title text verbatim, and the shortcut key. It is a HINT,
+// never a control: pointer-events:none, instant close on leave/click/Esc,
+// and it never opens while a canvas tool is armed - an operator brushing
+// the rail mid-gesture must not get a video in the face. Native title
+// attributes are untouched: they stay the accessible description and the
+// whole story for buttons without a clip (faithful toggle, help, clear).
+// Zero video bytes load up front: the manifest is fetched on the first
+// hover ever, and a clip's src is set only when its popover first opens.
+
+// TIPVID-PURE-BEGIN
+// Pure lookup + placement math (no DOM, no state.*) so
+// tests/test_tooldemo_tips.js can eval just this block.
+const TIPVID_HOVER_DELAY_MS = 600;
+
+// manifest row for a button, or null (no clip -> native title only)
+function tipvidEntry(manifest, btnId) {
+  if (!manifest || typeof manifest !== "object") return null;
+  const e = Object.prototype.hasOwnProperty.call(manifest, btnId)
+    ? manifest[btnId] : null;
+  return e && typeof e.file === "string" ? e : null;
+}
+
+// Place the popover just right of the rail button, vertically centred on
+// it, clamped inside the viewport; when the right side cannot fit (tiny
+// window) it flips to the left of the rail rather than covering it.
+function tipvidPos(btn, pop, vw, vh, gap) {
+  let x = btn.right + gap;
+  if (x + pop.w > vw - 4) x = Math.max(4, btn.left - gap - pop.w);
+  let y = btn.top + btn.height / 2 - pop.h / 2;
+  y = Math.min(y, vh - pop.h - 4);
+  y = Math.max(4, y);
+  return { x, y };
+}
+// TIPVID-PURE-END
+
+(() => {
+  const rail = document.querySelectorAll(".toolkit .tk");
+  if (!rail.length) return;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+  let manifest;            // undefined until the first hover fetches it
+  let manifestReq = null;
+  let pop = null, vid = null, tTitle = null, tCap = null, tKey = null;
+  let timer = null;
+
+  function withManifest(fn) {
+    if (manifest !== undefined) { fn(); return; }
+    if (!manifestReq)
+      manifestReq = fetch("tooldemos/manifest.json")
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((m) => { manifest = m; });
+    manifestReq.then(fn);
+  }
+
+  function build() {
+    if (pop) return;
+    pop = document.createElement("div");
+    pop.id = "tipvid";
+    pop.hidden = true;
+    pop.setAttribute("aria-hidden", "true");   // the title attr already reads
+    vid = document.createElement("video");
+    // muted looping inline autoplay; preload=none so no bytes move until a
+    // popover actually opens and sets src
+    vid.muted = true;
+    vid.loop = true;
+    vid.autoplay = true;
+    vid.playsInline = true;
+    vid.setAttribute("playsinline", "");
+    vid.preload = "none";
+    tTitle = document.createElement("div");
+    tTitle.className = "tv-title";
+    tKey = document.createElement("kbd");
+    tCap = document.createElement("div");
+    tCap.className = "tv-cap";
+    pop.append(vid, tTitle, tCap);
+    document.body.appendChild(pop);
+  }
+
+  function closeTip() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (pop && !pop.hidden) {
+      pop.hidden = true;
+      try { vid.pause(); } catch (e) { /* not loaded yet */ }
+    }
+  }
+
+  function openTip(btn) {
+    // a drawing/measuring/box gesture owns the canvas - no video in the face
+    if (state.tool) return;
+    const ent = tipvidEntry(manifest, btn.id);
+    if (!ent) return;                    // no clip: native title only
+    build();
+    tTitle.textContent = btn.getAttribute("title") || "";
+    tCap.textContent = ent.caption || "";
+    tKey.remove();
+    if (ent.key) { tKey.textContent = ent.key; tCap.append(" ", tKey); }
+    const src = "tooldemos/" + ent.file;
+    if (vid.getAttribute("src") !== src) vid.setAttribute("src", src);
+    if (reduced.matches) {
+      // reduced motion: the first frame, paused - a poster, not a loop
+      const still = () => { vid.pause(); try { vid.currentTime = 0; } catch (e) {} };
+      if (vid.readyState >= 2) still();
+      else { vid.addEventListener("loadeddata", still, { once: true }); vid.load(); }
+    } else {
+      const pr = vid.play();
+      if (pr && pr.catch) pr.catch(() => {});
+    }
+    // measure hidden, then place beside the rail, clamped to the viewport
+    pop.style.visibility = "hidden";
+    pop.hidden = false;
+    const b = btn.getBoundingClientRect();
+    const p = tipvidPos(
+      { left: b.left, right: b.right, top: b.top, height: b.height },
+      { w: pop.offsetWidth, h: pop.offsetHeight },
+      innerWidth, innerHeight, 10);
+    pop.style.left = p.x + "px";
+    pop.style.top = p.y + "px";
+    pop.style.visibility = "";
+  }
+
+  for (const btn of rail) {
+    btn.addEventListener("pointerenter", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        withManifest(() => { if (btn.matches(":hover")) openTip(btn); });
+      }, TIPVID_HOVER_DELAY_MS);
+    });
+    btn.addEventListener("pointerleave", closeTip);
+    // a click means USE the tool, not watch it - and no re-open until the
+    // pointer leaves and comes back (pointerenter will not refire in place)
+    btn.addEventListener("pointerdown", closeTip);
+  }
+  // capture phase: the app's own Esc cascade stops propagation downstream,
+  // and a hint must die on Esc no matter which panel handled the key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeTip();
+  }, true);
+})();
+// =============== end toolkit rich hover demos ==============================
