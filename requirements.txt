@@ -8,3 +8,6 @@ fastapi>=0.115
 uvicorn>=0.30
 python-multipart>=0.0.9
 requests>=2.31
+# Koby-approved 2026-08-31: GEOS geometry engine for topology cleanup,
+# snapping, polygon validity - replaces hand-rolled planar geometry.
+shapely>=2.1
