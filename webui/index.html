@@ -8,7 +8,6 @@
 <link rel="stylesheet" href="style.css?v=53">
 </head>
 <body>
-<div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
 <header>
   <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#pricing" title="The unit price book, material defaults, and CSV import/export">Pricing</a></div>
   <select id="sampleSel"><option value="">Open sample plan…</option></select>
@@ -42,6 +41,7 @@
     </div>
   </div>
   <div id="status" class="status"></div>
+  <span id="betaBanner" class="beta-chip" tabindex="0" role="note" title="BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.">BETA &mdash; verify every quantity</span>
   <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
   <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
   <span id="whoami" class="whoami" hidden></span>
@@ -529,24 +529,24 @@
          delete | work area | view toggles + help. Button DOM order is
          untouched - only separators were inserted. -->
     <div class="toolkit">
-      <button id="measureBtn" class="tk" title="Measure — click points on the sheet to read the distance (M; Esc to finish). Know the true dimension? Type it in the readout to calibrate the sheet scale.">&#128207;</button>
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet to read the distance (M; Esc to finish). Know the true dimension? Type it in the readout to calibrate the sheet scale."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)">&#9986;</button>
-      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)">&#10230;</button>
-      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)">&#9988;</button>
-      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)">&#9998;</button>
+      <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.6 20 19M8.2 16.4 20 5"/></svg></button>
+      <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h14M13 6l6 6-6 6"/></svg></button>
+      <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h5M16 12h5"/><path d="M10.5 12h3" stroke-dasharray="2 2.4"/></svg></button>
+      <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20c4-1 2.5-4.5 6-6s6-4 8-9"/><path d="M4 20h4"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)">&#8644;</button>
-      <button id="mergeBtn" class="tk" title="Merge the selected line with another — click the other half of the same run (J)">&#128279;</button>
-      <button id="sepBtn" class="tk" title="Separate — name the selected line and give it its own row in the itemized takeoff, priced apart from its family (no shortcut key)">&#9707;</button>
+      <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13M14 3l4 4-4 4M20 17H7M10 13l-4 4 4 4"/></svg></button>
+      <button id="mergeBtn" class="tk" title="Merge the selected line with another — click the other half of the same run (J)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12a4 4 0 0 1 4-4h3M15 12a4 4 0 0 1-4 4H8"/><path d="M3 12h4M17 12h4"/></svg></button>
+      <button id="sepBtn" class="tk" title="Separate — name the selected line and give it its own row in the itemized takeoff, priced apart from its family (no shortcut key)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="8" y="15" width="13" height="5" rx="1.5"/><path d="M3 17.5h2.5"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="removeBtn" class="tk danger" title="Delete the picked point, or the whole selected line if no point is picked (Delete or Backspace). Removed lines leave the count; Reset edits brings them back.">&#128465;</button>
+      <button id="removeBtn" class="tk danger" title="Delete the picked point, or the whole selected line if no point is picked (Delete or Backspace). Removed lines leave the count; Reset edits brings them back."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="wzBtn" class="tk" title="Work area &mdash; drag one or more boxes around the part of the sheet that counts. The takeoff lists (style rows, itemized rows, CSV, approve export) count only length inside your boxes; detection is untouched and Clear restores everything. The earthwork and trench calculators keep their own limit-of-work boundary and are not masked.">&#9635;</button>
-      <button id="wzClearBtn" class="tk danger" hidden title="Clear the work area &mdash; every line counts in full again">&#9635;&#10005;</button>
+      <button id="wzBtn" class="tk" title="Work area &mdash; drag one or more boxes around the part of the sheet that counts. The takeoff lists (style rows, itemized rows, CSV, approve export) count only length inside your boxes; detection is untouched and Clear restores everything. The earthwork and trench calculators keep their own limit-of-work boundary and are not masked."><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2.6"/></svg></button>
+      <button id="wzClearBtn" class="tk danger" hidden title="Clear the work area &mdash; every line counts in full again"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="12" height="12" rx="2" stroke-dasharray="3 2.6"/><path d="m14.6 14.6 6.4 6.4M21 14.6l-6.4 6.4"/></svg></button>
       <span class="tk-sep"></span>
-      <button id="faithfulBtn" class="tk active" title="Line rendering (F): ON draws every line with its true dash pattern and printed weight; OFF draws bold uniform strokes that are easier to see. Display only — no count or length changes.">&#9781;</button>
-      <button id="kbdBtn" class="tk" title="Keyboard shortcuts — every key and gesture the app answers to (?)">?</button>
+      <button id="faithfulBtn" class="tk active" title="Line rendering (F): ON draws every line with its true dash pattern and printed weight; OFF draws bold uniform strokes that are easier to see. Display only — no count or length changes."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8h6M12 8h3M18 8h3M3 16h18"/></svg></button>
+      <button id="kbdBtn" class="tk" title="Keyboard shortcuts — every key and gesture the app answers to (?)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.2-1.5 2.4"/><circle cx="12" cy="18" r=".9" fill="currentColor" stroke="none"/></svg></button>
     </div>
     <div class="canvas-status">
       <span id="selInfo" class="tk-info"></span>

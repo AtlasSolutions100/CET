@@ -1351,3 +1351,257 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
   background: var(--chip); border: 1px solid var(--line);
   border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px;
   margin-left: 4px; color: var(--text); }
+
+
+/* ==========================================================================
+   WAVE 1 - COMPONENT PASS  (CRITIQUE.md fixes 1, 6, 7, 8)
+   --------------------------------------------------------------------------
+   Appended, not woven in: the token sweep above is another builder's, and
+   these rules only have to win by coming last. Every colour and size here
+   is a --t-* token from DESIGN-TOKENS.md with the token's own value as the
+   fallback, so the block renders correctly whether or not tokens.css has
+   landed yet in a given checkout.
+   ========================================================================== */
+
+/* Fallback amber, declared on BODY (never on :root - that belongs to A1).
+   The dark value is style.css's own existing #d79b3a, so nothing shifts
+   before tokens.css lands. The light value is DESIGN-TOKENS' --t-warn for
+   paper mode, because #d79b3a on white measures 2.43:1 - it fails WCAG AA
+   for text, and this amber is carrying the BETA chip and the word
+   "Unnamed". #a86c14 measures 3.92:1 on the chip's own tint and 4.36:1 on
+   white - better, but still short of AA for 12px text; see the followup.
+   Both values are inert the moment A1's --t-warn exists. */
+body { --w1-warn: #d79b3a; }
+:root[data-theme="light"] body { --w1-warn: #a86c14; }
+
+/* ---------- FIX 7: drawn icons on the toolkit rail -----------------------
+   The rail used to be six emoji and seven geometric glyphs, which render at
+   a different size, weight and colour on every OS - and on Windows several
+   of them arrive as full-colour emoji. They are now inline SVG drawn into
+   index.html: no library, no icon font, no network request, identical on
+   every machine. Button ids, order, titles and separators are untouched;
+   the SVG sits INSIDE the existing <button>, so the hover-demo popover
+   still reads each button's own title verbatim.
+   :not([hidden]) matters - wzClearBtn is display-toggled by app.js, and a
+   .toolkit .tk display rule would out-specify the UA's [hidden] and show
+   a clear-work-area button on a sheet that has no work area. */
+.toolkit .tk:not([hidden]) {
+  display: flex; align-items: center; justify-content: center;
+  padding: 6px 0;
+}
+.toolkit .tk svg {
+  width: 20px; height: 20px; display: block;
+  fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+/* the rail's resting colour: present, not shouting. Active/danger/disabled
+   states are inherited from the existing .tk rules through currentColor. */
+.toolkit .tk { color: var(--t-text-dim, var(--dim)); }
+.toolkit .tk:hover { color: var(--t-text, var(--text)); }
+.toolkit .tk.active, .toolkit .tk.danger:hover, #faithfulBtn.active { color: #fff; }
+
+/* ---------- FIX 1: the BETA header chip ----------------------------------
+   Retires the full-width hazard-yellow strip that sat above every screen.
+   The strip spent the app's loudest colour on a standing caveat, so a real
+   contradiction on the sheet had nothing louder left to say it with.
+   What is NOT reduced: the chip is non-dismissible and always mounted, it
+   carries the server's own beta sentence verbatim as its title (set by
+   loadBetaNotice), the CSV tail and the report-PDF stamp are untouched, and
+   the per-sheet CHECK FIRST card below still states this sheet's specific
+   doubts in full. tabindex makes the chip reachable by keyboard. */
+.beta-chip {
+  flex: 0 0 auto;
+  font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px);
+  letter-spacing: .06em;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--t-warn, var(--w1-warn));
+  background: var(--t-warn-bg, rgba(215,155,58,.13));
+  border: 1px solid transparent;
+  border-radius: var(--t-r-pill, 999px);
+  padding: 3px 10px;
+  cursor: help;
+}
+.beta-chip:hover, .beta-chip:focus-visible {
+  border-color: var(--t-warn, var(--w1-warn));
+  outline: none;
+}
+
+/* ---------- FIX 6: the money reads like money ----------------------------
+   The tally is the number the estimator opened the app for and it was
+   10.5px mono running into the CSV button. It is now a 26px tabular figure
+   with everything that qualifies it - measured / union / % welded / $ - as
+   a caption underneath. Same sentence, same words, same order: app.js
+   splits the string it already built at one point and prints both halves
+   (proved byte-identical across all 288 branch combinations). The full
+   disclosure tooltip on #tallyBar is unchanged. */
+.approve-bar .tally { display: flex; flex-direction: column; gap: 2px;
+  letter-spacing: normal; }
+.tally .tally-big {
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums lining-nums);
+  font-size: var(--t-fs-xl, 26px);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.01em;
+  color: var(--t-text, var(--text));
+  white-space: nowrap;
+}
+/* "work area:" is a qualifier on the figure, not part of it */
+.tally .tally-big .tally-pre {
+  font-family: var(--t-font-ui, "IBM Plex Sans", "Segoe UI", system-ui, sans-serif);
+  font-size: var(--t-fs-sm, 13px);
+  font-weight: 500;
+  letter-spacing: normal;
+  color: var(--t-text-dim, var(--dim));
+}
+.tally .tally-cap {
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums lining-nums);
+  font-size: var(--t-fs-xs, 12px);
+  line-height: 1.45;
+  color: var(--t-text-dim, var(--dim));
+  overflow-wrap: anywhere;
+}
+/* itemized rows: the four numeric columns right-aligned and tabular, so a
+   column of quantities can be read down. The label column is left as it is. */
+.item-row > :nth-child(n+2) {
+  text-align: right;
+  font-variant-numeric: var(--t-numeric, tabular-nums lining-nums);
+}
+.item-row input { text-align: right;
+  font-variant-numeric: var(--t-numeric, tabular-nums lining-nums); }
+.item-row.head > :nth-child(n+2) { text-align: right; }
+/* the empty rate cell invites the price instead of printing a dead dash */
+.item-row input[name^="price-"]::placeholder {
+  color: var(--t-accent, var(--accent)); opacity: 1; font-style: normal;
+}
+
+/* ---------- FIXES 1 + 8: the two verdict cards ---------------------------
+   CHECK FIRST (#confBanner) and CHECK THESE (#ckPanel) carry the app's own
+   confidence grammar and were drawn as two flat strips separated by a hair
+   line. They become cards: their own surface, their own border, a rounded
+   edge and the severity colour as a left rule plus a dot per row. No string
+   and no severity rule changes - only the frame. */
+#confBanner.conf {
+  margin: var(--t-sp-3, 12px) var(--t-sp-3, 12px) var(--t-sp-2, 8px);
+  padding: var(--t-sp-3, 12px) var(--t-sp-4, 16px) var(--t-sp-3, 12px);
+  background: var(--t-surface-2, var(--panel));
+  border: 1px solid var(--t-border, var(--line));
+  border-left-width: 3px;
+  border-radius: var(--t-r-3, 12px);
+  border-bottom: 1px solid var(--t-border, var(--line));
+  box-shadow: var(--t-el-1, 0 1px 2px rgba(0,0,0,.30));
+  flex: none;   /* content-sized flex item in #sidebar - never squashed */
+}
+#confBanner.conf.ok   { border-left-color: var(--t-ok, var(--ok)); }
+#confBanner.conf.warn { border-left-color: var(--t-warn, var(--w1-warn)); }
+#confBanner.conf.stop { border-left-color: var(--t-stop, #e0473b); }
+#confBanner .conf-head { gap: var(--t-sp-2, 8px); margin-bottom: var(--t-sp-2, 8px); }
+#confBanner .conf-badge { font-size: var(--t-fs-xs, 12px); padding: 2px 9px;
+  letter-spacing: .08em; }
+#confBanner .conf-title { font-size: var(--t-fs-sm, 13px); }
+#confBanner .conf-line { font-size: var(--t-fs-sm, 13px); line-height: 1.45;
+  padding: var(--t-sp-2, 8px) 0; }
+#confBanner .conf-dot { width: 8px; height: 8px; }
+#confBanner .conf-txt .conf-q, #confBanner .conf-txt .conf-num {
+  font-size: var(--t-fs-xs, 12px); }
+
+.ck-panel {
+  margin: 0 var(--t-sp-3, 12px) var(--t-sp-2, 8px);
+  background: var(--t-surface-2, var(--panel));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-3, 12px);
+  border-bottom: 1px solid var(--t-border, var(--line));
+  box-shadow: var(--t-el-1, 0 1px 2px rgba(0,0,0,.30));
+  /* NO `overflow: hidden` here. #sidebar is a flex column and #ckPanel is
+     one of its items; `overflow` other than visible sets a flex item's
+     automatic minimum size to zero, and this card collapsed from 1,280px
+     to 2px - the whole doubt queue gone - the first time it was added.
+     `flex: none` is the belt: this card is content-sized, never squashed.
+     The rows carry their own radius, so nothing needed clipping anyway. */
+  flex: none;
+}
+.ck-panel .ck-row {
+  border-top: 0;
+  border-radius: var(--t-r-2, 8px);
+  padding: var(--t-sp-2, 8px);
+  font-size: var(--t-fs-sm, 13px);
+  gap: var(--t-sp-2, 8px);
+}
+.ck-panel .ck-row:hover { background: var(--t-surface-3, var(--chip)); }
+.ck-panel .ck-dot { width: 8px; height: 8px; margin-top: 5px; }
+.ck-panel .ck-dot.warn { background: var(--t-warn, var(--w1-warn)); }
+.ck-panel .ck-dot.stop { background: var(--t-stop, #e0473b); }
+.ck-panel .ck-more { font-size: var(--t-fs-xs, 12px);
+  border-radius: var(--t-r-2, 8px); }
+.ck-panel .ck-pending, .ck-panel .ck-clean { font-size: var(--t-fs-xs, 12px); }
+
+/* ---------- FIX 8: the unnamed-family row --------------------------------
+   `solid solid` and `dash1 d18.0 g9.0` are honest measurements the engine
+   made, and they were sitting where a name goes. The dash swatch already
+   renders faithfully and stays first; the absence is now stated in the UI
+   face as the label box's own placeholder, so typing over it IS the rename;
+   the engine id is demoted to a mono chip; and "name it" focuses that same
+   label box - the app's existing rename path, not a new one. Nothing about
+   the row's data changed. */
+/* Everything below was fitted to the sidebar as it is TODAY - 330px, which
+   leaves this row's main column ~131px - and measured on Oncor C-04
+   (engine page index 3 = printed sheet 4), 65 style rows, 57 of them
+   unnamed. Baseline style list: 3,663px, every row 53px.
+     - the full phrase "Unnamed - no legend match" in the label box needs
+       174px against a 117px box, so it clipped; "Unnamed" alone needs 58px
+     - "name it" on the META line wrapped rows to 90-107px: list 6,460px
+       (+76%). On the LABEL's line, in the space "Unnamed" leaves free, it
+       costs nothing
+     - the meta line still wraps, because the id chip must never be
+       half-shown: it is the literal string the itemized takeoff and the
+       CSV still carry for this family, and half an export label is worse
+       than none. Wrapping INLINE, not flex - flex made every fragment its
+       own line
+   Landed cost: 39 rows at 70px, 26 at 54px, list 4,379px (+19.6%), no
+   string truncated. Wave 2's 400px sidebar absorbs most of that. */
+.style-row-unnamed .style-meta { white-space: normal; overflow: visible;
+  text-overflow: clip; }
+.style-namerow { display: flex; align-items: baseline; gap: var(--t-sp-2, 8px); }
+.style-namerow .style-label { flex: 1 1 auto; min-width: 0; }
+.style-namerow .style-nameit { flex: 0 0 auto; }
+/* On an unnamed row the class badge is redundant: the demoted id chip
+   BEGINS with the class (`annotation leader`, `dash1 d18.0 g9.0`,
+   `solid solid`) because that is how detect_page.py builds the seed. Giving
+   its ~72px back to the main column is what keeps the row to one extra
+   line instead of three. Named rows keep their badge. */
+.style-row-unnamed > .badge { display: none; }
+.style-label.unnamed::placeholder {
+  color: var(--t-warn, var(--w1-warn));
+  font-weight: 500;
+  font-style: italic;
+  opacity: 1;
+}
+.style-eid {
+  font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-dim, var(--dim));
+  background: var(--t-surface-3, var(--chip));
+  border-radius: var(--t-r-1, 4px);
+  padding: 0 5px;
+  cursor: help;
+  /* the id is one token: it wraps to its own line, never through itself */
+  white-space: nowrap;
+}
+.style-nameit {
+  font: inherit;
+  font-size: var(--t-fs-xs, 12px);
+  background: none;
+  border: 0;
+  border-bottom: 1px dashed var(--t-accent-deep, var(--accent-deep));
+  border-radius: 0;
+  padding: 0;
+  color: var(--t-accent, var(--accent));
+  cursor: pointer;
+  white-space: nowrap;
+}
+.style-nameit:hover { border-bottom-color: var(--t-accent, var(--accent)); }
+/* the same absence, marked the same way, on the on-sheet mini legend */
+.ml-lab.unnamed { color: var(--t-warn, var(--w1-warn)); font-style: italic; }

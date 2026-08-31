@@ -1159,6 +1159,30 @@ function drawPatternSample(cnv, s, w, h) {
 }
 
 // ---------- on-sheet mini legend ----------
+// UI FIX 8 - the ONE test for "nothing named this family", shared by the
+// style list and the on-sheet mini legend so the two surfaces can never
+// disagree about which rows are named.
+//
+// It is character-for-character the rule ckCollect() already applies to
+// queue "N ft of linework has no name" in CHECK THESE: no legend row
+// matched the pattern, the operator has not typed over the engine's seed,
+// and the drafter filed it under nothing or under AutoCAD's default layer
+// "0". detect_page.py seeds an unmatched family's label with its own
+// measurement - `f"{class} {signature}"`, i.e. `solid solid` and
+// `dash1 d18.0 g9.0` - so "no name" is emphatically NOT "empty label".
+//
+// This is presentation only. Nothing here writes state.labels, so the
+// itemized takeoff, the CSV and every total keep the exact strings they
+// carried before.
+function styleIsUnnamed(s) {
+  const seed = (state.seedLabels.get(s.style_id) || "").trim();
+  const cur = (state.labels.get(s.style_id) ?? s.suggested_label ?? "").trim();
+  const leaf = layerSplit((s.layer || "").trim()).leaf.trim();
+  return !/\(legend\)\s*$/.test(s.suggested_label || "")
+    && !(cur !== "" && cur !== seed)
+    && (leaf === "" || leaf === "0");
+}
+
 function renderMiniLegend() {
   const box = $("miniLegend");
   if (!state.result) { box.hidden = true; return; }
@@ -1181,8 +1205,21 @@ function renderMiniLegend() {
     drawPatternSample(cnv, st, 80, 18);
     const lab = document.createElement("span");
     lab.className = "ml-lab";
-    lab.textContent = state.labels.get(st.style_id) || st.suggested_label
-      || `${st.class} · ${st.signature}`;
+    // Same fix as the style row, on the second surface that showed a
+    // measurement where a name goes. The pattern stays visible, in
+    // parentheses, where it reads as evidence rather than identity.
+    if (styleIsUnnamed(st)) {
+      lab.classList.add("unnamed");
+      lab.textContent = `Unnamed (${st.signature})`;
+      lab.title = "No legend row matched this pattern and the drafter filed "
+        + "it under no CAD layer. The takeoff and the CSV still list it as \""
+        + ((state.seedLabels.get(st.style_id) || "").trim()
+           || st.suggested_label || "") + "\" until you name it in the "
+        + "sidebar's line-styles list.";
+    } else {
+      lab.textContent = state.labels.get(st.style_id) || st.suggested_label
+        || `${st.class} · ${st.signature}`;
+    }
     const ft = document.createElement("span");
     ft.className = "ml-ft";
     const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
@@ -3885,6 +3922,39 @@ function renderStyles() {
     const lab = document.createElement("input");
     lab.className = "style-label"; lab.name = "label-" + s.style_id;
     lab.value = state.labels.get(s.style_id) ?? "";
+    // UI FIX 8. When nothing named a family, detect_page.py seeds the label
+    // with the engine's own fallback - `f"{class} {signature}"`, i.e. the
+    // strings `solid solid` and `dash1 d18.0 g9.0` - and the row then wore
+    // a measurement in the slot where a trade name goes. styleIsUnnamed()
+    // is the shared test (see its comment); the seed goes to the mono
+    // evidence chip on the meta line - where the operator can still read
+    // the literal string the export will carry - and the name slot says
+    // that nothing named this. Typing over the placeholder IS the rename;
+    // it is the same input, the same oninput, the same memSave.
+    const seedLab = (state.seedLabels.get(s.style_id) || "").trim();
+    const unnamed = styleIsUnnamed(s);
+    if (unnamed) {
+      lab.value = "";
+      // The mock's phrase is "Unnamed - no legend match". Measured at the
+      // 330px sidebar it needs 174px in a 117px label box, so it clips; and
+      // carrying the second half on the meta line instead cost +76% of
+      // style-list scroll (3,663px -> 6,460px on this sheet's 65 rows).
+      // The word alone goes in the name slot. WHY it is unnamed is not
+      // dropped - it is on this box's own title, and CHECK THESE states it
+      // in full for every row over the floor ("N ft of linework has no
+      // name. No legend row matched it and the drafter filed it under no
+      // CAD layer"), which is the link CRITIQUE fix 8 asks the two to make.
+      lab.placeholder = "Unnamed";
+      lab.classList.add("unnamed");
+      // the row's own hook, for two things this row alone needs: its meta
+      // line may WRAP so the id chip is never half-shown, and its class
+      // badge is hidden because the chip already begins with the class
+      // (see the rules in style.css, which carry the measurements)
+      row.classList.add("style-row-unnamed");
+      lab.title = "No legend row matched this pattern and the drafter filed "
+        + "it under no CAD layer, so the engine has only its own measurement "
+        + "to call it by (the chip below). Type a trade name here.";
+    }
     if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
@@ -3895,19 +3965,60 @@ function renderStyles() {
     };
     const meta = document.createElement("div");
     meta.className = "style-meta";
-    meta.textContent = `${fmtQty(styleLenPt(s))} · ${styleLiveCount(s.style_id)} lines · ${s.signature}`;
+    meta.appendChild(document.createTextNode(
+      `${fmtQty(styleLenPt(s))} · ${styleLiveCount(s.style_id)} lines · `));
+    // Same string as before, in a mono chip: `dash1 d18.0 g9.0` is what the
+    // engine measured off the sheet, not what the thing is called.
+    const eid = document.createElement("span");
+    eid.className = "style-eid";
+    // On an unnamed row the chip carries the SEED verbatim - the exact
+    // string the itemized takeoff and the CSV still use for this family -
+    // so emptying the name box hides nothing. Elsewhere it is the signature.
+    eid.textContent = unnamed ? (seedLab || s.signature) : s.signature;
+    eid.title = unnamed
+      ? "The engine's own id for this family, and the name this row still "
+        + "carries in the itemized takeoff and the CSV until you name it: "
+        + "its pattern class and its measured dash and gap lengths in points."
+      : "The engine's own id for this pattern — measured dash and gap "
+        + "lengths in points. Evidence, not a name.";
+    meta.appendChild(eid);
     // work-area disclosure, per row: a row that lost footage to the mask
     // says how much, on its own line, compactly
     {
       const wOut = styleLiveOut(s.style_id);
       if (wOut > 0.05) {
-        meta.textContent += ` · ${fmtQty(wOut)} outside work area`;
+        meta.appendChild(document.createTextNode(
+          ` · ${fmtQty(wOut)} outside work area`));
         meta.title = `${fmtQty(wOut)} of this style lies outside the drawn `
           + `work area and is not counted anywhere below. Clear the work `
           + `area to count it again.`;
       }
     }
-    main.append(lab, meta);
+    // The affordance for the absence stated above. It opens the SAME label
+    // box - no new rename path, no new store key - so a name typed here
+    // persists exactly the way a name typed in the box always has.
+    //
+    // It rides on the LABEL's own line, in the space "Unnamed" leaves free,
+    // rather than on the meta line. Measured on this sheet (65 rows, 330px
+    // sidebar): on the meta line it wrapped the row from 53px to 90-107px
+    // and the style list from 3,663px to 6,460px of scroll (+76%). Here it
+    // costs nothing.
+    if (unnamed) {
+      const nirow = document.createElement("div");
+      nirow.className = "style-namerow";
+      const ni = document.createElement("button");
+      ni.type = "button";
+      ni.className = "style-nameit";
+      ni.textContent = "name it";
+      ni.title = "Type a trade name for this family. Same box the legend "
+        + "fills in when it finds a match; the name sticks to this pattern "
+        + "on every sheet of the set.";
+      ni.onclick = (e) => { e.stopPropagation(); lab.focus(); lab.select(); };
+      nirow.append(lab, ni);
+      main.append(nirow, meta);
+    } else {
+      main.append(lab, meta);
+    }
 
     const badge = document.createElement("span");
     badge.className = `badge ${s.class}`; badge.textContent = s.class;
@@ -6891,7 +7002,13 @@ function renderItemized() {
         renderItemized(); renderChips();
       };
       const pin = document.createElement("input");
-      pin.type = "number"; pin.step = "0.01"; pin.placeholder = "—";
+      // UI FIX 6: an empty rate cell used to be a bare em dash, which reads
+      // as "there is no rate for this" rather than "you have not set one".
+      // Under the column's own "$/ft" head the cell now says what to do.
+      // Same empty state, same key, same write - only the invitation is new.
+      pin.type = "number"; pin.step = "0.01"; pin.placeholder = "set";
+      pin.title = "Unit price for this row, in $/" + (it.unit === "pt" ? "pt" : it.unit)
+        + ". Empty means no rate is set, so this row carries no dollars.";
       pin.name = "price-" + it.label;
       if (it.price) pin.value = it.price;
       pin.oninput = () => {
@@ -6967,16 +7084,32 @@ function renderItemized() {
     const ftv = ptv / 72 * ftPerIn;
     return (ftv >= 1000 ? (ftv / 1000).toFixed(1) + "k" : ftv.toFixed(0)) + " ft";
   };
-  tb.textContent =
-    (wzActive()
-      ? "work area: " + wzFmt(inkPt) + " counted \u00b7 "
-        + wzFmt(wzOutPt) + " outside excluded"
-        + (ovRowN ? " \u00b7 " + abbrQ(billedQ) + " billed" : "")
-      : ovRowN
-      ? abbrQ(billedQ) + " billed \u00b7 " + abbrQ(autoQ) + " measured"
-      : (tf !== null
-          ? (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft measured"
-          : fmtLen(inkPt) + " measured"))
+  // UI FIX 6: the money reads like money. The sentence below is assembled
+  // from EXACTLY the same pieces, in exactly the same order, as before -
+  // nothing is dropped, reworded or recomputed. It is only split at one
+  // point so the leading quantity (what this sheet is billing) can be set
+  // at the 26px tabular figure and everything that qualifies it becomes the
+  // caption underneath, instead of all of it running as one 10.5px line.
+  //   tallyLead   the quantity, e.g. "67.8k ft"
+  //   tallyPre    "work area:" when a mask is drawn, else ""
+  //   tallyRest   the qualifier + union + welded + $ - the caption
+  let tallyPre = "", tallyLead, tallyRest;
+  if (wzActive()) {
+    tallyPre = "work area:";
+    tallyLead = wzFmt(inkPt);
+    tallyRest = "counted \u00b7 " + wzFmt(wzOutPt) + " outside excluded"
+      + (ovRowN ? " \u00b7 " + abbrQ(billedQ) + " billed" : "");
+  } else if (ovRowN) {
+    tallyLead = abbrQ(billedQ);
+    tallyRest = "billed \u00b7 " + abbrQ(autoQ) + " measured";
+  } else if (tf !== null) {
+    tallyLead = (tf >= 1000 ? (tf/1000).toFixed(1) + "k" : tf.toFixed(0)) + " ft";
+    tallyRest = "measured";
+  } else {
+    tallyLead = fmtLen(inkPt);
+    tallyRest = "measured";
+  }
+  tallyRest = tallyRest
     + (sheet.excessPt > 0.05
         ? " · union " + (uf !== null
             ? (uf >= 1000 ? (uf/1000).toFixed(1) + "k" : uf.toFixed(0)) + " ft"
@@ -6993,6 +7126,26 @@ function renderItemized() {
         return ` · ${(100 * oc.gap / oc.len).toFixed(1)}% welded`;
       })()
     + (grand ? ` · $${grand.toFixed(0)}` : "");
+  // Two spans, one sentence. Reading them end to end still gives exactly the
+  // string this bar has always printed: [pre ]lead + " " + rest.
+  tb.textContent = "";
+  const tallyBig = document.createElement("span");
+  tallyBig.className = "tally-big";
+  if (tallyPre) {
+    const pre = document.createElement("span");
+    pre.className = "tally-pre";
+    pre.textContent = tallyPre + " ";
+    tallyBig.appendChild(pre);
+  }
+  tallyBig.appendChild(document.createTextNode(tallyLead));
+  const tallyCap = document.createElement("span");
+  tallyCap.className = "tally-cap";
+  // leading space: collapsed away at the start of the caption line, but it
+  // keeps tallyBar.textContent character-for-character the string this bar
+  // printed before the split - so anything reading the bar as text (a
+  // screen reader, a copy-paste, a future test) sees no change at all.
+  tallyCap.textContent = " " + tallyRest;
+  tb.append(tallyBig, tallyCap);
   const wzPrefix = wzActive()
     ? `WORK AREA: ${state.workZones.length} box(es) drawn on the sheet. `
       + `Every list here - the style rows, these itemized rows, the CSV and `
@@ -7068,8 +7221,15 @@ async function loadBetaNotice() {
     if (r.ok) n = await r.json();
   } catch (e) { /* keep the built-in wording */ }
   if (n && n.long) BETA_CSV_TAIL = "\n\n" + n.long.replace(/"/g, '""') + "\n";
+  // #betaBanner is now the header's amber BETA chip rather than the
+  // full-width strip (UI FIX 1, approved by sight on the mocks). The
+  // server's sentence still lands on it verbatim - as the title, which is
+  // what the chip exists to point at - so the wording on screen, in the CSV
+  // tail and on the report stamp still cannot drift apart. The chip itself
+  // is non-dismissible and always mounted; the per-sheet CHECK FIRST card
+  // continues to carry the sheet-specific warning in full.
   const el = $("betaBanner");
-  if (el && n && n.short) el.textContent = n.short;
+  if (el && n && n.short) el.title = n.short;
 }
 loadBetaNotice();
 
