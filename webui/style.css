@@ -226,6 +226,20 @@ canvas#view.panning { cursor: grabbing; }
 .toolkit .tk.danger { color: var(--t-danger); }
 .toolkit .tk.danger:not(:disabled):hover { background: var(--t-danger-deep); color: #fff; border-color: var(--t-danger-deep); }
 .tk-sep { height: 1px; width: auto; background: var(--line); margin: 2px 4px; }
+/* THE TOOLKIT SWAP. #tkSingle (one-line tools) and #tkMulti (the
+   multi-handle toolkit) share one slot in the rail; app.js shows exactly
+   one. Each group is its own flex column so the rail looks identical
+   whichever is up - same width, same 3px gaps, same separators around it.
+   The [hidden] rule is required: the author display above would otherwise
+   out-specify the UA's [hidden] and paint both groups at once (same reason
+   .multi-bar[hidden] exists). */
+.tk-group { display: flex; flex-direction: column; gap: 3px; align-items: stretch; }
+.tk-group[hidden] { display: none; }
+/* the multi rail wears the canvas selection magenta, exactly the way
+   .multi-bar does, so the two surfaces of one selection read as one thing.
+   #ff00cc is CV_SELECT in webui/app.js - see the note at .multi-bar. */
+#tkMulti:not([hidden]) { border-left: 2px solid #ff00cc; padding-left: 3px;
+  margin-left: -5px; }
 /* selection / measure readout: floating pill along the canvas bottom */
 .canvas-status { position: absolute; left: 50%; bottom: 14px; z-index: 5;
   transform: translateX(-50%); display: flex; gap: 8px; align-items: center;
@@ -1404,6 +1418,58 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 .multi-bar .mini.danger { color: var(--t-danger); }
 .multi-bar .mini.danger:hover { background: var(--t-danger-deep); color: #fff;
   border-color: var(--t-danger-deep); }
+/* ================= Ctrl+click multi-select + the multi-handle toolkit =====
+   (2026-09-01) One selection, two ways to build it: Ctrl/Cmd+click a LINE on
+   the canvas, or Ctrl/Cmd+click a family's ROW here in LINE STYLES. Both
+   feed the one shipped set (state.multiSel).
+
+   The row marks are deliberately the canvas selection magenta and NOT an
+   accent: they must read as "this row is part of the thing highlighted on
+   the sheet", which is exactly what .multi-bar and #tkMulti already say.
+   #ff00cc is CV_SELECT in webui/app.js and has no token on purpose - see
+   the note above .multi-bar. */
+.style-row.ms-on { box-shadow: inset 3px 0 0 #ff00cc;
+  background: color-mix(in srgb, #ff00cc 10%, transparent); }
+.style-row.ms-part { box-shadow: inset 3px 0 0 #ff00cc;
+  background: color-mix(in srgb, #ff00cc 5%, transparent); }
+/* The count rides ON the row, so a partial family cannot be misread as a
+   whole one. Written through ::after and attr(), which is the SAME grid slot
+   .style-row.iso::after already occupies - a real child element here would
+   be a seventh grid item in a six-column template and would move the row.
+   A row that is both isolated and selected says both, in one string.
+
+   IT GETS ITS OWN LINE - `grid-column: 3 / -1`, the same span .style-layer
+   and .style-scope already use. Measured live on Oncor C-04 2026-09-01: at
+   the row's right-hand end (margin-left:auto, which is what .iso::after
+   does) the tag ate the name column and five selected rows printed
+   "Unnai", "Unna", "Unn". The name is the thing the operator is reading
+   when he decides these five are one item, so the tag moves rather than the
+   name. Cost: a selected row grows ~13px, and only while it is selected. */
+.style-row[data-ms]::after {
+  content: attr(data-ms); font-size: var(--t-fs-xs); font-weight: 700;
+  color: #ff00cc; white-space: nowrap;
+  grid-column: 3 / -1; justify-self: end; padding-top: 1px;
+}
+.style-row.iso[data-ms]::after { content: attr(data-ms) " \00b7 ISOLATED"; }
+
+/* the multi bar's readout: the scope in full, then the softer detail */
+.multi-bar .ms-scope { font-weight: 700; }
+.multi-bar .ms-sub { color: var(--t-text-dim, var(--dim)); }
+
+/* Anchored menu for "Move all to a family": a <select> cannot live in a
+   42px rail, so the rail button opens this beside itself. Same surface
+   tokens and the same placement grammar as .color-pop, which is the other
+   popover a rail-adjacent control opens. */
+.ms-pop { position: fixed; z-index: 60; width: 286px;
+  padding: var(--t-sp-3); border-radius: var(--t-r-3);
+  background: var(--t-surface-2); border: 1px solid var(--t-border-strong);
+  box-shadow: var(--t-el-3); color: var(--t-text);
+  font-size: var(--t-fs-sm); }
+.ms-pop .ms-head { font-weight: 700; margin-bottom: var(--t-sp-2);
+  white-space: normal; line-height: var(--t-lh-tight); }
+.ms-pop .fam-sel { max-width: 100%; width: 100%; }
+.ms-pop .ms-note { margin-top: var(--t-sp-2); font-size: var(--t-fs-xs);
+  line-height: var(--t-lh-tight); color: var(--t-text-dim, var(--dim)); }
 /* --- grading zones -------------------------------------------------------
    Declared-design regions (pad / plane / balance / strip) computed against
    the detected existing ground. Panel rows live inside the earthwork panel;

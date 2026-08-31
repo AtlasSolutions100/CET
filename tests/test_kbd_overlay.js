@@ -65,6 +65,11 @@ const BINDINGS = {
   "Ctrl+Z":        /undoRedo\(/,                                    // UNDO-CORE landing
   "⇧+drag":    /e\.shiftKey && !state\.tool/,                   // marquee multi-select
   "&#8679;+drag":  /e\.shiftKey && !state\.tool/,
+  // Ctrl/Cmd+click multi-select: the canvas half (handleCanvasClick) and the
+  // style-row half (renderStyles' row.onclick) are two call sites of one
+  // gesture, so the rule below is anchored on the canvas guard and the
+  // reverse walk under "the gesture reaches both surfaces" pins the other.
+  "Ctrl+click":    /\(e\.ctrlKey \|\| e\.metaKey\) && !e\.shiftKey/,
 };
 const PLACEHOLDERS = new Set([]);   // Ctrl+Z graduated when UNDO-CORE landed in the same wave
 
@@ -86,6 +91,11 @@ for (const k of MUST_SHOW)
   check(shown.includes(k), `binding "${k}" is documented in the overlay`);
 check(shown.some(t => /^Del \/ /.test(t)), 'Delete/Backspace is documented in the overlay');
 check(shown.includes("Ctrl+Z"), "the Ctrl+Z undo row is present");
+check(shown.includes("Ctrl+click"), "the Ctrl+click multi-select row is present");
+// the gesture reaches BOTH surfaces the overlay row promises: a line on the
+// canvas, and a whole family from its row in the style list
+check(/msPickChain\(/.test(js) && /msPickFamily\(/.test(js),
+  "Ctrl+click is wired on the canvas AND on the style rows");
 
 // ---- the overlay's plumbing ----
 check(/id="kbdHelp"[^>]*hidden/.test(html), "#kbdHelp starts hidden");

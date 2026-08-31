@@ -4488,7 +4488,14 @@ function renderStyles() {
       clearTimeout(lab._t);
       lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
     };
-    row.onclick = () => {
+    row.onclick = (e) => {
+      // CTRL/CMD+CLICK adds or removes this whole FAMILY from the
+      // multi-selection. It is the modified click, so the row's own
+      // meaning - isolate - is untouched and still one plain click away.
+      if (e && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        msPickFamily(s);
+        return;
+      }
       const on = state.isolate !== s.style_id;
       state.isolate = on ? s.style_id : null;
       // Toggle the class in place rather than re-rendering: renderStyles()
@@ -4504,6 +4511,9 @@ function renderStyles() {
     box.appendChild(row);
     if (famOpen.has(s.style_id)) famRenderList(s);
   }
+  // the rows this list just rebuilt have to come back wearing the
+  // multi-selection they were already in
+  msMarkRows();
 }
 
 // ---------- the per-family line list ----------------------------------
@@ -13133,8 +13143,11 @@ cv.addEventListener("mousedown", (e) => {
     return;
   }
   // while a click-tool is armed, clicks land IN the tool - a click on a
-  // vertex dot is a cut/draw/measure anchor, never a point-drag
-  const v = state.tool ? null : vertexAt(e);
+  // vertex dot is a cut/draw/measure anchor, never a point-drag.
+  // Ctrl/Cmd is the multi-select modifier and must not grab a vertex handle
+  // either: a Ctrl+click that landed on the selected line's own dot would
+  // otherwise start a point-drag and never reach handleCanvasClick.
+  const v = (state.tool || e.ctrlKey || e.metaKey) ? null : vertexAt(e);
   if (v !== null) {           // grab the handle rather than pan the sheet
     state.selPt = v;
     state.dragPt = true;
@@ -13459,10 +13472,48 @@ $("mergeBtn").onclick = () => {
   draw();
 };
 
+// The line under the cursor, by the SAME visibility rules a plain click and
+// the marquee already use: an excluded, hidden or isolated-away line cannot
+// be picked. Extracted verbatim from handleCanvasClick's own fallback so the
+// plain click and the Ctrl+click can never disagree about what was hit.
+function chainHitAt(px, py) {
+  const f = IMG_DPI / 72;
+  const tolPt = 6 / state.view.k / f * 4 + 1.5; // generous when zoomed out
+  let best = null, bestD = tolPt;
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
+    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
+    const pts = ch.points;
+    for (let i = 1; i < pts.length; i++) {
+      const d = distToSeg(px, py, pts[i-1], pts[i]);
+      if (d < bestD) { bestD = d; best = ch; }
+    }
+  }
+  return best;
+}
+
 function handleCanvasClick(e) {
   const [px, py] = ptFromEvent(e);
-  const { k } = state.view;
-  const f = IMG_DPI / 72;
+  // (the `k` / `f` locals that used to sit here fed the inline hit test at
+  // the foot of this function; that loop is chainHitAt() now, which reads
+  // state.view itself, and the reclass branch below has always used its own
+  // fR/tolR. Nothing else in here referenced them.)
+  // CTRL/CMD+CLICK: add or remove THIS line from the multi-selection. First,
+  // so it beats the vertex pick and the plain selection - but gated on
+  // `!state.tool`, exactly like the Shift+drag marquee, so an armed
+  // draw/measure/cut/join tool keeps every click it had.
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && !state.tool) {
+    const hit = chainHitAt(px, py);
+    if (!hit) {
+      setStatus("Ctrl+click a LINE to add it to the selection (nothing was "
+        + "under that click) — or Ctrl+click a row in LINE STYLES to add a "
+        + "whole family", "err");
+      return;
+    }
+    msPickChain(hit);
+    return;
+  }
   if (state.tool === "measure") {
     state.measurePts.push([px, py]);
     updateMeasureInfo();
@@ -13540,18 +13591,7 @@ function handleCanvasClick(e) {
     draw();
     return;
   }
-  const tolPt = 6 / k / f * 4 + 1.5; // generous when zoomed out
-  let best = null, bestD = tolPt;
-  for (const ch of state.result.chains) {
-    if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
-    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
-    const pts = ch.points;
-    for (let i = 1; i < pts.length; i++) {
-      const d = distToSeg(px, py, pts[i-1], pts[i]);
-      if (d < bestD) { bestD = d; best = ch; }
-    }
-  }
+  const best = chainHitAt(px, py);   // the same pick the Ctrl+click uses
   state.selected = best && state.selected !== best.chain_id ? best.chain_id : null;
   state.selPt = null;
   state.clickPt = state.selected !== null ? [px, py] : null;
@@ -15375,17 +15415,292 @@ function marqueePick(rect) {
   return out;
 }
 
+// ============ CTRL+CLICK MULTI-SELECT: the selection model ================
+// OWNER (2026-09-01): "holding ctrl to multi-select whethers its from line
+// styles or the lines themselves on the rendered page ... I should be able to
+// multi-select these lines and have a multi-toolkit option appear".
+//
+// WHY IT MATTERS. A CAD set routinely splits ONE real item across several
+// engine families - SE-P-UT-FIBER, C-FIBER and FO are one thing to an
+// estimator and three style rows here. The colour layer matches EXACTLY so
+// that fragmentation stays VISIBLE (one turns red, the others do not). This
+// is the tool that RESOLVES it, and the headline action is therefore not
+// "delete", it is "these five are one item".
+//
+// THE SELECTION MODEL - the decision, stated.
+//
+//   state.multiSel (a Set of chain_ids) stays the ONE canonical store. It is
+//   the shipped hook, the marquee already fills it, every bulk action already
+//   resolves through it, and draw() already highlights it. A Ctrl+click on a
+//   STYLE ROW does not store a style_id - it folds the family's live chain
+//   ids into that same set, and family membership is DERIVED back out of the
+//   set (msWholeFamilies) whenever anything is rendered.
+//
+//   The brief recommended storing style_ids alongside chain_ids. Overruled,
+//   with a reason: a STORED family record goes stale the instant one of its
+//   lines is deleted, moved to another family, or consumed by a split, and a
+//   family-level action reading that stale record would touch lines the
+//   operator did not pick - which is this codebase's "silent wrong number"
+//   shape exactly. Derived membership cannot go stale, needs no new state
+//   field, and gives the same two behaviours the brief asked for: every
+//   action resolves to a chain set, and family-level actions are offered
+//   when whole families are in it.
+//
+//   The one visible consequence, and it is a feature: Ctrl+click a family,
+//   Ctrl+click one of its lines to drop that line, then Ctrl+click the family
+//   row again - it COMPLETES the family rather than clearing it, because
+//   "add" is the only honest reading of a toggle on a partial set. The status
+//   line says which of the two happened, every time.
+//
+// MULTISEL-CORE-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_multiselect.js can eval
+// the block, like TRENCH-MATH / WZ-MATH / UNDO-CORE / LINE-FAMILY.
+
+// Ctrl+click a LINE. Returns "added" | "removed".
+function msToggleChain(sel, chainId) {
+  if (chainId === null || chainId === undefined) return "none";
+  if (sel.has(chainId)) { sel.delete(chainId); return "removed"; }
+  sel.add(chainId);
+  return "added";
+}
+
+// Ctrl+click a STYLE ROW. famIds is every live chain_id of that family.
+// Whole -> take them all out; partial or absent -> put them all in.
+// Returns "added" | "removed" | "empty".
+function msToggleFamily(sel, famIds) {
+  const ids = (famIds || []).filter(id => id !== null && id !== undefined);
+  if (!ids.length) return "empty";
+  const whole = ids.every(id => sel.has(id));
+  for (const id of ids) { if (whole) sel.delete(id); else sel.add(id); }
+  return whole ? "removed" : "added";
+}
+
+// The chain set every action resolves to: the stored ids, minus anything no
+// longer live. `liveIds` is the caller's set of ids that still exist and are
+// not excluded. Order follows `liveOrder` when given, so a bulk action walks
+// the sheet in a deterministic order rather than Set-insertion order.
+function msResolve(sel, liveIds, liveOrder) {
+  if (liveOrder) return liveOrder.filter(id => sel.has(id) && liveIds.has(id));
+  const out = [];
+  for (const id of sel) if (liveIds.has(id)) out.push(id);
+  return out;
+}
+
+// Which of the selected families are in the set WHOLE. rows is the resolved
+// selection as [{ chain_id, style_id, len }]; famLiveCount(sid) is how many
+// live lines that family has in total. A family with more live lines than
+// are selected is PARTIAL and must never be offered a family-level action.
+function msWholeFamilies(rows, famLiveCount) {
+  const bySid = new Map();
+  for (const r of rows || [])
+    bySid.set(r.style_id, (bySid.get(r.style_id) || 0) + 1);
+  const whole = [], partial = [];
+  for (const [sid, n] of bySid)
+    (n >= famLiveCount(sid) ? whole : partial).push(sid);
+  whole.sort((a, b) => a - b); partial.sort((a, b) => a - b);
+  return { whole, partial };
+}
+
+// Exactly what the bar prints, computed once: "5 families · 1,240 lines ·
+// 12.4k LF". `len` is summed in points here; the caller formats it.
+function msCounts(rows, famLiveCount) {
+  const w = msWholeFamilies(rows, famLiveCount);
+  let len = 0;
+  for (const r of rows || []) len += r.len || 0;
+  return { lines: (rows || []).length, len,
+           families: w.whole.length + w.partial.length,
+           whole: w.whole, partial: w.partial };
+}
+
+// The sentence the bar and every status line share, so the readout and the
+// disclosure can never disagree about scope. fmt turns points into the
+// sheet's own unit.
+function msScopeText(c, fmt) {
+  const f = c.families === 1 ? "1 family" : c.families + " families";
+  const l = c.lines === 1 ? "1 line" : c.lines.toLocaleString() + " lines";
+  return f + " · " + l + " · " + fmt(c.len);
+}
+// MULTISEL-CORE-END
+
 // the live members: ids still present and not excluded (an edit can consume
 // a member; the set self-prunes here rather than going stale)
+// SHEET ORDER, not pick order. Walking state.result.chains (rather than the
+// Set's insertion order) makes a bulk action's result independent of the
+// order the operator happened to build the selection in - the same
+// order-pinning the accept loops keep - and turns an O(n·m) chainById scan
+// into one O(n) pass. Membership and pruning are unchanged.
 function multiLive() {
   if (!state.result || !state.multiSel || !state.multiSel.size) return [];
   const out = [];
-  for (const id of state.multiSel) {
-    if (state.excluded.has(id)) continue;
-    const ch = chainById(id);
-    if (ch) out.push(ch);
+  for (const ch of state.result.chains) {
+    if (!state.multiSel.has(ch.chain_id)) continue;
+    if (state.excluded.has(ch.chain_id)) continue;
+    out.push(ch);
   }
   return out;
+}
+
+// ---- the app-side half of the selection model ---------------------------
+// Every live (non-excluded) chain of one family, in sheet order. This is the
+// pick set for a Ctrl+click on a style row AND the denominator for "is this
+// family in the selection WHOLE?", deliberately the same predicate on both
+// sides so the two can never disagree. It is NOT styleLiveCount: that one
+// drops chains the work-area mask zeroes, which is a question about counted
+// footage, not about which lines exist to act on.
+function msFamIds(sid) {
+  if (!state.result) return [];
+  const out = [];
+  for (const ch of state.result.chains)
+    if (ch.style_id === sid && !state.excluded.has(ch.chain_id))
+      out.push(ch.chain_id);
+  return out;
+}
+
+// How many live lines EVERY family has, in ONE pass. Built fresh at each
+// call and never memoized: the obvious cache key (chain count + excluded
+// size) is restored to its old value by an undo while the style_ids under
+// it have changed, which is exactly the stale-memo shape that produces a
+// confident wrong number here. One O(n) pass per render is the cheap,
+// always-correct option.
+function msLiveByStyle() {
+  const m = new Map();
+  if (!state.result) return m;
+  for (const ch of state.result.chains)
+    if (!state.excluded.has(ch.chain_id))
+      m.set(ch.style_id, (m.get(ch.style_id) || 0) + 1);
+  return m;
+}
+function msFamLiveCount(sid) { return msLiveByStyle().get(sid) || 0; }
+
+// the resolved selection in the shape the pure block wants
+function msRows() {
+  return multiLive().map(c => ({ chain_id: c.chain_id, style_id: c.style_id,
+                                 len: chainLenPt(c) }));
+}
+function msScope() {
+  const m = msLiveByStyle();
+  return msCounts(msRows(), (sid) => m.get(sid) || 0);
+}
+
+// "5 families · 1,240 lines · 12.4k LF", one string, one owner
+function msScopeLine(c) { return msScopeText(c || msScope(), fmtQty); }
+
+// A family the takeoff will not count is a family whose footage will not
+// appear in the row this selection is about to create. Say so before, not
+// after. Returns the un-ticked style_ids inside the selection.
+function msUntickedSids(rows) {
+  const out = [];
+  for (const sid of new Set((rows || []).map(r => r.style_id)))
+    if (!state.include.get(sid)) out.push(sid);
+  return out;
+}
+
+// ---- Ctrl/Cmd+click entry points ----------------------------------------
+// A style row. The row's own click ISOLATES; this is the modified click, so
+// nothing about isolate changes.
+function msPickFamily(s) {
+  const ids = msFamIds(s.style_id);
+  const name = familyName(s) || "this line type";
+  const r = msToggleFamily(state.multiSel, ids);
+  if (r === "empty") {
+    setStatus(`"${name}" has no lines on this sheet right now — nothing to `
+      + "select", "err");
+    return;
+  }
+  const c = msScope();
+  setStatus((r === "added"
+      ? `added "${name}" (${ids.length} line${ids.length === 1 ? "" : "s"})`
+      : `removed "${name}" from the selection`)
+    + " — selected: " + msScopeLine(c)
+    + ". Ctrl+click another style row or another line to add it; Esc clears.");
+  renderMultiBar();
+  draw();
+}
+
+// A line on the canvas.
+function msPickChain(ch) {
+  const r = msToggleChain(state.multiSel, ch.chain_id);
+  const c = msScope();
+  const st = state.result.styles.find(x => x.style_id === ch.style_id);
+  const name = familyName(st) || "unnamed line type";
+  setStatus((r === "added" ? "added 1 line" : "removed 1 line")
+    + ` from "${name}" — selected: ` + msScopeLine(c)
+    + (c.lines ? ". Ctrl+click adds or removes one at a time; Esc clears."
+               : ". Selection empty — the normal toolkit is back."));
+  renderMultiBar();
+  draw();
+}
+
+// ---- the style rows' own marks -------------------------------------------
+// In place, never through renderStyles(): that rebuilds every row and throws
+// away the operator's scroll position on a 280-row sheet (the same reason
+// refreshStyleRows and the isolate handler already refuse to call it).
+function msMarkRows() {
+  const rows = msRows();
+  const live = msLiveByStyle();       // ONE pass, not one per row
+  const byS = new Map();
+  for (const r of rows) byS.set(r.style_id, (byS.get(r.style_id) || 0) + 1);
+  for (const row of document.querySelectorAll("#styleList .style-row")) {
+    const sid = +row.dataset.sid;
+    const n = byS.get(sid) || 0;
+    row.classList.remove("ms-on", "ms-part");
+    if (!n) { row.removeAttribute("data-ms"); continue; }
+    const total = live.get(sid) || 0;
+    const whole = n >= total;
+    row.classList.add(whole ? "ms-on" : "ms-part");
+    row.setAttribute("data-ms", whole
+      ? "SELECTED · " + n + (n === 1 ? " line" : " lines")
+      : "SELECTED · " + n + " of " + total);
+  }
+}
+
+// ---- THE TOOLKIT SWAP ----------------------------------------------------
+// One rail, two groups (see index.html). While a multi-selection exists the
+// single-line tools step aside for the multi-handle toolkit; the moment the
+// set empties they come back. Measure, work area, faithful rendering and the
+// keyboard map never leave the rail, so nothing becomes unreachable - and Esc
+// or Clear selection is always the way back.
+//
+// Every button's title is rewritten here with the LIVE scope, so a bulk
+// action states what it will touch BEFORE it is pressed. That is the same
+// discipline the shipped Delete all already keeps.
+function msSyncToolkit() {
+  const single = $("tkSingle"), multi = $("tkMulti");
+  if (!single || !multi) return;
+  const on = !!(state.multiSel && state.multiSel.size);
+  single.hidden = on;
+  multi.hidden = !on;
+  if (!on) return;
+  const c = msScope();
+  const scope = msScopeLine(c);
+  const back = " Esc (or Clear selection, at the foot of this rail) puts the "
+    + "normal draw / extend / split tools back.";
+  $("msNameBtn").title = "Name these as ONE item — " + scope + "."
+    + " Every selected line is given the same name, so the itemized takeoff "
+    + "pools them into ONE row carrying their combined footage. The "
+    + (c.families === 1 ? "family stays" : c.families + " style rows stay")
+    + " exactly as detected underneath, as evidence. One Ctrl+Z reverses the "
+    + "whole naming." + back;
+  $("msFamBtn").title = "Move all to a family — " + scope + "."
+    + " The heavier action: every selected line physically changes family, so "
+    + (c.families === 1 ? "the row" : "the " + c.families + " style rows")
+    + " you picked collapse into the one you choose. Prefer “Name these "
+    + "as one item” unless you really want one style row. One Ctrl+Z "
+    + "reverses the whole move." + back;
+  $("msColorBtn").title = "Change colour — " + scope + "."
+    + (c.partial.length
+        ? " " + c.partial.length + " of these families is only partly "
+          + "selected, so those lines get a PER-LINE colour and the rest of "
+          + "their family is left alone."
+        : " Every selected family is selected whole, so this sets the FAMILY "
+          + "colour on each of them.")
+    + " Colour is a recorded decision: it is saved, it exports, and Ctrl+Z "
+    + "does NOT undo it — the popover's reset buttons do.";
+  $("msDelBtn").title = "Delete all — " + scope
+    + " leave the takeoff. One Ctrl+Z brings every one of them back.";
+  $("msClearBtn").title = "Clear the selection — drops all " + c.lines
+    + " lines from the set and changes nothing on the sheet. Esc does the "
+    + "same, and the normal toolkit comes back.";
 }
 
 function renderMultiBar() {
@@ -15394,17 +15709,50 @@ function renderMultiBar() {
   const chs = multiLive();
   if (state.multiSel.size !== chs.length)
     state.multiSel = new Set(chs.map(c => c.chain_id));
-  if (!chs.length) { bar.hidden = true; bar.textContent = ""; return; }
+  if (!chs.length) {
+    bar.hidden = true; bar.textContent = "";
+    msSyncToolkit(); msMarkRows();
+    return;
+  }
   bar.hidden = false;
   bar.textContent = "";
   const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  const c0 = msScope();
   const txt = document.createElement("span");
-  txt.className = "sel-txt";
-  txt.textContent = `${chs.length} line${chs.length === 1 ? "" : "s"} selected — ${fmtQty(totalPt)}`;
+  txt.className = "sel-txt ms-scope";
+  // THE BAR SAYS WHAT IS SELECTED AND WHAT AN ACTION WILL TOUCH, in the
+  // owner's own words: "5 families · 1,240 lines · 12.4k LF". The family
+  // count is derived from the resolved chains, so it is what a family-level
+  // action would actually reach - never a stale record of what was clicked.
+  txt.textContent = msScopeLine(c0);
+  txt.title = "What this selection is, and exactly what every button on it "
+    + "will touch." + LF + LF
+    + c0.whole.length + " of the " + c0.families + " famil"
+    + (c0.families === 1 ? "y is" : "ies are") + " selected WHOLE"
+    + (c0.partial.length
+        ? "; " + c0.partial.length + " " + (c0.partial.length === 1
+            ? "is only partly in" : "are only partly in")
+          + " (some of their lines are not selected)."
+        : ".")
+    + LF + LF
+    + "Ctrl/Cmd+click a line on the sheet, or a row in LINE STYLES, to add "
+    + "or remove it. Shift+drag still boxes lines in. Esc clears.";
+  // THE HEADLINE ACTION, first on the bar and first on the rail. Naming is
+  // the non-destructive answer to a fragmented item; moving families is the
+  // heavier one and sits second.
+  const nameB = document.createElement("button");
+  nameB.className = "mini";
+  nameB.textContent = "Name as one item";
+  nameB.title = "Give every selected line the same name — the itemized "
+    + "takeoff pools by name, so these become ONE row carrying their "
+    + "combined footage. The style rows underneath are untouched. One "
+    + "Ctrl+Z reverses it.";
+  nameB.onclick = msNameAll;
   const del = document.createElement("button");
   del.className = "mini danger";
   del.textContent = "Delete all";
-  del.title = "Remove every selected line from the takeoff — one Ctrl+Z brings them all back";
+  del.title = "Remove every selected line from the takeoff (" + msScopeLine(c0)
+    + ") — one Ctrl+Z brings them all back";
   del.onclick = multiDeleteAll;
   const move = familySelect(null, "Move all to family…", (sid) => multiMoveAll(sid),
                             () => famNewFromMulti());
@@ -15414,19 +15762,257 @@ function renderMultiBar() {
   const clr = document.createElement("button");
   clr.className = "mini";
   clr.textContent = "Clear";
-  clr.title = "Drop the selection (changes nothing on the sheet) — Esc does this too";
-  clr.onclick = () => {
-    state.multiSel = new Set();
-    renderMultiBar();
-    setStatus("selection cleared — nothing changed");
-    draw();
-  };
-  bar.append(txt, del, move, clr);
+  clr.title = "Drop the selection (changes nothing on the sheet) — Esc does "
+    + "this too, and the normal toolkit comes back";
+  clr.onclick = msClearSel;
+  bar.append(txt, nameB, del, move, clr);
+  msSyncToolkit();
+  msMarkRows();
+}
+
+// ONE clear, shared by the bar button, the rail button and Esc, so the three
+// can never drift apart.
+function msClearSel() {
+  const n = state.multiSel ? state.multiSel.size : 0;
+  state.multiSel = new Set();
+  renderMultiBar();
+  setStatus(n
+    ? `selection cleared (${n} line${n === 1 ? "" : "s"} dropped from the `
+      + "set) — nothing on the sheet changed, and the normal toolkit is back"
+    : "selection cleared — nothing changed");
+  draw();
+}
+
+// ================= THE HEADLINE ACTION: name these as one item ============
+// The cheap, honest, non-destructive answer to a fragmented item.
+// computeTakeoffRows() pools its rows by LABEL:
+//     state.chainLabels.get(chain_id) || state.labels.get(style_id)
+// so giving five families the same NAME already makes them ONE itemized row,
+// while all five engine style rows survive underneath as evidence of what
+// was actually detected. That is strictly better than moving them into one
+// family, which destroys the evidence, and it is what this button does.
+//
+// It writes state.chainLabels - exactly the map the shipped Separate tool
+// writes, one chain at a time - so there is no second labelling path, and
+// captureUndo's `labels` region already snapshots that map per chain id.
+// ONE entry for the whole set: one Ctrl+Z reverses all of it.
+function msNameAll() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  const scope = msScopeLine(c);
+  // a sensible starting point: the longest selected family's name
+  const byLen = new Map();
+  for (const r of rows) byLen.set(r.style_id, (byLen.get(r.style_id) || 0) + r.len);
+  let bestSid = null, bestLen = -1;
+  for (const [sid, L] of byLen) if (L > bestLen) { bestLen = L; bestSid = sid; }
+  const seed = familyName(state.result.styles.find(s => s.style_id === bestSid));
+  const raw = prompt(
+    "Name these as ONE item.\n\n"
+    + scope + " will all carry this name, so the itemized takeoff pools them "
+    + "into ONE row with their combined footage.\n\n"
+    + "The " + c.families + " line " + (c.families === 1 ? "family" : "families")
+    + " below stay exactly as detected — nothing is merged, moved or "
+    + "deleted, and the evidence of what the engine found is kept.\n\n"
+    + "One Ctrl+Z reverses the whole naming.",
+    seed && !/^unnamed/i.test(seed) ? seed : "");
+  if (raw === null) { setStatus("nothing named — the selection is unchanged"); return; }
+  const nm = String(raw).trim();
+  if (!nm) { setStatus("an item needs a name — nothing was named"); return; }
+  // ONE undo entry for the whole set (the UNDO-CORE LIFO invariant: every
+  // pre-existing chain the edit touches is listed, and nothing else is)
+  captureUndo(`named ${c.lines} line${c.lines === 1 ? "" : "s"} as "${nm}" — `
+    + fmtQty(c.len), chs.map(ch => ch.chain_id));
+  for (const ch of chs) state.chainLabels.set(ch.chain_id, nm);
+  // DISCLOSURE, at the moment it happens, of the two things that could
+  // otherwise surprise: an un-ticked family contributes nothing to the row,
+  // and an existing row of the same name will absorb this footage too.
+  const unticked = msUntickedSids(rows);
+  const clash = famNameClash(nm, null);
+  const clashSelected = clash && byLen.has(clash.style_id);
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  afterEdit(`"${nm}" is now ONE itemized row — ${scope} pooled into it. `
+    + `The ${c.families} style row${c.families === 1 ? "" : "s"} below `
+    + `${c.families === 1 ? "is" : "are"} untouched and still `
+    + `${c.families === 1 ? "shows" : "show"} what the engine detected. `
+    + "Ctrl+Z reverses the whole naming."
+    + (unticked.length
+        ? `  NOTE: ${unticked.length} of these famil`
+          + (unticked.length === 1 ? "ies is" : "ies are")
+          + " un-ticked in LINE STYLES, so "
+          + (unticked.length === 1 ? "its" : "their")
+          + " footage is NOT in that row until you tick "
+          + (unticked.length === 1 ? "it" : "them") + "."
+        : "")
+    + (clash && !clashSelected
+        ? `  NOTE: a line type not in this selection is already called `
+          + `"${nm}" — the takeoff adds up by name, so its footage totals `
+          + "into this same row."
+        : ""));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// ================= the rail's own anchored menus ==========================
+// A <select> cannot live in a 42px icon rail, so "Move all to a family" opens
+// the SAME familySelect the selection bar builds, in a popover beside the
+// button. No second picker, no second mutation - it calls multiMoveAll /
+// famNewFromMulti exactly as the bar does.
+let msPop = null;
+function msPopClose() { if (msPop) { msPop.remove(); msPop = null; } }
+addEventListener("mousedown", (e) => {
+  if (!msPop) return;
+  if (msPop.contains(e.target)) return;
+  if (msPop._anchor && msPop._anchor.contains(e.target)) return;
+  msPopClose();
+}, true);
+
+function msFamPop(anchor) {
+  const again = msPop && msPop._anchor === anchor;
+  msPopClose();
+  if (again) return;
+  const chs = multiLive();
+  if (!chs.length) return;
+  const c = msScope();
+  const pop = document.createElement("div");
+  pop.className = "ms-pop";
+  pop._anchor = anchor;
+  msPop = pop;
+  const h = document.createElement("div");
+  h.className = "ms-head";
+  h.textContent = "Move all to a family — " + msScopeLine(c);
+  pop.appendChild(h);
+  const sel = familySelect(null, "Choose the family…",
+    (sid) => { msPopClose(); multiMoveAll(sid); },
+    () => { msPopClose(); famNewFromMulti(); });
+  pop.appendChild(sel);
+  const note = document.createElement("div");
+  note.className = "ms-note";
+  note.textContent = "This is the HEAVIER action: the selected lines change "
+    + "family, so the "
+    + (c.families === 1 ? "row" : c.families + " rows")
+    + " you picked collapse into the one you choose and the evidence of what "
+    + "the engine detected goes with them. If all you want is one line on the "
+    + "takeoff, use “Name these as one item” instead — it pools them into one "
+    + "row and leaves every style row standing. One Ctrl+Z reverses either.";
+  pop.appendChild(note);
+  document.body.appendChild(pop);
+  msPopPlace(pop, anchor);
+}
+
+// same placement grammar as the colour popover: beside the anchor, clamped
+function msPopPlace(pop, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, hh = pop.offsetHeight;
+  let x = Math.min(r.right + 8, innerWidth - w - 8);
+  let y = Math.min(r.top, innerHeight - hh - 8);
+  pop.style.left = Math.max(8, x) + "px";
+  pop.style.top = Math.max(8, y) + "px";
+}
+
+// ================= bulk colour ============================================
+// THE COLOUR LAYER IS NOT AN EDIT. It is a recorded decision with its own
+// reset, exactly as it shipped, and NOTHING in this path may call
+// captureUndo - tests/test_line_colors.js and tests/test_multiselect.js both
+// scan the source for it, and they are right to.
+//
+// Per family or per line, to MATCH WHAT IS SELECTED: a family that is in the
+// selection WHOLE gets setFamColor (one record, and its future lines inherit
+// it); a family that is only partly selected gets setLineColor on the picked
+// lines only, because recolouring the whole family would repaint lines the
+// operator did not select.
+function msColorApply(hex) {
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  const whole = new Set(c.whole);
+  let nFam = 0, nLine = 0;
+  for (const sid of c.whole) {
+    const st = state.result.styles.find(s => s.style_id === sid);
+    if (st && setFamColor(st, hex)) nFam++;
+  }
+  for (const r of rows) {
+    if (whole.has(r.style_id)) continue;
+    const ch = chainById(r.chain_id);
+    if (ch && setLineColor(ch, hex)) nLine++;
+  }
+  const near = colorNearReserved(hex);
+  setStatus(colorNorm(hex) + " applied to " + msScopeLine(c) + " — "
+    + (nFam ? nFam + " famil" + (nFam === 1 ? "y" : "ies")
+        + " recoloured as a whole" : "")
+    + (nFam && nLine ? ", and " : "")
+    + (nLine ? nLine + " line" + (nLine === 1 ? "" : "s")
+        + " given their own colour (their families are only partly "
+        + "selected, so the rest of those families is untouched)" : "")
+    + ". Colour is a recorded decision: it is saved, it exports, and Ctrl+Z "
+    + "does NOT undo it — use the reset buttons in the picker."
+    + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+function msColorResetLines() {
+  const rows = msRows();
+  let n = 0;
+  for (const r of rows) {
+    const ch = chainById(r.chain_id);
+    if (!ch || !state.lineColor.has(ch.chain_id)) continue;
+    lineColorReset(ch); n++;
+  }
+  setStatus(n
+    ? n + " selected line" + (n === 1 ? "" : "s") + " dropped "
+      + (n === 1 ? "its" : "their") + " own colour and follow"
+      + (n === 1 ? "s" : "") + " the family again"
+    : "none of the selected lines carried a colour of its own");
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+function msColorResetAll() {
+  const rows = msRows();
+  const c = msCounts(rows, msFamLiveCount);
+  let nf = 0, nl = 0;
+  for (const sid of [...c.whole, ...c.partial]) {
+    const st = state.result.styles.find(s => s.style_id === sid);
+    if (st && state.famColor.has(sid)) { famColorReset(st); nf++; }
+  }
+  for (const r of rows) {
+    const ch = chainById(r.chain_id);
+    if (ch && state.lineColor.has(ch.chain_id)) { lineColorReset(ch); nl++; }
+  }
+  setStatus("back to the colours the detector measured — " + nf + " famil"
+    + (nf === 1 ? "y" : "ies") + " and " + nl + " line"
+    + (nl === 1 ? "" : "s") + " reset. A company colour CONVENTION saved "
+    + "against a name still applies; clear that in Pricing › Line colour "
+    + "conventions.");
+  if (state.selected !== null) updateSelBar(chainById(state.selected));
+  renderStyles(); renderChips(); renderMiniLegend(); renderMultiBar(); draw();
+}
+
+// entry point 3 for the shipped picker (after the style row's swatch and the
+// selection bar's chip): a whole multi-selection at once
+function msColorPop(anchor) {
+  const rows = msRows();
+  if (!rows.length) return;
+  const c = msCounts(rows, msFamLiveCount);
+  const st0 = state.result.styles.find(s => s.style_id === rows[0].style_id);
+  colorPopOpen({
+    anchor,
+    title: "Colour for " + msScopeLine(c),
+    current: null,          // a set has no ONE current colour; assert none
+    currentSrc: null,
+    engineCss: st0 ? engineCssFor(st0) : "no colour",
+    convLabel: null,        // the book is keyed on ONE family name
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => msColorApply(hex),
+    onResetFamily: () => msColorResetLines(),
+    onResetEngine: () => msColorResetAll(),
+  });
 }
 
 function multiDeleteAll() {
   const chs = multiLive();
   if (!chs.length) return;
+  const nFam = new Set(chs.map(c => c.style_id)).size;
   const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
   // ONE undo entry for the whole set, and the same per-chain mutation the
   // trash button uses (exclude the id) - never a forked delete path
@@ -15438,8 +16024,9 @@ function multiDeleteAll() {
     updateSelBar(null);
   }
   state.multiSel = new Set();
-  setStatus(`${chs.length} line${chs.length === 1 ? "" : "s"} deleted — `
-    + `${fmtQty(totalPt)} out of the takeoff (Ctrl+Z restores all of them)`);
+  setStatus(`${chs.length} line${chs.length === 1 ? "" : "s"} deleted across `
+    + `${nFam} famil${nFam === 1 ? "y" : "ies"} — ${fmtQty(totalPt)} out of `
+    + "the takeoff (Ctrl+Z restores all of them)");
   $("restoreBtn").hidden = false;
   renderItemized();
   refreshStyleRows();
@@ -15449,8 +16036,14 @@ function multiDeleteAll() {
 }
 
 function multiMoveAll(sid) {
-  const chs = multiLive().filter(c => c.style_id !== sid);
+  const all = multiLive();
+  const chs = all.filter(c => c.style_id !== sid);
+  // lines already in the target are not moved - and must not silently fall
+  // OUT of the selection either, or the operator's next action would touch a
+  // smaller set than the bar said it would
+  const stay = all.filter(c => c.style_id === sid).map(c => c.chain_id);
   if (!chs.length) { setStatus("every selected line is already in that family"); return; }
+  const nFamFrom = new Set(chs.map(c => c.style_id)).size;
   const lab = familyName(state.result.styles.find(s => s.style_id === sid))
     || "its new family";
   const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
@@ -15460,16 +16053,32 @@ function multiMoveAll(sid) {
     chs.map(c => c.chain_id));
   const newIds = [];
   for (const c of chs) newIds.push(reclassCore(c, sid, null).chain_id);
-  state.multiSel = new Set(newIds);   // members were re-materialized under new ids
+  state.multiSel = new Set(stay.concat(newIds));   // members were re-materialized under new ids
   if (state.selected !== null &&
       (state.excluded.has(state.selected) || !chainById(state.selected))) {
     state.selected = null; state.selPt = null;
     updateSelBar(null);
   }
   afterEdit(`moved ${chs.length} line${chs.length === 1 ? "" : "s"} — `
-    + `${fmtQty(totalPt)} into ${lab} (Ctrl+Z reverses the whole move)`);
+    + `${fmtQty(totalPt)} — out of ${nFamFrom} famil`
+    + `${nFamFrom === 1 ? "y" : "ies"} into ${lab}`
+    + (stay.length ? `; ${stay.length} were already there` : "")
+    + `. Those ${nFamFrom} style row${nFamFrom === 1 ? "" : "s"} `
+    + `${nFamFrom === 1 ? "is" : "are"} now empty of the moved linework. `
+    + "(Ctrl+Z reverses the whole move)");
   renderStyles(); renderChips(); renderMiniLegend();
 }
+
+// ---- the multi-handle rail's buttons ------------------------------------
+// Every one of them is a call into an action that already existed for the
+// selection bar. No second delete path, no second reclass path, no second
+// colour path - the rail is a second ADDRESS for the same five actions.
+$("msNameBtn").onclick = () => { msPopClose(); msNameAll(); };
+$("msFamBtn").onclick = (e) => { e.stopPropagation(); msFamPop($("msFamBtn")); };
+$("msColorBtn").onclick = (e) => { e.stopPropagation(); msPopClose();
+                                   msColorPop($("msColorBtn")); };
+$("msDelBtn").onclick = () => { msPopClose(); multiDeleteAll(); };
+$("msClearBtn").onclick = () => { msPopClose(); msClearSel(); };
 
 function typing() {
   const el = document.activeElement;
@@ -15543,6 +16152,10 @@ addEventListener("keydown", (e) => {
     return;
   }
   if (e.key === "Escape") {
+    // an open anchored menu is the shallowest layer of all - it is a menu,
+    // not a state, and dismissing it must not also spend the operator's Esc
+    // on the selection underneath it
+    if (msPop) { msPopClose(); return; }
     if (!$("kbdHelp").hidden) { $("kbdHelp").hidden = true; return; }
     // the family question outranks everything: nothing is committed while
     // it is up, and Esc is the same answer as "Discard the line"
@@ -15606,13 +16219,12 @@ addEventListener("keydown", (e) => {
       cancelExtend();
       setStatus("");
     }
-    // the marquee set clears one layer before the single selection - same
-    // tools-first grammar; the next Esc still reaches selPt/selected below
+    // the multi-selection clears one layer before the single selection -
+    // same tools-first grammar; the next Esc still reaches selPt/selected
+    // below. ONE press also restores the normal toolkit, because
+    // renderMultiBar -> msSyncToolkit is the only thing that swaps it.
     if (state.multiSel && state.multiSel.size) {
-      state.multiSel = new Set();
-      renderMultiBar();
-      setStatus("selection cleared — nothing changed");
-      draw();
+      msClearSel();
       return;
     }
     if (state.selPt !== null) { state.selPt = null; updateSelBar(chainById(state.selected)); }

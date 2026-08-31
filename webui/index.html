@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=60">
+<link rel="stylesheet" href="style.css?v=61">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -664,7 +664,12 @@
     <div id="bidBox" class="bid-view" hidden></div>
         </section>
         <section class="card" id="cardStyles">
-    <div class="side-head" id="stylesHead">
+    <!-- The header carries the Ctrl+click affordance, because a modified
+         click is invisible: nothing on a row can show it, and the operator
+         who needs it most is the one looking at five rows he believes are
+         one item. Same sentence as the keyboard map's Ctrl+click row. -->
+    <div class="side-head" id="stylesHead"
+         title="Ctrl+click (Cmd+click on a Mac) a row to add that whole family to a multi-selection — several families at once, then name them as ONE item, move them into one family, recolour or delete them from the multi-handle toolkit on the left rail. Ctrl+click again takes a family back out; Esc clears.">
       <h2>Line styles <span class="card-n" id="stylesCount"></span></h2>
       <div class="side-actions">
         <!-- The reopen control for "Whose scope is this?" below. Always
@@ -734,6 +739,7 @@
         <kbd>Scroll</kbd><span>Zoom at the cursor</span>
         <kbd>Drag</kbd><span>Pan the sheet (drag a vertex dot to move that point)</span>
         <kbd>&#8679;+drag</kbd><span>Multi-select: drag across lines — the box only has to touch them (drag again adds; Delete removes all; Esc clears)</span>
+        <kbd>Ctrl+click</kbd><span>Multi-select one at a time: a line on the sheet, or a whole family by its row in LINE STYLES (click again to take it out). The left rail swaps to the multi-handle toolkit</span>
         <kbd>Esc</kbd><span>Layered: exit the armed tool first, then clear the multi-selection, the picked point, the selection, then isolate off</span>
       </div>
       <!-- Tools: M app.js:11136 (measureBtn app.js:10929); Enter finishes
@@ -790,10 +796,23 @@
     <!-- Toolkit groups, separated by .tk-sep: measure | edit geometry
          (split/extend/cut/draw) | family ops (reclass/merge/separate) |
          delete | work area | view toggles + help. Button DOM order is
-         untouched - only separators were inserted. -->
+         untouched - only separators were inserted.
+
+         THE SWAP (2026-09-01, Ctrl+click multi-select). The middle of the
+         rail is two groups in one slot: #tkSingle - every tool that acts on
+         ONE picked line - and #tkMulti, the multi-handle toolkit. Exactly
+         one of them is on screen; msSyncToolkit() in app.js flips them on
+         the size of state.multiSel and nothing else. Button DOM order,
+         ids, titles and separators inside #tkSingle are untouched, and the
+         four tools that are NOT about one line - measure, work area,
+         faithful rendering, keyboard help - sit OUTSIDE both groups and
+         never leave the rail, so a multi-selection cannot make them
+         unreachable. Esc (or Clear selection) empties the set and #tkSingle
+         comes straight back. -->
     <div class="toolkit">
       <button id="measureBtn" class="tk" title="Measure — click points on the sheet to read the distance (M; Esc to finish). Know the true dimension? Type it in the readout to calibrate the sheet scale."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/></svg></button>
       <span class="tk-sep"></span>
+      <div id="tkSingle" class="tk-group">
       <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.6 20 19M8.2 16.4 20 5"/></svg></button>
       <button id="extendBtn" class="tk" title="Extend the selected line — click where it should reach, or click a point on its own body to branch a spur off it (E)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h14M13 6l6 6-6 6"/></svg></button>
       <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h5M16 12h5"/><path d="M10.5 12h3" stroke-dasharray="2 2.4"/></svg></button>
@@ -804,6 +823,19 @@
       <button id="sepBtn" class="tk" title="Separate — name the selected line and give it its own row in the itemized takeoff, priced apart from its family (no shortcut key)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="8" y="15" width="13" height="5" rx="1.5"/><path d="M3 17.5h2.5"/></svg></button>
       <span class="tk-sep"></span>
       <button id="removeBtn" class="tk danger" title="Delete the picked point, or the whole selected line if no point is picked (Delete or Backspace). Removed lines leave the count; Reset edits brings them back."><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+      </div>
+      <!-- THE MULTI-HANDLE TOOLKIT. Shown only while a multi-selection
+           exists. Titles are rewritten with the live scope ("… all 1,240
+           selected lines in 5 families — 12.4k LF") by msSyncToolkit()
+           every time the set changes, so every action states what it will
+           touch BEFORE it is pressed. -->
+      <div id="tkMulti" class="tk-group" hidden>
+      <button id="msNameBtn" class="tk" title="Name these as one item"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7M4 10h5M4 14h7M4 18h5"/><path d="M13 8h7M13 8v8h7"/><rect x="19" y="10.5" width="3" height="3" rx=".8"/></svg></button>
+      <button id="msFamBtn" class="tk" title="Move all to a family"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13M14 3l4 4-4 4M20 17H7M10 13l-4 4 4 4"/></svg></button>
+      <button id="msColorBtn" class="tk" title="Change colour"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c-4.5 0-8 3.4-8 7.7 0 4 3 6.8 6.4 6.8 1.3 0 1.9.7 1.9 1.6 0 1 .8 1.9 1.9 1.9 3.2 0 5.8-3.1 5.8-7.3C20 6.6 16.5 3 12 3z"/><circle cx="8.2" cy="9.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.2" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.8" cy="9.4" r="1.1" fill="currentColor" stroke="none"/></svg></button>
+      <button id="msDelBtn" class="tk danger" title="Delete all selected lines"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg></button>
+      <button id="msClearBtn" class="tk" title="Clear the selection"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="17" height="17" rx="2.5" stroke-dasharray="3 2.6"/><path d="m9 9 6 6M15 9l-6 6"/></svg></button>
+      </div>
       <span class="tk-sep"></span>
       <button id="wzBtn" class="tk" title="Work area &mdash; drag one or more boxes around the part of the sheet that counts. The takeoff lists (style rows, itemized rows, CSV, approve export) count only length inside your boxes; detection is untouched and Clear restores everything. The earthwork and trench calculators keep their own limit-of-work boundary and are not masked."><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2.6"/></svg></button>
       <button id="wzClearBtn" class="tk danger" hidden title="Clear the work area &mdash; every line counts in full again"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="12" height="12" rx="2" stroke-dasharray="3 2.6"/><path d="m14.6 14.6 6.4 6.4M21 14.6l-6.4 6.4"/></svg></button>
@@ -921,6 +953,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=135"></script>
+<script src="app.js?v=136"></script>
 </body>
 </html>
