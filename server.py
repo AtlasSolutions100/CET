@@ -329,7 +329,11 @@ if True:
     # Terms and Privacy must be readable BEFORE anyone signs in - a policy you
     # can only see once you have already accepted it is not a policy. They pull
     # legal.css and the logo, so those are public too, and nothing else is.
+    # The site mark: /favicon.ico was already public, but the SVG and the
+    # apple-touch PNG were not, so the login page - the one page every user
+    # sees before any of this matters - fell back to a blank tab icon.
     _PUBLIC = {"/login", "/login.html", "/api/login", "/favicon.ico",
+               "/favicon.svg", "/favicon-32.png", "/favicon-180.png",
                "/terms", "/terms.html", "/privacy", "/privacy.html",
                "/legal.css", "/lockup-animated.svg"}
 
@@ -340,7 +344,8 @@ if True:
     # were told.
     _RESET_OK = {"/change-password", "/change-password.html",
                  "/api/change-password", "/api/me", "/api/logout",
-                 "/api/beta-notice", "/favicon.ico"}
+                 "/api/beta-notice", "/favicon.ico", "/favicon.svg",
+                 "/favicon-32.png", "/favicon-180.png"}
 
     # Crude per-IP throttle. Twenty known accounts on one box does not warrant
     # a real rate limiter, but it should not be a free password oracle either.
