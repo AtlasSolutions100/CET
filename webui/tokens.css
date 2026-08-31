@@ -1,0 +1,242 @@
+/* ==========================================================================
+   CORE Takeoff — design tokens
+   --------------------------------------------------------------------------
+   Load ORDER, in index.html:
+       <link rel="stylesheet" href="tokens.css?v=1">
+       <link rel="stylesheet" href="style.css?v=53">
+
+   tokens.css loads FIRST and is the SINGLE source of the palette: style.css
+   no longer declares one. The legacy names (--bg --panel --line --text --dim
+   --accent --accent-deep --ok --hover --chip --stage --field --mono
+   --swatch-line) are re-declared at the bottom of this file on `:root:root`
+   (specificity 0-2-0), so they keep winning even if a later edit puts a
+   plain `:root` block back into style.css. New rules should use --t-* names.
+
+   NOTHING here changes a number. Presentation only.
+   ========================================================================== */
+
+/* ------------------------------------------------------------------ FONTS
+   Self-hosted. The mocks pulled IBM Plex from fonts.googleapis.com; the
+   shipped app must render identically in a field office with no internet,
+   so the latin subsets live in webui/fonts/ (SIL OFL 1.1 — see
+   webui/fonts/LICENSE). Every stack still ends in a real system fallback
+   so a missing/blocked font file degrades to Segoe UI / Consolas rather
+   than to a default serif.
+
+   IBM Plex Sans latin is ONE variable file (fvar/avar/HVAR/STAT present),
+   so a single face covers 400/500/600. IBM Plex Mono latin is static, one
+   file per weight. unicode-range matches Google's own `latin` subset. */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  /* ------------------------------------------------------------------ TYPE
+     Two faces, one family: IBM Plex Sans for prose/labels, IBM Plex Mono
+     for DATA ONLY — quantities, ids, evidence strings. Mono is a meaning:
+     "this came off the sheet / out of the engine". It is never a heading
+     style, and nothing in the UI is uppercase+letterspaced by default.
+     Uppercase survives in exactly two places: the 4-letter brand and the
+     severity badge words (CHECK FIRST / OK / STOP). */
+  --t-font-ui:   "IBM Plex Sans", "Segoe UI", -apple-system, system-ui, sans-serif;
+  --t-font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* Type scale — 14px base. The floor is 12px: field-office monitors sit
+     further away than a laptop and the app had 161 rules between 8.5 and
+     11.5px. Nothing below --t-fs-xs. */
+  --t-fs-xs:   12px;   /* chips, meta, footnotes — the FLOOR */
+  --t-fs-sm:   13px;   /* secondary rows, hints */
+  --t-fs-base: 14px;   /* body, controls */
+  --t-fs-md:   16px;   /* card titles, sheet name */
+  --t-fs-lg:   20px;   /* page titles, key quantities */
+  --t-fs-xl:   26px;   /* the money number on the approve bar */
+  --t-lh-tight: 1.3;
+  --t-lh-body:  1.5;
+
+  /* every quantity cell: lining, equal-width digits */
+  --t-numeric: tabular-nums lining-nums;
+
+  /* -------------------------------------------------------------- SPACING */
+  --t-sp-1: 4px;
+  --t-sp-2: 8px;
+  --t-sp-3: 12px;
+  --t-sp-4: 16px;
+  --t-sp-5: 24px;
+  --t-sp-6: 32px;
+  --t-sp-7: 48px;
+  --t-sp-8: 64px;
+
+  /* ---------------------------------------------------------------- RADII */
+  --t-r-1: 4px;      /* inputs, chips-with-corners */
+  --t-r-2: 8px;      /* buttons, rows */
+  --t-r-3: 12px;     /* cards, panels, menus */
+  --t-r-pill: 999px; /* provenance chips, status pills */
+
+  /* ------------------------------------------------------------ ELEVATION
+     Dark UIs elevate with lighter surfaces + shadow, not shadow alone. */
+  --t-el-1: 0 1px 2px rgba(0,0,0,.30);
+  --t-el-2: 0 4px 14px rgba(0,0,0,.35);
+  --t-el-3: 0 12px 40px rgba(0,0,0,.45);     /* menus, modals */
+  --t-focus: 0 0 0 2px var(--t-accent);
+
+  /* ------------------------------------------------- DARK PALETTE (default)
+       stage (deepest, the "table" the sheet lies on)
+       < surface-1 (chrome: header, rails, sidebar ground)
+       < surface-2 (cards ON the sidebar / floating toolbars)
+       < surface-3 (menus, hovers, modals — highest).
+     The white sheet is the brightest thing on screen BY DESIGN; chrome
+     stays two stops darker so linework wins every contrast contest. */
+  --t-stage:     #0c0e10;
+  --t-surface-1: #16191b;
+  --t-surface-2: #1e2224;
+  --t-surface-3: #262b2e;
+  --t-field:     #24292c;   /* inputs sit slightly above their card */
+  --t-border:    #2e3438;
+  --t-border-strong: #3d454a;
+
+  --t-text:      #e9ecee;
+  --t-text-dim:  #9aa5ab;
+  --t-text-faint:#6b757b;
+  /* hairline around a color swatch, so a dark family chip still has an edge */
+  --t-swatch-line: rgba(255,255,255,.25);
+
+  /* Brand: Work Optional forest green, ONE accent. */
+  --t-accent:      #3fa873;
+  --t-accent-deep: #1f5c3e;
+  --t-accent-ink:  #06210f;   /* text on solid accent */
+
+  /* ------------------------------------------------ SEMANTIC — VERDICTS
+     The app's confidence grammar, promoted to tokens:
+       ok    = a second independent source corroborates (green)
+       warn  = one source, or a choice the operator must make (amber)
+       stop  = two sources contradict / no scale (red)
+       info  = neutral fact, no verdict (blue-gray)
+     A confident wrong number is worse than no number: warn is the default
+     state of everything unverified. Never restyle warn to look like ok. */
+  --t-ok:        #3fa873;
+  --t-ok-bg:     rgba(63,168,115,.14);
+  --t-ok-ink:    #06210f;     /* text on a solid ok badge */
+  --t-warn:      #d79b3a;
+  --t-warn-bg:   rgba(215,155,58,.13);
+  --t-warn-ink:  #241703;     /* text on a solid warn badge */
+  --t-stop:      #e0574a;
+  --t-stop-bg:   rgba(224,87,74,.13);
+  --t-stop-ink:  #2a0503;     /* text on a solid stop badge */
+  --t-info:      #6d93c8;
+  --t-info-bg:   rgba(109,147,200,.13);
+
+  /* Danger controls (delete, remove-from-server) */
+  --t-danger:      #e0574a;
+  --t-danger-deep: #8f2f26;
+
+  /* ------------------------------------------------ SEMANTIC — EARTHWORK
+     The industry map convention the app already uses (AGTEK et al.):
+     cut = blue, fill = orange. These are DATA colors, exempt from the
+     one-accent rule, and must never be reassigned to UI meanings. */
+  --t-cut:      #4f8ff7;
+  --t-cut-bg:   rgba(79,143,247,.16);
+  --t-fill:     #e8912d;
+  --t-fill-bg:  rgba(232,145,45,.16);
+  /* the existing/proposed surface assignment pair (earthwork rows) */
+  --t-exist:    #35b26b;
+  --t-exist-bg: rgba(53,178,107,.16);
+  --t-prop:     #4f8ff7;
+  --t-prop-bg:  rgba(79,143,247,.16);
+
+  /* selection / measure — ONE interactive highlight for "the thing you are
+     drawing or measuring right now", replacing magenta measure + cyan
+     structure + orange armed states. It is deliberately NOT the canvas
+     chain-selection magenta (#ff00cc, set in app.js) and not cut blue. */
+  --t-select:    #58b7e6;
+  --t-select-bg: rgba(88,183,230,.18);
+}
+
+/* ------------------------------------------------------- LIGHT ("paper") */
+:root[data-theme="light"] {
+  --t-stage:     #dcdfd8;   /* darker than the panels: the sheet still pops */
+  --t-surface-1: #f4f5f1;
+  --t-surface-2: #ffffff;
+  --t-surface-3: #ffffff;
+  --t-field:     #eef0ea;
+  --t-border:    #d9ddd4;
+  --t-border-strong: #b9c0b6;
+
+  --t-text:      #24272a;
+  --t-text-dim:  #5f6a64;
+  --t-text-faint:#8a938d;
+  --t-swatch-line: rgba(0,0,0,.25);
+
+  --t-accent:      #1f5c3e;
+  --t-accent-deep: #1f5c3e;
+  --t-accent-ink:  #ffffff;
+
+  --t-ok:      #1f7a4d;  --t-ok-bg:   rgba(31,122,77,.12);   --t-ok-ink:   #ffffff;
+  --t-warn:    #a86c14;  --t-warn-bg: rgba(168,108,20,.12);  --t-warn-ink: #241703;
+  --t-stop:    #bb3a2e;  --t-stop-bg: rgba(187,58,46,.10);   --t-stop-ink: #ffffff;
+  --t-info:    #3d6ca8;  --t-info-bg: rgba(61,108,168,.10);
+  --t-danger:  #bb3a2e;  --t-danger-deep: #8f2f26;
+
+  --t-cut:     #2f6fd6;  --t-cut-bg:  rgba(47,111,214,.14);
+  --t-fill:    #c4761a;  --t-fill-bg: rgba(196,118,26,.14);
+  --t-exist:   #1f7a4d;  --t-exist-bg: rgba(31,122,77,.14);
+  --t-prop:    #2f6fd6;  --t-prop-bg:  rgba(47,111,214,.14);
+  --t-select:  #1a7fb5;  --t-select-bg: rgba(26,127,181,.14);
+
+  --t-el-1: 0 1px 2px rgba(20,24,20,.10);
+  --t-el-2: 0 4px 14px rgba(20,24,20,.12);
+  --t-el-3: 0 12px 40px rgba(20,24,20,.18);
+}
+
+/* ==========================================================================
+   LEGACY REMAP — the names style.css already consumes, now sourced here.
+   `:root:root` (0-2-0) out-specifies any plain `:root` regardless of file
+   order. Delete each line as style.css migrates to the --t-* names.
+   ========================================================================== */
+:root:root {
+  --bg:          var(--t-surface-1);
+  --panel:       var(--t-surface-2);
+  --line:        var(--t-border);
+  --text:        var(--t-text);
+  --dim:         var(--t-text-dim);
+  --accent:      var(--t-accent);
+  --accent-deep: var(--t-accent-deep);
+  --ok:          var(--t-ok);
+  --hover:       var(--t-surface-3);
+  --chip:        var(--t-surface-3);
+  --stage:       var(--t-stage);
+  --field:       var(--t-field);
+  --mono:        var(--t-font-data);
+  --swatch-line: var(--t-swatch-line);
+}
+:root:root[data-theme="light"] {
+  --hover:       var(--t-field);
+  --chip:        var(--t-field);
+}

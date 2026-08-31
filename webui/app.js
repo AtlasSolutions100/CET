@@ -7872,7 +7872,7 @@ function ewDispRow(lay, i) {
     const r = isFinite(lay.reuse_pct) ? lay.reuse_pct : 0;
     const s = isFinite(lay.respread_pct) ? lay.respread_pct : 0;
     exp.textContent = `${Math.max(100 - r - s, 0)}% export`;
-    exp.style.color = (r + s > 100) ? "var(--bad, #c0483c)" : "";
+    exp.style.color = (r + s > 100) ? "var(--t-stop)" : "";
   }
   paint();
   const span = (cls, txt) => {
@@ -10034,6 +10034,59 @@ function fitView() {
   state.view.y = (cv.clientHeight - state.img.height * state.view.k) / 2;
 }
 
+/* ---- canvas paint, in one place ----------------------------------------
+   Every colour the sheet is drawn with used to be a hex literal buried in
+   draw(). They are named constants now, so a palette change is one edit and
+   so the CSS chrome that echoes a canvas colour can be pinned to it by name.
+
+   PROTECTED - unchanged in value AND in meaning by the 2026-08-31 token pass:
+     CV_SELECT      the chain-selection magenta. Multi-select paints the same
+                    hue a step thinner (see draw()), which is the existing
+                    contract; it must stay unmistakable against every family
+                    colour and against CV_MEASURE. style.css `.multi-bar`
+                    carries this literal to match - change both or neither.
+     CV_GZ_CUT_LAB / CV_GZ_FILL_LAB
+                    red = cut, blue = fill on the per-cell dz numbers. That is
+                    deliberately the OPPOSITE hue for cut from the map tint
+                    underneath (whose convention is cut = BLUE): it follows the
+                    reference aerial's label convention, and the zone row's
+                    title says which is which. Do not "fix" it.
+     AR_COLOR / AR_HOT, ST_COLOR - declared with their own features, untouched.
+
+   RETINTED by that pass (the only colour changes in this file):
+     CV_MEASURE       #b3369a -> #58b7e6, matching --t-select, which is what
+                      #measureBtn.active and #measureInfo now use.
+     ST_DRAFT_COLOR   #00a8e8 -> #58b7e6, same reason (.st-modes button.active
+                      and .st-draft moved to --t-select).
+   ------------------------------------------------------------------------ */
+const CV_SHEET        = "#fff";              // the paper under the linework
+const CV_SELECT       = "#ff00cc";           // PROTECTED - see above
+const CV_MARQUEE_FILL = "rgba(255,0,204,0.07)";
+const CV_VERTEX       = "#ffffff";           // vertex handle fill
+const CV_VERTEX_ON    = "#ffd400";           // the vertex under the cursor
+const CV_VERTEX_ON_RG = "#8a6d00";           // ...and its ring
+const CV_MEASURE      = "#58b7e6";           // RETINTED - was #b3369a
+const CV_CUTSPAN      = "#e0245e";           // cut-span first anchor
+const CV_WORKZONE     = "#0e8a5f";           // work-zone drag rectangle
+const CV_EWBOUND      = "rgba(67,160,71,.95)";  // limit-of-work, in flight
+const CV_EWBOUND_DOT  = "#43a047";
+const CV_GZONE        = "#8e24aa";           // grading zone (purple: cannot be
+const CV_GZONE_DRAFT  = "rgba(142,36,170,.95)";  // confused with the green
+const CV_GZONE_SAVED  = "rgba(142,36,170,.9)";   // limit-of-work draft)
+const CV_GZ_CUT_LAB   = "#c62828";           // PROTECTED - see above
+const CV_GZ_FILL_LAB  = "#1565c0";           // PROTECTED - see above
+const CV_GZ_ZERO_LAB  = "#5f6a63";
+const CV_GZ_BADGE_BG  = "rgba(20,24,20,.85)";
+const CV_GZ_BADGE_ERR = "rgba(122,74,10,.9)";
+const CV_GZ_BADGE_TXT = "#fff";
+const CV_LABEL_HALO   = "rgba(255,255,255,.85)";
+const CV_SYMBOL       = "#a64dff";           // Count panel instance rings
+const CV_OPENING      = "rgba(160,120,40,.55)";  // door/opening exclusion ring
+const CV_WZ_MASK      = "rgba(255,255,255,0.62)";  // outside the work area
+const CV_WZ_EDGE      = "rgba(14,138,95,0.85)";    // a committed work-area box
+const CV_FAM_UNKNOWN  = "#8f959e";           // a family the engine gave no colour
+const CV_FAM_NEARWHITE = "#a7adb6";          // ...or gave one that is invisible
+
 function draw() {
   // buffer may lag the element across browser zoom - resync before painting
   const bw = Math.round(cv.clientWidth * devicePixelRatio);
@@ -10049,7 +10102,7 @@ function draw() {
   const { x, y, k } = state.view;
   ctx.save();
   ctx.translate(x, y); ctx.scale(k, k);
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = CV_SHEET;
   ctx.fillRect(0, 0, state.img.width, state.img.height);
   ctx.drawImage(state.img, 0, 0);
   if (state.result) {
@@ -10134,7 +10187,7 @@ function draw() {
       const msel = !sel && state.multiSel.size > 0 && state.multiSel.has(ch.chain_id);
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
     ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
-    ctx.strokeStyle = (sel || msel) ? "#ff00cc" : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
+    ctx.strokeStyle = (sel || msel) ? CV_SELECT : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
       ctx.lineWidth = sel ? 4.5 / k
@@ -10199,10 +10252,10 @@ function draw() {
         if (!on && i !== 0 && i !== sel.points.length - 1 && i % step) return;
         ctx.beginPath();
         ctx.arc(q[0] * f2, q[1] * f2, on ? rad * 1.9 : rad, 0, Math.PI * 2);
-        ctx.fillStyle = on ? "#ffd400" : "#ffffff";
+        ctx.fillStyle = on ? CV_VERTEX_ON : CV_VERTEX;
         ctx.fill();
         ctx.lineWidth = 1.2 / k;
-        ctx.strokeStyle = on ? "#8a6d00" : "#ff00cc";
+        ctx.strokeStyle = on ? CV_VERTEX_ON_RG : CV_SELECT;
         ctx.stroke();
       });
     }
@@ -10260,7 +10313,7 @@ function draw() {
     const opens2 = state.result.openings || [];
     if (opens2.length) {
       ctx.setLineDash([3 / k, 3 / k]);
-      ctx.strokeStyle = "rgba(160,120,40,.55)";
+      ctx.strokeStyle = CV_OPENING;
       ctx.lineWidth = 1 / k;
       for (const o of opens2) {
         ctx.beginPath();
@@ -10281,10 +10334,10 @@ function draw() {
     if (wzActive()) {
       const zonesPx = state.workZones.map(
         z => [z[0] * fz, z[1] * fz, z[2] * fz, z[3] * fz]);
-      ctx.fillStyle = "rgba(255,255,255,0.62)";
+      ctx.fillStyle = CV_WZ_MASK;
       for (const rc of wzComplementRects(zonesPx, state.img.width, state.img.height))
         ctx.fillRect(rc[0], rc[1], rc[2] - rc[0], rc[3] - rc[1]);
-      ctx.strokeStyle = "rgba(14,138,95,0.85)";
+      ctx.strokeStyle = CV_WZ_EDGE;
       ctx.lineWidth = 1.6 / k;
       ctx.setLineDash([7 / k, 5 / k]);
       for (const z of zonesPx)
@@ -10293,7 +10346,7 @@ function draw() {
     }
     if (state.wzDrag) {
       const a = state.wzDrag.a, b = state.wzDrag.b;
-      ctx.strokeStyle = "#0e8a5f";
+      ctx.strokeStyle = CV_WORKZONE;
       ctx.lineWidth = 1.8 / k;
       ctx.setLineDash([5 / k, 4 / k]);
       ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
@@ -10307,9 +10360,9 @@ function draw() {
     const a = state.marquee.a, b = state.marquee.b;
     const rx = Math.min(a[0], b[0]) * fq, ry = Math.min(a[1], b[1]) * fq;
     const rw = Math.abs(b[0] - a[0]) * fq, rh = Math.abs(b[1] - a[1]) * fq;
-    ctx.fillStyle = "rgba(255,0,204,0.07)";
+    ctx.fillStyle = CV_MARQUEE_FILL;
     ctx.fillRect(rx, ry, rw, rh);
-    ctx.strokeStyle = "#ff00cc";
+    ctx.strokeStyle = CV_SELECT;
     ctx.lineWidth = 1.6 / k;
     ctx.setLineDash([6 / k, 4 / k]);
     ctx.strokeRect(rx, ry, rw, rh);
@@ -10320,14 +10373,14 @@ function draw() {
     const f2 = IMG_DPI / 72;
     ctx.beginPath();
     ctx.arc(state.cutA.q[0] * f2, state.cutA.q[1] * f2, 5 / k, 0, Math.PI * 2);
-    ctx.fillStyle = "#e0245e"; ctx.fill();
-    ctx.lineWidth = 1.5 / k; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+    ctx.fillStyle = CV_CUTSPAN; ctx.fill();
+    ctx.lineWidth = 1.5 / k; ctx.strokeStyle = CV_VERTEX; ctx.stroke();
   }
   // in-progress drawn line
   if (state.tool === "ew-bound-draw" && state.ewBoundDraft.length) {
     const f2b = IMG_DPI / 72;
     ctx.save();
-    ctx.strokeStyle = "rgba(67,160,71,.95)";
+    ctx.strokeStyle = CV_EWBOUND;
     ctx.lineWidth = 2 / state.view.k;
     ctx.setLineDash([8 / state.view.k, 5 / state.view.k]);
     ctx.beginPath();
@@ -10341,7 +10394,7 @@ function draw() {
     for (const q of state.ewBoundDraft) {
       ctx.beginPath();
       ctx.arc(q[0] * f2b, q[1] * f2b, 4 / state.view.k, 0, Math.PI * 2);
-      ctx.fillStyle = "#43a047";
+      ctx.fillStyle = CV_EWBOUND_DOT;
       ctx.fill();
     }
     ctx.restore();
@@ -10351,7 +10404,7 @@ function draw() {
   if (state.tool === "gz-draw" && state.gzDraft.length) {
     const fz = IMG_DPI / 72;
     ctx.save();
-    ctx.strokeStyle = "rgba(142,36,170,.95)";
+    ctx.strokeStyle = CV_GZONE_DRAFT;
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([8 / k, 5 / k]);
     ctx.beginPath();
@@ -10365,7 +10418,7 @@ function draw() {
     for (const q of state.gzDraft) {
       ctx.beginPath();
       ctx.arc(q[0] * fz, q[1] * fz, 4 / k, 0, Math.PI * 2);
-      ctx.fillStyle = "#8e24aa";
+      ctx.fillStyle = CV_GZONE;
       ctx.fill();
     }
     ctx.restore();
@@ -10374,7 +10427,7 @@ function draw() {
   if (state.gzDrag) {
     const fz = IMG_DPI / 72;
     const a = state.gzDrag.a, b = state.gzDrag.b;
-    ctx.strokeStyle = "#8e24aa";
+    ctx.strokeStyle = CV_GZONE;
     ctx.lineWidth = 1.8 / k;
     ctx.setLineDash([5 / k, 4 / k]);
     ctx.strokeRect(Math.min(a[0], b[0]) * fz, Math.min(a[1], b[1]) * fz,
@@ -10389,7 +10442,7 @@ function draw() {
     for (const z of state.gzones) {
       const poly = z.polygon;
       ctx.save();
-      ctx.strokeStyle = "rgba(142,36,170,.9)";
+      ctx.strokeStyle = CV_GZONE_SAVED;
       ctx.lineWidth = 2 / k;
       ctx.setLineDash([9 / k, 5 / k]);
       ctx.beginPath();
@@ -10413,11 +10466,11 @@ function draw() {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.lineWidth = fontPx / 5;
-        ctx.strokeStyle = "rgba(255,255,255,.85)";
+        ctx.strokeStyle = CV_LABEL_HALO;
         for (const c of z.result.cell_labels) {
           const dzv = c.dz === 0 ? 0 : c.dz;   // -0.0 reads as a cut of nothing
           const t = (dzv > 0 ? "+" : "") + dzv.toFixed(1);
-          ctx.fillStyle = dzv < 0 ? "#c62828" : dzv > 0 ? "#1565c0" : "#5f6a63";
+          ctx.fillStyle = dzv < 0 ? CV_GZ_CUT_LAB : dzv > 0 ? CV_GZ_FILL_LAB : CV_GZ_ZERO_LAB;
           ctx.strokeText(t, c.x * fz, c.y * fz);
           ctx.fillText(t, c.x * fz, c.y * fz);
         }
@@ -10433,12 +10486,12 @@ function draw() {
       const w = ctx.measureText(txt).width + 12 / k;
       const h = fpx + 10 / k;
       const bx = cx * fz - w / 2, by = cy * fz - h / 2;
-      ctx.fillStyle = z.err ? "rgba(122,74,10,.9)" : "rgba(20,24,20,.85)";
+      ctx.fillStyle = z.err ? CV_GZ_BADGE_ERR : CV_GZ_BADGE_BG;
       ctx.beginPath();
       if (ctx.roundRect) ctx.roundRect(bx, by, w, h, 4 / k);
       else ctx.rect(bx, by, w, h);
       ctx.fill();
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = CV_GZ_BADGE_TXT;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(txt, cx * fz, cy * fz);
@@ -10456,20 +10509,20 @@ function draw() {
     if (state.hoverPt) ctx.lineTo(state.hoverPt[0] * f2, state.hoverPt[1] * f2);
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([6 / k, 4 / k]);
-    ctx.strokeStyle = "#ff00cc";
+    ctx.strokeStyle = CV_SELECT;
     ctx.stroke();
     ctx.setLineDash([]);
     for (const q of state.drawPts) {
       ctx.beginPath();
       ctx.arc(q[0] * f2, q[1] * f2, 3.5 / k, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff"; ctx.fill();
-      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = "#ff00cc"; ctx.stroke();
+      ctx.fillStyle = CV_VERTEX; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_SELECT; ctx.stroke();
     }
   }
   // symbol-instance markers from the Count panel
   if (state.symMarks && state.symMarks.length) {
     const f3 = IMG_DPI / 72;
-    ctx.strokeStyle = "#a64dff";
+    ctx.strokeStyle = CV_SYMBOL;
     ctx.lineWidth = 2.2 / k;
     for (const c of state.symMarks) {
       ctx.beginPath();
@@ -10479,8 +10532,8 @@ function draw() {
   }
   if (state.measurePts.length) {
     const f = IMG_DPI / 72;
-    ctx.strokeStyle = "#b3369a";
-    ctx.fillStyle = "#b3369a";
+    ctx.strokeStyle = CV_MEASURE;
+    ctx.fillStyle = CV_MEASURE;
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([7 / k, 5 / k]);
     ctx.beginPath();
@@ -10541,7 +10594,7 @@ function styleColor(sid) {
   return styleColorCache.get(sid);
 }
 function cssColor(c, w) {
-  if (!c) return "#8f959e";
+  if (!c) return CV_FAM_UNKNOWN;
   const [r, g, b] = c.map(v => Math.round(v * 255));
   // near-white linework draws as the faint grey it visually is on the
   // sheet - at EVERY weight. White ink is invisible on paper: rendering
@@ -10549,7 +10602,7 @@ function cssColor(c, w) {
   // rows and squiggles along the Oncor boundary, because the white w3.3
   // family there is plotter-invisible linework, NOT an outlined core.
   // The truly bold lines (property line) are black ink and need no help.
-  if (r > 225 && g > 225 && b > 225) return "#a7adb6";
+  if (r > 225 && g > 225 && b > 225) return CV_FAM_NEARWHITE;
   return `rgb(${r},${g},${b})`;
 }
 
@@ -12033,7 +12086,10 @@ const ST_LABELS = ["Mass Excavation", "Structure Excavation", "Structure Backfil
 const ST_UNITS = { "Mass Excavation": "CY", "Structure Excavation": "CY",
                    "Structure Backfill": "CY", "Slab Prep": "SF" };
 const ST_COLOR = "#ff7a00";        // committed structures: outline + band
-const ST_DRAFT_COLOR = "#00a8e8";  // the one being outlined right now
+const ST_DRAFT_COLOR = "#58b7e6";  // the one being outlined right now.
+// RETINTED 2026-08-31 from #00a8e8 to --t-select, so the canvas outline
+// and its sidebar chrome (.st-modes button.active, .st-draft) agree.
+const ST_DRAFT_BAND = "rgba(88,183,230,.30)";
 const stR1 = (v) => Math.round(v * 10) / 10;
 const stFmt = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
 
@@ -12505,7 +12561,7 @@ function drawStructural(ctx, k) {
     }
   };
   st.items.forEach((it, i) => paint(it, ST_COLOR, "rgba(255,122,0,.30)", st.hot === i));
-  if (st.draft) paint(st.draft, ST_DRAFT_COLOR, "rgba(0,168,232,.30)", true);
+  if (st.draft) paint(st.draft, ST_DRAFT_COLOR, ST_DRAFT_BAND, true);
   // in-progress polygon while drawing
   if (state.tool === "st-draw" && st.drawPts.length) {
     const P = st.drawPts;
@@ -12522,7 +12578,7 @@ function drawStructural(ctx, k) {
     for (const q of P) {
       ctx.beginPath();
       ctx.arc(q[0] * f, q[1] * f, 3.5 / k, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.fillStyle = CV_VERTEX; ctx.fill();
       ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
     }
   }

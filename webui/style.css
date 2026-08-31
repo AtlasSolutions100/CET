@@ -1,30 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Typefaces are SELF-HOSTED in webui/tokens.css (webui/fonts/*.woff2).
+   The Google-Fonts @import that used to live on this line made the app
+   depend on the internet to render correctly in a field office. */
 * { box-sizing: border-box; margin: 0; }
 /* any CSS display rule beats the hidden attribute; make hidden always win
    (this is why the earthwork panel's close button "did nothing") */
 [hidden] { display: none !important; }
-:root {
-  /* CORE by Work Optional: ink/paper editorial + forest green, dark chrome */
-  --bg: #131511; --panel: #1b1e1a; --line: #2b2f2a; --text: #e8ebe6;
-  --dim: #98a29a; --accent: #3fa873; --accent-deep: #1f5c3e; --ok: #3fa873;
-  --hover: #262b34; --chip: #262a32; --stage: #0d0f12; --field: #262a32;
-  --swatch-line: rgba(255,255,255,.25);
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}
-:root[data-theme="light"] {
-  /* paper mode: matches the Work Optional site (white, ink, forest green) */
-  --bg: #f2f3ef; --panel: #ffffff; --line: #e0e3dc; --text: #28292c;
-  --dim: #6f7873; --accent: #1f5c3e; --accent-deep: #1f5c3e; --ok: #1f5c3e;
-  --hover: #eef0ea; --chip: #eef0ea; --stage: #e6e8e2; --field: #f4f5f1;
-  --swatch-line: rgba(0,0,0,.25);
-}
-body { font: 13px/1.45 "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+/* The palette used to be declared here, twice (dark + paper), as 24 literal
+   hexes. It now lives in webui/tokens.css, which index.html loads BEFORE this
+   file and which re-declares every legacy name (--bg --panel --line --text
+   --dim --accent --accent-deep --ok --hover --chip --stage --field --mono
+   --swatch-line) on `:root:root`. One source of truth: change a color there,
+   not here, and prefer the --t-* names in new rules. */
+body { font: var(--t-fs-base)/var(--t-lh-body) var(--t-font-ui); background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.brand { font-family: var(--mono); font-weight: 600; font-size: 16px;
+.brand { font-family: var(--mono); font-weight: 600; font-size: var(--t-fs-md);
   letter-spacing: .14em; margin-right: 6px; }
 .brand .brand-o { color: var(--accent); }
-.brand .brand-sub { display: block; font-size: 8.5px; font-weight: 500;
-  letter-spacing: .22em; color: var(--dim); margin-top: -1px; }
+/* letter-spacing INHERITS, so the wordmark s .14em was tracking this line
+   out too. The lockup keeps its tracking; the subtitle is plain text. */
+.brand .brand-sub { display: block; font-size: var(--t-fs-xs); font-weight: 500;
+  letter-spacing: normal; color: var(--dim); margin-top: 1px; }
 select, input, button { background: var(--field); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; font: inherit; }
 input#pathInput { width: 240px; }
 button { cursor: pointer; }
@@ -36,14 +31,19 @@ aside::-webkit-scrollbar, .thumb-list::-webkit-scrollbar,
 .ew-rows::-webkit-scrollbar { width: 8px; }
 aside::-webkit-scrollbar-thumb, .thumb-list::-webkit-scrollbar-thumb,
 .ew-rows::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
-header button, .status, .side-head h2 { font-family: var(--mono);
-  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+/* De-shouted. One declaration was doing three jobs (mono = "this is data",
+   ALL-CAPS = "this is a heading", tracking = "this is a brand"), applied to
+   things that are none of them. Header buttons are now plain UI text at the
+   body size; the status line and the sidebar section heads are 12px sans,
+   dim, sentence case. Mono is reserved for data, uppercase for the brand and
+   the severity badges. */
+.status, .side-head h2 { font-size: var(--t-fs-xs); }
 #detectBtn { background: var(--accent-deep); border-color: var(--accent);
   color: #fff; font-weight: 600; }
 .doc-name { color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { color: var(--dim); }
 .status.busy { color: var(--accent); }
-.status.err { color: #e5645a; }
+.status.err { color: var(--t-stop); }
 
 main { flex: 1; display: flex; min-height: 0; }
 /* flex: none. `width` alone is only a BASIS for a flex child, so on a narrow
@@ -57,8 +57,8 @@ main { flex: 1; display: flex; min-height: 0; }
 aside { width: 330px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 /* section rhythm: 8px grid, headers carry the hierarchy - not borders */
 .side-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 4px; }
-.side-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
-.mini { padding: 2px 8px; font-size: 11px; }
+.side-head h2 { font-size: var(--t-fs-xs); color: var(--dim); }
+.mini { padding: 2px 8px; font-size: var(--t-fs-xs); }
 .style-list { padding: 4px 8px 8px; }
 .style-row { display: grid; grid-template-columns: 16px 46px 1fr auto auto; gap: 8px; align-items: center; padding: 8px; border-radius: 8px; cursor: pointer; }
 .style-row:hover, .style-row.hot { background: var(--hover); }
@@ -67,13 +67,16 @@ aside { width: 330px; flex: none; background: var(--panel); border-right: 1px so
 .style-main { min-width: 0; }
 .style-label { width: 100%; background: transparent; border: none; border-bottom: 1px dashed transparent; padding: 0 0 1px; color: var(--text); font-weight: 600; }
 .style-label:hover, .style-label:focus { border-bottom-color: var(--dim); outline: none; }
-.style-meta { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; background: #2c3947; color: #9ec1ef; }
-.badge.dash1 { background: #452322; color: #f2938b; }
-.badge.dash2 { background: #1f2c4d; color: #92b4f4; }
-.badge.dash3 { background: #453518; color: #f0c078; }
-.badge.dash-text { background: #3b2347; color: #d9a1ef; }
-.badge.solid { background: #1e3b2b; color: #7fd6a4; }
+.style-meta { color: var(--dim); font-size: var(--t-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A pattern class is a neutral fact about the line, not a verdict on it.
+   The five hand-picked colour pairs here (red/blue/amber/purple/green) read
+   as five severities; they are one --t-info chip now, and the badge's own
+   text ("dash1", "dash-text") carries the distinction. `solid` keeps green
+   because a solid line is the one class that needs no interpretation. */
+.badge { font-size: var(--t-fs-xs); font-weight: 700; padding: 1px 6px; border-radius: 10px; background: var(--t-info-bg); color: var(--t-info); }
+.badge.dash1, .badge.dash2, .badge.dash3, .badge.dash-text {
+  background: var(--t-info-bg); color: var(--t-info); }
+.badge.solid { background: var(--t-ok-bg); color: var(--t-ok); }
 /* The sidebar is a fixed 330px, so this bar has about 306px of usable width.
    The tally is a nowrap monospace sentence that on a real sheet reads
    "171.0k ft billed - 178.0k ft measured - union 177.5k ft - $180000", and
@@ -85,7 +88,7 @@ aside { width: 330px; flex: none; background: var(--panel); border-right: 1px so
 .approve-bar .tally { flex: 1 0 100%; }
 .approve-bar button { flex: 0 0 auto; }
 #approveBtn { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 700; flex: 1; }
-#dlLink { color: var(--accent); font-size: 12px; }
+#dlLink { color: var(--accent); font-size: var(--t-fs-xs); }
 
 #stage { flex: 1; position: relative; overflow: hidden; background: var(--stage); }
 canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
@@ -96,9 +99,9 @@ canvas#view.tool-point { cursor: crosshair; }
 canvas#view.panning { cursor: grabbing; }
 .hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: var(--dim); pointer-events: none; text-align: center; }
 /* first-open "how this works": four steps under the lead line */
-.hint-lead { font-size: 15px; }
+.hint-lead { font-size: var(--t-fs-md); }
 .hint-how { margin-top: 16px; display: inline-block; text-align: left;
-  font-size: 12px; line-height: 2; color: var(--dim); }
+  font-size: var(--t-fs-xs); line-height: 2; color: var(--dim); }
 .hint-how b { color: var(--text); font-weight: 600; }
 
 .restore-btn { position: absolute; right: 16px; bottom: 16px; }
@@ -108,35 +111,35 @@ canvas#view.panning { cursor: grabbing; }
   width: 42px; background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--line); border-radius: 10px; padding: 5px;
   backdrop-filter: blur(3px); }
-.toolkit .tk { font-size: 15px; line-height: 1; padding: 7px 0; text-align: center; }
+.toolkit .tk { font-size: var(--t-fs-md); line-height: 1; padding: 7px 0; text-align: center; }
 .toolkit .tk:disabled { opacity: .3; }
-.toolkit .tk.danger { color: #ff9a90; }
-.toolkit .tk.danger:not(:disabled):hover { background: #b3362c; color: #fff; border-color: #b3362c; }
+.toolkit .tk.danger { color: var(--t-danger); }
+.toolkit .tk.danger:not(:disabled):hover { background: var(--t-danger-deep); color: #fff; border-color: var(--t-danger-deep); }
 .tk-sep { height: 1px; width: auto; background: var(--line); margin: 2px 4px; }
 /* selection / measure readout: floating pill along the canvas bottom */
 .canvas-status { position: absolute; left: 50%; bottom: 14px; z-index: 5;
   transform: translateX(-50%); display: flex; gap: 8px; align-items: center;
   pointer-events: none; max-width: 70%; }
-.tk-info { color: var(--text); font-size: 12px; white-space: nowrap;
+.tk-info { color: var(--text); font-size: var(--t-fs-xs); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px; }
 .tk-info:empty { display: none; }
 #faithfulBtn.active { background: var(--accent-deep); border-color: var(--accent); color: #fff; }
-#measureBtn.active { background: #b3369a; border-color: #b3369a; color: #fff; }
-#measureInfo { background: var(--panel); border: 1px solid #b3369a; border-radius: 999px; padding: 5px 14px; font-weight: 700; color: #f0a6e2; white-space: nowrap; }
+#measureBtn.active { background: var(--t-select); border-color: var(--t-select); color: #fff; }
+#measureInfo { background: var(--panel); border: 1px solid var(--t-select); border-radius: 999px; padding: 5px 14px; font-weight: 700; color: var(--t-select); white-space: nowrap; }
 
 .color-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 12px 0; }
 .color-chips:empty { display: none; }
 .color-chip { width: 22px; height: 22px; border-radius: 5px; border: 2px solid rgba(255,255,255,.35); cursor: pointer; }
 .color-chip.off { opacity: .25; }
 .legend-box { padding: 4px 12px 8px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.legend-head { width: 100%; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
-.legend-chip { font-size: 11px; padding: 3px 8px; border-radius: 10px; background: var(--chip); }
-.legend-chip.applied { background: #1e3b2b; border-color: var(--ok); color: #9fe0bb; }
+.legend-head { width: 100%; font-size: var(--t-fs-xs); letter-spacing: .06em; color: var(--dim); }
+.legend-chip { font-size: var(--t-fs-xs); padding: 3px 8px; border-radius: 10px; background: var(--chip); }
+.legend-chip.applied { background: var(--t-ok-bg); border-color: var(--ok); color: var(--t-ok); }
 .takeoff-head { padding: 12px 12px 4px; border-top: 1px solid var(--line); }
-.takeoff-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
-.itemized { padding: 4px 12px 8px; font-size: 12px; }
+.takeoff-head h2 { font-size: var(--t-fs-xs); color: var(--dim); }
+.itemized { padding: 4px 12px 8px; font-size: var(--t-fs-xs); }
 /* The quantity column must FIT its number. .qty-in is right-aligned, so an
    overflowing value is clipped on the LEFT: 13278.8 in a 62px box renders as
    "3278.8" - a wrong number with no symptom, the exact harm this change
@@ -162,103 +165,103 @@ canvas#view.panning { cursor: grabbing; }
 .item-row > :nth-child(3) { grid-area: qty; }
 .item-row > :nth-child(4) { grid-area: rate; }
 .item-row > :nth-child(5) { grid-area: ext; }
-.item-row.head { color: var(--dim); font-size: 10px; text-transform: uppercase; }
-.item-row input { width: 100%; padding: 2px 4px; font-size: 11px; }
+.item-row.head { color: var(--dim); font-size: var(--t-fs-xs); }
+.item-row input { width: 100%; padding: 2px 4px; font-size: var(--t-fs-xs); }
 .item-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0; }
 .item-row.total { border-top: 1px solid var(--line); font-weight: 700; }
 .links-bar { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 12px 10px; }
-.links-bar a { color: var(--accent); font-size: 12px; }
+.links-bar a { color: var(--accent); font-size: var(--t-fs-xs); }
 /* one accent: calculator/AI entry buttons are quiet chrome, not a rainbow */
 .ai-banner { background: var(--panel); border-bottom: 1px solid var(--line);
   box-shadow: inset 3px 0 0 var(--accent);
-  padding: 8px 16px; font-size: 12px; color: var(--text); line-height: 1.6; }
+  padding: 8px 16px; font-size: var(--t-fs-xs); color: var(--text); line-height: 1.6; }
 .ai-banner b { color: var(--text); }
 .ai-dim { color: var(--dim); }
 .ai-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 #aiApplyBtn { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
-.style-row.ai-keep { box-shadow: inset 3px 0 0 #7fd6a4; }
-.style-row.ai-drop { box-shadow: inset 3px 0 0 #6b5f8a; }
+.style-row.ai-keep { box-shadow: inset 3px 0 0 var(--t-ok); }
+.style-row.ai-drop { box-shadow: inset 3px 0 0 var(--t-text-faint); }
 
 .ew-panel { border-top: 1px solid var(--line); }
 .ew-rows { max-height: 300px; }
-.ew-hint { color: var(--dim); font-size: 11px; padding: 6px 12px 2px; }
+.ew-hint { color: var(--dim); font-size: var(--t-fs-xs); padding: 6px 12px 2px; }
 .ew-rows { overflow-y: auto; padding: 4px 8px; }
 .ew-row { display: grid; grid-template-columns: 60px 1fr auto; gap: 6px; align-items: center; padding: 3px 4px; border-radius: 6px; }
 /* contour rows carry a 4th column (the x remove button); .co-row reuses
    .ew-row and must keep the original 3-column grid */
 .ew-row.has-x { grid-template-columns: 60px 1fr auto auto; }
 .ew-row:hover { background: var(--hover); }
-.ew-row input.z { width: 100%; padding: 2px 6px; font-size: 12px; }
-.ew-row .x { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.ew-row input.z { width: 100%; padding: 2px 6px; font-size: var(--t-fs-xs); }
+.ew-row .x { font-size: var(--t-fs-xs); padding: 1px 6px; border-radius: 4px; }
 /* head above the contour rows: the manual "+ Add contour" entry point */
 .ew-rows-head { display: flex; gap: 6px; align-items: center; color: var(--dim); padding: 5px 12px 0; }
-.ew-rows-head span { flex: 1; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; font-size: 10px; }
-.ew-rows-head #ewAddRow.active { background: #b3369a; border-color: #b3369a; color: #fff; }
+.ew-rows-head span { flex: 1; font-weight: 600; letter-spacing: .03em; font-size: var(--t-fs-xs); }
+.ew-rows-head #ewAddRow.active { background: var(--t-select); border-color: var(--t-select); color: #fff; }
 .ew-row .seg, .ew-spots .seg { display: flex; gap: 2px; }
-.ew-row .seg button, .ew-spots .seg button { font-size: 10px; padding: 3px 7px; border-radius: 4px; }
-.ew-row .seg button.on-ex, .ew-spots .seg button.on-ex { background: #1f4d33; border-color: #35b26b; color: #9fe0bb; }
-.ew-row .seg button.on-pr, .ew-spots .seg button.on-pr { background: #1f2c4d; border-color: #4f8ff7; color: #a9c6f5; }
+.ew-row .seg button, .ew-spots .seg button { font-size: var(--t-fs-xs); padding: 3px 7px; border-radius: 4px; }
+.ew-row .seg button.on-ex, .ew-spots .seg button.on-ex { background: var(--t-exist-bg); border-color: var(--t-exist); color: var(--t-exist); }
+.ew-row .seg button.on-pr, .ew-spots .seg button.on-pr { background: var(--t-prop-bg); border-color: var(--t-prop); color: var(--t-prop); }
 .ew-actions { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); }
 #ewCalc { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
-.ew-result { font-size: 12px; color: var(--text); }
-.ew-meta { color: var(--dim); font-size: 10.5px; }
+.ew-result { font-size: var(--t-fs-xs); color: var(--text); }
+.ew-meta { color: var(--dim); font-size: var(--t-fs-xs); }
 /* layer stacks: what comes off the existing side, what goes on the proposed */
 .ew-layers { padding: 4px 8px 6px; border-top: 1px solid var(--line); }
-.ew-layers-head { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--dim); padding: 5px 4px 2px; }
-.ew-layers-head span { flex: 1; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; font-size: 10px; }
-.ew-layer-rows:empty::after { content: "none"; color: var(--dim); font-size: 11px; padding: 2px 4px; display: block; }
+.ew-layers-head { display: flex; gap: 6px; align-items: center; font-size: var(--t-fs-xs); color: var(--dim); padding: 5px 4px 2px; }
+.ew-layers-head span { flex: 1; font-weight: 600; letter-spacing: .03em; font-size: var(--t-fs-xs); }
+.ew-layer-rows:empty::after { content: "none"; color: var(--dim); font-size: var(--t-fs-xs); padding: 2px 4px; display: block; }
 .ew-layer-row { display: grid; grid-template-columns: 1fr 54px auto auto; gap: 6px; align-items: center; padding: 2px 4px; border-radius: 6px; }
 .ew-layer-row:hover { background: var(--hover); }
-.ew-layer-row input { width: 100%; padding: 2px 6px; font-size: 12px; }
-.ew-layer-row .unit { color: var(--dim); font-size: 11px; }
-.ew-layer-row .x { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
-.ew-layer-out { font-size: 11.5px; padding: 4px 4px 0; }
+.ew-layer-row input { width: 100%; padding: 2px 6px; font-size: var(--t-fs-xs); }
+.ew-layer-row .unit { color: var(--dim); font-size: var(--t-fs-xs); }
+.ew-layer-row .x { font-size: var(--t-fs-xs); padding: 1px 6px; border-radius: 4px; }
+.ew-layer-out { font-size: var(--t-fs-xs); padding: 4px 4px 0; }
 .ew-layer-out div { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
 .ew-layer-out b { font-variant-numeric: tabular-nums; }
 .ew-layer-out .sub { color: var(--dim); }
 /* material balance: per-removal disposition + the export/reuse/import rows */
 .ew-layer-disp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-  font-size: 10.5px; color: var(--dim); padding: 0 4px 4px 6px; }
-.ew-layer-disp input[type=number] { width: 42px; padding: 1px 4px; font-size: 11px; }
-.ew-layer-disp input[type=text] { width: 74px; padding: 1px 4px; font-size: 11px; }
+  font-size: var(--t-fs-xs); color: var(--dim); padding: 0 4px 4px 6px; }
+.ew-layer-disp input[type=number] { width: 42px; padding: 1px 4px; font-size: var(--t-fs-xs); }
+.ew-layer-disp input[type=text] { width: 74px; padding: 1px 4px; font-size: var(--t-fs-xs); }
 .ew-layer-disp .exp { color: var(--text); font-variant-numeric: tabular-nums; }
 .ew-layer-disp .sep { opacity: .45; }
 .ew-balance { padding: 6px 8px 10px; border-top: 1px solid var(--line); }
-.ew-bal-cut { display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+.ew-bal-cut { display: flex; align-items: center; gap: 6px; font-size: var(--t-fs-xs);
   padding: 2px 4px 6px; cursor: pointer; }
 .ew-bal-out:empty::after { content: "run Calculate to see where the dirt goes";
-  color: var(--dim); font-size: 11px; padding: 2px 4px; display: block; }
+  color: var(--dim); font-size: var(--t-fs-xs); padding: 2px 4px; display: block; }
 .ew-bal-out .bal-row { display: grid; grid-template-columns: 1fr auto; gap: 8px;
   align-items: baseline; padding: 3px 4px; border-radius: 6px; }
-.ew-bal-out .bal-row.k-export { background: rgba(255, 190, 20, .07); }
-.ew-bal-out .bal-row.k-import { background: rgba(30, 100, 255, .09); }
-.ew-bal-out .bal-row b { font-variant-numeric: tabular-nums; font-size: 12px; }
-.ew-bal-out .bal-row .lab { font-size: 12px; }
-.ew-bal-out .bal-row .why { display: block; color: var(--dim); font-size: 10.5px;
+.ew-bal-out .bal-row.k-export { background: var(--t-fill-bg); }
+.ew-bal-out .bal-row.k-import { background: var(--t-cut-bg); }
+.ew-bal-out .bal-row b { font-variant-numeric: tabular-nums; font-size: var(--t-fs-xs); }
+.ew-bal-out .bal-row .lab { font-size: var(--t-fs-xs); }
+.ew-bal-out .bal-row .why { display: block; color: var(--dim); font-size: var(--t-fs-xs);
   line-height: 1.4; margin-top: 1px; }
-.ew-bal-out .bal-sum { font-size: 11px; color: var(--dim); padding: 6px 4px 0;
+.ew-bal-out .bal-sum { font-size: var(--t-fs-xs); color: var(--dim); padding: 6px 4px 0;
   border-top: 1px dashed var(--line); margin-top: 5px; line-height: 1.5; }
 .ew-bal-out .bal-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ew-bal-factors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--dim); padding: 8px 4px 0; }
+  font-size: var(--t-fs-xs); color: var(--dim); padding: 8px 4px 0; }
 .ew-bal-factors input { width: 62px; }
-.ew-bal-note { font-size: 10.5px; color: var(--dim); line-height: 1.45;
+.ew-bal-note { font-size: var(--t-fs-xs); color: var(--dim); line-height: 1.45;
   padding: 6px 4px 0; }
-.ew-map-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; margin-left: auto; white-space: nowrap; cursor: pointer; }
+.ew-map-toggle { display: flex; align-items: center; gap: 5px; font-size: var(--t-fs-xs); margin-left: auto; white-space: nowrap; cursor: pointer; }
 .ew-map-toggle input { margin: 0; }
 /* the permanent limitation statement: always on, never dismissible, and
    deliberately not styled as an alert - it is what the feature IS, not a
    warning that a later run might clear */
-.ew-limit { font-size: 10.5px; color: var(--dim); line-height: 1.5;
+.ew-limit { font-size: var(--t-fs-xs); color: var(--dim); line-height: 1.5;
   margin: 6px 12px 2px; padding: 7px 9px; border-radius: 7px;
-  border: 1px solid var(--line); background: rgba(255, 190, 20, .05); }
+  border: 1px solid var(--line); background: var(--t-warn-bg); }
 .ew-limit b { color: var(--text); font-weight: 600; }
 /* what the number rests on, beside the number */
-.ew-basis { font-size: 10.5px; color: var(--dim); line-height: 1.5;
+.ew-basis { font-size: var(--t-fs-xs); color: var(--dim); line-height: 1.5;
   padding: 0 12px 8px; }
 .ew-basis b { color: var(--text); font-variant-numeric: tabular-nums; }
-.ew-basis .unbounded { display: block; margin-top: 3px; color: #e0b45a; }
+.ew-basis .unbounded { display: block; margin-top: 3px; color: var(--t-warn); }
 /* consent row: nothing priced until this is pressed */
 .ew-take { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
   padding: 0 12px 10px; }
@@ -266,8 +269,8 @@ canvas#view.panning { cursor: grabbing; }
    el.hidden on every id it owns and would un-hide these on expand */
 .ew-basis.off, .ew-take.off { display: none; }
 #ewAdd, #trAdd { font-weight: 600; }
-#ewAdd.on, #trAdd.on { background: #4d2f1f; border-color: #c07a3c; color: #f0c99b; }
-.ew-take-note { font-size: 10.5px; color: var(--dim); line-height: 1.45; flex: 1; min-width: 160px; }
+#ewAdd.on, #trAdd.on { background: var(--t-warn-bg); border-color: var(--t-warn); color: var(--t-warn); }
+.ew-take-note { font-size: var(--t-fs-xs); color: var(--dim); line-height: 1.45; flex: 1; min-width: 160px; }
 
 .side-head h2, .takeoff-head h2 { cursor: pointer; user-select: none; }
 .side-head h2::before, .takeoff-head h2::before { content: "▾ "; color: var(--dim); }
@@ -275,55 +278,53 @@ canvas#view.panning { cursor: grabbing; }
 
 #trCalc { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
 .tr-body { padding: 4px 12px; display: flex; flex-direction: column; gap: 6px; }
-.tr-grid { display: grid; grid-template-columns: 1fr 78px; gap: 6px; align-items: center; font-size: 12px; }
-.tr-grid input, .tr-grid select { width: 100%; padding: 3px 6px; font-size: 12px; }
-.tr-rules { font-size: 11px; color: var(--dim); }
+.tr-grid { display: grid; grid-template-columns: 1fr 78px; gap: 6px; align-items: center; font-size: var(--t-fs-xs); }
+.tr-grid input, .tr-grid select { width: 100%; padding: 3px 6px; font-size: var(--t-fs-xs); }
+.tr-rules { font-size: var(--t-fs-xs); color: var(--dim); }
 .tr-rule { display: grid; grid-template-columns: 1fr 66px 1fr 66px; gap: 5px; align-items: center; padding: 2px 0; }
 /* Pierce depth bands (read-only LF per band, from the typed profile).
    .off like .ew-take: the trHead collapse handler owns `hidden`, so an
    attribute here would be un-hidden on every expand. */
 .tr-bands { margin: 2px 12px 4px; padding: 7px 9px; border: 1px solid var(--line);
-  border-radius: 7px; font-size: 11.5px; }
+  border-radius: 7px; font-size: var(--t-fs-xs); }
 .tr-bands.off { display: none; }
 .tr-bands-head { font-weight: 600; cursor: help; }
 .tr-bands-cfg { display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
-  color: var(--dim); font-size: 11px; margin: 4px 0; }
-.tr-bands-cfg input { width: 54px; padding: 2px 5px; font-size: 11px; }
+  color: var(--dim); font-size: var(--t-fs-xs); margin: 4px 0; }
+.tr-bands-cfg input { width: 54px; padding: 2px 5px; font-size: var(--t-fs-xs); }
 .tr-band-row { display: flex; justify-content: space-between; gap: 8px;
   padding: 1px 2px; font-variant-numeric: tabular-nums; }
-.tr-bands-note { color: var(--dim); font-size: 10.5px; line-height: 1.45; margin-top: 4px; }
+.tr-bands-note { color: var(--dim); font-size: var(--t-fs-xs); line-height: 1.45; margin-top: 4px; }
 
 .sym-row { display: grid; grid-template-columns: 54px 1fr 60px; gap: 6px; align-items: center; padding: 3px 6px; border-radius: 6px; }
 .sym-row:hover { background: var(--hover); }
-.sym-row input { width: 100%; padding: 3px 6px; font-size: 12px; }
-.sym-row .add { font-size: 11px; padding: 3px 8px; background: var(--accent-deep); border-color: var(--accent); color: #fff; }
-.sym-meta { color: var(--dim); font-size: 11px; }
+.sym-row input { width: 100%; padding: 3px 6px; font-size: var(--t-fs-xs); }
+.sym-row .add { font-size: var(--t-fs-xs); padding: 3px 8px; background: var(--accent-deep); border-color: var(--accent); color: #fff; }
+.sym-meta { color: var(--dim); font-size: var(--t-fs-xs); }
 /* the count itself, big enough to read across a desk - it is the number
    the estimator is here for */
-.sym-n { font-family: var(--mono); font-size: 15px; font-weight: 600; text-align: right; }
+.sym-n { font-family: var(--mono); font-size: var(--t-fs-md); font-weight: 600; text-align: right; }
 .sym-name { font-family: var(--mono); font-weight: 600; letter-spacing: .04em; }
-.sym-chk-ok { color: var(--ok, #3a8f4a); }
-.sym-chk-bad { color: var(--bad, #c0483c); font-weight: 600; }
-.sym-sched { font-size: 11px; color: var(--dim); padding: 4px 8px 6px; border-bottom: 1px solid var(--line); }
-.sym-sched b { color: var(--fg); font-family: var(--mono); }
-.sym-total { font-size: 11.5px; padding: 6px 8px; border-top: 1px solid var(--line); color: var(--dim); }
-.sym-total b { font-family: var(--mono); color: var(--fg); }
+.sym-chk-ok { color: var(--t-ok); }
+.sym-chk-bad { color: var(--t-stop); font-weight: 600; }
+.sym-sched { font-size: var(--t-fs-xs); color: var(--dim); padding: 4px 8px 6px; border-bottom: 1px solid var(--line); }
+.sym-sched b { color: var(--t-text); font-family: var(--mono); }
+.sym-total { font-size: var(--t-fs-xs); padding: 6px 8px; border-top: 1px solid var(--line); color: var(--dim); }
+.sym-total b { font-family: var(--mono); color: var(--t-text); }
 .sym-foot { padding: 4px 8px 8px; }
 .sym-unnamed .sym-name { color: var(--dim); font-weight: 400; }
 .sym-off { color: var(--accent); }
 
 /* ---------- itemized takeoff, by trade ---------- */
-.trade-head { display: flex; align-items: baseline; justify-content: space-between;
-  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .14em; color: var(--accent);
+.trade-head { display: flex; align-items: baseline; justify-content: space-between; font-size: var(--t-fs-xs); font-weight: 600; color: var(--accent);
   border-top: 1px solid var(--line); margin-top: 8px; padding: 8px 8px 3px; }
 .trade-head .t-sub { color: var(--dim); font-weight: 500; letter-spacing: .06em; }
 .item-row .lab { border-bottom: 1px dotted var(--line); }
-.item-row select.trade-pick { max-width: 100%; font-family: var(--mono); font-size: 9.5px;
+.item-row select.trade-pick { max-width: 100%; font-size: var(--t-fs-xs);
   padding: 1px 2px; background: transparent; border: none; color: var(--dim);
   max-width: 100%; cursor: pointer; }
 .item-row select.trade-pick:hover { color: var(--accent); }
-.item-row.total { font-family: var(--mono); letter-spacing: .08em; }
+.item-row.total { font-family: var(--mono); }
 
 /* ---------- operator-declared trade scope ----------
    The declaration sits directly above the filter box it drives, because the
@@ -334,49 +335,47 @@ canvas#view.panning { cursor: grabbing; }
 .scope-bar { margin: 8px 8px 0; padding: 7px 9px 8px; border-radius: 7px;
   background: var(--chip); border: 1px solid var(--line); }
 .scope-head { display: flex; align-items: center; gap: 8px; }
-.scope-title { font-family: var(--mono); font-size: 9.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
+.scope-title { font-size: var(--t-fs-xs); font-weight: 600; color: var(--dim);
   flex: 1 1 auto; }
 .scope-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; }
-.scope-chip { padding: 2px 8px; border-radius: 999px; font-size: 10px;
+.scope-chip { padding: 2px 8px; border-radius: 999px; font-size: var(--t-fs-xs);
   line-height: 1.6; background: var(--panel); border: 1px solid var(--line);
   color: var(--dim); text-align: left; white-space: nowrap; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; }
 .scope-chip.on { background: var(--accent-deep); border-color: var(--accent);
   color: #fff; font-weight: 600; }
-.scope-note { margin-top: 6px; font-size: 10.5px; line-height: 1.45;
+.scope-note { margin-top: 6px; font-size: var(--t-fs-xs); line-height: 1.45;
   color: var(--dim); }
 .scope-note b { color: var(--text); }
 .scope-act { display: flex; align-items: center; gap: 7px; margin-top: 6px;
   flex-wrap: wrap; }
-.scope-warn { font-size: 9.5px; line-height: 1.3; color: var(--dim);
+.scope-warn { font-size: var(--t-fs-xs); line-height: 1.3; color: var(--dim);
   opacity: .8; }
 /* the verdict, on the row, in the words of whatever asserted it */
 .style-scope { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
   align-items: baseline; margin-top: 1px; overflow: hidden;
-  font-size: 10px; line-height: 1.2; }
-.sc-why { min-width: 0; font-size: 10px; line-height: 1.2; color: var(--dim);
+  font-size: var(--t-fs-xs); line-height: 1.2; }
+.sc-why { min-width: 0; font-size: var(--t-fs-xs); line-height: 1.2; color: var(--dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .style-scope.in .sl-tag { color: var(--accent); opacity: 1; }
 .style-scope.kept .sl-tag { color: var(--accent); opacity: 1; }
-.style-scope.out .sl-tag { color: #d08a3c; opacity: 1; }
+.style-scope.out .sl-tag { color: var(--t-warn); opacity: 1; }
 .style-row.scope-out { opacity: .62; }
 .style-row.scope-out .style-label { text-decoration: line-through;
-  text-decoration-color: rgba(208,138,60,.7); }
+  text-decoration-color: color-mix(in srgb, var(--t-warn) 70%, transparent); }
 .style-row.scope-in { box-shadow: inset 2px 0 0 var(--accent); }
 /* the same declaration, restated over the symbol count */
-.sym-scope { font-size: 10.5px; line-height: 1.45; color: var(--dim);
+.sym-scope { font-size: var(--t-fs-xs); line-height: 1.45; color: var(--dim);
   padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .sym-scope b { color: var(--text); }
-.sym-aside { color: #d08a3c; }
+.sym-aside { color: var(--t-warn); }
 .sym-row.scope-out { opacity: .62; }
 .sym-row.scope-in { box-shadow: inset 2px 0 0 var(--accent); }
 
 /* ---------- readable style list ---------- */
-.style-search { margin: 8px 8px 2px; width: calc(100% - 16px); font-family: var(--mono);
-  font-size: 11px; letter-spacing: .03em; }
-.class-head { font-family: var(--mono); font-size: 9.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
+.style-search { margin: 8px 8px 2px; width: calc(100% - 16px);
+  font-size: var(--t-fs-xs); letter-spacing: .03em; }
+.class-head { font-size: var(--t-fs-xs); font-weight: 600; color: var(--dim);
   padding: 10px 10px 2px; }
 canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
 
@@ -403,21 +402,26 @@ canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
 .style-row { row-gap: 0; }
 .style-layer { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
   align-items: baseline; margin-top: 1px; overflow: hidden;
-  font-size: 10px; line-height: 1.2; }
-.sl-tag { flex: none; font-size: 9px; line-height: 1.2; letter-spacing: .1em;
-  opacity: .75; text-transform: uppercase; color: var(--dim); }
-.sl-name { min-width: 0; font-family: var(--mono); font-size: 10px;
+  font-size: var(--t-fs-xs); line-height: 1.2; }
+.sl-tag { flex: none; font-size: var(--t-fs-xs); line-height: 1.2;
+  opacity: .75; color: var(--dim); }
+.sl-name { min-width: 0; font-family: var(--mono); font-size: var(--t-fs-xs);
   line-height: 1.2; letter-spacing: .01em; color: var(--text); opacity: .82;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the sheet names layers but this row has none: stated, not shouted */
-.style-layer.none { font-family: var(--mono); font-size: 9.5px;
+.style-layer.none { font-size: var(--t-fs-xs);
   line-height: 1.2; letter-spacing: .04em; color: var(--dim); opacity: .5; }
 /* the sheet names no layers at all: said once at the top of the list,
    because 60 rows each reading "no CAD layer" is noise, not evidence */
 .layer-none-note { margin: 8px 8px 0; padding: 6px 9px; border-radius: 7px;
   background: var(--chip); border: 1px solid var(--line);
-  color: var(--dim); font-size: 10.5px; line-height: 1.4; }
-.tally { font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+  color: var(--dim); font-size: var(--t-fs-xs); line-height: 1.4; }
+/* The number the estimator opened the app for. It was 10.5px. It is one
+   step up from the floor here and tabular; the mock's 26px treatment needs
+   the approve bar split into a figure + a caption (CRITIQUE fix 6), which is
+   an app.js change and is NOT part of this token pass. */
+.tally { font-family: var(--mono); font-size: var(--t-fs-sm);
+  font-variant-numeric: var(--t-numeric); letter-spacing: .04em;
   color: var(--accent); white-space: normal; line-height: 1.5;
   overflow-wrap: anywhere; }
 
@@ -427,17 +431,16 @@ canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
   border: 1px solid var(--line); border-radius: 8px; min-width: 168px;
   max-width: 240px; backdrop-filter: blur(3px); }
 .ml-head { display: flex; justify-content: space-between; align-items: center;
-  padding: 5px 8px 3px; font-family: var(--mono); font-size: 9px;
-  font-weight: 600; letter-spacing: .18em; color: var(--dim); }
+  padding: 5px 8px 3px; font-size: var(--t-fs-xs);
+  font-weight: 600; color: var(--dim); }
 .ml-rows { padding: 0 8px 6px; }
 .ml-row { display: grid; grid-template-columns: 40px 1fr auto; gap: 7px;
-  align-items: center; padding: 2.5px 0; cursor: pointer; font-size: 11px; }
+  align-items: center; padding: 2.5px 0; cursor: pointer; font-size: var(--t-fs-xs); }
 .ml-row:hover .ml-lab { color: var(--accent); }
 .ml-row.iso .ml-lab { color: var(--accent); font-weight: 600; }
 .ml-lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ml-ft { font-family: var(--mono); font-size: 9.5px; color: var(--dim); }
-.ml-more { font-family: var(--mono); font-size: 9px; color: var(--dim);
-  letter-spacing: .08em; padding-top: 2px; }
+.ml-ft { font-family: var(--mono); font-size: var(--t-fs-xs); color: var(--dim); }
+.ml-more { font-size: var(--t-fs-xs); color: var(--dim); padding-top: 2px; }
 .mini-legend.collapsed .ml-rows { display: none; }
 canvas.ml-swatch { width: 40px; height: 9px; }
 /* ---------- keyboard help ---------- */
@@ -446,38 +449,36 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
   box-shadow: 0 12px 40px rgba(0,0,0,.35);
   max-height: min(84vh, 640px); overflow-y: auto; }
-.kh-group { font-family: var(--mono); font-size: 9px; font-weight: 600;
-  color: var(--dim); text-transform: uppercase; letter-spacing: .14em;
+.kh-group { font-size: var(--t-fs-xs); font-weight: 600;
+  color: var(--dim);
   margin: 12px 0 6px; }
-.kh-title { font-family: var(--mono); font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .14em; margin-bottom: 10px; }
+.kh-title { font-size: var(--t-fs-xs); font-weight: 600; margin-bottom: 10px; }
 .kh-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px;
-  font-size: 12px; align-items: center; }
-.kh-grid kbd { font-family: var(--mono); font-size: 10px; background: var(--chip);
+  font-size: var(--t-fs-xs); align-items: center; }
+.kh-grid kbd { font-family: var(--mono); font-size: var(--t-fs-xs); background: var(--chip);
   border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
   padding: 1px 6px; text-align: center; }
-.kh-dim { color: var(--dim); font-size: 10px; margin-top: 10px;
-  font-family: var(--mono); letter-spacing: .06em; }
+.kh-dim { color: var(--dim); font-size: var(--t-fs-xs); margin-top: 10px; letter-spacing: .06em; }
 
 /* LF / EA measure-mode toggle */
-.mm-toggle { font-family: var(--mono); font-size: 9px; font-weight: 600;
+.mm-toggle { font-family: var(--mono); font-size: var(--t-fs-xs); font-weight: 600;
   letter-spacing: .06em; padding: 1px 5px; border-radius: 4px;
   background: transparent; border: 1px solid var(--line); color: var(--dim); }
 .mm-toggle.ea { background: var(--accent-deep); border-color: var(--accent);
   color: #fff; }
 
-.ai-mode { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
+.ai-mode { font-size: var(--t-fs-xs); letter-spacing: .05em;
   background: transparent; border: 1px solid var(--accent);
   color: var(--accent); }
 .ai-mode:hover { background: var(--accent-deep); color: #fff; }
 
 .ai-banner.slim { display: flex; align-items: center; gap: 10px;
-  padding: 5px 16px; font-size: 11.5px; }
+  padding: 5px 16px; font-size: var(--t-fs-xs); }
 .ai-banner.slim b { font-weight: 600; }
 
 /* editable qty/ft cell in the itemized takeoff */
 .item-row input.qty-in { text-align: right; }
-.item-row input.qty-in.ov { border-color: var(--accent, #4a9); font-weight: 700;
+.item-row input.qty-in.ov { border-color: var(--t-accent); font-weight: 700;
   border-style: solid; }
 /* The box always holds a number now, so "this one is the engine's" has to be
    stated rather than implied by emptiness: dashed rule, normal weight, and
@@ -494,32 +495,39 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 
 /* callouts panel */
 .co-row { cursor: pointer; }
-.co-row .co-text { font-size: 11px; line-height: 1.35; }
-.co-row:hover { background: rgba(120,160,255,0.08); }
+.co-row .co-text { font-size: var(--t-fs-xs); line-height: 1.35; }
+.co-row:hover { background: var(--t-info-bg); }
 
 /* ---------- sidebar sheet header ---------- */
 .sheet-head { padding: 12px 12px 10px; border-bottom: 1px solid var(--line); }
-.sh-name { font-weight: 600; font-size: 12.5px; overflow: hidden;
+.sh-name { font-weight: 600; font-size: var(--t-fs-sm); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .sh-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.sh-chip { font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+/* These chips carry the scale PROVENANCE, which is a sentence, not a word:
+   "graphic bar 0-60 ft over 144.0pt (1" = 30 ft, ticks)". At 9.5px it was
+   318px wide and just fitted the 330px rail; at the 12px floor it measured
+   398px and pushed an 80px horizontal scrollbar onto the whole sidebar -
+   the same overflow failure the aside{flex:none} note above documents. It
+   wraps now instead of running off the edge. The short chips ("vector",
+   "detected") are far under one line, so nothing else moves. */
+.sh-chip { font-family: var(--mono); font-size: var(--t-fs-xs); letter-spacing: .04em;
   padding: 2px 7px; border-radius: 999px; background: var(--chip);
-  color: var(--dim); white-space: nowrap; }
+  color: var(--dim); max-width: 100%; white-space: normal;
+  overflow-wrap: anywhere; line-height: 1.45; }
 .sh-chip.ok { background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent); }
-.sh-chip.warn { background: rgba(229,100,90,.16); color: #e5645a; }
+.sh-chip.warn { background: var(--t-stop-bg); color: var(--t-stop); }
 /* the drawn scale bar contradicts the printed caption - louder than warn,
    because every length, area and volume on the sheet is downstream of it */
-.sh-chip.bad { background: rgba(229,60,50,.28); color: #ff8a80;
-               border-color: rgba(229,60,50,.55); font-weight: 700; }
+.sh-chip.bad { background: var(--t-stop-bg); color: var(--t-stop);
+               border-color: var(--t-stop); font-weight: 700; }
 
 /* ---------- page thumbnail strip ---------- */
 .page-strip { width: 128px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
   display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
 .strip-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 6px; flex-wrap: wrap; }
 #detectAllBtn { flex: 1 0 100%; }
-.strip-title { flex: 1; font-family: var(--mono); font-size: 9.5px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: .16em; color: var(--dim); }
+.strip-title { flex: 1; font-size: var(--t-fs-xs); font-weight: 600; color: var(--dim); }
 .strip-toggle { transition: transform .15s; }
 .page-strip.collapsed { width: 34px; }
 .page-strip.collapsed .strip-head { flex-direction: column; padding: 8px 4px; }
@@ -536,78 +544,80 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .thumb img { width: 100%; display: block; min-height: 24px; }
 .thumb-foot { position: absolute; left: 0; right: 0; bottom: 0; display: flex;
   justify-content: space-between; align-items: center; padding: 2px 5px;
+  /* This scrim sits on the white PAGE RASTER, not on a themed surface, so
+     it must stay dark in paper mode too - tying it to --t-stage put white
+     text on a pale grey strip and the sheet numbers vanished. */
   background: rgba(15,17,14,.62); color: #fff; font-family: var(--mono);
-  font-size: 9px; }
+  font-size: var(--t-fs-xs); }
 .thumb-badge { width: 8px; height: 8px; border-radius: 50%;
   border: 1px solid rgba(255,255,255,.7); background: transparent; }
-.thumb-badge.running { background: #e0a83c; border-color: #e0a83c;
+.thumb-badge.running { background: var(--t-warn); border-color: var(--t-warn);
   animation: pulse 1.1s ease-in-out infinite; }
 .thumb-badge.done { background: var(--ok); border-color: var(--ok); }
-.thumb-badge.error { background: #e5645a; border-color: #e5645a; }
+.thumb-badge.error { background: var(--t-stop); border-color: var(--t-stop); }
 @keyframes pulse { 50% { opacity: .35; } }
 
 /* sheet triage: attention paint only. Tier tint on the thumb's top edge;
    "highlight" DIMS other-trade pages, never hides them (hover restores
    full brightness so a dimmed page is still readable and clickable). */
-.triage-bar { padding: 2px 8px 6px; font-size: 10.5px; line-height: 1.35;
+.triage-bar { padding: 2px 8px 6px; font-size: var(--t-fs-xs); line-height: 1.35;
   color: var(--dim); display: flex; flex-direction: column; gap: 4px;
   border-bottom: 1px solid var(--line); margin-bottom: 6px; }
 .triage-bar .mini { align-self: flex-start; }
 .page-strip.collapsed .triage-bar { display: none; }
 .thumb.tri-core { border-top: 3px solid var(--ok); }
-.thumb.tri-maybe { border-top: 3px solid #e0a83c; }
+.thumb.tri-maybe { border-top: 3px solid var(--t-warn); }
 .thumb.tri-unknown { border-top: 3px dashed var(--dim); }
 .thumb.tri-dim { opacity: .35; }
 .thumb.tri-dim:hover { opacity: 1; }
-.tri-tag { font-size: 8.5px; color: rgba(255,255,255,.85);
-  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis;
+.tri-tag { font-size: var(--t-fs-xs); color: rgba(255,255,255,.85); overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; max-width: 58px; margin: 0 3px; flex: 1;
   text-align: center; }
 
 /* ---------- structure calculator (footprint dig + layback) ---------- */
 .st-modes { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.st-modes button.active { background: #00a8e8; border-color: #00a8e8; color: #fff; }
+.st-modes button.active { background: var(--t-select); border-color: var(--t-select); color: #fff; }
 .st-draft { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px;
-  border: 1px solid #00a8e8; border-radius: 8px; }
-.st-draft .st-name input { width: 100%; padding: 3px 6px; font-size: 12px; }
-.st-draft .tr-grid { grid-template-columns: 1fr 64px; font-size: 11px; line-height: 1.3; }
+  border: 1px solid var(--t-select); border-radius: 8px; }
+.st-draft .st-name input { width: 100%; padding: 3px 6px; font-size: var(--t-fs-xs); }
+.st-draft .tr-grid { grid-template-columns: 1fr 64px; font-size: var(--t-fs-xs); line-height: 1.3; }
 .st-draft-acts { display: flex; justify-content: flex-end; }
 .st-row { display: flex; flex-direction: column; gap: 3px; padding: 4px 6px; border-radius: 6px;
-  border-left: 3px solid #ff7a00; margin: 2px 0; }
+  border-left: 3px solid var(--t-border-strong); margin: 2px 0; }
 .st-row:hover { background: var(--hover); }
-.st-row-top { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+.st-row-top { display: flex; gap: 8px; align-items: center; font-size: var(--t-fs-xs); }
 .st-row-top b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.st-row-top .danger { color: #ff9a90; padding: 0 7px; }
-.st-row-top .danger:hover { background: #b3362c; color: #fff; border-color: #b3362c; }
+.st-row-top .danger { color: var(--t-danger); padding: 0 7px; }
+.st-row-top .danger:hover { background: var(--t-danger-deep); color: #fff; border-color: var(--t-danger-deep); }
 .st-row-in { display: grid; grid-template-columns: auto 52px auto 52px auto 52px; gap: 4px;
-  align-items: center; font-size: 10.5px; color: var(--dim); }
-.st-row-in input { width: 100%; padding: 2px 4px; font-size: 11px; }
-.st-total { font-family: var(--mono); font-size: 10.5px; color: var(--text); padding: 6px 6px 2px;
+  align-items: center; font-size: var(--t-fs-xs); color: var(--dim); }
+.st-row-in input { width: 100%; padding: 2px 4px; font-size: var(--t-fs-xs); }
+.st-total { font-family: var(--mono); font-size: var(--t-fs-xs); color: var(--text); padding: 6px 6px 2px;
   border-top: 1px solid var(--line); margin-top: 4px; }
 
 /* spot grades + strip-area control (earthwork) */
 .ew-spots { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
 .ew-spots .sp-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); }
+  font-size: var(--t-fs-xs); color: var(--dim); }
 .ew-spots .sp-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
 .ew-spots label.sp-tag { display: inline-flex; align-items: center; gap: 4px;
-  font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+  font-size: var(--t-fs-xs); background: var(--panel); border: 1px solid var(--line);
   border-radius: 3px; padding: 2px 7px; cursor: pointer; }
 .ew-spots label.sp-tag.on { border-color: var(--accent); color: var(--text); }
-.ew-spots .sp-note { font-size: 11px; color: var(--dim); margin-top: 7px; line-height: 1.45; }
-.ew-spots .sp-datum { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 12px; }
+.ew-spots .sp-note { font-size: var(--t-fs-xs); color: var(--dim); margin-top: 7px; line-height: 1.45; }
+.ew-spots .sp-datum { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: var(--t-fs-xs); }
 .ew-spots .sp-datum input { width: 78px; }
 .ew-area { display: flex; align-items: center; gap: 7px; padding: 8px 10px;
-  border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+  border-top: 1px solid var(--line); font-size: var(--t-fs-xs); flex-wrap: wrap; }
 .ew-area input { width: 92px; }
 .ew-area .ew-unit { color: var(--dim); }
-.ew-area .ew-area-note { flex: 1 1 100%; color: var(--dim); font-size: 11px; line-height: 1.45; }
+.ew-area .ew-area-note { flex: 1 1 100%; color: var(--dim); font-size: var(--t-fs-xs); line-height: 1.45; }
 
 /* whole-job mark rollup: one row per mark code, one column per sheet */
-.roll-tbl { width: 100%; border-collapse: collapse; font-size: 12px;
+.roll-tbl { width: 100%; border-collapse: collapse; font-size: var(--t-fs-xs);
             font-variant-numeric: tabular-nums; }
 .roll-tbl th { text-align: right; font-weight: 600; opacity: .6;
-               padding: 4px 6px; border-bottom: 1px solid var(--line, #3a3a3a); }
+               padding: 4px 6px; border-bottom: 1px solid var(--t-border); }
 .roll-tbl th:first-child { text-align: left; }
 .roll-tbl td { text-align: right; padding: 4px 6px;
                border-bottom: 1px solid rgba(128,128,128,.18); }
@@ -626,41 +636,41 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .ar-label { width: 100%; background: transparent; border: none; border-bottom: 1px dashed transparent;
             padding: 0 0 1px; color: var(--text); font-weight: 600; }
 .ar-label:hover, .ar-label:focus { border-bottom-color: var(--dim); outline: none; }
-.ar-meta { color: var(--dim); font-size: 11px; display: flex; flex-wrap: wrap;
+.ar-meta { color: var(--dim); font-size: var(--t-fs-xs); display: flex; flex-wrap: wrap;
            gap: 6px; align-items: center; }
-.ar-why { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px;
-          background: #2c3947; color: #9ec1ef; }
-.ar-why.tag { background: #1e3b2b; color: #7fd6a4; }
-.ar-why.legend { background: #1f2c4d; color: #92b4f4; }
-.ar-why.layer { background: #35302a; color: #d3bd93; }
-.ar-why.none, .ar-why.unnamed { background: #3a2e2e; color: #e0a3a3; }
-.ar-check { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
-.ar-check.ok { background: #1e3b2b; color: #7fd6a4; }
-.ar-check.bad { background: #4a2222; color: #ffb4a8; }
-.ar-nrows { font-size: 10px; color: var(--dim); }
+.ar-why { font-size: var(--t-fs-xs); font-weight: 700; padding: 1px 6px; border-radius: 10px;
+          background: var(--t-info-bg); color: var(--t-info); }
+/* where the name came from is a neutral fact (info); a name the sheet never
+   gave is a doubt the operator has to settle (warn), not an error (stop). */
+.ar-why.tag { background: var(--t-ok-bg); color: var(--t-ok); }
+.ar-why.legend, .ar-why.layer { background: var(--t-info-bg); color: var(--t-info); }
+.ar-why.none, .ar-why.unnamed { background: var(--t-warn-bg); color: var(--t-warn); }
+.ar-check { font-size: var(--t-fs-xs); font-weight: 700; padding: 1px 6px; border-radius: 10px; }
+.ar-check.ok { background: var(--t-ok-bg); color: var(--t-ok); }
+.ar-check.bad { background: var(--t-stop-bg); color: var(--t-stop); }
+.ar-nrows { font-size: var(--t-fs-xs); color: var(--dim); }
 .ar-add { align-self: center; }
 /* scale provenance: an area is only as good as the scale under it */
-.ar-scale { margin: 2px 12px 6px; padding: 7px 9px; border-radius: 7px; font-size: 11px;
-            line-height: 1.5; color: var(--dim); background: #232b33;
+.ar-scale { margin: 2px 12px 6px; padding: 7px 9px; border-radius: 7px; font-size: var(--t-fs-xs);
+            line-height: 1.5; color: var(--dim); background: var(--t-surface-1);
             border-left: 3px solid var(--dim); }
-.ar-scale.ok { border-left-color: #4caf7d; }
-.ar-scale.bad { border-left-color: #e0574a; background: #352322; color: #f2c3bc; }
+.ar-scale.ok { border-left-color: var(--t-ok); }
+.ar-scale.bad { border-left-color: var(--t-stop); background: var(--t-stop-bg); color: var(--t-stop); }
 .ar-scale b { color: var(--text); }
-.ar-scale.bad b { color: #ffd9d3; }
+.ar-scale.bad b { color: var(--t-text); }
 /* legend classes that are named but have nothing to measure on this sheet */
-.ar-un-head { padding: 6px 12px 2px; font-size: 10px; text-transform: uppercase;
-              letter-spacing: .07em; color: var(--dim); }
+.ar-un-head { padding: 6px 12px 2px; font-size: var(--t-fs-xs); color: var(--dim); }
 .ar-un { display: flex; gap: 8px; align-items: center; padding: 3px 12px;
-         font-size: 12px; color: var(--dim); }
-.ar-noqty { margin-left: auto; font-size: 10px; font-weight: 700; padding: 1px 6px;
-            border-radius: 10px; background: #33302a; color: #cbb98f; }
+         font-size: var(--t-fs-xs); color: var(--dim); }
+.ar-noqty { margin-left: auto; font-size: var(--t-fs-xs); font-weight: 700; padding: 1px 6px;
+            border-radius: 10px; background: var(--t-info-bg); color: var(--t-info); }
 
 /* more than one scale printed on the sheet: show them all, let one click
    switch. The engine picks by caption count, which on a detail sheet runs
    backwards - many small details, one big plan. */
 .sh-scales { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-             padding: 6px 12px 2px; font-size: 11px; }
-.sh-scale-pick { font-family: var(--mono); font-size: 10.5px; padding: 2px 8px;
+             padding: 6px 12px 2px; font-size: var(--t-fs-xs); }
+.sh-scale-pick { font-family: var(--mono); font-size: var(--t-fs-xs); padding: 2px 8px;
                  border-radius: 10px; background: var(--chip); cursor: pointer; }
 .sh-scale-pick.on { background: color-mix(in srgb, var(--accent) 22%, transparent);
                     border-color: var(--accent); font-weight: 700; }
@@ -671,22 +681,22 @@ canvas.ml-swatch { width: 40px; height: 9px; }
    priced at all, and a sheet with ONE wrong reading had no second button to
    click. This box is the only thing behind the word "calibrate". */
 .sh-typed { padding-top: 2px; }
-.sh-typed-on { font-size: 11px; color: #e5a05a; }
+.sh-typed-on { font-size: var(--t-fs-xs); color: var(--t-warn); }
 .sh-typed-on b { font-family: var(--mono); color: var(--text); }
 .sh-typed-edit { flex: 1 1 100%; }
 .sh-typed-bar { display: flex; gap: 6px; align-items: center; }
 .sh-typed-in { flex: 1 1 auto; min-width: 90px; font-family: var(--mono);
-               font-size: 11.5px; padding: 3px 7px; }
-.sh-typed-echo { margin-top: 5px; font-size: 11px; line-height: 1.5;
+               font-size: var(--t-fs-xs); padding: 3px 7px; }
+.sh-typed-echo { margin-top: 5px; font-size: var(--t-fs-xs); line-height: 1.5;
                  color: var(--dim); }
-.sh-typed-echo code { font-family: var(--mono); font-size: 10.5px;
+.sh-typed-echo code { font-family: var(--mono); font-size: var(--t-fs-xs);
                       padding: 0 3px; border-radius: 3px; background: var(--chip); }
 /* amber, never green: a number a person typed is their word, not a second
    independent reading of the sheet. Same contract as the banner's colours. */
-.sh-typed-echo.ok { color: #e5a05a; }
-.sh-typed-echo.ok b { color: #ffc98a; }
-.sh-typed-echo.bad { color: #ffb4a8; }
-.sh-typed-echo.bad b { color: #ffd9d3; }
+.sh-typed-echo.ok { color: var(--t-warn); }
+.sh-typed-echo.ok b { color: var(--t-text); }
+.sh-typed-echo.bad { color: var(--t-stop); }
+.sh-typed-echo.bad b { color: var(--t-text); }
 
 /* ---------- confidence banner ------------------------------------------
    What to doubt on this sheet, stated in words, above everything it
@@ -698,11 +708,11 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .conf { border-bottom: 1px solid var(--line); padding: 10px 12px 11px;
         background: var(--panel); }
 .conf-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
-.conf-badge { font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+.conf-badge { font-family: var(--mono); font-size: var(--t-fs-xs); font-weight: 700;
               letter-spacing: .1em; padding: 3px 8px; border-radius: 999px;
               white-space: nowrap; text-transform: uppercase; }
-.conf-title { font-size: 11px; color: var(--dim); }
-.conf-line { display: flex; gap: 8px; font-size: 12px; line-height: 1.45;
+.conf-title { font-size: var(--t-fs-xs); color: var(--dim); }
+.conf-line { display: flex; gap: 8px; font-size: var(--t-fs-xs); line-height: 1.45;
              padding: 5px 0 5px 0; border-top: 1px solid var(--line); }
 .conf-line:first-of-type { border-top: 0; }
 .conf-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
@@ -714,11 +724,11 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 /* green: a second source agrees */
 .conf.ok { border-left: 3px solid var(--ok); }
 .conf .conf-dot.ok, .conf-badge.ok { background: var(--ok); }
-.conf-badge.ok { color: #06210f; }
+.conf-badge.ok { color: var(--t-ok-ink); }
 /* amber: one source, or a choice the reviewer has to make */
-.conf.warn { border-left: 3px solid #d79b3a; }
-.conf .conf-dot.warn, .conf-badge.warn { background: #d79b3a; }
-.conf-badge.warn { color: #241703; }
+.conf.warn { border-left: 3px solid var(--t-warn); }
+.conf .conf-dot.warn, .conf-badge.warn { background: var(--t-warn); }
+.conf-badge.warn { color: var(--t-warn-ink); }
 /* not judged yet: the page-level checks are still reading the sheet. The
    rule stays amber (never green - nothing has corroborated anything yet)
    but goes dashed, and the badge is neutral rather than a verdict colour,
@@ -728,16 +738,12 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .conf-badge.checking { background: var(--chip); color: var(--dim);
                        box-shadow: inset 0 0 0 1px var(--line); }
 /* red: two sources contradict, or there is no scale to price with */
-.conf.stop { border-left: 3px solid #e0473b;
-             background: color-mix(in srgb, #e0473b 7%, var(--panel)); }
-.conf .conf-dot.stop, .conf-badge.stop { background: #e0473b; }
-.conf-badge.stop { color: #2a0503; }
-.conf-line.stop .conf-txt b { color: #ff8a80; }
-:root[data-theme="light"] .conf-line.stop .conf-txt b { color: #b0281d; }
-:root[data-theme="light"] .conf-badge.ok { color: #ffffff; }
-:root[data-theme="light"] .conf-badge.warn { color: #241703; }
-:root[data-theme="light"] .conf-badge.stop { color: #ffffff; }
-.conf-txt .conf-q { font-family: var(--mono); font-size: 11px;
+.conf.stop { border-left: 3px solid var(--t-stop);
+             background: color-mix(in srgb, var(--t-stop) 7%, var(--panel)); }
+.conf .conf-dot.stop, .conf-badge.stop { background: var(--t-stop); }
+.conf-badge.stop { color: var(--t-stop-ink); }
+.conf-line.stop .conf-txt b { color: var(--t-stop); }
+.conf-txt .conf-q { font-family: var(--mono); font-size: var(--t-fs-xs);
                     color: var(--text); background: var(--chip);
                     padding: 0 4px; border-radius: 4px; }
 
@@ -751,8 +757,7 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   margin: 6px 0 8px; }
 .ai-fact { line-height: 1.45; }
 .ai-purpose { margin-top: 2px; }
-.ai-grade { font-family: var(--mono); font-size: 9px; letter-spacing: .04em;
-  text-transform: uppercase; color: var(--dim); border: 1px solid var(--line);
+.ai-grade { font-family: var(--mono); font-size: var(--t-fs-xs); letter-spacing: .04em; color: var(--dim); border: 1px solid var(--line);
   border-radius: 3px; padding: 0 4px; margin-left: 6px; cursor: help;
   white-space: nowrap; }
 .ai-props-lead { margin: 8px 0 4px; }
@@ -761,11 +766,11 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .ai-prop { display: flex; align-items: center; gap: 6px; padding: 3px 6px;
   border-left: 3px solid var(--line); background: var(--bg); }
 .ai-prop-txt { flex: 1; min-width: 0; line-height: 1.4; }
-.ai-p-on { border-left-color: #3d8b4a; }
-.ai-p-off { border-left-color: #a8452f; }
+.ai-p-on { border-left-color: var(--t-ok); }
+.ai-p-off { border-left-color: var(--t-danger); }
 .ai-p-label, .ai-p-obj { border-left-color: var(--line); }
 .ai-prop.ai-done { opacity: .6; }
-.ai-warn { color: #a8452f; }
+.ai-warn { color: var(--t-danger); }
 .ai-foot { margin-top: 8px; line-height: 1.4; }
 
 /* ---- counted twice: the union beside the sum (within one sheet) ---- */
@@ -775,7 +780,7 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .dup-note { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
             margin: 0 0 5px; padding: 4px 7px; border-radius: 6px;
             background: var(--chip); border: 1px solid var(--line);
-            color: var(--dim); font-size: 10.5px; line-height: 1.45; }
+            color: var(--dim); font-size: var(--t-fs-xs); line-height: 1.45; }
 .dup-note b { color: var(--text); font-family: var(--mono);
               font-variant-numeric: tabular-nums; }
 .dup-note .dup-take { flex: 0 0 auto; margin-left: auto; }
@@ -783,17 +788,17 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 /* ---- counted twice: the same label on two approved sheets ---- */
 .xs-lab { padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .xs-lab-head { display: flex; align-items: baseline; justify-content: space-between;
-               gap: 8px; font-size: 12px; }
+               gap: 8px; font-size: var(--t-fs-xs); }
 .xs-lab-head .xs-name { font-weight: 600; overflow: hidden;
                         text-overflow: ellipsis; white-space: nowrap; }
 .xs-row { display: grid; grid-template-columns: 16px auto 1fr; gap: 7px;
-          align-items: center; padding: 3px 0 3px 4px; font-size: 11.5px; }
+          align-items: center; padding: 3px 0 3px 4px; font-size: var(--t-fs-xs); }
 .xs-row.off { opacity: .45; text-decoration: line-through; }
-.xs-row .xs-go { font-family: var(--mono); font-size: 10px; padding: 1px 5px; }
-.xs-ft { color: var(--dim); font-family: var(--mono); font-size: 11px;
+.xs-row .xs-go { font-size: var(--t-fs-xs); padding: 1px 5px; }
+.xs-ft { color: var(--dim); font-family: var(--mono); font-size: var(--t-fs-xs);
          text-align: right; font-variant-numeric: tabular-nums;
          white-space: nowrap; }
-.xs-adj { padding: 3px 0 0 27px; font-size: 10.5px; color: var(--accent);
+.xs-adj { padding: 3px 0 0 27px; font-size: var(--t-fs-xs); color: var(--accent);
           font-family: var(--mono); }
 .sym-total .dim { color: var(--dim); }
 
@@ -805,29 +810,26 @@ canvas.ml-swatch { width: 40px; height: 9px; }
    the old session-only Map was protecting. */
 .mem-btn { color: var(--dim); border-color: var(--line); }
 .mem-btn:hover { color: var(--text); border-color: var(--accent); }
-.mem-btn.warn { color: #e2b04a; border-color: #7a5a1c; }
+.mem-btn.warn { color: var(--t-warn); border-color: color-mix(in srgb, var(--t-warn) 45%, transparent); }
 
 .mem-menu { position: fixed; z-index: 60; width: min(340px, calc(100vw - 16px));
             max-height: calc(100vh - 16px); overflow-y: auto;
             background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; padding: 6px;
             box-shadow: 0 12px 34px rgba(0,0,0,.45); }
-.mem-menu-head { font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
-                 text-transform: uppercase; color: var(--dim);
+.mem-menu-head { font-size: var(--t-fs-xs); color: var(--dim);
                  padding: 6px 8px 8px; }
 .mem-menu-item { display: block; width: 100%; text-align: left;
                  background: transparent; border: 1px solid transparent;
                  border-radius: 8px; padding: 8px 9px; cursor: pointer; }
 .mem-menu-item + .mem-menu-item { margin-top: 2px; }
 .mem-menu-item:hover { background: var(--hover); border-color: var(--line); }
-.mem-menu-label { font-family: var(--mono); font-size: 12px; color: var(--text); }
-.mem-menu-note { font-size: 11.5px; line-height: 1.4; color: var(--dim);
+.mem-menu-label { font-size: var(--t-fs-xs); color: var(--text); }
+.mem-menu-note { font-size: var(--t-fs-xs); line-height: 1.4; color: var(--dim);
                  margin-top: 3px; white-space: normal; }
-.mem-menu-item.danger:hover { border-color: #7a2c24; }
-.mem-menu-item.danger .mem-menu-label { color: #e2705f; }
+.mem-menu-item.danger:hover { border-color: var(--t-danger-deep); }
+.mem-menu-item.danger .mem-menu-label { color: var(--t-danger); }
 :root[data-theme="light"] .mem-menu { box-shadow: 0 12px 34px rgba(0,0,0,.16); }
-:root[data-theme="light"] .mem-btn.warn { color: #8a5a06; border-color: #d9bd7e; }
-:root[data-theme="light"] .mem-menu-item.danger .mem-menu-label { color: #b0281d; }
 
 /* --- isolate: the row you clicked, marked where you clicked it -----------
    Clicking a style row filters the canvas to that one line type. Until
@@ -840,13 +842,12 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .style-row.iso::after {
-  content: "ISOLATED";
-  font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+  content: "ISOLATED"; font-size: var(--t-fs-xs);
   color: var(--accent); align-self: center; margin-left: auto;
   padding-left: 6px; white-space: nowrap;
 }
 :root[data-theme="light"] .style-row.iso {
-  background: #e6efe9;
+  background: color-mix(in srgb, var(--t-accent) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
@@ -858,29 +859,25 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .ew-stale {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   margin: 8px 0; padding: 9px 11px; border-radius: 8px;
-  border: 1px solid #7a5a1c; background: #2c2415; color: #e2b04a;
-  font-size: 12.5px; line-height: 1.45;
+  border: 1px solid color-mix(in srgb, var(--t-warn) 45%, transparent);
+  background: var(--t-warn-bg); color: var(--t-warn);
+  font-size: var(--t-fs-sm); line-height: 1.45;
 }
-.ew-stale b { color: #f0c86a; }
-:root[data-theme="light"] .ew-stale {
-  border-color: #d9bd7e; background: #fbf3e2; color: #8a5a06;
-}
-:root[data-theme="light"] .ew-stale b { color: #6d4705; }
+.ew-stale b { color: var(--t-text); }
 
 /* --- earthwork limit of work -------------------------------------------
    Without one, cut/fill is integrated over the intersection of the two
    surfaces' convex hulls. On a 600-acre sheet that read fill 2.6M CY against
    the estimator's own 1.6M - "it's filling all that stuff outside". */
 .ew-bound { margin: 8px 0; padding: 8px 10px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--sunk); }
+  border: 1px solid var(--line); background: var(--t-surface-1); }
 .ew-bound-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ew-bound-row + .ew-bound-row { margin-top: 6px; }
-.ew-bound-lab { font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
-  text-transform: uppercase; color: var(--dim); }
-.ew-bound-state { font-size: 12px; color: var(--dim); }
+.ew-bound-lab { font-size: var(--t-fs-xs); color: var(--dim); }
+.ew-bound-state { font-size: var(--t-fs-xs); color: var(--dim); }
 .ew-bound.on { border-color: var(--accent); background: var(--accent-deep); }
 .ew-bound.on .ew-bound-state { color: var(--accent); font-weight: 600; }
-:root[data-theme="light"] .ew-bound.on { background: #e6efe9; }
+:root[data-theme="light"] .ew-bound.on { background: color-mix(in srgb, var(--t-accent) 14%, transparent); }
 
 /* --- upload: drag a plan set onto the window ----------------------------
    On a hosted box TAKEOFF_HOSTED=1 refuses filesystem paths, so this is the
@@ -893,22 +890,21 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 .drop-card { border: 2px dashed var(--accent); border-radius: 16px;
   padding: 40px 56px; background: var(--panel); text-align: center;
   box-shadow: 0 24px 60px rgba(0,0,0,.45); }
-.drop-title { font-size: 20px; font-weight: 600; color: var(--text); }
-.drop-sub { margin-top: 6px; font-family: var(--mono); font-size: 11px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.drop-title { font-size: var(--t-fs-lg); font-weight: 600; color: var(--text); }
+.drop-sub { margin-top: 6px; font-size: var(--t-fs-xs); color: var(--dim); }
 
 .up-bar { position: fixed; left: 50%; transform: translateX(-50%); top: 14px;
   z-index: 95; display: flex; align-items: center; gap: 10px;
   padding: 9px 14px; border-radius: 10px; background: var(--panel);
   border: 1px solid var(--line); box-shadow: 0 10px 30px rgba(0,0,0,.4);
   min-width: 320px; max-width: min(560px, 92vw); }
-.up-name { font-size: 12px; color: var(--text); white-space: nowrap;
+.up-name { font-size: var(--t-fs-xs); color: var(--text); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
 .up-track { flex: 1; height: 6px; border-radius: 999px; background: var(--chip);
   overflow: hidden; }
 .up-fill { height: 100%; width: 0%; background: var(--accent);
   transition: width .12s linear; }
-.up-pct { font-family: var(--mono); font-size: 11px; color: var(--dim);
+.up-pct { font-family: var(--mono); font-size: var(--t-fs-xs); color: var(--dim);
   font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
 :root[data-theme="light"] .drop-card,
 :root[data-theme="light"] .up-bar { box-shadow: 0 16px 40px rgba(0,0,0,.16); }
@@ -921,13 +917,12 @@ canvas.ml-swatch { width: 40px; height: 9px; }
   position: sticky;
   top: 0;
   z-index: 60;
-  padding: 5px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .02em;
-  color: #3b2600;
-  background: #f5d67e;
-  border-bottom: 1px solid #c9a227;
+  padding: var(--t-sp-1) var(--t-sp-3);
+  font-size: var(--t-fs-xs);
+  font-weight: 500;
+  color: var(--t-warn);
+  background: var(--t-warn-bg);
+  border-bottom: 1px solid color-mix(in srgb, var(--t-warn) 30%, transparent);
   text-align: center;
 }
 
@@ -937,7 +932,7 @@ canvas.ml-swatch { width: 40px; height: 9px; }
    difference between "my plans are missing" and "I am logged in as someone
    else". */
 .whoami {
-  font-size: 11px;
+  font-size: var(--t-fs-xs);
   color: var(--dim);
   letter-spacing: .03em;
   align-self: center;
@@ -964,35 +959,34 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; padding: 20px;
 }
-.fb-head { font-size: 15px; font-weight: 600; }
-.fb-sub { font-size: 12px; color: var(--dim); margin: 3px 0 16px; }
+.fb-head { font-size: var(--t-fs-md); font-weight: 600; }
+.fb-sub { font-size: var(--t-fs-xs); color: var(--dim); margin: 3px 0 16px; }
 .fb-lab {
-  display: block; font-size: 11px; letter-spacing: .05em;
-  text-transform: uppercase; color: var(--dim); margin: 12px 0 5px;
+  display: block; font-size: var(--t-fs-xs); letter-spacing: .05em; color: var(--dim); margin: 12px 0 5px;
 }
 .fb-in {
-  width: 100%; padding: 8px 10px; font-size: 13px; font-family: inherit;
+  width: 100%; padding: 8px 10px; font-size: var(--t-fs-sm); font-family: inherit;
   color: var(--text); background: var(--field);
   border: 1px solid var(--line); border-radius: 6px;
 }
 .fb-msg { resize: vertical; min-height: 84px; }
 .fb-check {
   display: flex; align-items: center; gap: 7px;
-  font-size: 12px; color: var(--dim); margin-top: 12px;
+  font-size: var(--t-fs-xs); color: var(--dim); margin-top: 12px;
 }
 .fb-check input { width: auto; }
 .fb-ctx {
   margin-top: 14px; padding: 9px 11px; border-radius: 6px;
   background: var(--chip); border: 1px solid var(--line);
 }
-.fb-ctx-h { font-size: 10.5px; text-transform: uppercase;
+.fb-ctx-h { font-size: var(--t-fs-xs);
             letter-spacing: .05em; color: var(--dim); }
-.fb-ctx-b { font-size: 12px; margin-top: 4px; word-break: break-word; }
+.fb-ctx-b { font-size: var(--t-fs-xs); margin-top: 4px; word-break: break-word; }
 .fb-actions {
   display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
 }
-.fb-actions button { padding: 8px 16px; font-size: 13px; border-radius: 6px; }
-#fbSend { background: var(--accent); color: #071009; border: 0; font-weight: 600; }
+.fb-actions button { padding: 8px 16px; font-size: var(--t-fs-sm); border-radius: 6px; }
+#fbSend { background: var(--accent); color: var(--t-accent-ink); border: 0; font-weight: 600; }
 #fbSend[disabled] { opacity: .6; }
 
 
@@ -1007,7 +1001,7 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
    full-page load, but nothing renders it today. */
 
 .legal-link {
-  font-size: 11px; color: var(--dim); text-decoration: none;
+  font-size: var(--t-fs-xs); color: var(--dim); text-decoration: none;
   align-self: center; white-space: nowrap;
 }
 .legal-link:hover { color: var(--text); text-decoration: underline; }
@@ -1016,7 +1010,7 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
    leaf. It may ellipsize; the leaf never does. Two rows whose layers differ
    only by this prefix used to print identically. */
 .sl-xref { flex: 0 1 auto; min-width: 0; font-family: var(--mono);
-  font-size: 10px; line-height: 1.2; color: var(--dim); opacity: .6;
+  font-size: var(--t-fs-xs); line-height: 1.2; color: var(--dim); opacity: .6;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .style-layer .sl-name { flex: none; }
 
@@ -1024,11 +1018,10 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
    number the takeoff prints. Sits under the layer line, same left edge. */
 .item-split { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
   align-items: baseline; margin-top: 2px; padding: 1px 5px 1px 0;
-  background: none; border: 0; border-left: 2px solid #d08a3c;
+  background: none; border: 0; border-left: 2px solid var(--t-warn);
   padding-left: 6px; cursor: pointer; text-align: left; font: inherit; }
-.item-split .is-tag { flex: none; font-size: 9px; line-height: 1.2;
-  letter-spacing: .1em; text-transform: uppercase; color: #d08a3c; }
-.item-split .is-txt { min-width: 0; font-size: 10px; line-height: 1.25;
+.item-split .is-tag { flex: none; font-size: var(--t-fs-xs); line-height: 1.2; color: var(--t-warn); }
+.item-split .is-txt { min-width: 0; font-size: var(--t-fs-xs); line-height: 1.25;
   color: var(--text); opacity: .78; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 .item-split:hover .is-txt { opacity: 1; }
@@ -1037,9 +1030,9 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 /* The sheet's two datum sources disagree - both candidates shown, override
    offered. Amber, not red: the engine chose by evidence strength, but the
    operator must see that a choice was made. */
-.sp-datum.sp-conflict { border-left: 3px solid #d08a3c; padding: 6px 8px;
-  background: rgba(208, 138, 60, .08); border-radius: 4px;
-  font-size: 11px; line-height: 1.5; }
+.sp-datum.sp-conflict { border-left: 3px solid var(--t-warn); padding: 6px 8px;
+  background: var(--t-warn-bg); border-radius: 4px;
+  font-size: var(--t-fs-xs); line-height: 1.5; }
 .sp-datum.sp-conflict input { margin-top: 4px; }
 
 /* calibrate-from-a-known-line, inline in the measure readout */
@@ -1051,11 +1044,9 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
    informational, not dismissible, and never silent. */
 .calc-restore-note {
   margin: 6px 12px; padding: 7px 10px; border-radius: 8px;
-  border: 1px solid #7a5a1c; background: #2c2415; color: #e2b04a;
-  font-size: 12px; line-height: 1.4;
-}
-:root[data-theme="light"] .calc-restore-note {
-  border-color: #d9bd7e; background: #fbf3e2; color: #8a5a06;
+  border: 1px solid color-mix(in srgb, var(--t-warn) 45%, transparent);
+  background: var(--t-warn-bg); color: var(--t-warn);
+  font-size: var(--t-fs-xs); line-height: 1.4;
 }
 
 /* --- CHECK THESE: the confidence-ranked review queue --------------------
@@ -1068,14 +1059,14 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 .ck-rows { padding: 2px 8px 4px; }
 .ck-row { display: flex; gap: 8px; align-items: flex-start; width: 100%;
   text-align: left; background: none; border: 0; border-top: 1px solid var(--line);
-  padding: 6px 4px; cursor: pointer; font: inherit; font-size: 12px;
+  padding: 6px 4px; cursor: pointer; font: inherit; font-size: var(--t-fs-xs);
   line-height: 1.45; color: var(--dim); }
 .ck-row:first-child { border-top: 0; }
 .ck-row:hover { background: var(--chip); border-radius: 4px; }
 .ck-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
   margin-top: 6px; }
-.ck-dot.warn { background: #d79b3a; }
-.ck-dot.stop { background: #e0473b; }
+.ck-dot.warn { background: var(--t-warn); }
+.ck-dot.stop { background: var(--t-stop); }
 .ck-txt { flex: 1; }
 .ck-txt b { color: var(--text); font-weight: 600; }
 .ck-row.done { opacity: .55; }
@@ -1083,66 +1074,62 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 .ck-undo { flex: 0 0 auto; }
 .ck-more { display: block; width: calc(100% - 24px); margin: 2px 12px 8px;
   background: none; border: 1px dashed var(--line); border-radius: 6px;
-  color: var(--dim); font: inherit; font-size: 11px; padding: 5px 8px;
+  color: var(--dim); font: inherit; font-size: var(--t-fs-xs); padding: 5px 8px;
   cursor: pointer; }
 .ck-more:hover { background: var(--chip); color: var(--text); }
-.ck-pending { font-size: 11px; color: var(--dim); padding: 2px 12px 8px;
+.ck-pending { font-size: var(--t-fs-xs); color: var(--dim); padding: 2px 12px 8px;
   line-height: 1.5; }
 .ck-pending .ck-pend-line { padding-top: 2px; }
-.ck-clean { font-size: 12px; color: var(--dim); padding: 4px 12px 8px; }
+.ck-clean { font-size: var(--t-fs-xs); color: var(--dim); padding: 4px 12px 8px; }
 /* ---------- bid view (EXCAVATION-PLAN.md section 7 item 1) ----------
    The takeoff regrouped as a bid schedule, above the style drill-down.
    Same visual register as the trade heads in the itemized takeoff. */
 .bid-head { flex-wrap: wrap; }
-.bid-honesty { flex-basis: 100%; color: var(--dim); font-size: 10px;
+.bid-honesty { flex-basis: 100%; color: var(--dim); font-size: var(--t-fs-xs);
   line-height: 1.35; }
 .bid-view { padding: 0 10px 6px; }
 .bid-bucket { border-top: 1px solid var(--line); }
 .bid-bucket summary { display: flex; align-items: baseline; gap: 8px;
-  list-style: none; cursor: pointer; padding: 6px 0 3px;
-  font-family: var(--mono); font-size: 10.5px; }
+  list-style: none; cursor: pointer; padding: 6px 0 3px; font-size: var(--t-fs-xs); }
 .bid-bucket summary::-webkit-details-marker { display: none; }
 .bid-bucket summary::before { content: "\25B8"; color: var(--dim);
-  font-size: 9px; }
+  font-size: var(--t-fs-xs); }
 .bid-bucket[open] summary::before { content: "\25BE"; }
-.bid-b-name { font-weight: 600; text-transform: uppercase;
-  letter-spacing: .1em; color: var(--accent); white-space: nowrap; }
+.bid-b-name { font-weight: 600; color: var(--accent); white-space: nowrap; }
 .bid-b-sub { color: var(--dim); letter-spacing: .04em; margin-left: auto;
   text-align: right; }
 /* UNASSIGNED is a finding, not a bid line: amber, the register the app
    already uses for "look at this" (.ew-stale, .sp-conflict). */
-.bid-unassigned .bid-b-name { color: #d08a3c; }
-:root[data-theme="light"] .bid-unassigned .bid-b-name { color: #8a5a06; }
+.bid-unassigned .bid-b-name { color: var(--t-warn); }
 .bid-member { display: flex; align-items: center; gap: 6px;
-  padding: 2px 0 2px 15px; font-size: 11px; cursor: pointer; }
+  padding: 2px 0 2px 15px; font-size: var(--t-fs-xs); cursor: pointer; }
 .bid-member:hover .bm-label { color: var(--accent); }
 .bid-member.nogeom { cursor: default; }
 .bid-member.nogeom:hover .bm-label { color: inherit; }
 .bid-member.bid-iso .bm-label { color: var(--accent); font-weight: 600; }
 .bm-label { flex: 1; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
-.bm-size { flex: none; font-size: 9px; line-height: 1.4; padding: 0 3px;
+.bm-size { flex: none; font-size: var(--t-fs-xs); line-height: 1.4; padding: 0 3px;
   border: 1px solid var(--line); border-radius: 3px; color: var(--dim); }
-.bm-qty { flex: none; font-family: var(--mono); font-size: 10px;
+.bm-qty { flex: none; font-family: var(--mono); font-size: var(--t-fs-xs);
   color: var(--dim); white-space: nowrap; }
-.bid-member select.bid-pick { flex: none; max-width: 88px;
-  font-family: var(--mono); font-size: 9px; padding: 0 1px;
+.bid-member select.bid-pick { flex: none; max-width: 88px; font-size: var(--t-fs-xs); padding: 0 1px;
   background: transparent; border: none; color: var(--dim);
   cursor: pointer; }
 .bid-member select.bid-pick:hover { color: var(--accent); }
 .bid-member select.bid-pick.ov { color: var(--accent); font-weight: 600; }
-.bid-bysize { padding: 0 0 3px 15px; color: var(--dim); font-size: 10px;
+.bid-bysize { padding: 0 0 3px 15px; color: var(--dim); font-size: var(--t-fs-xs);
   font-family: var(--mono); }
-.bid-none { color: var(--dim); font-size: 11px; padding: 6px 0; }
+.bid-none { color: var(--dim); font-size: var(--t-fs-xs); padding: 6px 0; }
 
 /* cut/fill map legend: the gradient IS the map's own color ramp (cut blue,
    fill yellow-orange), labeled with the ref depth so "how dark = how deep"
    is on screen, not in a tooltip. */
 .ew-map-legend { display: inline-flex; align-items: center; gap: 6px;
-  margin-left: 10px; font-size: 10px; color: var(--dim); }
+  margin-left: 10px; font-size: var(--t-fs-xs); color: var(--dim); }
 .ew-map-legend .eml-bar { width: 92px; height: 9px; border-radius: 4px;
   background: linear-gradient(90deg, rgba(43,98,209,.95), rgba(43,98,209,0) 48%,
-    rgba(232,150,34,0) 52%, rgba(232,150,34,.95)); border: 1px solid var(--line, #333); }
+    rgba(232,150,34,0) 52%, rgba(232,150,34,.95)); border: 1px solid var(--t-border); }
 
 /* ---------- TOOLS dropdown: the header's tool buttons, one entry point ----
    The nine tool buttons MOVED into #toolsMenu unchanged (ids, handlers,
@@ -1169,7 +1156,7 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
   height: 6px; border-radius: 50%; background: transparent; margin-right: 8px;
   vertical-align: 1px; }
 .tools-menu button.t-on::before { background: var(--accent); }
-.tools-note { color: var(--dim); font-size: 11px; line-height: 1.4;
+.tools-note { color: var(--dim); font-size: var(--t-fs-xs); line-height: 1.4;
   padding: 4px 10px 6px; max-width: 230px; }
 :root[data-theme="light"] .tools-menu { box-shadow: 0 14px 40px rgba(0,0,0,.18); }
 
@@ -1183,9 +1170,8 @@ main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
   background: var(--stage); }
 .pv-head { display: flex; align-items: baseline; gap: 12px;
   max-width: 1100px; margin: 0 auto 14px; }
-.pv-head h1 { font-family: var(--mono); font-size: 15px;
-  text-transform: uppercase; letter-spacing: .12em; color: var(--text); }
-.pv-count { color: var(--dim); font-size: 11px; }
+.pv-head h1 { font-size: var(--t-fs-md); color: var(--text); }
+.pv-count { color: var(--dim); font-size: var(--t-fs-xs); }
 .pv-head .mini { margin-left: auto; }
 .pv-grid { display: grid; gap: 14px; max-width: 1100px; margin: 0 auto;
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
@@ -1199,28 +1185,25 @@ main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
   display: flex; align-items: center; justify-content: center;
   border-bottom: 1px solid var(--line); }
 .pv-thumb img { width: 100%; height: 100%; object-fit: contain; }
-.pv-ph { font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--dim); }
-.pv-name { font-weight: 600; font-size: 12.5px; padding: 9px 12px 2px;
+.pv-ph { font-size: var(--t-fs-xs); color: var(--dim); }
+.pv-name { font-weight: 600; font-size: var(--t-fs-sm); padding: 9px 12px 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pv-meta { color: var(--dim); font-size: 11px; padding: 0 12px; }
-.pv-when { color: var(--dim); font-family: var(--mono); font-size: 10px;
+.pv-meta { color: var(--dim); font-size: var(--t-fs-xs); padding: 0 12px; }
+.pv-when { color: var(--dim); font-family: var(--mono); font-size: var(--t-fs-xs);
   padding: 3px 12px 0; }
-.pv-badge { position: absolute; top: 8px; left: 8px; font-size: 9px;
-  font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase;
+.pv-badge { position: absolute; top: 8px; left: 8px; font-size: var(--t-fs-xs);
   color: var(--dim); background: var(--panel); border: 1px solid var(--line);
   border-radius: 8px; padding: 1px 6px; }
 /* remove-from-server, card form. Same server flow and same confirm wording
    as #docRemoveBtn; shown only where /api/projects said deletable. */
 .pv-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
-  padding: 0; line-height: 1; border-radius: 50%; font-size: 13px;
+  padding: 0; line-height: 1; border-radius: 50%; font-size: var(--t-fs-sm);
   color: var(--dim); background: var(--panel); border: 1px solid var(--line); }
-.pv-x:hover { background: #b3362c; border-color: #b3362c; color: #fff; }
+.pv-x:hover { background: var(--t-danger-deep); border-color: var(--t-danger-deep); color: #fff; }
 .pv-empty { max-width: 1100px; margin: 0 auto; padding: 60px 20px;
-  text-align: center; color: var(--dim); font-size: 13px; }
+  text-align: center; color: var(--dim); font-size: var(--t-fs-sm); }
 /* the Projects link rides the brand block, third line, quiet but present */
-.projects-link { display: block; font-size: 9px; font-family: var(--mono);
-  letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
+.projects-link { display: block; font-size: var(--t-fs-xs); color: var(--accent);
   text-decoration: none; margin-top: 2px; }
 .projects-link:hover { text-decoration: underline; }
 
@@ -1234,50 +1217,46 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
   background: var(--stage); }
 .sv-head { display: flex; align-items: baseline; gap: 12px;
   max-width: 900px; margin: 0 auto 14px; }
-.sv-head h1 { font-family: var(--mono); font-size: 15px;
-  text-transform: uppercase; letter-spacing: .12em; color: var(--text); }
+.sv-head h1 { font-size: var(--t-fs-md); color: var(--text); }
 .sv-head .mini { margin-left: auto; }
 .sv-section { max-width: 900px; margin: 0 auto 26px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px 16px; }
-.sv-section h2 { font-family: var(--mono); font-size: 11px;
-  text-transform: uppercase; letter-spacing: .14em; color: var(--dim);
+.sv-section h2 { font-size: var(--t-fs-xs); color: var(--dim);
   margin: 0 0 8px; }
-.sv-note { color: var(--dim); font-size: 11px; margin: 2px 0 8px; }
+.sv-note { color: var(--dim); font-size: var(--t-fs-xs); margin: 2px 0 8px; }
 .sv-table { display: grid; grid-template-columns: 1fr 60px 110px 110px 26px;
-  gap: 2px 10px; align-items: center; font-size: 12px; }
-.sv-table .sv-th { font-family: var(--mono); font-size: 10px;
-  text-transform: uppercase; letter-spacing: .1em; color: var(--dim);
+  gap: 2px 10px; align-items: center; font-size: var(--t-fs-xs); }
+.sv-table .sv-th { font-size: var(--t-fs-xs); color: var(--dim);
   padding-bottom: 4px; }
 .sv-table .sv-lab { overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
 .sv-table .sv-unit, .sv-table .sv-where { color: var(--dim);
-  font-family: var(--mono); font-size: 10.5px; }
+  font-family: var(--mono); font-size: var(--t-fs-xs); }
 .sv-table input[type=number] { width: 100px; }
 .sv-table .sv-x { width: 22px; height: 22px; padding: 0; line-height: 1;
-  border-radius: 50%; font-size: 12px; color: var(--dim);
+  border-radius: 50%; font-size: var(--t-fs-xs); color: var(--dim);
   background: var(--panel); border: 1px solid var(--line); }
-.sv-table .sv-x:hover { background: #b3362c; border-color: #b3362c;
+.sv-table .sv-x:hover { background: var(--t-danger-deep); border-color: var(--t-danger-deep);
   color: #fff; }
 .sv-addrow { display: flex; gap: 8px; align-items: center; margin-top: 12px;
   flex-wrap: wrap; }
 .sv-addrow input[type=text] { flex: 1; min-width: 180px; }
 .sv-addrow input[type=number] { width: 100px; }
 .sv-mat { display: grid; grid-template-columns: 1fr 90px 110px 110px;
-  gap: 2px 10px; align-items: baseline; font-size: 12px; margin-top: 6px; }
-.sv-mat .sv-th { font-family: var(--mono); font-size: 10px;
-  text-transform: uppercase; letter-spacing: .1em; color: var(--dim);
+  gap: 2px 10px; align-items: baseline; font-size: var(--t-fs-xs); margin-top: 6px; }
+.sv-mat .sv-th { font-size: var(--t-fs-xs); color: var(--dim);
   padding-bottom: 4px; }
-.sv-cite { grid-column: 1 / -1; color: var(--dim); font-size: 10.5px;
+.sv-cite { grid-column: 1 / -1; color: var(--dim); font-size: var(--t-fs-xs);
   padding: 0 0 8px 12px; }
 .sv-ovr { display: flex; gap: 8px; align-items: center; margin-top: 10px;
-  flex-wrap: wrap; font-size: 12px; }
+  flex-wrap: wrap; font-size: var(--t-fs-xs); }
 .sv-ovr input[type=number] { width: 90px; }
 .sv-io { display: flex; gap: 10px; align-items: center; }
-.sv-preview { margin-top: 10px; font-size: 12px; }
+.sv-preview { margin-top: 10px; font-size: var(--t-fs-xs); }
 .sv-preview .sv-badline { color: var(--dim); font-family: var(--mono);
-  font-size: 10.5px; white-space: pre-wrap; }
+  font-size: var(--t-fs-xs); white-space: pre-wrap; }
 .sv-foot { max-width: 900px; margin: 0 auto; color: var(--dim);
-  font-size: 11px; padding: 0 4px; }
+  font-size: var(--t-fs-xs); padding: 0 4px; }
 /* --- editing core: family switch on the selection bar + marquee bar ------
    .canvas-status is pointer-events:none so the pills never block the sheet;
    these three grew CONTROLS (family select, bulk buttons, the calibrate
@@ -1286,36 +1265,38 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 #selInfo { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 #selInfo:empty { display: none; }   /* the id rule above outranks .tk-info:empty */
 .sel-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fam-sel { flex: none; max-width: 180px; font-size: 11px; padding: 2px 6px;
+.fam-sel { flex: none; max-width: 180px; font-size: var(--t-fs-xs); padding: 2px 6px;
   border-radius: 6px; background: var(--chip); color: var(--text);
   border: 1px solid var(--line); cursor: pointer; }
 .fam-sel:hover { border-color: var(--accent); }
+/* #ff00cc is the canvas chain-selection magenta. It is NOT a UI colour and
+   has no token on purpose: this border exists to match CV_SELECT in
+   webui/app.js exactly, so the two must be changed together or not at all. */
 .multi-bar { display: inline-flex; align-items: center; gap: 8px;
   border-color: #ff00cc; }
 .multi-bar[hidden] { display: none; }   /* author display beats [hidden] otherwise */
 .multi-bar .mini { flex: none; }
-.multi-bar .mini.danger { color: #ff9a90; }
-.multi-bar .mini.danger:hover { background: #b3362c; color: #fff;
-  border-color: #b3362c; }
+.multi-bar .mini.danger { color: var(--t-danger); }
+.multi-bar .mini.danger:hover { background: var(--t-danger-deep); color: #fff;
+  border-color: var(--t-danger-deep); }
 /* --- grading zones -------------------------------------------------------
    Declared-design regions (pad / plane / balance / strip) computed against
    the detected existing ground. Panel rows live inside the earthwork panel;
    the modal is a plain centered overlay, app-styled, no library. */
-.gz-hint { font-size: 11px; color: var(--dim); margin-top: 6px; }
+.gz-hint { font-size: var(--t-fs-xs); color: var(--dim); margin-top: 6px; }
 .gz-rows { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .gz-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
 .gz-row.added { border-color: var(--accent); }
-.gz-row input.gz-name { width: 84px; font-size: 11px; padding: 1px 4px;
+.gz-row input.gz-name { width: 84px; font-size: var(--t-fs-xs); padding: 1px 4px;
   background: transparent; border: 1px solid transparent; color: var(--text); }
 .gz-row input.gz-name:hover, .gz-row input.gz-name:focus {
   border-color: var(--line); }
-.gz-row .gz-sum { font-size: 10px; color: var(--dim); font-family: var(--mono); }
-.gz-row .gz-cyf { font-size: 11px; margin-left: auto; white-space: nowrap; }
-.gz-row .gz-err { color: #d08a3c; font-size: 10px; }
-:root[data-theme="light"] .gz-row .gz-err { color: #8a5a06; }
+.gz-row .gz-sum { font-size: var(--t-fs-xs); color: var(--dim); font-family: var(--mono); }
+.gz-row .gz-cyf { font-size: var(--t-fs-xs); margin-left: auto; white-space: nowrap; }
+.gz-row .gz-err { color: var(--t-warn); font-size: var(--t-fs-xs); }
 .gz-row .mini.on { border-color: var(--accent); color: var(--accent); }
-.gz-totals { margin-top: 6px; font-size: 11px; display: flex; gap: 12px;
+.gz-totals { margin-top: 6px; font-size: var(--t-fs-xs); display: flex; gap: 12px;
   font-family: var(--mono); color: var(--text); }
 .gz-totals b { font-weight: 600; }
 
@@ -1327,24 +1308,23 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; padding: 14px 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
 .gz-m-head { display: flex; align-items: center; gap: 8px; }
-.gz-m-head h2 { margin: 0; font-size: 14px; flex: 1; }
-.gz-m-exist { font-size: 11px; color: var(--dim); margin: 6px 0 10px; }
+.gz-m-head h2 { margin: 0; font-size: var(--t-fs-base); flex: 1; }
+.gz-m-exist { font-size: var(--t-fs-xs); color: var(--dim); margin: 6px 0 10px; }
 .gz-m-design { display: flex; flex-direction: column; gap: 6px; }
 .gz-m-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  font-size: 12px; }
-.gz-num { width: 84px; font-size: 12px; padding: 2px 4px; }
+  font-size: var(--t-fs-xs); }
+.gz-num { width: 84px; font-size: var(--t-fs-xs); padding: 2px 4px; }
 .gz-num.gz-sm { width: 56px; }
-.gz-m-note { font-size: 10px; color: var(--dim); }
+.gz-m-note { font-size: var(--t-fs-xs); color: var(--dim); }
 .gz-m-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  margin: 10px 0; font-size: 12px; }
+  margin: 10px 0; font-size: var(--t-fs-xs); }
 .gz-m-live { border: 1px solid var(--line); border-radius: 8px;
-  background: var(--sunk); padding: 8px 10px; min-height: 40px;
-  font-size: 12px; }
-.gz-m-live .gz-big { font-size: 15px; font-weight: 600; }
-.gz-m-live .gz-meta { font-size: 10px; color: var(--dim); display: block;
+  background: var(--t-surface-1); padding: 8px 10px; min-height: 40px;
+  font-size: var(--t-fs-xs); }
+.gz-m-live .gz-big { font-size: var(--t-fs-md); font-weight: 600; }
+.gz-m-live .gz-meta { font-size: var(--t-fs-xs); color: var(--dim); display: block;
   margin-top: 3px; }
-.gz-m-live .gz-warn { color: #d08a3c; }
-:root[data-theme="light"] .gz-m-live .gz-warn { color: #8a5a06; }
+.gz-m-live .gz-warn { color: var(--t-warn); }
 .gz-m-live img.gz-map { display: block; max-width: 100%; margin-top: 8px;
   image-rendering: pixelated; border: 1px solid var(--line);
   border-radius: 4px; background: #fff; }
@@ -1362,12 +1342,12 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
   border-radius: 10px; padding: 8px 8px 9px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
 #tipvid video { display: block; width: 300px; aspect-ratio: 46 / 30;
-  border-radius: 6px; background: #0d1014; border: 1px solid var(--line); }
-#tipvid .tv-title { margin-top: 7px; font-size: 12px; line-height: 1.45;
+  border-radius: 6px; background: var(--t-stage); border: 1px solid var(--line); }
+#tipvid .tv-title { margin-top: 7px; font-size: var(--t-fs-xs); line-height: 1.45;
   color: var(--text); }
-#tipvid .tv-cap { margin-top: 5px; font-size: 10px; line-height: 1.5;
-  color: var(--dim); font-family: var(--mono); letter-spacing: .04em; }
-#tipvid kbd { font-family: var(--mono); font-size: 10px;
+#tipvid .tv-cap { margin-top: 5px; font-size: var(--t-fs-xs); line-height: 1.5;
+  color: var(--dim); letter-spacing: .04em; }
+#tipvid kbd { font-family: var(--mono); font-size: var(--t-fs-xs);
   background: var(--chip); border: 1px solid var(--line);
   border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px;
   margin-left: 4px; color: var(--text); }
