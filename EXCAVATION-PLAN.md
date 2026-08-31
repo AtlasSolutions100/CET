@@ -1069,3 +1069,40 @@ Engine follow-ups the session surfaced: L-family scale bars unread
 fills not measurable as areas (fills detector caught only 10 solid
 patches); dev server died twice unexplained (now instrumented -
 out/howto/devserver.log captures stderr on next occurrence).
+
+## 27. The operator-UI wave + the data flywheel (2026-08-30)
+
+Seven commits, 64f538c..cac16ee, all landed on provenance-and-gate, each
+gated + suite-swept, live-verified on dev :8128 with annotated captures
+(out/verify/2026-08-30/{ui-wave,grading-zones,pricing-settings}/).
+
+- My Projects landing (GET /api/projects + card grid; cap disclosed
+  "showing 200 of 420"), Tools dropdown (9 buttons moved, ids/handlers
+  untouched; header 14 -> 6 buttons), bounded undo (Ctrl+Z, per-chain
+  snapshots, 633 B median), Shift+drag marquee with bulk delete/reclass
+  (one undo entry each), family <select> on the selection bar, grouped
+  audited keymap overlay, toolkit separators + tooltip rewrites.
+- GRADING ZONES: declared-design regions (pad / plane / BALANCE /
+  strip) vs the detected existing TIN - the Stice lesson productized.
+  Balance mode solves the cut=fill elevation ("balances at 7718.22 ft,
+  0.67 below existing mean" verified live on Barn C3.0). dz map painted
+  through the polygon + per-cell numbers + per-zone consent rows.
+  42 hand-checked volume cases in tests/test_grading_zone.py.
+- TRAINING LEDGER (the AI flywheel): every operator correction is now
+  an append-only labeled example (out/ledger/, TAKEOFF_LEDGER_DIR
+  overrides; write-only wrt the pipeline; local-only). Backfill mined
+  32 historical events from C:/Users/kobys/takeoff-jobs, idempotent.
+  docs/LEDGER.md maps phase 2 (junk filter / family classifier /
+  z-labeler). Strategy decided with Koby: no from-scratch LLM; corpus
+  first, small local models next, LLM as judgment layer via API/local
+  (RTX 5070 12GB runs 7-14B), LoRA fine-tune when the ledger justifies.
+- PRICING settings page: unit-price book over the itemized panel's own
+  tk1::price: store (cross-surface proven live), ew_defaults cited
+  table, CSV in/out with dry-run disclosure.
+
+Open for the joint pass: narrow-window menu flip + theme sweep of new
+pills; zone palette question (tint blue/orange vs cell numbers
+red/blue); the 8" strip default is opt-out not opt-in; factor boxes
+still not persisted (existing behaviour, now stated in UI); set
+TAKEOFF_LEDGER_DIR to one shared path if :8100 and :8128 should write
+one ledger. Cache busters now app.js v126 / style.css v52.
