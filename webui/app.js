@@ -2581,7 +2581,8 @@ function renderConfidence() {
     confLoad(state.gen, key);
   }
   const lines = confLines();
-  if (!lines.length) { box.hidden = true; box.innerHTML = ""; return; }
+  if (!lines.length) { box.hidden = true; box.innerHTML = "";
+    syncAutoCard(); return; }   // the card may now have nothing to show
   // The worst line sets the banner, and green needs a positive: a page whose
   // every line is merely "nothing contradicts this" is amber, not green.
   let worst = "ok";
@@ -2599,6 +2600,7 @@ function renderConfidence() {
   const badge = waiting ? "checking…"
     : { ok: "corroborated", warn: "check first", stop: "stop" }[worst];
   box.hidden = false;
+  syncAutoCard();
   box.className = "conf " + worst + (waiting ? " checking" : "");
   box.innerHTML =
     `<div class="conf-head"><span class="conf-badge `
@@ -3088,6 +3090,9 @@ function renderCheckQueue() {
   $("ckTitle").textContent = "Check these (" + ord.unchecked + ")";
   $("ckToggle").textContent = state.ckCollapsed ? "show" : "hide";
   $("ckBody").hidden = state.ckCollapsed;
+  // the ▾/▸ the CSS paints from `.closed` must agree with the real state
+  $("ckHead").classList.toggle("closed", !!state.ckCollapsed);
+  syncAutoCard();
   if (state.ckCollapsed) return;
   const rows = $("ckRows");
   rows.innerHTML = "";
@@ -3204,10 +3209,18 @@ function ckGo(e) {
   }
 }
 
-$("ckToggle").onclick = () => {
-  state.ckCollapsed = !state.ckCollapsed;
+function ckSetCollapsed(on) {
+  state.ckCollapsed = on;
   renderCheckQueue();
-};
+}
+$("ckToggle").onclick = () => ckSetCollapsed(!state.ckCollapsed);
+// The header's own chevron. `.side-head h2::before` paints a ▾ on EVERY
+// side-head, so this one looked clickable and did nothing - the queue only
+// closed from the "hide" button beside it. CHECK THESE is not in the generic
+// SECTIONS fold because it owns its own collapsed state (state.ckCollapsed
+// gates the row BUILD, not just visibility), so the title drives that state
+// instead of a second, competing mechanism.
+$("ckHead").querySelector("h2").onclick = () => ckSetCollapsed(!state.ckCollapsed);
 
 // ---------- what the drafter called it -----------------------------------
 // `s.layer` is the CAD layer name and it is the only field on a style row
@@ -8648,6 +8661,10 @@ $("csvBtn").onclick = () => {
 // would mean pressing EARTHWORK produced a bare header - which is the exact
 // symptom audit item 8 was raised for. Their folds stay per-session.
 const SECTIONS = [
+  // the Auto-detected card: one fold over BOTH the corroborated banner and the
+  // check queue. "Check these" keeps its own sub-fold below (ckHead), so the
+  // operator can put the queue away without losing what the engine confirmed.
+  ["autoHead", ["autoBody"]],
   ["legendHead", ["legendBox"]],
   ["arHead", ["arList", "arScale", "arUnmatched"]],
   ["bidHead", ["bidBox"]],
@@ -8659,10 +8676,24 @@ const SECTIONS = [
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
 ];
-const FOLD_KEEP = new Set(["legendHead", "arHead", "bidHead", "stylesHead",
-                           "takeoffHead"]);
+const FOLD_KEEP = new Set(["autoHead", "legendHead", "arHead", "bidHead",
+                           "stylesHead", "takeoffHead"]);
 // same "core-" localStorage prefix the page strip, mini legend and theme use
 const foldKey = (headId) => "core-fold-" + headId;
+// The Auto-detected card holds two independently-hidden blocks. Neither the
+// card nor its head may show while both are silent - otherwise a sheet with
+// nothing to report grows an empty header. Called from both renderers; the
+// `.card:not(:has(...))` rule then folds the section away entirely.
+function syncAutoCard() {
+  const head = $("autoHead"), body = $("autoBody");
+  if (!head || !body) return;
+  const cb = $("confBanner"), ck = $("ckPanel");
+  const silent = (!cb || cb.hidden) && (!ck || ck.hidden);
+  // never fight the operator's fold: a folded card hides its body by design
+  const folded = head.classList.contains("closed");
+  head.hidden = silent;
+  body.hidden = silent || folded;
+}
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
   if (!head) continue;

@@ -5,7 +5,7 @@
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=56">
+<link rel="stylesheet" href="style.css?v=57">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -474,11 +474,21 @@
         </div>
         <section class="card" id="cardSheet">
     <div id="sheetHead" class="sheet-head" hidden></div>
+        </section>
+        <!-- AUTO-DETECTED: ONE card for everything the ENGINE concluded about
+             this sheet - what it corroborated (confBanner) and what it doubts
+             most (ckPanel). These were two separate cards; an operator reads
+             them as a single question - "what did the machine work out, and
+             where is it unsure?" - so they answer it in one place. The two
+             blocks keep their own sub-heads, their own fold, and their own
+             renderers; only the framing is shared. syncAutoCard() in app.js
+             hides the whole card when neither block has anything to say. -->
+        <section class="card" id="cardCheck">
+    <div class="side-head" id="autoHead" hidden><h2>Auto-detected</h2></div>
+    <div id="autoBody" hidden>
     <!-- What to doubt on this sheet, in the operator's language, before any
          number below it is priced. Built by renderConfidence() in app.js. -->
     <div id="confBanner" class="conf" hidden></div>
-        </section>
-        <section class="card" id="cardCheck">
     <!-- The confidence-ranked review queue (EXCAVATION-PLAN.md section 7
          item 2). The banner above says what to doubt about the SHEET; this
          lists the specific THINGS the engine is least sure about, most
@@ -499,6 +509,7 @@
         <div id="ckPending" class="ck-pending" hidden></div>
       </div>
     </div>
+    </div><!-- /#autoBody -->
         </section>
         <section class="card" id="cardLegend">
     <div class="side-head" id="legendHead" hidden><h2>Sheet legend <span class="card-n" id="legendCount"></span></h2></div>
@@ -785,6 +796,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=131"></script>
+<script src="app.js?v=132"></script>
 </body>
 </html>
