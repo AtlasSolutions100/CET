@@ -3489,12 +3489,68 @@ def earthwork_suggest(job_id: str, page: int):
             # they measured correctly offline.
             self.layer = d.get("layer") or ""
             self.klass = d.get("class") or ""
+            # color + style_id feed the surface split and the exclusion
+            # rules below: white = invisible mask ink, style_id = the
+            # legend verdict for the family
+            self.color = d.get("color")
+            self.style_id = d.get("style_id")
     chains = [_C(c) for c in res["chains"]]
+    # Which chains may seed contour rows at all - an explicit precedence,
+    # never first-writer-wins (earthwork.family_verdicts has the rules):
+    #  a. a family the LEGEND matched to a non-contour row (property line,
+    #     swale, grade break...) never seeds - on C-04 those families
+    #     seeded 4 junk rows, each with a stolen nearby spot elevation;
+    #  b. near-white strokes never seed - they are mask ink, invisible on
+    #     paper (C-04 sids 44-48 seeded 10 junk rows the same way).
+    # Excluded chains also leave the label-matching pool entirely, so the
+    # labels they used to steal reach the real contours (earthwork.py).
+    from takeoff_engine.earthwork import (_chain_white, family_verdicts,
+                                          split_rows_surface)
+    verdicts = family_verdicts(res.get("styles") or [])
+    excl = set()
+    fam_excluded = []
+    n_by_sid = {}
+    for c in chains:
+        n_by_sid[c.style_id] = n_by_sid.get(c.style_id, 0) + 1
+    # Self-consistency gate on the legend evidence: a non-contour verdict
+    # is trusted only when the SAME legend read also matched a contour
+    # family somewhere on the sheet. On Stice's 600-acre grading plan the
+    # legend matcher hung "PROPOSED LOT LINE" on the proposed CONTOUR
+    # families themselves (1,733 chains, wiggly terraces by eye - see
+    # out/verify/2026-08-30/stice-recipe) and matched NO contour row at
+    # all; applying the exclusions there deleted 634 of the operator's
+    # 1,487 verified rows. A legend read that cannot find the contours
+    # has no standing to disqualify anything else.
+    legend_saw_contours = any(v["role"] in ("existing", "proposed",
+                                            "contour")
+                              for v in verdicts.values())
+    if legend_saw_contours:
+        for sid, v in sorted(verdicts.items()):
+            if v["role"] == "noncontour":
+                fam_excluded.append({"style_id": sid, "label": v["label"],
+                                     "reason": "legend: not a contour",
+                                     "n_chains": n_by_sid.get(sid, 0)})
+    noncontour_sids = {f["style_id"] for f in fam_excluded}
+    n_white = 0
+    for c in chains:
+        if c.style_id in noncontour_sids:
+            excl.add(int(c.chain_id))
+        elif _chain_white(c):
+            excl.add(int(c.chain_id))
+            n_white += 1
+    if n_white:
+        fam_excluded.append({"style_id": None, "label": "near-white strokes",
+                             "reason": "white ink (mask)",
+                             "n_chains": n_white})
     # contour labels printed inside line breaks are rotated + often
     # exploded to vectors: read them by deskewing each gap with the
     # line's own angle. OCR of a fixed raster is deterministic, so the
     # per-page cache reproduces on any seat (compute cache, not memory).
-    gcache = _job_dir(job_id) / f"p{page}_elevgaps.json"
+    # v2 suffix: the v1 cache was built with the old trigger (first-come
+    # 400-patch cap, lone-gap threshold) and holds none of the mask-covered
+    # or split-break labels; keeping the old filename would read that stale
+    # result back forever. Orphaned v1 files are harmless.
+    gcache = _job_dir(job_id) / f"p{page}_elevgaps2.json"
     gap_z = None
     if gcache.exists():
         try:
@@ -3511,13 +3567,14 @@ def earthwork_suggest(job_id: str, page: int):
         img = _np3.frombuffer(pix.samples, _np3.uint8).reshape(
             pix.height, pix.width, pix.n)[:, :, :3].copy()
         doc2.close()
-        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0)
+        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0,
+                                     exclude=excl)
         try:
             gcache.write_text(json.dumps(
                 {str(k): list(v) for k, v in gap_z.items()}))
         except OSError:
             pass
-    sug = suggest_elevations(chains, words, gap_z=gap_z)
+    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl)
     by_id = {c.chain_id: c for c in chains}
     for r in sug:
         w = by_id[r["chain_id"]].width
@@ -3541,6 +3598,24 @@ def earthwork_suggest(job_id: str, page: int):
     #    when at least two candidates agree on it. A lone outlier is noise;
     #    if nothing agrees, nothing is dropped (better a noisy list than a
     #    silently emptied one).
+    # Gap-OCR-minted rows must cohere with what the sheet's own TEXT
+    # witnesses: the glyph-derived row values plus the resolved spot
+    # grades. With >= 6 witnessed values, an OCR row further than 100 ft
+    # from every one of them is a misread minting terrain that nothing on
+    # the sheet corroborates - Barn C3.1 (272 spot grades around 7,7xx,
+    # zero labeled contours) got three such rows at 424-444 read out of
+    # dimension texts, and with no native rows at all the group-consensus
+    # below cannot reject them. 100 ft matches the consensus gap; 6
+    # matches the OCR anchor rule's threshold.
+    wit = sorted({float(r["z"]) for r in sug
+                  if r.get("how") in ("radius", "inline")}
+                 | {float(g["z"]) for g in spots
+                    if g.get("resolved") and g.get("z") is not None})
+    n_before_filters = len(sug)
+    if len(wit) >= 6:
+        sug = [r for r in sug
+               if r.get("how") != "gap-ocr"
+               or min(abs(float(r["z"]) - a) for a in wit) <= 100.0]
     boxes = res.get("legend_samples") or []
     def _in_legend(r):
         x, y = r.get("label_xy", [None, None])
@@ -3559,13 +3634,31 @@ def earthwork_suggest(job_id: str, page: int):
                 groups.append(cur); cur = []
             cur.append(r)
         groups.append(cur)
-        top = max(groups, key=len)
-        if len(top) >= 2:
+        # rank groups by GLYPH-backed rows first, count second: OCR can
+        # mint mutually-supporting misreads (Barn C3.1: three dimension
+        # texts read as 424-444 against the sheet's one real 7,7xx row),
+        # and on pure row count that junk band outvotes the surface the
+        # sheet's own text witnesses. A native token cannot be minted.
+        top = max(groups, key=lambda g: (
+            sum(1 for r in g if r.get("how") in ("radius", "inline")),
+            len(g)))
+        if len(top) >= 2 or (len(kept) > len(top)
+                             and any(r.get("how") in ("radius", "inline")
+                                     for r in top)):
             kept = top
-    dropped = len(sug) - len(kept)
+    dropped = n_before_filters - len(kept)
     sug = kept
+    # surface split with the rule disclosed per row (surface + split_by):
+    # legend verdict > color screening > width median - the UI keeps its
+    # own width-median default until it adopts these fields, so they are
+    # advisory, but the row set above (exclusions, label sources) is not
+    chain_info = {c.chain_id: {"style_id": c.style_id, "color": c.color,
+                               "width": c.width} for c in chains}
+    split_counts = split_rows_surface(sug, chain_info, verdicts)
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
+            "families_excluded": fam_excluded,
+            "split_counts": split_counts,
             "spot_grades": spots,
             "spot_datum": spot_datum_info,
             "spot_datum_needed": bool(spots) and not any(
