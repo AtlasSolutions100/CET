@@ -2346,3 +2346,95 @@ main.sv-open ~ .status-bar .sb-facts { display: none; }
 /* the bid view's read-only mirror of the same components */
 .bid-member.bid-sub { padding-left: var(--t-sp-4); opacity: .92; }
 .bid-member.bid-sub .bm-label { color: var(--t-text-dim); }
+
+/* ==========================================================================
+   OPERATOR LINE COLOUR (webui/app.js, the COLOR-RULES block)
+   The operator giving a black-and-white sheet a readable visual language.
+   Every colour here comes from a --t-* token; the only literals are the
+   colours the OPERATOR chose, which are set inline as style.background
+   because they are data, not design.
+   ========================================================================== */
+
+/* the style row's swatch IS the control - say so on hover, and mark a row
+   whose colour is a decision rather than a measurement */
+canvas.swatch-line[role="button"] { cursor: pointer; border-radius: 3px;
+  outline-offset: 2px; }
+canvas.swatch-line[role="button"]:hover,
+canvas.swatch-line[role="button"]:focus-visible {
+  box-shadow: 0 0 0 2px var(--t-accent); outline: none; }
+/* the same "somebody typed this" cue the label box uses, under the swatch.
+   Both states are box-shadow, so the hover rule would REPLACE the underline
+   and a hovered row would stop saying its colour is a decision - the hover
+   variants restate it rather than shadowing it. */
+canvas.swatch-line.recoloured {
+  box-shadow: inset 0 -2px 0 0 var(--t-accent); }
+canvas.swatch-line.recoloured[role="button"]:hover,
+canvas.swatch-line.recoloured[role="button"]:focus-visible {
+  box-shadow: inset 0 -2px 0 0 var(--t-accent), 0 0 0 2px var(--t-accent); }
+/* the colour chips already carry an operator colour; ring the ones that do */
+.color-chip.recoloured { border-color: var(--t-accent); }
+
+/* the selection bar's per-line swatch, beside the family switch */
+.sel-color { flex: none; width: 22px; height: 22px; padding: 0;
+  border-radius: var(--t-r-1); border: 1px solid var(--t-border-strong);
+  cursor: pointer; }
+.sel-color:hover { border-color: var(--t-accent); }
+.sel-color.own { box-shadow: 0 0 0 2px var(--t-accent); }
+
+/* ---------- the picker popover ------------------------------------------- */
+.color-pop { position: fixed; z-index: 60; width: 268px;
+  padding: var(--t-sp-3); border-radius: var(--t-r-3);
+  background: var(--t-surface-2); border: 1px solid var(--t-border-strong);
+  box-shadow: var(--t-el-3); color: var(--t-text);
+  font-size: var(--t-fs-sm); }
+.cp-head { font-weight: 700; font-size: var(--t-fs-sm);
+  margin-bottom: var(--t-sp-2); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.cp-grid { display: grid; grid-template-columns: repeat(7, 1fr);
+  gap: var(--t-sp-1); }
+.cp-sw { height: 26px; padding: 0; border-radius: var(--t-r-1);
+  border: 1px solid var(--t-border-strong); cursor: pointer; }
+.cp-sw:hover { transform: scale(1.08); }
+.cp-sw.on { box-shadow: 0 0 0 2px var(--t-accent); }
+.cp-row { display: flex; align-items: center; gap: var(--t-sp-2);
+  margin-top: var(--t-sp-2); }
+.cp-lab { color: var(--t-text-dim); font-size: var(--t-fs-xs); }
+.cp-row input[type="color"] { width: 40px; height: 24px; padding: 0;
+  background: var(--t-field); border: 1px solid var(--t-border);
+  border-radius: var(--t-r-1); cursor: pointer; }
+.cp-rst { flex-wrap: wrap; border-top: 1px solid var(--t-border);
+  padding-top: var(--t-sp-2); }
+.cp-warn { margin-top: var(--t-sp-2); padding: var(--t-sp-2);
+  border-radius: var(--t-r-1); font-size: var(--t-fs-xs);
+  line-height: var(--t-lh-tight);
+  background: var(--t-warn-bg); color: var(--t-warn); }
+.cp-warn[hidden] { display: none; }
+.cp-conv { display: flex; align-items: flex-start; gap: var(--t-sp-2);
+  margin-top: var(--t-sp-2); font-size: var(--t-fs-xs);
+  color: var(--t-text-dim); line-height: var(--t-lh-tight);
+  cursor: pointer; }
+.cp-conv input { margin-top: 2px; flex: none; }
+.cp-evid { margin-top: var(--t-sp-2); font-size: var(--t-fs-xs);
+  font-family: var(--t-font-data); color: var(--t-text-faint); }
+.cp-note { margin-top: var(--t-sp-1); font-size: var(--t-fs-xs);
+  line-height: var(--t-lh-tight); color: var(--t-text-faint); }
+
+/* ---------- PRICING: the line colour convention book --------------------- */
+.sv-book-table .sv-colpick { width: 46px; height: 22px; padding: 0;
+  background: var(--t-field); border: 1px solid var(--t-border);
+  border-radius: var(--t-r-1); cursor: pointer; }
+.sv-book-table .sv-colpick:hover { border-color: var(--t-accent); }
+/* nothing stored yet. An <input type="color"> always paints SOME swatch, so
+   an unset row gets this instead - the same "set" affordance the price
+   column uses - and the picker only appears once there is a colour. */
+.sv-book-table .sv-colset { width: 46px; height: 22px; padding: 0;
+  font-size: var(--t-fs-xs); color: var(--t-text-faint);
+  background: var(--t-field); border: 1px dashed var(--t-border);
+  border-radius: var(--t-r-1); cursor: pointer; }
+.sv-book-table .sv-colset:hover { color: var(--t-text);
+  border-color: var(--t-accent); border-style: solid; }
+#svColorWarn { padding: 0 var(--t-sp-4) var(--t-sp-2);
+  color: var(--t-warn); line-height: var(--t-lh-tight); }
+#svColorPick { width: 46px; height: 26px; padding: 0;
+  background: var(--t-field); border: 1px solid var(--t-border);
+  border-radius: var(--t-r-1); cursor: pointer; }

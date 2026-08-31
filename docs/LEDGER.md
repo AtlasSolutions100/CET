@@ -60,6 +60,12 @@ Real lines produced by the shipped code (long arrays elided with `…`).
 `style_label` — engine's suggested label vs. the label the human exported
 under. One per exported style, per approve.
 
+`context.operator_created` says whether a HUMAN invented this family in the
+review UI rather than the detector finding it. Written on every
+`style_label`, true or false, so its **absence** means "an event from before
+the field" and never "detected" — a model trained on these must not learn an
+operator's invented family as a detector proposal that got renamed.
+
 ```json
 {"ts_iso": "2026-08-30T20:39:32", "event": "style_label", "job": "d6c45228002c", "pdf_sha1": null, "page_index": 2, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": {"suggested_label": "dash2 d6.1 g3.0"}, "after": {"label": "PROPOSED 8\" SANITARY SEWER"}, "context": {"style_id": 7, "style": {"suggested_label": "dash2 d6.1 g3.0", "class": "dash2", "signature": "d6.1 g3.0", "color": [0.0, 0.0, 0.0], "width": 0.72, "layer": "C-SSWR", "length_pt": 4310.2, "n": 18, "texture": false}}, "ui_source": "webui"}
 ```
@@ -81,9 +87,57 @@ count.
 {"ts_iso": "2026-08-30T20:39:32", "event": "chain_excluded", "job": "d6c45228002c", "pdf_sha1": null, "page_index": 2, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": {"label": "PROPOSED 8\" SANITARY SEWER"}, "after": null, "context": {"chain_id": 42, "chain": {"class": "dash2", "style_id": 7, "layer": "C-SSWR", "color": [0.0, 0.0, 0.0], "width": 0.72, "length_pt": 16.2, "ink_pt": 9.0, "gap_pt": 0.0, "pickup_pt": 0.0, "n_dashes": 2, "dash_signature": "d6.1 g3.0", "n_points": 2}}, "ui_source": "webui"}
 ```
 
+### Colour — the sheet's visual language (approve hook)
+
+The operator giving a black-and-white sheet a readable visual language:
+"red for like a fiber line, light yellow for existing contour". It is a
+DECISION, so it is recorded here like every other operator correction — and
+it is deliberately **not** on the app's undo stack (Ctrl+Z stays about
+geometry; reversal is the picker's own reset buttons).
+
+`before.color` is the engine's own measured colour, as floats, exactly as
+`context.style` / `context.chain` carry it. Nothing in the pipeline ever
+overwrites that value: the review UI keeps an override layer beside it,
+because `styleFp` — the cross-sheet family identity that set-level
+include/exclude decisions are keyed on — contains the colour.
+
+`style_color` — a whole family recoloured. `context.label` is the name it
+carries, which is what the cross-job colour convention is keyed on.
+
+```json
+{"ts_iso": "2026-08-31T12:46:54", "event": "style_color", "job": "762b230c72cd", "pdf_sha1": "9024b7a21aa844eb8a53571fbf941c93f125f500", "page_index": 0, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": {"color": [0.0, 0.0, 0.0]}, "after": {"color": "#ffe066", "set_by": "reviewer"}, "context": {"style_id": 47, "label": "O-SURFACE-EXISTING COMBINED", "operator_created": false, "style": {"suggested_label": "O-SURFACE-EXISTING COMBINED", "class": "dash1", "signature": "d8.9 g4.5", "color": [0.0, 0.0, 0.0], "width": 0.1, "layer": "O-SURFACE-EXISTING COMBINED", "length_pt": 5477.2, "n": 12, "texture": false}}, "ui_source": "webui"}
+```
+
+`chain_color` — ONE line given its own colour, overriding its family's. The
+review UI's resolution order is per-chain > per-family > the operator's
+cross-job convention > the engine, and only the first two reach the server
+(the convention lives in the browser's saved work and is folded into the
+per-family value before it is sent).
+
+```json
+{"ts_iso": "2026-08-31T12:46:54", "event": "chain_color", "job": "762b230c72cd", "pdf_sha1": "9024b7a21aa844eb8a53571fbf941c93f125f500", "page_index": 0, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": {"color": [0.0, 0.0, 0.0]}, "after": {"color": "#c2255c", "set_by": "reviewer"}, "context": {"chain_id": 2099, "chain": {"class": "dash1", "style_id": 47, "layer": "O-SURFACE-EXISTING COMBINED", "color": [0.0, 0.0, 0.0], "width": 0.1, "length_pt": 2866.88, "ink_pt": 1914.08, "gap_pt": 35.31, "pickup_pt": 17.95, "n_dashes": 213, "dash_signature": "d9.0 g4.5", "template": [9.0, 4.5], "seg_counts": "…", "n_points": 692}}, "ui_source": "webui"}
+```
+
+`style_label` on a family the operator INVENTED — the machine-readable
+provenance, on the label event itself:
+
+```json
+{"ts_iso": "2026-08-31T12:46:54", "event": "style_label", "job": "762b230c72cd", "pdf_sha1": "9024b7a21aa844eb8a53571fbf941c93f125f500", "page_index": 0, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": {"suggested_label": null}, "after": {"label": "STORM LATERAL - FIELD MARKED"}, "context": {"style_id": 80, "operator_created": true, "style": null}, "ui_source": "webui"}
+```
+
 `approve_export` — one per approve: the final itemized counts, overrides
 and scale a human signed off on (this line is a real backfilled one from
 the Belle Farms job).
+
+Its `context` also summarises the sheet's visual language and its
+provenance: `n_style_colors`, `n_chain_colors`, and
+`operator_created_style_ids` — the families a human created that actually
+reached an element. A live example of just that context, from the same
+approve as the colour events above:
+
+```json
+{"n_excluded": 1, "n_excluded_ledgered": 1, "n_added_chains": 1, "n_extra_items": 0, "object_counts": null, "n_style_colors": 1, "n_chain_colors": 1, "operator_created_style_ids": [80], "image_dpi": 300}
+```
 
 ```json
 {"ts_iso": "2026-08-21T16:56:27", "event": "approve_export", "job": "0ae37bd300ea", "pdf_sha1": null, "page_index": 0, "engine_sig": "f74c853f3270c297", "schema_version": 1, "before": null, "after": {"n_elements": 467, "items": [{"label": "solid solid", "count": 301, "length_ft": 3859.8, "unit_price": 12.5, "extended": 48247.65}, …], "overrides": [], "scale": {"pixelsPerUnit": 75.0, "unit": "ft", "name": "1/4\" - 1'-0\" (auto, text)"}, "work_area": null}, "context": {"source_pdf_name": "Belle Farms Structural Plans.pdf", "labels": […], "image_dpi": 300}, "ui_source": "backfill", "dedupe": "…"}

@@ -49,6 +49,17 @@ const state = window.state = {
                             // one-line disclosure in renderStyles()
   selected: null, excluded: new Set(),
   chainLabels: new Map(),   // chain_id -> label override (separate-from-group)
+  // OPERATOR LINE COLOUR - an OVERRIDE LAYER, never a rewrite. The engine's
+  // colour stays in st.color / ch.color untouched, because it is EVIDENCE
+  // and not decoration: styleFp() (the cross-sheet family identity that
+  // keys set-level include/exclude decisions across all 48 sheets of a set)
+  // contains rawColor(st.color), and chain.py grouped these chains by
+  // (class, colour, weight, layer) in the first place. Overwriting either
+  // field would silently void the operator's decisions on every other sheet
+  // and destroy a measurement. Everything that PAINTS goes through
+  // styleCssColor / chainCssColor, which consult these two maps first.
+  famColor: new Map(),      // style_id -> "#rrggbb" chosen for the family
+  lineColor: new Map(),     // chain_id -> "#rrggbb" chosen for one line
   nextChainId: 1,           // ids for chains created by edits
   clickPt: null,            // last click position on the selected chain (pt)
   tool: null,               // one of POINT_TOOLS below, or null
@@ -1204,7 +1215,11 @@ function drawPatternSample(cnv, s, w, h) {
   const rep = state.result.chains.find(c => c.style_id === s.style_id);
   const tpl = rep && rep.template && rep.template.length >= 2
     ? rep.template : dashArray(s.signature);
-  sctx.strokeStyle = cssColor(s.color, s.width);
+  // the family's RESOLVED colour - the operator's, else the convention's,
+  // else the engine's (styleColorInfo). The engine's own value stays visible
+  // as evidence on the row's colour chip, the way the 'engine id' chip shows
+  // the measured cadence.
+  sctx.strokeStyle = styleCssColor(s);
   sctx.lineWidth = Math.min(2 + (s.width || 0.5) * 1.6, 7);
   if (s.class !== "solid" && tpl && tpl.length >= 2) {
     const span = tpl.reduce((a, b) => a + b, 0);
@@ -4055,6 +4070,27 @@ function renderStyles() {
     const sw = document.createElement("canvas");
     sw.className = "swatch-line";
     drawPatternSample(sw, s, 92, 20);
+    // THE SWATCH IS THE COLOUR CONTROL. It is already this family's colour on
+    // this family's row, so nothing else has to be invented or explained.
+    // stopPropagation because the row's own click is "isolate".
+    {
+      const info = styleColorInfo(s);
+      if (info.src !== "engine") sw.classList.add("recoloured");
+      sw.tabIndex = 0;
+      sw.setAttribute("role", "button");
+      sw.title = (info.src === "engine"
+          ? "This is the colour the detector measured. "
+          : "You set this colour (" + colorSrcLabel(info.src) + "); the "
+            + "detector measured " + engineCssFor(s) + ". ")
+        + "Click to change the colour of every line in this family — it "
+        + "drives the canvas, this swatch, the legend and the export. It is "
+        + "saved and it is NOT undone by Ctrl+Z.";
+      sw.onclick = (e) => { e.stopPropagation(); colorPopForStyle(s, sw); };
+      sw.onkeydown = (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault(); e.stopPropagation(); colorPopForStyle(s, sw);
+      };
+    }
 
     const main = document.createElement("div");
     main.className = "style-main";
@@ -4098,6 +4134,7 @@ function renderStyles() {
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
+      colorBust();  // the colour convention is keyed on the NAME
       memSave(s);   // decisions persist: same label on every future load
       clearTimeout(lab._t);   // itemized + legend regroup as you type
       lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
@@ -4368,6 +4405,7 @@ function renderStyles() {
     // that a later family with the same pattern would read back as its own.
     if (famIsMine(s)) lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
+      colorBust();
       clearTimeout(lab._t);
       lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
     };
@@ -4920,18 +4958,31 @@ function renderChips() {
   const box = $("colorChips");
   box.innerHTML = "";
   if (!state.result) return;
-  const groups = new Map(); // colorKey -> {css, sids: []}
+  // Grouped on the colour ON SCREEN, not on the engine's raw value. The chip
+  // is a VISUAL bulk toggle - "hide everything that looks like this" - so it
+  // has to group by what the operator is looking at, or recolouring a family
+  // red would leave its chip sitting in the black group. Two consequences,
+  // both wanted: a recoloured family leaves its engine-colour chip and gets
+  // its own, and two families the operator painted the same colour share one
+  // chip. With no overrides in play the grouping is byte-for-byte what it
+  // was. The engine's value is NOT touched - see styleColorInfo.
+  const groups = new Map(); // css -> {css, sids: [], nOvr}
   for (const s of state.result.styles) {
-    const key = JSON.stringify(s.color);
-    if (!groups.has(key)) groups.set(key, { css: cssColor(s.color), sids: [] });
+    const info = styleColorInfo(s);
+    const key = info.css;
+    if (!groups.has(key)) groups.set(key, { css: key, sids: [], nOvr: 0 });
     groups.get(key).sids.push(s.style_id);
+    if (info.src !== "engine") groups.get(key).nOvr++;
   }
   for (const [, g] of groups) {
     const anyOn = g.sids.some(sid => state.include.get(sid));
     const chip = document.createElement("div");
-    chip.className = "color-chip" + (anyOn ? "" : " off");
+    chip.className = "color-chip" + (anyOn ? "" : " off")
+      + (g.nOvr ? " recoloured" : "");
     chip.style.background = g.css;
-    chip.title = `${g.sids.length} style(s) — click to ${anyOn ? "hide" : "show"} all of this color`;
+    chip.title = `${g.sids.length} style(s) — click to ${anyOn ? "hide" : "show"} all of this color`
+      + (g.nOvr ? ` · ${g.nOvr} of them wear a colour you chose, not the `
+          + `one the detector measured` : "");
     chip.onclick = () => {
       for (const sid of g.sids) setInclude(sid, !anyOn);
       renderStyles(); renderChips(); renderItemized(); draw();
@@ -5885,6 +5936,600 @@ function setDecResolve(pageRec, docRec, eligible) {
   return null;
 }
 // SET-DECISIONS-END
+
+// ======================= OPERATOR LINE COLOUR ============================
+// OWNER (2026-08-31): "lets also add the ability to change lines colors,
+// whether if its by family/style or when you select a line ... some have
+// color but some are black and white, I think it would be a good addition to
+// be able to change a color to red for like a fiber line, light yellow for
+// existing contour, on and on and be able to export it and add it to the line
+// family colors, it should be a recorded decision but it shouldnt be undoable
+// and it should override or add to a family color swatch, thats why we added
+// the individual line detector".
+//
+// So this is NOT an edit tool and NOT a paint program. It is the operator
+// giving a black-and-white sheet a READABLE VISUAL LANGUAGE - fiber red,
+// existing contour light yellow - so the sheet can be read, checked, and
+// handed to someone else. Three consequences shape every line below.
+//
+// 1. NOT UNDOABLE, ON PURPOSE. Colour belongs with the app's other
+//    DECISIONS - a family's name, its price, its trade, its include tick -
+//    none of which are on the undo stack. Ctrl+Z is about GEOMETRY. A colour
+//    change sitting on that stack would swallow an undo the operator meant
+//    for a line edit. Reversal is by setting it back, plus the explicit
+//    "reset to family" / "reset to detected" controls. See setFamColor /
+//    setLineColor: neither calls captureUndo, and the colour maps are
+//    deliberately NOT in UNDO_SMAPS. tests/test_line_colors.js pins both.
+// 2. RECORDED. It is a decision, so it persists in the same store as the
+//    labels and prices, and it is a ledger event at approve
+//    (server.py _ledger_approve -> style_color / chain_color, docs/LEDGER.md).
+// 3. IT OVERRIDES OR ADDS TO THE FAMILY SWATCH. A family colour drives the
+//    canvas, the row swatch, the mini legend, the colour chips, the report
+//    and the export; a per-line colour overrides its family for that one
+//    line. Both reach the export.
+//
+// COLOR-RULES-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_colors.js can eval
+// the block alone - the same technique as SET-DECISIONS / TRENCH-MATH /
+// UNDO-CORE / LINE-FAMILY.
+
+// The colours the CANVAS ALREADY SPEAKS IN. A family painted near one of
+// these makes every line of it look selected, or look like an armed tool, or
+// look like cut/fill on the earthwork volume map - so a pick that lands near
+// one is CALLED OUT at the moment of choosing. It is never refused: it is the
+// operator's sheet and there are legitimate reasons to want magenta linework.
+//
+// Exactly four, and the list is deliberately short. These are the colours
+// that paint OVER or BESIDE ordinary linework on the same canvas:
+//   CV_SELECT          the chain-selection magenta (app.js, PROTECTED)
+//   --t-select         the measure/armed-tool blue (CV_MEASURE, tokens.css)
+//   earthwork cut/fill the dz map tint, earthwork.py _dz_png:
+//                      rgba[cut] = (30,100,255)  rgba[fill] = (255,190,20)
+// The work-area green, grading-zone purple, symbol-count violet and vertex
+// yellow are NOT here: each is a region outline or a handle dot that exists
+// only while its own tool has been used, and none of them is ever mistaken
+// for a run of linework. Listing them would also block the owner's own
+// example - "light yellow for existing contour" sits 52 units from the
+// vertex-handle yellow - which is a false alarm on a 3.5 px dot.
+const RESERVED_COLORS = [
+  { hex: "#ff00cc", name: "the selection highlight",
+    why: "lines of this family would look permanently selected" },
+  { hex: "#58b7e6", name: "the measure / armed-tool blue",
+    why: "it reads as “a tool is running on this”" },
+  { hex: "#1e64ff", name: "CUT on the earthwork volume map",
+    why: "it reads as excavation when the volume map is on" },
+  { hex: "#ffbe14", name: "FILL on the earthwork volume map",
+    why: "it reads as embankment when the volume map is on" },
+];
+
+// The curated palette. Every entry clears every reserved colour by at least
+// 134 units under colorDist below (measured: min clearance 134, at light
+// yellow vs the earthwork FILL tint; the flag threshold is 110), and no two
+// entries are closer to each other than 69. Chosen to read BOTH on the white
+// sheet the linework is drawn on and on the dark UI where the swatch sits -
+// which is why there is no white, no pastel and no pure black in it.
+// The two the owner named by name lead their hues.
+const COLOR_PALETTE = [
+  { hex: "#e03131", name: "Red",          hint: "fiber, electric, alerts" },
+  { hex: "#d9480f", name: "Burnt orange", hint: "gas, hot utilities" },
+  { hex: "#ffe066", name: "Light yellow", hint: "existing contour" },
+  { hex: "#74b816", name: "Lime",         hint: "proposed grading" },
+  { hex: "#2f9e44", name: "Green",        hint: "landscape, erosion control" },
+  { hex: "#087f5b", name: "Deep teal",    hint: "sanitary sewer" },
+  { hex: "#00a3a3", name: "Teal",         hint: "storm drain" },
+  { hex: "#1864ab", name: "Deep blue",    hint: "water" },
+  { hex: "#5f3dc4", name: "Indigo",       hint: "communications" },
+  { hex: "#862e9c", name: "Purple",       hint: "reuse / irrigation" },
+  { hex: "#c2255c", name: "Crimson",      hint: "property line, easements" },
+  { hex: "#8b5a2b", name: "Brown",        hint: "earth, subgrade" },
+  { hex: "#7a8b99", name: "Slate",        hint: "demolition, existing" },
+  { hex: "#343a40", name: "Charcoal",     hint: "structures, curbs" },
+];
+
+// "#RRGGBB" lower case, or null when the input is not a colour. Accepts the
+// 3-digit short form because <input type="color"> is not the only writer -
+// an imported convention CSV is a human-typed file.
+function colorNorm(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim().toLowerCase();
+  let m = /^#?([0-9a-f]{6})$/.exec(s);
+  if (m) return "#" + m[1];
+  m = /^#?([0-9a-f]{3})$/.exec(s);
+  if (m) return "#" + m[1].split("").map(c => c + c).join("");
+  return null;
+}
+
+function colorRgb(hex) {
+  const h = colorNorm(hex);
+  if (!h) return null;
+  return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16),
+          parseInt(h.slice(5, 7), 16)];
+}
+
+// Perceptual-ish distance, the "redmean" weighting (Compuphase). Plain
+// Euclidean RGB is not good enough for this job - it calls #ff00cc and
+// #cc00aa further apart than two greens nobody could tell apart - and a full
+// CIEDE2000 is a page of code for a warning label. Calibrated on this
+// palette: 19-42 = "the same colour", 63-102 = "same family, confusable on a
+// thin line", 130+ = plainly different.
+function colorDist(a, b) {
+  const A = colorRgb(a), B = colorRgb(b);
+  if (!A || !B) return Infinity;
+  const rm = (A[0] + B[0]) / 2;
+  const dr = A[0] - B[0], dg = A[1] - B[1], db = A[2] - B[2];
+  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg
+                   + (2 + (255 - rm) / 256) * db * db);
+}
+
+// 110: above the 102 that separates #ff00cc from #ff33cc (a shade an
+// operator would call "the same pink") and below the 134 of the closest
+// palette entry, so nothing curated ever trips its own warning.
+const COLOR_NEAR = 110;
+
+// The nearest reserved colour, when one is close enough to surprise the
+// operator; null otherwise. Reports rather than refuses - see the block
+// comment. `reserved`/`near` are injectable so the test can pin the rule
+// without pinning this file's palette.
+function colorNearReserved(hex, reserved, near) {
+  const list = reserved || RESERVED_COLORS;
+  const lim = Number.isFinite(near) ? near : COLOR_NEAR;
+  let best = null;
+  for (const r of list) {
+    const d = colorDist(hex, r.hex);
+    if (d < lim && (!best || d < best.dist))
+      best = { hex: r.hex, name: r.name, why: r.why, dist: d };
+  }
+  return best;
+}
+
+// THE RESOLUTION ORDER, in one place so it can be pinned and so the comment
+// at the mutation sites can point at it:
+//
+//     per-line  >  per-family (this document)  >  convention (by label,
+//                                                  every job)  >  engine
+//
+// Read it as "the more specific decision wins, and a measurement is what you
+// get when nobody decided". The convention sits UNDER the per-family record
+// on purpose: the company convention says what FIBER OPTIC looks like in
+// general, and a job where this particular fiber run must stand out is
+// exactly the case a per-family override exists for. Anything the operator
+// set on THIS document therefore beats the book, and the book beats the
+// detector. `engine` is already a CSS string (cssColor has its own rules
+// about invisible near-white ink); the three above it are "#rrggbb".
+//
+// Returns the colour AND where it came from, because every surface that
+// shows a colour also has to be able to say whether it is a decision or a
+// measurement - the same reason the style row carries an "engine id" chip.
+function colorResolve(v) {
+  const line = colorNorm(v && v.line);
+  if (line) return { css: line, src: "line" };
+  const fam = colorNorm(v && v.family);
+  if (fam) return { css: fam, src: "family" };
+  const conv = colorNorm(v && v.convention);
+  if (conv) return { css: conv, src: "convention" };
+  return { css: (v && v.engine) || null, src: "engine" };
+}
+
+// Where a colour DECISION came from, in the operator's words. "engine" is
+// not a decision and returns "".
+function colorSrcLabel(src) {
+  return src === "line" ? "this line"
+       : src === "family" ? "this family, on this document"
+       : src === "convention" ? "your colour convention for this name"
+       : "";
+}
+// COLOR-RULES-END
+
+// ---- the override layer's keys and readers (impure: state + store) -------
+// THREE RECORDS, THREE SCOPES, and the scope is the whole design. Each one
+// is keyed on the narrowest identity that is actually valid for it, which is
+// the lesson labelKey / includeKey below already paid for.
+//
+//   per-family : docKey + styleFp  - the SAME identity the label record
+//                travels on, so a family recoloured on sheet 1 is that
+//                colour on sheets 2-48 exactly as its typed name is.
+//   per-line   : docKey + page + engine_sig + chain_id - a chain id is an
+//                ordinal inside ONE page of ONE result, so the key names the
+//                only scope in which it means anything (see includeKey for
+//                the measurement behind that rule).
+//   convention : the bare label, upper-cased, no document in the key - the
+//                same road tradeKey and measure::<LABEL> already ride, so
+//                "FIBER OPTIC comes up red on the next job" needs no new
+//                mechanism and no server.
+function famColorKey(st) { return docKey() + "::famcolor::" + styleFp(st); }
+function lineColorKey(chainId) {
+  return docKey() + "::p" + state.page + "::" + sigKey()
+       + "::linecolor::" + chainId;
+}
+function colorConvKey(label) {
+  return "linecolor::" + String(label || "").trim().toUpperCase();
+}
+
+// The convention for a family, by the name it currently carries. Reads the
+// LIVE label, not the seed: renaming a row to FIBER OPTIC should make the
+// book apply, and renaming it away should stop it - the book is keyed on the
+// name, so it follows the name.
+function colorConvFor(sid) {
+  const lab = (state.labels.get(sid) || "").trim();
+  if (!lab) return null;
+  return colorNorm(store.getItem(colorConvKey(lab)));
+}
+
+// The engine's own colour for a style, as a CSS string - the fallback and
+// the evidence. Untouched by anything in this section.
+function engineCssFor(st) { return cssColor(st && st.color, st && st.width); }
+
+// Everything that PAINTS A FAMILY goes through here: the row swatch, the
+// mini legend, the colour chips, the canvas, the object boxes.
+//
+// MEMOISED, because draw() asks this once per CHAIN and a pan re-draws on
+// every mousemove: on a 2,000-chain sheet the unmemoised version does 2,000
+// store lookups and 2,000 string builds per frame. The memo is keyed on
+// style_id and thrown away whenever anything that feeds the answer moves -
+// a colour write, a label edit (the convention is keyed on the name), or a
+// new result. `colorBust()` is the ONE invalidator; call it from any future
+// writer rather than adding a second cache.
+let _colorMemo = new Map();
+function colorBust() { _colorMemo.clear(); }
+function styleColorInfo(st) {
+  if (!st) return { css: CV_FAM_UNKNOWN, src: "engine" };
+  const hit = _colorMemo.get(st.style_id);
+  if (hit) return hit;
+  const info = colorResolve({
+    family: state.famColor.get(st.style_id),
+    convention: colorConvFor(st.style_id),
+    engine: engineCssFor(st),
+  });
+  _colorMemo.set(st.style_id, info);
+  return info;
+}
+function styleCssColor(st) { return styleColorInfo(st).css; }
+
+// ...and everything that paints ONE LINE goes through here. `st` is the
+// chain's style row when the caller already has it (draw() does).
+function chainColorInfo(ch, st) {
+  const row = st || (state.result
+    && state.result.styles.find(x => x.style_id === (ch && ch.style_id)));
+  const eng = row ? engineCssFor(row) : cssColor(ch && ch.color, ch && ch.width);
+  return colorResolve({
+    line: ch && state.lineColor.get(ch.chain_id),
+    family: row && state.famColor.get(row.style_id),
+    convention: row && colorConvFor(row.style_id),
+    engine: eng,
+  });
+}
+function chainCssColor(ch, st) { return chainColorInfo(ch, st).css; }
+
+// ---- the writers. NO captureUndo. NO undo snapshot. ----------------------
+// DO NOT "helpfully" add captureUndo() here, and do not add famColor /
+// lineColor to UNDO_SMAPS. It is not an oversight, it is requirement 1 of
+// the block comment above: Ctrl+Z must stay about geometry, and a colour
+// change on that stack would eat the undo the operator meant for a line
+// edit. Reversal is famColorReset / lineColorReset, which are on the same
+// popover as the swatches. tests/test_line_colors.js fails if this changes.
+//
+// The engine's value is NOT touched here either: st.color and ch.color are
+// what styleFp() fingerprints the family by (and what chain.py measured), so
+// writing a decision into them would change the family's identity and
+// silently void the set-level include/exclude decisions the operator made on
+// every other sheet of the set. The override lives beside it, never over it.
+function setFamColor(st, hex) {
+  const h = colorNorm(hex);
+  if (!st || !h) return false;
+  state.famColor.set(st.style_id, h);
+  colorBust();
+  // Page state alone would be a decision that dies on the next page switch.
+  // Recorded against the same fingerprint the name travels on - EXCEPT for a
+  // family the operator invented, which has no CAD layer and no engine seed,
+  // so styleFp cannot tell two of them apart (the same abstention famIsMine
+  // already forces on memSave).
+  if (!famIsMine(st)) {
+    try { store.setItem(famColorKey(st), h); } catch (e) {}
+  }
+  return true;
+}
+function famColorReset(st) {
+  if (!st) return;
+  state.famColor.delete(st.style_id);
+  colorBust();
+  if (!famIsMine(st)) { try { store.removeItem(famColorKey(st)); } catch (e) {} }
+}
+function setLineColor(ch, hex) {
+  const h = colorNorm(hex);
+  if (!ch || !h) return false;
+  state.lineColor.set(ch.chain_id, h);
+  // Recorded only for chains the ENGINE produced. A chain created by an edit
+  // (split / draw / reclass) gets its id from state.nextChainId, which starts
+  // over every session - so a stored record for one would be read back onto a
+  // DIFFERENT line next time, which is a colour that lies. Those stay page
+  // state, exactly like the edit that made them.
+  if (!ch.custom) { try { store.setItem(lineColorKey(ch.chain_id), h); } catch (e) {} }
+  return true;
+}
+function lineColorReset(ch) {
+  if (!ch) return;
+  state.lineColor.delete(ch.chain_id);
+  if (!ch.custom) { try { store.removeItem(lineColorKey(ch.chain_id)); } catch (e) {} }
+}
+// THE BOOK: label -> colour, across every job. Same store, same shape and the
+// same "typed by a human" rule as tradeKey and measure::<LABEL>.
+function setColorConvention(label, hex) {
+  const lab = String(label || "").trim();
+  const h = colorNorm(hex);
+  if (!lab || !h) return false;
+  store.setItem(colorConvKey(lab), h);
+  colorBust();          // the book feeds styleColorInfo through the label
+  return true;
+}
+function clearColorConvention(label) {
+  const lab = String(label || "").trim();
+  if (lab) { store.removeItem(colorConvKey(lab)); colorBust(); }
+}
+// every convention on the book right now, [{label, hex}] - read off the same
+// sessionMem the store wrapper fronts, like svStoredPriceLabels
+function colorConventions() {
+  const out = [];
+  for (const k of sessionMem.keys()) {
+    if (!k.startsWith("linecolor::")) continue;
+    const hex = colorNorm(sessionMem.get(k));
+    if (hex) out.push({ label: k.slice("linecolor::".length), hex });
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+// ---- the picker. ONE popover, both entry points --------------------------
+// The style row's swatch and the selection bar's colour button open the same
+// control, so "by family" and "by this line" are visibly the same gesture at
+// two scopes - which is how the owner described it ("whether if its by
+// family/style or when you select a line").
+//
+// It is a floating div on <body> rather than an inline block in the row: the
+// style list is a 330px column that scrolls, and a 14-swatch grid inline
+// would reflow every row under it on every open.
+let colorPop = null;
+function colorPopClose() {
+  if (!colorPop) return;
+  colorPop.remove();
+  colorPop = null;
+}
+addEventListener("keydown", (e) => {
+  if (colorPop && e.key === "Escape") { e.stopImmediatePropagation(); colorPopClose(); }
+}, true);
+// A click outside dismisses it - EXCEPT on the control it was opened from,
+// which must stay a toggle. Without the exception, mousedown closes the
+// popover and the click that follows reopens it, so clicking the swatch a
+// second time looks like nothing happened.
+addEventListener("mousedown", (e) => {
+  if (!colorPop) return;
+  if (colorPop.contains(e.target)) return;
+  if (colorPop._anchor && colorPop._anchor.contains(e.target)) return;
+  colorPopClose();
+}, true);
+
+// opt = { anchor, title, current, currentSrc, engineCss, convLabel,
+//         onPick(hex), onResetFamily?, onResetEngine, resetEngineText }
+function colorPopOpen(opt) {
+  // second click on the same control closes it (see the mousedown handler)
+  const again = colorPop && colorPop._anchor === opt.anchor;
+  colorPopClose();
+  if (again) return;
+  const pop = document.createElement("div");
+  pop.className = "color-pop";
+  pop._anchor = opt.anchor;
+  colorPop = pop;
+
+  const h = document.createElement("div");
+  h.className = "cp-head";
+  h.textContent = opt.title;
+  pop.appendChild(h);
+
+  const warn = document.createElement("div");
+  warn.className = "cp-warn";
+  warn.hidden = true;
+
+  // The reserved-colour check, at the MOMENT OF CHOOSING. It never refuses -
+  // it is the operator's sheet - it just refuses to let the choice surprise
+  // them. Shown for a custom pick and for a palette hover alike.
+  function sayNear(hex) {
+    const near = colorNearReserved(hex);
+    warn.hidden = !near;
+    if (near)
+      warn.textContent = "That is very close to " + near.name + " — "
+        + near.why + ". It will still be used if you pick it.";
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "cp-grid";
+  for (const p of COLOR_PALETTE) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "cp-sw" + (opt.current === p.hex ? " on" : "");
+    b.style.background = p.hex;
+    b.title = p.name + " — " + p.hint;
+    b.setAttribute("aria-label", p.name);
+    b.onclick = () => { opt.onPick(p.hex); colorPopClose(); };
+    grid.appendChild(b);
+  }
+  pop.appendChild(grid);
+
+  const cust = document.createElement("div");
+  cust.className = "cp-row";
+  const cl = document.createElement("span");
+  cl.className = "cp-lab"; cl.textContent = "custom";
+  const ci = document.createElement("input");
+  ci.type = "color";
+  ci.name = "cp-custom";
+  ci.value = colorNorm(opt.current) || colorNorm(opt.engineCss) || "#e03131";
+  ci.setAttribute("aria-label", "custom colour");
+  ci.oninput = () => sayNear(ci.value);
+  const capply = document.createElement("button");
+  capply.type = "button"; capply.className = "mini"; capply.textContent = "Use it";
+  capply.onclick = () => { opt.onPick(ci.value); colorPopClose(); };
+  cust.append(cl, ci, capply);
+  pop.append(cust, warn);
+  sayNear(ci.value);
+
+  // THE BOOK, offered where the decision is made. Only where the family has
+  // a name: the convention is keyed on the name, so an unnamed row has
+  // nothing to file it under and the tick would silently do nothing.
+  if (opt.convLabel) {
+    const cv = document.createElement("label");
+    cv.className = "cp-conv";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.name = "cp-conv";
+    cb.checked = !!colorNorm(store.getItem(colorConvKey(opt.convLabel)));
+    cb.onchange = () => {
+      if (cb.checked) {
+        const h2 = colorNorm(opt.current) || ci.value;
+        setColorConvention(opt.convLabel, h2);
+        setStatus("colour convention saved: “" + opt.convLabel + "” is "
+          + h2 + " on every job from now on — Pricing › Line colour "
+          + "conventions lists them all");
+      } else {
+        clearColorConvention(opt.convLabel);
+        setStatus("colour convention for “" + opt.convLabel + "” removed");
+      }
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    };
+    const t = document.createElement("span");
+    t.textContent = "use this colour for “" + opt.convLabel
+      + "” on every job";
+    cv.append(cb, t);
+    cv.title = "The company convention - fiber red, existing contour light "
+      + "yellow, on and on. Stored against the NAME, not this document, so "
+      + "the next job's " + opt.convLabel + " comes up this colour without "
+      + "being set again. Anything you set on a document still beats it.";
+    pop.appendChild(cv);
+  }
+
+  const rst = document.createElement("div");
+  rst.className = "cp-row cp-rst";
+  if (opt.onResetFamily) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mini"; b.textContent = "Reset to family";
+    b.title = "Drop this line's own colour and let its family decide again.";
+    b.onclick = () => { opt.onResetFamily(); colorPopClose(); };
+    rst.appendChild(b);
+  }
+  {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mini";
+    b.textContent = opt.resetEngineText || "Reset to detected";
+    b.title = "Drop the colour you chose and go back to the colour the "
+      + "detector measured off the sheet.";
+    b.onclick = () => { opt.onResetEngine(); colorPopClose(); };
+    rst.appendChild(b);
+  }
+  pop.appendChild(rst);
+
+  const ev = document.createElement("div");
+  ev.className = "cp-evid";
+  ev.textContent = "detector measured " + (opt.engineCss || "no colour")
+    + (opt.currentSrc && opt.currentSrc !== "engine"
+       ? "  ·  showing: " + colorSrcLabel(opt.currentSrc) : "");
+  ev.title = "The engine's own reading is kept exactly as measured and is "
+    + "what identifies this family across the sheets of a set. Your colour "
+    + "sits on top of it; it never replaces it.";
+  pop.appendChild(ev);
+
+  const fn = document.createElement("div");
+  fn.className = "cp-note";
+  fn.textContent = "Colour is a decision, like a name or a price — it is "
+    + "saved, it exports, and Ctrl+Z does not touch it. Use the reset "
+    + "buttons above.";
+  pop.appendChild(fn);
+
+  document.body.appendChild(pop);
+  // place under the anchor, nudged back inside the viewport
+  const r = opt.anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, hh = pop.offsetHeight;
+  let x = Math.min(r.left, innerWidth - w - 8);
+  let y = r.bottom + 6;
+  if (y + hh > innerHeight - 8) y = Math.max(8, r.top - hh - 6);
+  pop.style.left = Math.max(8, x) + "px";
+  pop.style.top = y + "px";
+}
+
+// entry point 1: the style row's swatch (the natural affordance - it is
+// already the family's colour, sitting on the family's row)
+function colorPopForStyle(st, anchor) {
+  const info = styleColorInfo(st);
+  const name = familyName(st) || "this line type";
+  colorPopOpen({
+    anchor,
+    title: "Colour for " + name,
+    current: colorNorm(info.css),
+    currentSrc: info.src,
+    engineCss: engineCssFor(st),
+    convLabel: (state.labels.get(st.style_id) || "").trim() || null,
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => {
+      if (!setFamColor(st, hex)) return;
+      const near = colorNearReserved(hex);
+      setStatus(name + " is now " + colorNorm(hex)
+        + " — every line of this family, the swatch, the legend and the "
+        + "export. Not undoable by Ctrl+Z; use Reset to detected."
+        + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    },
+    onResetEngine: () => {
+      famColorReset(st);
+      setStatus(name + " is back to the colour the detector measured"
+        + (colorConvFor(st.style_id)
+           ? " — your convention for this name still applies" : ""));
+      renderStyles(); renderChips(); renderMiniLegend(); draw();
+    },
+  });
+}
+
+// entry point 2: the selection bar ("...or when you select a line"). This is
+// what the individual line detector bought - the app can address ONE line, so
+// one line can carry its own colour over its family's.
+function colorPopForChain(ch, anchor) {
+  const st = state.result.styles.find(s => s.style_id === ch.style_id);
+  const info = chainColorInfo(ch, st);
+  colorPopOpen({
+    anchor,
+    title: "Colour for this line",
+    current: colorNorm(info.css),
+    currentSrc: info.src,
+    engineCss: st ? engineCssFor(st) : cssColor(ch.color, ch.width),
+    convLabel: null,     // the book is keyed on a family name, not a line
+    resetEngineText: "Reset to detected",
+    onPick: (hex) => {
+      if (!setLineColor(ch, hex)) return;
+      const near = colorNearReserved(hex);
+      setStatus("this line is now " + colorNorm(hex)
+        + ", overriding its family. Not undoable by Ctrl+Z; use Reset to "
+        + "family or Reset to detected."
+        + (ch.custom ? "  (A line you drew or split keeps this for the "
+            + "session only — its id is not stable across a reload.)" : "")
+        + (near ? "  NOTE: close to " + near.name + " — " + near.why + "." : ""));
+      updateSelBar(ch); draw();
+    },
+    onResetFamily: () => {
+      lineColorReset(ch);
+      setStatus("this line follows its family's colour again");
+      updateSelBar(ch); draw();
+    },
+    onResetEngine: () => {
+      // "back to what the detector measured" for ONE line means: drop this
+      // line's override AND stop its family's override applying to it. There
+      // is no third record to write, so the honest thing is to drop the
+      // line's own and say what the family is still doing.
+      lineColorReset(ch);
+      if (st && (state.famColor.has(st.style_id) || colorConvFor(st.style_id)))
+        setStatus("this line's own colour is gone; its family is still "
+          + "recoloured, so it follows that. Reset the family from its "
+          + "swatch in the line-styles list to get back to the detector's "
+          + "colour everywhere.");
+      else setStatus("this line is back to the colour the detector measured");
+      updateSelBar(ch); draw();
+    },
+  });
+}
+// ===================== end OPERATOR LINE COLOUR ==========================
+
 // The label / EA record: keyed on the line type, doc-wide, so it travels
 // across pages. That is the capability; do not scope this one to a page.
 function labelKey(st) {
@@ -5983,6 +6628,22 @@ function memSave(st, touchedMeasure) {
 function memApply() {
   if (!state.result) return;
   state.inheritedInc = new Map();
+  // OPERATOR LINE COLOUR, restored. Only the two RECORDS are read back here -
+  // the convention book is not, because it is resolved live by label in
+  // colorConvFor(): copying it into state.famColor would freeze a family at
+  // the colour its name had at load time and make a rename stop working.
+  state.famColor = new Map();
+  state.lineColor = new Map();
+  colorBust();      // style_id means something different on another page
+  for (const st of state.result.styles) {
+    const h = colorNorm(store.getItem(famColorKey(st)));
+    if (h) state.famColor.set(st.style_id, h);
+  }
+  for (const ch of state.result.chains) {
+    if (ch.custom) continue;   // see setLineColor: those ids are per-session
+    const h = colorNorm(store.getItem(lineColorKey(ch.chain_id)));
+    if (h) state.lineColor.set(ch.chain_id, h);
+  }
   for (const st of state.result.styles) {
     // page record first, set-level record second, seed otherwise - the
     // ranking lives in setDecResolve so the test can pin it. Inherited
@@ -11485,6 +12146,42 @@ $("approveBtn").onclick = async () => {
           !state.excluded.has(id) && state.include.get(sid.get(id)));
       })()),
       quantity_overrides: ovRows,
+      // OPERATOR LINE COLOUR -> the export. Resolved HERE, on the client,
+      // because the client is the only place that knows the convention book:
+      // it lives in this browser's saved work beside the prices and trades
+      // and never reached the server (see MEM_V). What the server receives is
+      // therefore the colour that was ON SCREEN, already ranked - the same
+      // discipline quantity_overrides follows. Only rows carrying an actual
+      // decision are sent, so a sheet nobody recoloured produces a payload
+      // and an export byte-for-byte identical to before.
+      style_colors: Object.fromEntries((() => {
+        const out = [];
+        for (const [sid, inc] of state.include) {
+          if (!inc) continue;
+          const st = state.result.styles.find(s => s.style_id === sid);
+          if (!st) continue;
+          const info = styleColorInfo(st);
+          if (info.src !== "engine") out.push([sid, info.css]);
+        }
+        return out;
+      })()),
+      // The SAME gate chain_labels applies: a line the operator coloured and
+      // then erased, or whose family is unticked, exports nothing, so its
+      // colour must not travel either.
+      chain_colors: Object.fromEntries((() => {
+        const sidOf = new Map(state.result.chains.map(c => [c.chain_id, c.style_id]));
+        return [...state.lineColor].filter(([id, hex]) =>
+          !state.excluded.has(id) && state.include.get(sidOf.get(id))
+          && !!colorNorm(hex));
+      })()),
+      // THE MACHINE-READABLE PROVENANCE. Until now the one fact that a HUMAN
+      // invented a family survived export only as English inside `notes`, so
+      // a downstream reader had to parse prose to tell an operator's family
+      // from a detected one. The note stays (a person reading the report
+      // deserves it too) - this is its typed twin, exactly the way
+      // export.scale carries `setBy: "reviewer"` beside the sentence in
+      // `name`. Same source of truth as the note: famMineExportStyles().
+      operator_created_style_ids: famMineExportStyles().map(s => s.style_id),
       // The work-area quantity mask, so the export's per-label footage is
       // computed the same zone-clipped way the panel shows it. The server
       // clips with the same segment/rect math (mirrored in _wz_frac) and
@@ -11807,7 +12504,13 @@ function draw() {
       const msel = !sel && state.multiSel.size > 0 && state.multiSel.has(ch.chain_id);
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
     ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
-    ctx.strokeStyle = (sel || msel) ? CV_SELECT : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
+      // OPERATOR LINE COLOUR: the override layer, consulted here and nowhere
+      // deeper. ch.color / st2.color still hold the engine's measurement -
+      // chainCssColor reads them as the LAST rank and never writes them, so
+      // the family's styleFp (and every set-level decision keyed on it) is
+      // untouched by a recolour. Precedence: per-line > per-family >
+      // convention > engine (colorResolve).
+    ctx.strokeStyle = (sel || msel) ? CV_SELECT : chainCssColor(ch, st2);
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
       ctx.lineWidth = sel ? 4.5 / k
@@ -11916,11 +12619,13 @@ function draw() {
       if (state.isolate !== null && s2.style_id !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(s2.style_id)) continue;
       const lab = (state.labels.get(s2.style_id) || "#" + s2.style_id);
-      if (!pools.has(lab)) pools.set(lab, { color: s2.color, w: s2.width, sids: [] });
+      // the pool's box is drawn in the family's RESOLVED colour, so an
+      // object-mode family recoloured red boxes in red like it draws in red
+      if (!pools.has(lab)) pools.set(lab, { css: styleCssColor(s2), sids: [] });
       pools.get(lab).sids.push(s2.style_id);
     }
     for (const pool of pools.values()) {
-      ctx.strokeStyle = cssColor(pool.color, pool.w);
+      ctx.strokeStyle = pool.css;
       ctx.lineWidth = 1.4 / k;
       ctx.setLineDash([]);
       for (const comp of styleObjects(pool.sids)) {
@@ -12271,14 +12976,12 @@ function dashArray(sig) {
   return out;
 }
 
-const styleColorCache = new Map();
-function styleColor(sid) {
-  if (!styleColorCache.has(sid)) {
-    const s = state.result.styles.find(s => s.style_id === sid);
-    styleColorCache.set(sid, s ? s.color : null);
-  }
-  return styleColorCache.get(sid);
-}
+// (styleColor / styleColorCache lived here. Its ONE caller was draw()'s
+// strokeStyle, which now goes through chainCssColor so the override layer is
+// consulted. Removed rather than left dead: the cache was keyed on style_id
+// with no invalidation on a page or document switch, so the next caller to
+// reach for it would have got another page's colour. cssColor below is
+// unchanged and is still the only place an engine colour becomes CSS.)
 function cssColor(c, w) {
   if (!c) return CV_FAM_UNKNOWN;
   const [r, g, b] = c.map(v => Math.round(v * 255));
@@ -13764,6 +14467,25 @@ function updateSelBar(ch) {
     + "Reclassify tool, and Ctrl+Z undoes it. “+ New family…” makes a family "
     + "of your own, named by you, and puts this line in it.";
   info.appendChild(fam);
+  // PER-LINE COLOUR, on the bar beside the family switch: the two controls
+  // are the same question at two scopes ("which family is this?" / "what
+  // colour is this one?"). The button IS the swatch - it wears the colour the
+  // line is currently drawn in.
+  const cinfo = chainColorInfo(ch, st);
+  const cbtn = document.createElement("button");
+  cbtn.type = "button";
+  cbtn.className = "sel-color" + (cinfo.src === "line" ? " own" : "");
+  cbtn.style.background = cinfo.css;
+  cbtn.setAttribute("aria-label", "colour of this line");
+  cbtn.title = (cinfo.src === "line"
+      ? "This line carries its own colour, overriding its family. "
+      : cinfo.src === "engine"
+        ? "This line is drawn in the colour the detector measured. "
+        : "This line follows " + colorSrcLabel(cinfo.src) + ". ")
+    + "Click to colour THIS line only — it overrides its family, it is "
+    + "saved, it exports, and Ctrl+Z does not undo it.";
+  cbtn.onclick = (e) => { e.stopPropagation(); colorPopForChain(ch, cbtn); };
+  info.appendChild(cbtn);
 }
 
 function deleteVertex() {
@@ -14376,19 +15098,24 @@ function famNewFromMulti() {
   renderStyles(); renderChips(); renderMiniLegend();
 }
 
-// Every operator-created family that has anything in it, for the export
-// disclosure. Empty families are left out on purpose: an empty family exports
-// nothing, so a note about it would be noise on the face of a report.
-function famApproveNotes() {
+// Every operator-created family that has anything in it. ONE definition,
+// shared by the human-readable note below and the MACHINE-READABLE
+// operator_created_style_ids in the approve payload, so the prose on the face
+// of the report and the field a downstream reader parses can never disagree
+// about which families a person invented.
+//
+// Empty families are left out on purpose: an empty family exports no
+// elements, so naming it in either channel is noise.
+function famMineExportStyles() {
   if (!state.result) return [];
-  const mine = [];
-  for (const s of state.result.styles) {
-    if (!famIsMine(s)) continue;
-    const n = styleLiveCount(s.style_id);
-    if (!n || !state.include.get(s.style_id)) continue;
-    mine.push(`"${state.labels.get(s.style_id) || s.suggested_label}" `
-      + `(${n} line${n === 1 ? "" : "s"}, ${fmtQty(styleLenPt(s))})`);
-  }
+  return state.result.styles.filter(s =>
+    famIsMine(s) && state.include.get(s.style_id) && styleLiveCount(s.style_id));
+}
+function famApproveNotes() {
+  const mine = famMineExportStyles().map(s =>
+    `"${state.labels.get(s.style_id) || s.suggested_label}" `
+    + `(${styleLiveCount(s.style_id)} line`
+    + `${styleLiveCount(s.style_id) === 1 ? "" : "s"}, ${fmtQty(styleLenPt(s))})`);
   if (!mine.length) return [];
   // ONE note line, whatever the count: `approve` keeps only the first 6 notes
   // and earthwork already spends 3 of them.
@@ -17006,9 +17733,168 @@ function svLiveItems() {
 
 function renderSettings() {
   renderSvBook();
+  renderSvColors();
   renderSvMaterials();
   renderSvFoot();
 }
+
+// ---- the colour convention book ------------------------------------------
+// The whole set of standing colour decisions, where the operator can see and
+// manage them - the owner's "on and on" made inspectable instead of scattered
+// across popovers on sheets he has closed.
+//
+// Rows are the union of (a) every convention stored and (b) every label on
+// the open document's itemized takeoff, exactly like the price book above, so
+// a name can be given its company colour before it is ever seen on a sheet.
+function renderSvColors() {
+  const box = $("svColorBox");
+  box.innerHTML = "";
+  const conv = new Map(colorConventions().map(c => [c.label, c.hex]));
+  const live = new Map();
+  for (const it of svLiveItems()) {
+    const k = (it.label || "").trim().toUpperCase();
+    if (k) live.set(k, it.label);
+  }
+  const labels = [...new Set([...conv.keys(), ...live.keys()])]
+    .sort((a, b) => a.localeCompare(b));
+  $("svColorNote").textContent = !labels.length
+    ? "No colour conventions yet and no document open — add one below, or "
+      + "set a colour from a line family's swatch on any sheet and tick "
+      + "“use this colour on every job”."
+    : conv.size + " convention(s) stored. A name listed here comes up in its "
+      + "colour on EVERY job. Precedence, strongest first: a colour you set "
+      + "on one line, then a colour you set on that family in that document, "
+      + "then this book, then the colour the detector measured — so a "
+      + "convention never overwrites a decision you made on a sheet.";
+  if (!labels.length) return;
+
+  const scroll = document.createElement("div");
+  scroll.className = "sv-book-scroll";
+  const table = document.createElement("table");
+  table.className = "sv-book-table";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const [h, cls] of [["label", ""], ["colour", ""], ["hex", ""],
+                          ["where", ""], ["", "sv-r"]]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (cls) th.className = cls;
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const key of labels) {
+    const shown = live.get(key) || key;
+    const hex = conv.get(key) || null;
+    const tr = document.createElement("tr");
+
+    const lab = document.createElement("td");
+    lab.className = "sv-lab"; lab.textContent = shown; lab.title = shown;
+
+    const ctd = document.createElement("td");
+    // A row with NO convention must not wear a colour. `<input type="color">`
+    // has no empty state - it always renders SOME swatch - so an unset row
+    // showing a picker pre-loaded with the default red read as "everything is
+    // already red" (measured on this page: 11 of 13 rows). The unset row gets
+    // the same "set" affordance the price column uses instead, and the picker
+    // only appears once there is something to pick.
+    const commit = (val, el) => {
+      setColorConvention(key, val);
+      const near = colorNearReserved(val);
+      setStatus("“" + shown + "” is " + colorNorm(val)
+        + " on every job from now on"
+        + (near ? " — NOTE: close to " + near.name + ", " + near.why : ""));
+      renderSvColors();
+      if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+    };
+    if (hex) {
+      const pick = document.createElement("input");
+      pick.type = "color";
+      pick.className = "sv-colpick";
+      pick.name = "sv-color-" + key;
+      pick.setAttribute("aria-label", "colour for " + shown);
+      pick.value = hex;
+      pick.onchange = () => commit(pick.value, pick);
+      ctd.appendChild(pick);
+    } else {
+      const b = document.createElement("button");
+      b.className = "sv-colset";
+      b.textContent = "set";
+      b.title = "Pick the colour “" + shown + "” comes up in on every job.";
+      b.onclick = () => {
+        // swap in a real picker and open it, so it is one click, not two
+        const pick = document.createElement("input");
+        pick.type = "color";
+        pick.className = "sv-colpick";
+        pick.name = "sv-color-" + key;
+        pick.setAttribute("aria-label", "colour for " + shown);
+        pick.value = "#e03131";
+        pick.onchange = () => commit(pick.value, pick);
+        b.replaceWith(pick);
+        pick.click();
+      };
+      ctd.appendChild(b);
+    }
+
+    const htd = document.createElement("td");
+    htd.className = "sv-unit"; htd.textContent = hex || "—";
+
+    const where = document.createElement("td");
+    where.className = "sv-where" + (live.has(key) ? " sv-where-on" : "");
+    where.textContent = live.has(key)
+      ? (hex ? "on this sheet" : "on this sheet, no colour set")
+      : "stored only";
+
+    const xtd = document.createElement("td");
+    xtd.className = "sv-r";
+    const x = document.createElement("button");
+    x.className = "sv-x"; x.textContent = "×";
+    x.title = "Forget the colour convention for “" + shown + "”. "
+      + "Colours already set on a document are not touched.";
+    x.disabled = !hex;
+    x.onclick = () => {
+      clearColorConvention(key);
+      renderSvColors();
+      if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+    };
+    xtd.appendChild(x);
+
+    tr.append(lab, ctd, htd, where, xtd);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+
+  // the reserved-colour check, restated over the whole book: a convention set
+  // months ago on another sheet still has to be able to surprise nobody
+  const bad = [];
+  for (const [k, hex] of conv) {
+    const near = colorNearReserved(hex);
+    if (near) bad.push("“" + k + "” (" + hex + ") is close to "
+      + near.name + " — " + near.why);
+  }
+  const warn = $("svColorWarn");
+  warn.hidden = !bad.length;
+  warn.textContent = bad.length
+    ? "Heads up: " + bad.join("; ") + ". They still apply." : "";
+}
+
+$("svColorAdd").onclick = () => {
+  const label = $("svColorLabel").value.trim();
+  if (!label) return setStatus("give the convention a label first", "err");
+  if (!setColorConvention(label, $("svColorPick").value))
+    return setStatus("that is not a colour", "err");
+  $("svColorLabel").value = "";
+  const near = colorNearReserved($("svColorPick").value);
+  setStatus("“" + label + "” is " + colorNorm($("svColorPick").value)
+    + " on every job from now on"
+    + (near ? " — NOTE: close to " + near.name + ", " + near.why : ""));
+  renderSvColors();
+  if (state.result) { renderStyles(); renderChips(); renderMiniLegend(); draw(); }
+};
 
 function renderSvBook() {
   const box = $("svBookTable");

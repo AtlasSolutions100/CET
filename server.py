@@ -2109,6 +2109,61 @@ class ApproveBody(BaseModel):
     # export cannot drift from the screen the way the hand-assembled payload
     # did. See QtyOverride.
     quantity_overrides: list["QtyOverride"] = []
+    # ---- OPERATOR LINE COLOUR ------------------------------------------
+    # The operator giving a black-and-white sheet a readable visual language
+    # ("red for a fiber line, light yellow for existing contour"). Both maps
+    # are OVERRIDES: the engine's measured colour is still what arrives on
+    # each chain, it is still what identifies the family across the sheets of
+    # a set, and nothing here rewrites it - `approve` ranks them below.
+    #
+    # Optional with empty defaults, so a client that predates the field posts
+    # exactly what it always did. Its export then gains two EMPTY declarations
+    # (`operator_created_style_ids: []` and an empty `line_colors`) and is
+    # otherwise unchanged - written even when empty for the same reason
+    # `overrides` is: [] says "this export knows what an operator colour is
+    # and has none", which a file predating the field cannot say, and a
+    # reader has to be able to tell those two apart.
+    #
+    # style_id -> "#rrggbb" the whole family is drawn in. Already RESOLVED by
+    # the client, which is the only place that knows the operator's
+    # cross-job colour convention (it lives in that browser's saved work
+    # beside the prices, the same way the trades do).
+    style_colors: dict[int, str] = {}
+    # chain_id -> "#rrggbb" for ONE line, overriding its family. This is what
+    # the individual-line detector bought: the app can address a single line,
+    # so a single line can carry its own colour.
+    chain_colors: dict[int, str] = {}
+    # THE MACHINE-READABLE OPERATOR PROVENANCE. style_ids of families a HUMAN
+    # created in the review UI (the detector never found them; their lines
+    # were moved in by hand). Until this field the fact survived export only
+    # as English inside `notes`, so a downstream reader had to parse prose to
+    # tell an operator's family from a detected one. The note is still sent -
+    # a person reading the report deserves it too - and this is its typed
+    # twin, exactly as export["scale"]["setBy"] is the typed twin of the
+    # sentence in its `name`.
+    operator_created_style_ids: list[int] = []
+
+
+def _hex_color(v) -> "str | None":
+    """A colour an operator chose, normalised to "#rrggbb", or None.
+
+    Validated rather than trusted: these strings are written straight into
+    the export and onto the report, and a client that sent "red" or
+    "#ff00cc; drop" must degrade to the engine's own measured colour rather
+    than put a broken value in front of a reader. Silent fallback is right
+    here and only here - the value is decoration, not a quantity, so nothing
+    a person is billed for can move because a colour failed to parse.
+    """
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lower()
+    if s.startswith("#"):
+        s = s[1:]
+    if len(s) == 3 and all(c in "0123456789abcdef" for c in s):
+        return "#" + "".join(c * 2 for c in s)
+    if len(s) == 6 and all(c in "0123456789abcdef" for c in s):
+        return "#" + s
+    return None
 
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
@@ -2130,6 +2185,12 @@ def approve(job_id: str, page: int, body: ApproveBody):
 
     _wz = _wz_norm(body.work_zones)
     _wz_fr: list = []   # per-element inside fraction, parallel to `elements`
+    # families a human invented, as a set, for the per-element stamp below
+    _mine_sids = {int(s) for s in body.operator_created_style_ids
+                  if isinstance(s, (int, float)) and not isinstance(s, bool)}
+    _sid_exported: set = set()          # style_ids that produced an element
+    _style_col_used: dict = {}          # style_id -> the colour it drew in
+    _chain_col_used: dict = {}          # chain_id -> its own colour override
     elements = []
     excluded = set(body.excluded_chain_ids)
     for ch in list(res["chains"]) + list(body.added_chains):
@@ -2140,11 +2201,36 @@ def approve(job_id: str, page: int, body: ApproveBody):
         wf = _wz_frac(ch["points"], _wz, _v_ratio) if _wz else 1.0
         _wz_fr.append(wf)
         color = ch.get("color")
-        hexcol = "#%02x%02x%02x" % tuple(int(c * 255) for c in color) if color else "#333333"
+        # THE ENGINE'S OWN COLOUR, kept whatever else happens. It is a
+        # measurement (chain.py grouped these chains by it), so it is carried
+        # beside any override rather than replaced by one.
+        engine_hex = "#%02x%02x%02x" % tuple(int(c * 255) for c in color) if color else "#333333"
+        # PRECEDENCE - per-chain > per-family > engine. Read it as "the more
+        # specific decision wins, and a measurement is what you get when
+        # nobody decided". It mirrors webui/app.js colorResolve() exactly;
+        # the convention-by-label rank that sits between per-family and
+        # engine there is already folded into style_colors by the client,
+        # which is the only side that holds the book.
+        _col_ovr = (_hex_color(body.chain_colors.get(ch["chain_id"]))
+                    or _hex_color(body.style_colors.get(ch["style_id"])))
+        hexcol = _col_ovr or engine_hex
         elements.append({
             "type": "line",
             "label": label,
             "color": hexcol,
+            # Machine-readable twin of the colour itself, written only when a
+            # human actually chose one - so a reader can tell "this is red
+            # because a person said so" from "this is red because the
+            # drafter plotted it red", and can still recover what was
+            # measured. Keyed on whether an override was SENT, not on whether
+            # the two strings differ: choosing exactly the detected colour is
+            # still a decision.
+            **({"colorSetBy": _BY_REVIEWER, "engineColor": engine_hex}
+               if _col_ovr else {}),
+            # ...and the same for the family's provenance, per element, so a
+            # reader never has to join against a list to learn it.
+            **({"styleCreatedBy": _BY_REVIEWER}
+               if ch["style_id"] in _mine_sids else {}),
             "vertices": [{"x": round(x * scale, 1), "y": round(y * scale, 1)}
                          for x, y in ch["points"]],
             "detectedClass": ch["class"],
@@ -2161,6 +2247,13 @@ def approve(job_id: str, page: int, body: ApproveBody):
             # elements without re-deriving the clip
             **({"workAreaFrac": round(wf, 6)} if _wz else {}),
         })
+        # what actually reached the export, for the summaries written below
+        _sid_exported.add(ch["style_id"])
+        if _col_ovr:
+            if _hex_color(body.chain_colors.get(ch["chain_id"])):
+                _chain_col_used[ch["chain_id"]] = _col_ovr
+            else:
+                _style_col_used[ch["style_id"]] = _col_ovr
     export = {
         "source": Path(JOBS[job_id]["path"]).name if job_id in JOBS else "",
         "pageIndex": page,
@@ -2318,6 +2411,21 @@ def approve(job_id: str, page: int, body: ApproveBody):
     ]
     if ov_warn:
         export["override_warnings"] = ov_warn[:12]
+    # Written even when empty, for the same reason `overrides` is: [] says
+    # "this export knows what an operator-created family is and has none",
+    # which a file predating the field cannot say. Only ids that actually
+    # reached an element are listed - a family with nothing in it exports
+    # nothing, so naming it here would be a claim with no rows behind it.
+    _mine_used = sorted({ch_sid for ch_sid in _mine_sids
+                         if ch_sid in _sid_exported})
+    export["operator_created_style_ids"] = _mine_used
+    # ...and the colours a person chose, as a summary beside the per-element
+    # stamps, so a reader can see the sheet's whole visual language at once
+    # without walking every element.
+    export["line_colors"] = {
+        "by_style": {str(k): v for k, v in sorted(_style_col_used.items())},
+        "by_chain": {str(k): v for k, v in sorted(_chain_col_used.items())},
+    }
     # verbatim onto the report (report_pdf prints them under the scale
     # lines); capped so no caller can paper over the table with prose
     export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
@@ -2504,6 +2612,8 @@ def _ledger_approve(job_id: str, page: int, body: "ApproveBody",
         for c in body.added_chains:
             if isinstance(c, dict) and c.get("chain_id") is not None:
                 chains.setdefault(c["chain_id"], c)
+        mine = {int(s) for s in body.operator_created_style_ids
+                if isinstance(s, (int, float)) and not isinstance(s, bool)}
         for sid, label in body.labels.items():
             st = styles.get(int(sid))
             ledger.record(
@@ -2511,7 +2621,43 @@ def _ledger_approve(job_id: str, page: int, body: "ApproveBody",
                 {"suggested_label": (st or {}).get("suggested_label")},
                 {"label": label},
                 {"style_id": int(sid),
+                 # PROVENANCE, on the label event itself: a model trained on
+                 # these must not learn an operator's invented family as if
+                 # the detector had proposed it and been renamed. Written on
+                 # every style_label, true or false, so its absence means
+                 # "an export from before the field" and never "detected".
+                 "operator_created": int(sid) in mine,
                  "style": ledger.style_features(st) if st else None},
+                pdf_path=pdf)
+        # COLOUR, recorded like every other operator correction: what the
+        # engine measured, what the human left in force, and the features the
+        # engine had. Two events because they are two decisions at two
+        # scopes - see webui/app.js colorResolve for the ranking between them.
+        for sid, hexv in (body.style_colors or {}).items():
+            hexv = _hex_color(hexv)
+            if hexv is None:
+                continue
+            st = styles.get(int(sid))
+            ledger.record(
+                "style_color", job_id, page,
+                {"color": (st or {}).get("color")},
+                {"color": hexv, "set_by": _BY_REVIEWER},
+                {"style_id": int(sid),
+                 "label": body.labels.get(int(sid)),
+                 "operator_created": int(sid) in mine,
+                 "style": ledger.style_features(st) if st else None},
+                pdf_path=pdf)
+        for cid, hexv in (body.chain_colors or {}).items():
+            hexv = _hex_color(hexv)
+            if hexv is None:
+                continue
+            ch = chains.get(int(cid))
+            ledger.record(
+                "chain_color", job_id, page,
+                {"color": (ch or {}).get("color")},
+                {"color": hexv, "set_by": _BY_REVIEWER},
+                {"chain_id": int(cid),
+                 "chain": ledger.chain_features(ch) if ch else None},
                 pdf_path=pdf)
         for cid, label in body.chain_labels.items():
             ch = chains.get(int(cid))
@@ -2546,6 +2692,12 @@ def _ledger_approve(job_id: str, page: int, body: "ApproveBody",
              "n_added_chains": len(body.added_chains),
              "n_extra_items": len(body.extra_items),
              "object_counts": body.object_counts or None,
+             # the sheet's visual language and its provenance, in the one
+             # event that summarises a whole approve
+             "n_style_colors": len(body.style_colors or {}),
+             "n_chain_colors": len(body.chain_colors or {}),
+             "operator_created_style_ids":
+                 export.get("operator_created_style_ids") or [],
              "image_dpi": body.image_dpi},
             pdf_path=pdf)
     except Exception:

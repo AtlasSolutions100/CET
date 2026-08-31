@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=59">
+<link rel="stylesheet" href="style.css?v=60">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -181,6 +181,24 @@
         <button id="svAddBtn" class="mini">Add line item</button>
         <span class="sv-note">pre-price a label before it appears on any sheet</span>
       </div>
+    </section>
+    <!-- LINE COLOUR CONVENTIONS. "fiber = red, existing contour = light
+         yellow, on and on" is a COMPANY convention, not a per-job whim, so it
+         lives on the page that already owns the book of standing decisions
+         beside the unit prices - same store, same browser-saved-work rules,
+         same CSV backup story. Per-job and per-family colours still beat it;
+         renderSvColors() states the precedence on the page. -->
+    <section class="sv-section">
+      <h2>Line colour conventions</h2>
+      <div class="sv-note" id="svColorNote"></div>
+      <div id="svColorBox" class="sv-book"></div>
+      <div class="sv-addrow">
+        <input id="svColorLabel" type="text" placeholder="line-item label (FIBER OPTIC)" spellcheck="false">
+        <input id="svColorPick" type="color" value="#e03131" aria-label="colour for this label">
+        <button id="svColorAdd" class="mini">Add convention</button>
+        <span class="sv-note">the colour this name comes up in on every job</span>
+      </div>
+      <div id="svColorWarn" class="sv-preview" hidden></div>
     </section>
     <section class="sv-section">
       <h2>Material defaults</h2>
@@ -799,6 +817,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=132"></script>
+<script src="app.js?v=133"></script>
 </body>
 </html>
