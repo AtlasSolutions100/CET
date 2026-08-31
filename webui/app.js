@@ -594,6 +594,7 @@ async function selectPage(p) {
   // "restore" chains onto a page they never belonged to. Same rule as the
   // work area below - page switch is the reliable chokepoint.
   state.multiSel = new Set(); state.marquee = null;
+  state.sgPartial = new Map();
   state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
   state.extendAnchor = null; state.drawPend = null; drawFamClose();
   undoClear(undoStack);
@@ -905,6 +906,7 @@ async function loadResult(gen = state.gen) {
   // a fresh result invalidates every snapshot on the undo stack ("Reset
   // edits" reloads through here, and re-detect replaces every chain object)
   state.multiSel = new Set(); state.marquee = null;
+  state.sgPartial = new Map();
   state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
   state.extendAnchor = null; state.drawPend = null; drawFamClose();
   undoClear(undoStack);
@@ -4391,9 +4393,49 @@ function sgSyncHeads() {
 // filter is ticked on first, or the filter never records that IT is the
 // reason it is off - see the 25.0k ft measurement at scopeKeepRow), then one
 // scopeApply() and one repaint at the end.
+// A GROUP TICK MUST BE ABLE TO GIVE BACK WHAT IT TOOK.
+//
+// The header checkbox is three-state, and a real sheet usually starts
+// PARTIAL: Barn C3.0's Solid group is 37 of 103 ticked, 87.0k LF counted,
+// and that mix is the operator's (or the engine's default) - work, either
+// way. The native cycle is indeterminate -> all on -> all off, and there is
+// no click that returns to 37 of 103. Measured 2026-09-01: one click moved
+// that sheet's takeoff 178.0k -> 182.5k, a second (intended as an undo)
+// -> 91.0k, and no third click brought it back. Ticks are DECISIONS, so
+// they are deliberately not in the undo stack, and they persist across a
+// reload - so the only recovery was clearing all 313 saved keys for the
+// document, which discards labels and prices with it. An 87k LF swing with
+// nothing on screen saying a selection was destroyed is exactly the silent
+// wrong number this project exists to refuse.
+//
+// So the partial set is REMEMBERED the moment a tick leaves it, and the
+// cycle gains a fourth stop: partial -> all on -> all off -> BACK TO THE
+// PARTIAL. Session-scoped and keyed by group, cleared when the page changes
+// because style_ids are per page; it is an escape hatch, not a saved
+// decision, and it never writes anything the record has to carry.
+function sgPartialMem() {
+  if (!state.sgPartial) state.sgPartial = new Map();
+  return state.sgPartial;
+}
 function sgTickGroup(key, on) {
   const g = sgCurrentPlan().groups.find(x => x.key === key);
   if (!g) return;
+  const mem = sgPartialMem();
+  // leaving a partial state: photograph it before it is gone
+  if (g.tick.state === "some")
+    mem.set(key, new Set(g.rows.filter(s => state.include.get(s.style_id))
+                             .map(s => s.style_id)));
+  // coming back from all-off with a photograph on file: restore it instead
+  const back = (g.tick.state === "none" && on) ? mem.get(key) : null;
+  if (back && back.size && back.size < g.rows.length) {
+    if (!state.scopeKeep) state.scopeKeep = new Set();
+    for (const s of g.rows) setInclude(s.style_id, back.has(s.style_id));
+    renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
+    setStatus("restored the " + back.size + " of " + g.rows.length + " "
+      + g.name.toLowerCase() + " line types you had counted — "
+      + "tick again for all " + g.rows.length);
+    return;
+  }
   if (!state.scopeKeep) state.scopeKeep = new Set();
   let scoped = false;
   for (const s of g.rows) {
@@ -4412,9 +4454,12 @@ function sgTickGroup(key, on) {
   if (scoped) { scopeApply(); renderScopeBar(); }
   renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
   // never silent: a bulk quantity change says what it did
+  const kept = mem.get(key);
   setStatus(g.tick.n + " " + g.name.toLowerCase() + " line type"
     + (g.tick.n === 1 ? "" : "s") + (on ? " turned on" : " turned off")
-    + (on ? "" : " — their footage has left the takeoff"));
+    + (on ? "" : " — their footage has left the takeoff")
+    + (kept && kept.size && kept.size < g.rows.length
+        ? " · tick twice more to get your " + kept.size + " back" : ""));
 }
 
 // The group header. Two controls, side by side, that must never be confused

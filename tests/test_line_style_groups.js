@@ -279,5 +279,40 @@ eq(F.sgFoldKey("annotation"), "core-sgfold-annotation",
   eq(p3.groups[0].nAll, 1, "carrying its count");
 }
 
+// ---- the partial set must survive a group tick ---------------------------
+// Measured on Barn C3.0 (2026-09-01, plan section 28): Solid starts 37 of 103
+// ticked. The native three-state cycle is indeterminate -> all -> none, so
+// there was NO click that returned to 37 - the takeoff moved 178.0k -> 182.5k
+// -> 91.0k and stayed there. Ticks are decisions and are deliberately not
+// undoable, and they persist, so recovery meant clearing every saved key for
+// the document. A source scan, because the failure is a MISSING branch: a
+// behavioural test over the shipped state machine would pass just as happily
+// without the restore, by cycling forever between all and none.
+{
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "webui", "app.js"), "utf8");
+  const start = src.indexOf("function sgTickGroup(");
+  let depth = 0, end = -1;
+  for (let i = src.indexOf("{", start); i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (!depth) { end = i + 1; break; } }
+  }
+  const fn = src.slice(start, end);
+  check(start > 0 && end > start, "sgTickGroup found");
+  check(/g\.tick\.state === "some"/.test(fn) && /mem\.set\(key/.test(fn),
+    "leaving a PARTIAL group photographs which rows were on");
+  check(/g\.tick\.state === "none" && on/.test(fn) && /mem\.get\(key\)/.test(fn),
+    "returning from all-off consults that photograph");
+  check(/back\.size < g\.rows\.length/.test(fn),
+    "a photograph of the WHOLE group is not treated as a partial restore");
+  check(/setInclude\(s\.style_id, back\.has\(s\.style_id\)\)/.test(fn),
+    "restoring sets each row to what it actually was, not all-on");
+  check(/restored the /.test(fn),
+    "the restore says so - a quantity that moved must never move silently");
+  // page-scoped: style_ids do not mean the same thing on the next sheet
+  check((src.match(/state\.sgPartial = new Map\(\);/g) || []).length >= 2,
+    "the photograph is cleared when the page changes");
+}
+
 console.log(failures ? `\n${failures} FAILURE(S)` : "\nall style-group assertions pass");
 process.exit(failures ? 1 : 0);

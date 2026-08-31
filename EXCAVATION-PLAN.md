@@ -1162,3 +1162,35 @@ Candidate fixes, cheapest first, none applied:
   3. Put include ticks in the undo stack - the largest change, and it
      argues with the deliberate decision-vs-edit split colour follows.
 Recommend 1, with 2 for large groups.
+
+### 28a. Fixed the same day (2026-09-01)
+
+Option 1 shipped: the group tick photographs the partial set the moment a
+click leaves it, and the cycle gains a fourth stop - partial -> all on ->
+all off -> BACK TO THE PARTIAL. Session-scoped, keyed by group, cleared on
+a page change because style_ids are per page; it is an escape hatch, never
+a saved decision, and it writes nothing the record has to carry.
+
+Verified live on the sheet that found the bug, Barn C3.0, same three
+clicks that lost the selection before:
+  start    partial   178.0k ft
+  click 1  all       182.5k   "103 solid line types turned on ·
+                               tick twice more to get your 37 back"
+  click 2  none       91.0k   "...their footage has left the takeoff"
+  click 3  partial   178.0k   "restored the 37 of 103 solid line types
+                               you had counted - tick again for all 103"
+The way out is now signposted from the first click, and the total comes
+home to the digit.
+
+Option 2 (a confirm on large groups) was NOT taken: the action is
+reversible now, and a confirm on a reversible action is a click tax.
+Option 3 (ticks into the undo stack) stays rejected - it argues with the
+decision-vs-edit split that colour, labels and prices all follow.
+
+Test note worth keeping: the assertions for this went in as a source scan,
+because the failure is a MISSING branch. A behavioural test over the
+shipped state machine passes just as happily without the restore, by
+cycling between all and none forever. The first version of that test was
+also appended BELOW the file's process.exit and never ran at all - a
+silently dead test, caught only by grepping its own output for the new
+assertion names.
