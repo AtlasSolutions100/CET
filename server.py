@@ -1108,8 +1108,21 @@ def _register(path: Path, classify: bool = True, owner=None) -> dict:
             # so two people uploading the same PDF land on the same path - and
             # without this the second one would be handed the first one's job
             # and then be refused access to it by the ownership check.
-            if (j.get("path") == str(path) and j.get("mtime") == mtime
-                    and j.get("owner") == owner):
+            # RECLAIM AN INTERRUPTED OPEN. mtime is written when a job is
+            # registered, but an open that dies before it finishes leaves a row
+            # with mtime None - and None can never equal a real timestamp, so
+            # that row could never be matched and the next open registered
+            # ANOTHER one. Measured on this box: 420 registry rows, 250 of them
+            # carrying mtime None, including 63 rows for one Belle Farms sheet
+            # and 54 for one Oncor sheet - months of restarts and killed dev
+            # servers, each leaving a permanent orphan. A null mtime means "we
+            # never finished recording this", not "this is a different file",
+            # so it is reclaimed by path+owner and its mtime repaired below.
+            _mt = j.get("mtime")
+            if (j.get("path") == str(path) and j.get("owner") == owner
+                    and (_mt == mtime or _mt is None)):
+                if _mt is None:
+                    j["mtime"] = mtime
                 kinds0 = j.get("kinds")
                 sizes0 = j.get("sizes")
                 # Gated on SIZES only. It used to require kinds too, so a job
