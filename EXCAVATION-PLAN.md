@@ -1043,3 +1043,29 @@ WHAT WOULD ACTUALLY CLOSE IT (ranked):
    estimator's judgment codified, cited as such, operator-consented.
 3. Denser gap-label OCR in the readable mid-zones (marginal - one label
    was gained there tonight).
+
+## 26. The Liberty Park proof (2026-08-31)
+
+Koby's exam: "do a full estimate WITHOUT our software, then do it WITH
+the app, and show me the video." All three delivered.
+
+* HAND ESTIMATE (no CORE software): stice.pdf = Liberty Park Renovation,
+  Boise P&R - a park job, not mass grading (the read is the test). Bid
+  $390,427, 44 lines, every quantity tagged M/P/J, calibrated planimeter
+  with mask proofs, multi-scale trap caught (L5.4 is 1"=10'), scope traps
+  caught (playground equipment by others; unassigned restroom), 4 RFIs.
+  Artifact: liberty-park-bid.html + CSV.
+* APP SESSION (operator replay): app CONFIRMED the playground (trace
+  7,376 SF vs hand 7,416; Mass Ex 155.7 vs 157 CY) and CORRECTED four
+  hand judgments with measured linework: demo concrete 2,800->5,481 SF
+  (hatch planimetry: 1,826 LF at data-measured 3.0 ft pitch), sanitary
+  60->205 LF, electric 120->223 LF, chain-link 250->331 LF; curb
+  converged 607->500 LF across three methods. Bid Rev 1: $407,146;
+  provenance 34% M / 38% P / 28% J.
+* V6 video (2m00s) delivered: the session on camera.
+
+Engine follow-ups the session surfaced: L-family scale bars unread
+(three hand-typed scales); sheet-no misread "L-0" on L3.0; stipple walk
+fills not measurable as areas (fills detector caught only 10 solid
+patches); dev server died twice unexplained (now instrumented -
+out/howto/devserver.log captures stderr on next occurrence).
