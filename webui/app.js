@@ -4131,9 +4131,18 @@ function renderStyles() {
         + "to call it by (the chip below). Type a trade name here.";
     }
     if (state.legendNames.length) lab.setAttribute("list", "legendVocab");
+    // A NAMED family had no title, and an <input> can neither wrap nor
+    // ellipsise - it just cuts. Measured 2026-09-01 on Oncor C-04: 8 of the
+    // 65 rows cut their own name, the worst losing 36%, and the only way to
+    // read the rest was to click in and scroll. The unnamed path already
+    // explained itself on this same attribute; the named one now shows the
+    // name. (Widening is not the fix: the column is the operator's to resize,
+    // and a 40-character CAD name would still lose.)
+    if (!unnamed && lab.value) lab.title = lab.value;
     lab.onclick = (e) => e.stopPropagation();
     lab.oninput = () => {
       state.labels.set(s.style_id, lab.value);
+      if (!unnamed) lab.title = lab.value;   // stays true as it is typed
       colorBust();  // the colour convention is keyed on the NAME
       memSave(s);   // decisions persist: same label on every future load
       clearTimeout(lab._t);   // itemized + legend regroup as you type
