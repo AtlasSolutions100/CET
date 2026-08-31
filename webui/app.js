@@ -18222,6 +18222,255 @@ function projReachLine(matched, loaded, total, q, noun) {
     : head + " — searched all " + loaded + " "
       + (loaded === 1 ? n.one : n.many) + " on this server.";
 }
+
+// ---- MULTI-SELECT + BULK DELETE -------------------------------------------
+// The registry carries real duplicates - 15 rows for Oncor Cloudcrest, 14 for
+// Belle Farms Structural, all from a job-reuse bug that is now fixed - and
+// clearing them one ⋯-menu at a time is 29 confirms. This is the layer that
+// makes it one.
+//
+// THE SELECTION MODEL - the decision, stated.
+//
+//   pvSel is a Set of JOB_ID strings and nothing else. It is deliberately NOT
+//   state.multiSel: that set holds chain_ids on the canvas, and the two
+//   universes share no id space, no lifetime and no action. What they DO
+//   share is the gesture (Ctrl/Cmd+click toggles, Esc clears) and the shape
+//   of the toolkit - toggle / resolve / split / count / one scope sentence -
+//   so one idea still means one thing everywhere.
+//
+//   Membership is stored as ids and RESOLVED against the rows on screen at
+//   every use (pvSelResolve). A row that was deleted, filtered out by the
+//   search box or dropped by a refetch simply stops resolving; nothing here
+//   ever holds a stale copy of a row and then acts on it. That is the same
+//   derive-don't-store rule msWholeFamilies keeps, for the same reason.
+//
+//   TWO DIFFERENT ELIGIBILITIES, and conflating them is the bug this design
+//   exists to avoid:
+//     * pvSelectable(row) - may it be PICKED. Demo rows never are (see below).
+//     * row.deletable     - may the ACCOUNT delete it. The server decides,
+//                           per row, and a selection may legitimately hold
+//                           rows that fail this. They are excluded from the
+//                           action and COUNTED OUT LOUD, never silently
+//                           dropped and never silently failed.
+
+// A demo row is not selectable, on any tab, ever. The demo corpus is the
+// thing every visitor lands on, and DELETE /api/job refuses an owner-less row
+// to anyone who is not staff anyway - so a selection layer over demo cards
+// could only ever build a set whose action was a row of 403s. Gated on the
+// ROW's own server-sent flag rather than on which tab is showing, so it holds
+// even if the tab split is rewritten underneath it.
+function pvSelectable(row) {
+  return !!(row && row.job_id) && !projIsDemo(row);
+}
+
+// Ctrl/Cmd+click a card. Returns "added" | "removed" | "blocked".
+// "blocked" is a demo row: the caller says why rather than doing nothing.
+function pvSelToggle(sel, row) {
+  if (!pvSelectable(row)) return "blocked";
+  if (sel.has(row.job_id)) { sel.delete(row.job_id); return "removed"; }
+  sel.add(row.job_id);
+  return "added";
+}
+
+// Shift+click a card: the contiguous run from the anchor to it, IN THE ORDER
+// THE OPERATOR IS LOOKING AT (the sorted, filtered rows pvPaint drew), not in
+// registry order. Range always ADDS - it never removes - because a shift
+// range that could clear rows off the top of a grid is how an operator loses
+// a selection they cannot see the end of. Demo rows inside the span are
+// skipped and counted, not silently swallowed.
+// Returns { added, spanned, blocked }; a missing anchor or target spans 0.
+function pvSelRange(sel, rows, anchorId, toId) {
+  const list = rows || [];
+  const i = list.findIndex(r => r && r.job_id === anchorId);
+  const j = list.findIndex(r => r && r.job_id === toId);
+  if (i < 0 || j < 0) return { added: 0, spanned: 0, blocked: 0 };
+  const lo = Math.min(i, j), hi = Math.max(i, j);
+  let added = 0, blocked = 0;
+  for (let k = lo; k <= hi; k++) {
+    const r = list[k];
+    if (!pvSelectable(r)) { blocked++; continue; }
+    if (!sel.has(r.job_id)) { sel.add(r.job_id); added++; }
+  }
+  return { added, spanned: hi - lo + 1, blocked };
+}
+
+// The rows every action resolves to: selected ids that are still present,
+// in the order given (so a bulk action walks the grid the way it is drawn,
+// deterministically, rather than in Set-insertion order - the same
+// order-pinning the accept loops keep).
+function pvSelResolve(sel, rows) {
+  return (rows || []).filter(r => r && sel.has(r.job_id));
+}
+
+// Self-prune: the ids still backed by a row anywhere in `rows`. Called after
+// every refetch so a deleted project cannot linger in the set and inflate
+// the next confirm's count. `rows` here is the WHOLE cached list, not the
+// filtered view - a row hidden by the search box still exists.
+function pvSelPrune(sel, rows) {
+  const live = new Set((rows || []).map(r => r && r.job_id));
+  const out = new Set();
+  for (const id of sel) if (live.has(id)) out.add(id);
+  return out;
+}
+
+// Split a resolved selection into what the action will touch and what it
+// will not. `go` is what gets deleted; `blocked` is what the account may not
+// delete and which the confirm must therefore name a count for.
+function pvSelSplit(rows) {
+  const go = [], blocked = [];
+  for (const r of rows || []) (r.deletable ? go : blocked).push(r);
+  return { go, blocked };
+}
+
+// The aggregate arithmetic behind the confirm. Every number the single-row
+// confirm states, summed: projects, pages, pages already detected, approved
+// exports. `names` is display order, so "the first few" the confirm prints
+// are the first few on screen.
+function pvBulkStats(rows) {
+  const list = rows || [];
+  let pages = 0, detected = 0, approved = 0;
+  for (const r of list) {
+    pages += r.pages || 0;
+    // a stale extra result can push detected past pages; the card's meta line
+    // already reads that as "all detected", so the confirm must not print a
+    // detected count larger than the page count it is quoted against
+    detected += Math.min(r.detected || 0, r.pages || 0);
+    approved += r.approved || 0;
+  }
+  return { projects: list.length, pages, detected, approved,
+           names: list.map(r => r.name) };
+}
+
+// The selection bar's readout, in the shape msScopeText set: what is
+// selected, and - separately - what the action will actually touch.
+function pvBulkScopeLine(stats, blockedN) {
+  const p = stats.projects === 1 ? "1 project" : stats.projects + " projects";
+  const g = stats.pages === 1 ? "1 page" : stats.pages + " pages";
+  const d = stats.detected + " detected";
+  const a = stats.approved ? " · " + stats.approved + " approved" : "";
+  const b = blockedN ? " · " + blockedN + " not yours to delete" : "";
+  return p + " · " + g + " · " + d + a + b;
+}
+
+// How many names to print in the confirm before "…and N more". Enough that
+// an operator recognises a wrong pick; few enough that the dialog still fits.
+const PV_CONFIRM_NAMES = 5;
+
+// THE CONFIRM. One builder for one project and for forty, so there is one
+// deletion vocabulary rather than two: called with a single row it returns
+// the EXACT sentence pvRemove has always shown (pinned by the test), and
+// pvRemove now calls this rather than keeping its own copy.
+//
+// `go` is what will be deleted, `blocked` what the account may not. Both come
+// straight out of pvSelSplit, so the dialog can never disagree with the loop
+// that follows it about which rows are in scope.
+//
+// NO UNDO IS OFFERED OR IMPLIED. This is server-side permanent deletion, not
+// a canvas edit: there is no captureUndo behind it and the closing line says
+// so in the words the single delete already used.
+function pvBulkConfirm(go, blocked) {
+  const rows = go || [], out = blocked || [];
+  if (!rows.length) return "";
+  const s = pvBulkStats(rows);
+  const tail = out.length
+    ? LF + LF + out.length + " selected project"
+      + (out.length === 1 ? " is" : "s are") + " not yours to delete — "
+      + (out.length === 1 ? "it stays" : "they stay")
+      + " on this server, untouched."
+    : "";
+  if (rows.length === 1) {
+    // WORD FOR WORD what the ⋯ menu has always asked. Do not reflow this.
+    const r = rows[0];
+    return "Remove \"" + r.name + "\" from this server?" + LF + LF
+      + "This permanently deletes the uploaded PDF and everything detected "
+      + "from it — " + r.detected + " of " + r.pages + " page(s) already "
+      + "detected, plus any approved exports and report for it." + tail
+      + LF + LF + "This cannot be undone.";
+  }
+  const shown = s.names.slice(0, PV_CONFIRM_NAMES);
+  const more = s.names.length - shown.length;
+  const list = shown.map(n => "  • " + n).join(LF)
+    + (more ? LF + "  …and " + more + " more." : "");
+  return "Remove " + s.projects + " projects from this server?" + LF + LF
+    + "This permanently deletes " + s.projects + " uploaded PDFs and "
+    + "everything detected from them — " + s.detected + " of " + s.pages
+    + " page(s) already detected, plus any approved exports and reports for "
+    + "them"
+    + (s.approved ? " (" + s.approved + " approved page(s))" : "")
+    + "." + LF + LF + list + tail
+    + LF + LF + "This cannot be undone.";
+}
+
+// WHAT ACTUALLY HAPPENED. Forty projects is forty requests and some of them
+// will fail, so the outcome is reported from the RESULTS, never assumed from
+// the intent. `results` is [{ name, ok, why }] in the order they were tried.
+// Reasons are grouped with counts because forty rows of "unknown job" is not
+// a report. Nothing here says "removed" about a request that errored.
+//
+// `stillSel` is how many rows are ACTUALLY still selected when this sentence
+// is written - counted after the refetch has pruned the set, never assumed.
+// It has to be passed in because the two numbers come apart in the most
+// ordinary failure there is: a row that failed with "unknown job" is a row
+// the server no longer has, so the refetch drops it and it CANNOT be retried.
+// Measured live on 2026-09-01: the first cut of this function hard-coded the
+// retry clause and printed "the one that failed is still selected" over an
+// empty set. Saying a false thing about a permanent deletion is the exact
+// failure this whole feature is supposed to not have.
+function pvBulkReport(results, stillSel) {
+  const list = results || [];
+  const ok = list.filter(r => r.ok);
+  const bad = list.filter(r => !r.ok);
+  if (!list.length) return "nothing to remove";
+  if (!bad.length)
+    return "removed " + ok.length + " project"
+      + (ok.length === 1 ? "" : "s") + " — permanently";
+  const by = new Map();
+  for (const r of bad) {
+    const w = r.why || "no reason given";
+    by.set(w, (by.get(w) || 0) + 1);
+  }
+  const why = [...by.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .map(([w, n]) => (n > 1 ? n + " × " : "") + w)
+    .join("; ");
+  const head = ok.length
+    ? "removed " + ok.length + " of " + list.length + " — "
+    : "removed none of " + list.length + " — ";
+  const n = Math.max(0, stillSel | 0);
+  const tail = n
+    ? "; " + (n === 1 ? "the one still selected" : "the " + n
+              + " still selected") + " can be retried in one click"
+    : "; " + (bad.length === 1 ? "it is" : "they are")
+      + " no longer in the list, so there is nothing here to retry";
+  return head + bad.length + " failed (" + why + ")" + tail + ".";
+}
+
+// DUPLICATE SPOTTING, never duplicate GUESSING. The registry holds 15 rows
+// named "Oncor Cloudcrest Substation Civils - 20251212.pdf"; the operator
+// wants to see that on the card. This counts rows sharing a name AND a page
+// count - the pair, because two different revisions can share a filename and
+// are not the same document - and returns a per-job_id note for the ones in a
+// group larger than one. It NEVER selects anything: a similarity is evidence
+// for the operator, not a decision taken on their behalf.
+function pvDupeNotes(rows) {
+  const groups = new Map();
+  for (const r of rows || []) {
+    if (!pvSelectable(r)) continue;
+    const k = String(r.name) + "\x00" + (r.pages || 0);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  const notes = new Map();
+  for (const g of groups.values()) {
+    if (g.length < 2) continue;
+    // newest first, so "1 of 15" is the liveliest copy and the operator can
+    // keep that one and take the rest
+    const ord = [...g].sort((a, b) => (b.when || 0) - (a.when || 0));
+    ord.forEach((r, i) => notes.set(r.job_id,
+      (i + 1) + " of " + g.length + " with this name and page count"));
+  }
+  return notes;
+}
 // PROJECTS-PURE-END ----------------------------------------------------------
 
 function pvIsOpen() { return !$("projectsView").hidden; }
@@ -18409,6 +18658,12 @@ function pvPaint() {
   const badge = projShowsSharedBadge(pvRows);
   const nowS = Date.now() / 1000;
   for (const r of shown) grid.appendChild(pvCard(r, badge, nowS));
+  // The selection layer repaints itself over the cards that were just built
+  // (marks, duplicate notes, the bar). Deliberately the LAST thing here and
+  // deliberately ARGUMENT-FREE: it re-reads the grid it is looking at, so
+  // this stays a single line that cannot go out of step with whatever
+  // pvPaint decided to draw. See MULTI-SELECT + BULK DELETE.
+  pvSelSync();
 }
 
 // A DEMO CARD. Built from a manifest entry, not from a job row, so it carries
@@ -18509,6 +18764,13 @@ function pvCard(r, sharedBadge, nowS) {
   card.tabIndex = 0;
   card.setAttribute("role", "button");
   card.title = "Open " + r.name;
+  // THE ONE HOOK THE SELECTION LAYER NEEDS (see MULTI-SELECT + BULK DELETE).
+  // Set only on a SELECTABLE row, so the presence of data-job IS the
+  // predicate - a demo card carries none and can never be picked, whatever
+  // the tab split does. Everything else about selection (the click gesture,
+  // the .pv-picked class, the bar) is done by pvSelSync/pvSelClick over this
+  // attribute, so this function stays otherwise untouched.
+  if (pvSelectable(r)) card.dataset.job = r.job_id;
 
   const thumb = document.createElement("div");
   thumb.className = "pv-thumb";
@@ -18693,34 +18955,45 @@ async function pvOpenDemo(p) {
     setStatus("fresh copy of " + j.name + " — nothing detected yet; press Detect");
 }
 
-async function pvRemove(r) {
-  // the same server flow and the same words as the header's "Remove from
-  // server" button - one deletion vocabulary, not two
-  if (!confirm("Remove \"" + r.name + "\" from this server?\n\n"
-    + "This permanently deletes the uploaded PDF and everything detected from "
-    + "it — " + r.detected + " of " + r.pages + " page(s) already "
-    + "detected, plus any approved exports and report for it.\n\n"
-    + "This cannot be undone.")) return;
-  setStatus("removing…", "busy");
+// ONE server call for one deletion, used by the ⋯ menu AND by the bulk
+// action, so there is exactly one deletion path. Never throws and never
+// reports success for a request that errored: it RETURNS what happened,
+// { ok, name, why }, and the caller decides what to say. That return shape is
+// what makes pvBulkReport's "deleted N, failed M" arithmetic honest.
+async function pvDeleteOne(r) {
   try {
     const resp = await fetch("/api/job/" + r.job_id, { method: "DELETE" });
     if (!resp.ok) {
       const e = await resp.json().catch(() => ({}));
-      return setStatus(e.detail || ("could not remove it (" + resp.status + ")"), "err");
+      return { ok: false, name: r.name,
+               why: e.detail || ("HTTP " + resp.status) };
     }
     const j = await resp.json();
-    if (r.job_id === state.job) {
-      // the document on the hidden workbench no longer exists; a clean
-      // reload is the only honest state (same choice as #docRemoveBtn)
-      location.reload();
-      return;
-    }
-    setStatus("removed " + j.name);
-    loadProjects();
-    loadRecent();                    // the recents <select> lists it too
+    return { ok: true, name: j.name || r.name };
   } catch (e) {
-    setStatus("could not remove it — the server did not answer", "err");
+    return { ok: false, name: r.name, why: "the server did not answer" };
   }
+}
+
+async function pvRemove(r) {
+  // the same server flow and the same words as the header's "Remove from
+  // server" button - one deletion vocabulary, not two. The sentence now comes
+  // from pvBulkConfirm([r], []), which returns it verbatim (pinned by
+  // tests/test_projects_bulk_delete.js) so single and bulk cannot drift.
+  if (!confirm(pvBulkConfirm([r], []))) return;
+  setStatus("removing…", "busy");
+  const res = await pvDeleteOne(r);
+  if (!res.ok) return setStatus("could not remove it (" + res.why + ")", "err");
+  if (r.job_id === state.job) {
+    // the document on the hidden workbench no longer exists; a clean
+    // reload is the only honest state (same choice as #docRemoveBtn)
+    location.reload();
+    return;
+  }
+  pvSel.delete(r.job_id);            // it can no longer be bulk-acted on
+  setStatus("removed " + res.name);
+  loadProjects();
+  loadRecent();                      // the recents <select> lists it too
 }
 
 // close every open card overflow popover (only ever one, but the DOM is the
@@ -18742,6 +19015,274 @@ addEventListener("click", (e) => {
   if (!e.target.closest || !e.target.closest(".pv-more, .pv-menu"))
     pvCloseMenus();
 });
+
+// =============== MULTI-SELECT + BULK DELETE ================================
+// An ADDITIVE layer over the cards. It owns three things and touches nothing
+// else on this page: the set, the click gesture, and the bar. The card itself
+// is built by pvCard exactly as before and still opens on a plain click -
+// that is the primary action and it must never become a two-step.
+//
+// THE GESTURE, in the vocabulary this app already speaks:
+//   plain click        open the project            (unchanged)
+//   Ctrl/Cmd + click   toggle this card in the set (same as a style row,
+//                                                   same as a canvas line)
+//   Shift + click      add the run from the anchor to here, in the order
+//                      the grid is drawn
+//   Esc                clear the selection (and only then leave the page)
+//
+// The set is pvSel, a Set of job_ids. The pure half - toggle, range, resolve,
+// prune, split, the aggregate arithmetic and every sentence - is in the
+// PROJECTS-PURE block above and is tested under node with no DOM.
+let pvSel = new Set();
+// The last card picked with Ctrl/Cmd, which is what a Shift range measures
+// from. Null until something is picked, and cleared with the selection.
+let pvSelAnchor = null;
+
+// The rows on screen, in the order they are drawn. Read back out of the grid
+// rather than remembered from pvPaint: the DOM is what the operator is
+// looking at, so a Shift range over it is a range over what they can see,
+// and this layer cannot fall out of step with a re-render it did not cause.
+function pvVisibleRows() {
+  const grid = $("pvGrid");
+  if (!grid) return [];
+  const byId = new Map(pvRows.map(r => [r.job_id, r]));
+  const out = [];
+  for (const el of grid.querySelectorAll("[data-job]")) {
+    const r = byId.get(el.dataset.job);
+    if (r) out.push(r);
+  }
+  return out;
+}
+
+// Repaint the layer over whatever cards are currently in the grid: the picked
+// marks, the duplicate notes, and the bar. Argument-free and idempotent, so
+// pvPaint calls it once at its tail and every action here calls it again.
+function pvSelSync() {
+  // self-prune first: a project deleted (here or in another tab) must not
+  // linger in the set and inflate the next confirm's count
+  pvSel = pvSelPrune(pvSel, pvRows);
+  if (pvSelAnchor && !pvSel.has(pvSelAnchor)) pvSelAnchor = null;
+  const grid = $("pvGrid");
+  if (grid) {
+    const notes = pvDupeNotes(pvRows);
+    for (const el of grid.querySelectorAll("[data-job]")) {
+      const on = pvSel.has(el.dataset.job);
+      el.classList.toggle("pv-picked", on);
+      el.setAttribute("aria-pressed", on ? "true" : "false");
+      // the duplicate note: evidence for the operator, never a decision.
+      // Written into a node of our own so pvCard's markup is untouched.
+      const note = notes.get(el.dataset.job);
+      let n = el.querySelector(".pv-dupe");
+      if (note && !n) {
+        n = document.createElement("div");
+        n.className = "pv-dupe";
+        el.appendChild(n);
+      }
+      if (n) {
+        n.textContent = note || "";
+        n.hidden = !note;
+        n.title = note
+          ? "This server holds " + note.split(" of ")[1].split(" ")[0]
+            + " registry rows with this exact name and page count. They are "
+            + "usually leftovers from re-opening the same PDF. Nothing is "
+            + "selected for you — pick the ones you want gone."
+          : "";
+      }
+    }
+  }
+  pvRenderSelBar();
+}
+
+// THE BAR. Hidden while nothing is picked; it is the only new chrome on the
+// page and it never covers a card (it sits in the flow, above the grid).
+function pvRenderSelBar() {
+  const bar = $("pvSelBar");
+  if (!bar) return;
+  const picked = pvSelResolve(pvSel, pvRows);
+  if (!picked.length) { bar.hidden = true; bar.textContent = ""; return; }
+  const { go, blocked } = pvSelSplit(picked);
+  bar.hidden = false;
+  bar.textContent = "";
+
+  const txt = document.createElement("span");
+  txt.className = "pv-sel-txt";
+  txt.textContent = pvBulkScopeLine(pvBulkStats(picked), blocked.length);
+  txt.title = "What is selected, and exactly what Delete would touch." + LF + LF
+    + (blocked.length
+        ? blocked.length + " of these " + picked.length + " are not yours to "
+          + "delete (the server decides that per project). They are counted "
+          + "here so you can see them, and they are EXCLUDED from the "
+          + "delete — it would remove " + go.length + "."
+        : "All " + picked.length + " are yours to delete.")
+    + LF + LF
+    + "Ctrl/Cmd+click a card to add or remove it, Shift+click for a run. "
+    + "A plain click still opens the project. Esc clears.";
+
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = go.length === picked.length
+    ? "Delete " + go.length + "…"
+    : "Delete " + go.length + " of " + picked.length + "…";
+  del.disabled = !go.length;
+  del.title = go.length
+    ? "Permanently remove " + go.length + " project"
+      + (go.length === 1 ? "" : "s") + " from this server — the uploaded "
+      + "PDFs and everything detected from them. You are asked to confirm, "
+      + "with the full count and the names, first. This CANNOT be undone: it "
+      + "is a server-side deletion, not a canvas edit, and Ctrl+Z does not "
+      + "reach it."
+    : "None of the selected projects are yours to delete, so there is "
+      + "nothing this button could remove.";
+  del.onclick = pvBulkDelete;
+
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = "Clear";
+  clr.title = "Drop the selection — nothing is deleted and nothing on this "
+    + "server changes. Esc does the same.";
+  clr.onclick = () => pvSelClear(true);
+
+  bar.append(txt, del, clr);
+}
+
+function pvSelClear(say) {
+  const n = pvSel.size;
+  pvSel = new Set();
+  pvSelAnchor = null;
+  pvSelSync();
+  if (say)
+    setStatus(n
+      ? "selection cleared (" + n + " project" + (n === 1 ? "" : "s")
+        + " dropped from the set) — nothing was deleted"
+      : "selection cleared — nothing changed");
+}
+
+// The click gesture. Registered in the CAPTURE phase on #pvGrid so a modified
+// click is intercepted BEFORE pvCard's own onclick can open the project: a
+// Ctrl+click that also opened the plan would be the worst of both.
+$("pvGrid").addEventListener("click", (e) => {
+  const mod = e.ctrlKey || e.metaKey, range = e.shiftKey;
+  if (!mod && !range) return;               // plain click: open, as always
+  const card = e.target.closest && e.target.closest(".pv-card");
+  if (!card) return;
+  e.preventDefault();
+  e.stopPropagation();
+  // A card with no data-job is a card this layer refuses to select. Today
+  // that is exactly the demo cards, and saying so beats a dead gesture.
+  if (!card.dataset.job) {
+    setStatus("demo plans cannot be selected or bulk-deleted — they are the "
+      + "shared set every visitor lands on. Your own projects are on the "
+      + "other tab.", "warn");
+    return;
+  }
+  const rows = pvVisibleRows();
+  const row = rows.find(r => r.job_id === card.dataset.job);
+  if (!row) return;
+  if (range && pvSelAnchor) {
+    const g = pvSelRange(pvSel, rows, pvSelAnchor, row.job_id);
+    pvSelSync();
+    setStatus(g.added
+      ? "added " + g.added + " project" + (g.added === 1 ? "" : "s")
+        + " (" + g.spanned + " card" + (g.spanned === 1 ? "" : "s")
+        + " spanned) — " + pvSel.size + " selected"
+      : "those " + g.spanned + " were already selected — "
+        + pvSel.size + " selected");
+    return;
+  }
+  // Shift with no anchor behaves as a plain toggle and SETS the anchor, so
+  // the second Shift+click does what the operator expected the first to.
+  const what = pvSelToggle(pvSel, row);
+  if (what === "blocked") return;           // unreachable: gated on data-job
+  pvSelAnchor = what === "added" ? row.job_id : null;
+  pvSelSync();
+  setStatus(pvSel.size
+    ? what + " “" + row.name + "” — " + pvSel.size + " selected. "
+      + "Shift+click another card to take the run between them."
+    : "selection cleared — nothing was deleted");
+}, true);
+
+// THE BULK ACTION.
+//
+// Five things this is careful about, all of them learned from the brief:
+//   1. It deletes ONLY rows the server said are deletable. The rest are
+//      counted in the confirm and left alone - never silently dropped, never
+//      silently 403'd.
+//   2. The confirm is pvBulkConfirm: the aggregate of everything the single
+//      delete states, plus the first few names, plus "cannot be undone".
+//   3. Partial failure is the NORMAL case at 40 requests. Every result is
+//      recorded and the report is built from the results, so a request that
+//      errored is never reported as removed.
+//   4. Failures STAY SELECTED. pvSel is rebuilt from exactly the rows that
+//      did not delete, so a retry is one click on the same button.
+//   5. No undo, and nothing that implies one.
+//
+// Requests go one at a time, on purpose. Forty parallel DELETEs against a
+// registry behind a single lock is how you find out the hard way that
+// _save_registry() is not reentrant; serial is slower and boring and cannot
+// interleave two rewrites of the same file.
+let pvBulkBusy = false;
+async function pvBulkDelete() {
+  if (pvBulkBusy) return;
+  const picked = pvSelResolve(pvSel, pvRows);
+  const { go, blocked } = pvSelSplit(picked);
+  if (!go.length) {
+    setStatus(blocked.length
+      ? "none of the " + blocked.length + " selected project(s) are yours to "
+        + "delete — nothing was removed"
+      : "nothing selected", "warn");
+    return;
+  }
+  if (!confirm(pvBulkConfirm(go, blocked))) return;
+  pvBulkBusy = true;
+  const results = [];
+  const failed = new Set(blocked.map(r => r.job_id));  // never silently drop
+  // The blocked rows are IN `failed` because they stay selected, but they are
+  // not retryable - retrying a row the account may not delete just fails
+  // again. So the retry count is measured over this set only: rows that were
+  // actually attempted and actually errored.
+  const retryable = new Set();
+  let hitOpenDoc = false;
+  try {
+    for (let i = 0; i < go.length; i++) {
+      const r = go[i];
+      setStatus("removing " + (i + 1) + " of " + go.length + "…", "busy");
+      const res = await pvDeleteOne(r);      // eslint-disable-line no-await-in-loop
+      results.push(res);
+      if (res.ok) { if (r.job_id === state.job) hitOpenDoc = true; }
+      else { failed.add(r.job_id); retryable.add(r.job_id); }
+    }
+  } finally {
+    pvBulkBusy = false;
+  }
+  // the set now holds exactly what did NOT go: the blocked rows plus the
+  // failures, so the same button retries them and the readout stays true
+  pvSel = failed;
+  pvSelAnchor = null;
+  if (hitOpenDoc) {
+    // the document on the hidden workbench no longer exists - same choice
+    // pvRemove and #docRemoveBtn make. Say what happened before reloading,
+    // because the reload throws the status line away.
+    // 0 still selected: the reload below clears the set outright, so this
+    // sentence must not offer a retry that the reload is about to remove
+    alert(pvBulkReport(results, 0) + LF + LF
+      + "One of them was the document you had open, so this page will "
+      + "reload.");
+    location.reload();
+    return;
+  }
+  const anyBad = results.some(r => !r.ok);
+  // REPORT AFTER THE REFETCH, not before. loadProjects repaints and re-syncs
+  // this bar, and that sync prunes from the set every row the server no
+  // longer has - so only here is pvSel.size the true count of what is still
+  // selected and therefore still retryable. Reporting first would let the
+  // sentence promise a retry the prune had already taken away.
+  await loadProjects();
+  loadRecent();                              // the recents <select> lists them
+  let canRetry = 0;
+  for (const id of retryable) if (pvSel.has(id)) canRetry++;
+  setStatus(pvBulkReport(results, canRetry), anyBad ? "err" : "");
+}
+// =============== end MULTI-SELECT + BULK DELETE ============================
 
 // ---- search + sort controls ------------------------------------------------
 // Both are pure re-renders over the cached rows: no refetch, no server round
@@ -18794,6 +19335,11 @@ addEventListener("keydown", (e) => {
   if (!pvIsOpen() || typing()) return;
   if (e.key === "Escape") {
     e.stopImmediatePropagation();
+    // A live card selection is the innermost thing Esc can dismiss, so it
+    // goes first - leaving the page with a selection still armed behind you
+    // is how the next visit deletes the wrong forty. Same precedence Esc
+    // already keeps on the sheet (clear the selection, then the tool).
+    if (pvSel.size) { e.preventDefault(); pvSelClear(true); return; }
     if (state.job) { e.preventDefault(); showProjects(false); }
     return;
   }

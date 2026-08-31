@@ -1970,6 +1970,52 @@ body { --w1-warn: #d79b3a; }
 .pv-menu-hint { font-size: var(--t-fs-xs, 12px); line-height: 1.45;
   color: var(--t-text-faint, var(--dim)); padding: 3px 10px 5px; }
 
+/* ---------- PROJECTS: multi-select + bulk delete -------------------------
+   An additive layer. The card is unchanged; a picked one gains .pv-picked,
+   which must read as SELECTED and not as "current document" - .pv-current
+   already owns the accent border and an inset top rule, so picked uses a
+   filled accent ring plus a tint instead, and the two compose without
+   either winning. */
+.pv-card.pv-picked { border-color: var(--t-accent, var(--accent));
+  box-shadow: 0 0 0 2px var(--t-accent, var(--accent)) inset,
+              var(--t-el-2, 0 4px 14px rgba(0,0,0,.35)); }
+.pv-card.pv-picked .pv-thumb { opacity: .82; }
+/* the tick, drawn in the corner the ... does NOT use, so a picked card can
+   still be opened one click into its own overflow menu */
+.pv-card.pv-picked::after { content: "\2713"; position: absolute;
+  top: 8px; left: 8px; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--t-fs-xs, 12px); line-height: 1; font-weight: 700;
+  background: var(--t-accent, var(--accent));
+  color: var(--t-surface-1, var(--panel)); }
+/* a picked card that also carries the "shared demo" badge would collide with
+   the tick; the badge steps right by its own width */
+.pv-card.pv-picked .pv-badge { left: 36px; }
+
+/* The duplicate note. Evidence, not a decision: it says how many registry
+   rows share this exact name and page count and selects nothing. */
+.pv-dupe { font-size: var(--t-fs-xs, 12px);
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums);
+  color: var(--t-text-faint, var(--dim));
+  padding: 4px var(--t-sp-3, 12px) 0; line-height: 1.4; }
+
+/* The bar. In the flow above the grid, never over it. */
+.pv-selbar { display: flex; align-items: center; gap: var(--t-sp-3, 12px);
+  flex-wrap: wrap; max-width: 1100px; margin: 0 auto var(--t-sp-4, 16px);
+  padding: var(--t-sp-3, 12px) var(--t-sp-4, 16px);
+  background: var(--t-surface-2, var(--panel));
+  border: 1px solid var(--t-accent, var(--accent));
+  border-radius: var(--t-r-3, 12px); }
+.pv-selbar[hidden] { display: none; }
+.pv-sel-txt { flex: 1; min-width: 0;
+  font-size: var(--t-fs-sm, 13px);
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums);
+  color: var(--t-text, var(--text)); }
+.pv-selbar .mini { flex: none; }
+.pv-selbar .mini:disabled { opacity: .5; cursor: not-allowed; }
+
 /* ---------- PRICING: page frame ----------------------------------------- */
 .settings-view { padding: var(--t-sp-5, 24px) var(--t-sp-6, 32px)
   var(--t-sp-7, 48px); }

@@ -392,8 +392,24 @@ check(appSrc.includes('$("pvSort").addEventListener("change", pvPaint)'),
 // delete moved behind the overflow menu, but the confirm flow did not change
 check(appSrc.includes("pvCloseMenus(); pvRemove(r);"),
   "the overflow menu's delete still calls pvRemove");
-check(appSrc.includes('confirm("Remove \\"" + r.name + "\\" from this server?'),
-  "pvRemove keeps #docRemoveBtn's confirm wording");
+// UPDATED 2026-09-01, with the reason. This used to assert that the confirm
+// SENTENCE was a literal inside pvRemove:
+//     appSrc.includes('confirm("Remove \\"" + r.name + "\\" from this server?')
+// Multi-select + bulk delete moved that sentence into pvBulkConfirm(), which
+// builds it for one project and for forty from one place, so the literal is
+// no longer in pvRemove and the old source-substring check could only fail.
+// What it was PROTECTING - that the ⋯ menu keeps asking in #docRemoveBtn's
+// words - is now pinned far harder in tests/test_projects_bulk_delete.js
+// ("CONFIRM PARITY"), which compares the STRING pvBulkConfirm actually
+// returns for one row against a literal copy of the shipped sentence,
+// character for character. A source-substring test cannot catch a reflow
+// that keeps the substring; that one can. All this needs to hold here is
+// that pvRemove still routes through the shared builder rather than growing
+// a second copy of the wording.
+check(appSrc.includes("if (!confirm(pvBulkConfirm([r], []))) return;"),
+  "pvRemove asks through the shared pvBulkConfirm builder");
+check(!/confirm\("Remove \\"" \+ r\.name/.test(appSrc),
+  "pvRemove keeps no second copy of the confirm wording");
 check(!appSrc.includes('x.className = "pv-x"'),
   "the always-armed card ✕ is gone (delete is behind the ⋯ menu)");
 // The empty state's promised wording is in the renderer.
