@@ -3658,6 +3658,13 @@ class EarthworkBody(BaseModel):
     existing_points: list[dict] = []
     proposed_points: list[dict] = []
     cell_ft: float = 2.0
+    # How each surface is EVALUATED between its contours: "auto" (measure
+    # the sheet's label sparsity and pick), "linear" (the piecewise-linear
+    # TIN this app has always used), "clamped_ct" (C1-smooth, clipped to
+    # the local contour bracket). See earthwork.SURFACE_MODELS for the
+    # measurement behind the choice. The answer always names the model it
+    # used, whichever way this arrives.
+    surface_model: str = "auto"
     # Layer stacks (Beaumont workflow, F52). Each {name, thickness_in}.
     # existing_layers come OFF first (topsoil strip from the soils report,
     # old asphalt, road base): their total lowers the existing surface
@@ -3903,10 +3910,65 @@ def earthwork_suggest(job_id: str, page: int):
     chain_info = {c.chain_id: {"style_id": c.style_id, "color": c.color,
                                "width": c.width} for c in chains}
     split_counts = split_rows_surface(sug, chain_info, verdicts)
+    # INTERVAL INFILL: the unlabelled contours between two labelled ones.
+    # A grading sheet labels a minority of its contours and expects the
+    # reader to COUNT the rest; the engine has been interpolating blindly
+    # across them. Each accepted fan is worth real volume - measured on
+    # C-04's existing surface, labelled-only vs +infill on identical cells,
+    # cut 1,781.0 -> 2,072.3 CY.
+    #
+    # These arrive with surface=None (skip) and inferred=True: unlike a
+    # read label they have NO printed evidence, and against the offline
+    # analyst's answer key this pass scored 24 of 41 rows vouched (16 of
+    # his 20 transect counts, 8 more of his 22 welds, zero disagreements)
+    # with 17 he did not assign, 3 of which he had explicitly refused. A
+    # 59%-vouched row is a suggestion to confirm, not an elevation to bill,
+    # so nothing here moves a volume until the operator clicks EXIST/PROP.
+    from takeoff_engine.earthwork import _is_plan_chain, infill_intervals
+    by_cid = {c.chain_id: c for c in chains}
+    seeded = {int(r["chain_id"]) for r in sug}
+    infill_rows, infill_diag = [], {}
+    for side in ("existing", "proposed"):
+        assigned = [{"chain_id": int(r["chain_id"]),
+                     "pts": by_cid[r["chain_id"]].pts, "z": r["z"],
+                     "family": by_cid[r["chain_id"]].style_id}
+                    for r in sug
+                    if r.get("surface") == side and r.get("z") is not None
+                    and r["chain_id"] in by_cid]
+        cands = [{"chain_id": int(c.chain_id), "pts": c.pts,
+                  "family": c.style_id}
+                 for c in chains
+                 if int(c.chain_id) not in seeded
+                 and int(c.chain_id) not in excl
+                 and _is_plan_chain(c)]
+        r = infill_intervals(assigned, cands)
+        infill_diag[side] = {"interval": r["interval"],
+                             "families": r.get("families"),
+                             "candidates_in_family":
+                                 r.get("n_candidates_in_family", 0),
+                             "transects": r["n_transects"],
+                             "refused": r["refused"],
+                             "n_rows": len(r["rows"])}
+        for row in r["rows"]:
+            cid = row["chain_id"]
+            if cid in seeded:
+                continue
+            seeded.add(cid)
+            ch = by_cid.get(cid)
+            row.update({"surface": None, "split_by": "interval-infill",
+                        "for_surface": side,
+                        "width": (ch.width if ch else None), "dist": None})
+            infill_rows.append(row)
+    sug = sug + infill_rows
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
             "families_excluded": fam_excluded,
             "split_counts": split_counts,
+            # every inferred row is counted here as well as flagged on
+            # itself, so a caller that ignores the flag still cannot show
+            # the row set without the number being available
+            "interval_infill": infill_diag,
+            "interval_infill_rows": len(infill_rows),
             "spot_grades": spots,
             "spot_datum": spot_datum_info,
             # disclosed heuristics: how many legend sample rows were dropped
@@ -3997,7 +4059,8 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       build("proposed", body.proposed, body.proposed_points),
                       ft_per_pt, cell_ft=body.cell_ft,
                       existing_offset_ft=ex_off, proposed_offset_ft=pr_off,
-                      return_grid=return_grid, boundary=body.boundary)
+                      return_grid=return_grid, boundary=body.boundary,
+                      surface_model=body.surface_model)
     if "error" in result:
         # UNWELD (audit item 10): stripping is pure area x depth and owes
         # nothing to a TIN. A clearing / erosion-control sheet has no

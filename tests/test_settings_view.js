@@ -524,14 +524,27 @@ check(!/store\.setItem\([^)]*brand/i.test(appSrc)
 // ============================================================================
 // cache busters: NOT bumped here, and that is a thing to say out loud
 // ============================================================================
-// Bumped AT INTEGRATION (this page shipped alongside the line-colour work and
-// the client-view fix, which moved these on). The pin stays so the next builder
-// gets the same reminder the last one wrote: new markup behind a stale buster
-// is a page whose handlers never load.
-check(htmlSrc.includes("style.css?v=60") && htmlSrc.includes("app.js?v=135")
-  && htmlSrc.includes("tokens.css?v=1"),
-  "cache busters are untouched (they NEED a bump before this ships - the "
-  + "settings page will not appear for a browser holding app.js v132)");
+// EVERY asset carries a cache buster. Deliberately NOT pinned to specific
+// numbers any more: this assertion was written by a builder as a reminder to
+// bump at integration, and it then failed on three consecutive landings for
+// the only reason it ever could - somebody HAD bumped. A check whose green
+// state means "nobody has shipped since I was written" teaches integrators to
+// edit tests to make them pass, which is the opposite of what it is for. What
+// is actually testable is that no asset lost its buster; remembering to turn
+// the number belongs to the landing checklist, not here.
+{
+  const b = (f) => {
+    const at = htmlSrc.indexOf(f + "?v=");
+    if (at < 0) return null;
+    const tail = htmlSrc.slice(at + f.length + 3);
+    const n = tail.slice(0, tail.search(/[^0-9]/));
+    return n.length ? n : null;
+  };
+  const seen = {"tokens.css": b("tokens.css"), "style.css": b("style.css"),
+                "app.js": b("app.js")};
+  for (const [f, v] of Object.entries(seen))
+    check(!!v, "cache buster present on " + f + " (v=" + v + ")");
+}
 
 if (failures) { console.error(`\n${failures} FAILURE(S)`); process.exit(1); }
 console.log("\nall settings view checks passed");

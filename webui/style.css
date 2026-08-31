@@ -390,6 +390,29 @@ canvas#view.panning { cursor: grabbing; }
   padding: 0 12px 8px; }
 .ew-basis b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ew-basis .unbounded { display: block; margin-top: 3px; color: var(--t-warn); }
+/* which surface produced the number - stated, never implied */
+.ew-basis .ew-basis-model { display: block; margin-top: 3px;
+  color: var(--t-info); }
+
+/* the surface-model picker, above Calculate */
+.ew-model { display: flex; align-items: center; gap: var(--t-sp-2);
+  padding: var(--t-sp-2) 12px; flex-wrap: wrap;
+  font-size: var(--t-fs-xs); border-top: 1px solid var(--line); }
+.ew-model label { color: var(--dim); }
+.ew-model select { font-size: var(--t-fs-xs); padding: 2px 4px; }
+.ew-model .ew-model-note { flex: 1 1 100%; color: var(--t-info);
+  font-size: var(--t-fs-xs); line-height: var(--t-lh-tight); }
+
+/* an INFERRED elevation - counted between two labelled contours, never
+   printed on the sheet. Marked on the row itself so it cannot pass for a
+   read label at a glance. */
+.ew-row.ew-inferred { background: var(--t-info-bg); }
+.ew-row input.z.inferred { border-style: dashed; }
+.ew-inf-tag { display: inline-block; margin-right: 4px; padding: 0 4px;
+  border-radius: var(--t-r-pill); background: var(--t-info);
+  color: var(--t-stage); font-size: var(--t-fs-xs); font-weight: 600; }
+.ew-inf-why { color: var(--dim); font-size: var(--t-fs-xs);
+  line-height: var(--t-lh-tight); margin-top: 2px; }
 /* consent row: nothing priced until this is pressed */
 .ew-take { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
   padding: 0 12px 10px; }

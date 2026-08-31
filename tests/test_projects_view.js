@@ -165,11 +165,22 @@ for (const id of ["pvGrid", "pvEmpty", "pvBack", "pvCount",
   check(htmlSrc.includes(`id="${id}"`), `#${id} exists in index.html`);
 }
 // the sort <select> offers exactly the modes PROJ_SORTS knows how to apply -
-// an option with no comparator would silently fall back to last activity
+// an option with no comparator would silently fall back to last activity.
+//
+// SCOPED to the #pvSort element. Both checks read the WHOLE of index.html
+// until 2026-08-31: the count one failed the moment any other panel grew a
+// <select> (the earthwork surface-model picker was the first, and it would
+// have gone on tripping on every future one while never once looking at
+// #pvSort), and the per-mode one would have passed on an <option> belonging
+// to some other control. Same checks, same intent, right scope - they are
+// now actually statements about the sort control.
+const pvSortSel = htmlSrc.slice(
+  htmlSrc.indexOf('<select id="pvSort">'),
+  htmlSrc.indexOf("</select>", htmlSrc.indexOf('<select id="pvSort">')));
 for (const m of P.PROJ_SORTS)
-  check(htmlSrc.includes(`<option value="${m}"`),
+  check(pvSortSel.includes(`<option value="${m}"`),
     `#pvSort offers the "${m}" mode`);
-check((htmlSrc.match(/<option value="[a-z]+"/g) || []).length
+check((pvSortSel.match(/<option value="[a-z]+"/g) || []).length
   === P.PROJ_SORTS.length,
   "#pvSort offers no mode PROJ_SORTS cannot sort");
 // search and sort are re-renders over the cached rows, never a refetch: a

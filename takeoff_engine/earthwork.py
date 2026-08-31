@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy.interpolate import LinearNDInterpolator
+from scipy.interpolate import CloughTocher2DInterpolator, LinearNDInterpolator
 from scipy.spatial import cKDTree
 
 from .chain import _sample_polyline
@@ -30,7 +30,13 @@ class Surface:
     contours: list = field(default_factory=list)  # (pts Nx2 pt-space, z_ft)
     points: list = field(default_factory=list)    # (x_pt, y_pt, z_ft) spot grades
 
-    def interpolator(self, step_pt: float = 6.0):
+    def samples(self, step_pt: float = 6.0):
+        """(P Nx2 page pt, Z N ft) - every contour sample plus every spot.
+
+        Split out of interpolator() so the clamped-smooth model can reuse
+        the SAME point set the linear TIN is built from; the two models
+        must never disagree about what the sheet said.
+        """
         xs, zs = [], []
         for pts, z in self.contours:
             s, _ = _sample_polyline(np.asarray(pts, float), step=step_pt,
@@ -55,7 +61,126 @@ class Surface:
         Z = np.concatenate(zs)
         if len(P) < 3:
             return None, None
+        return P, Z
+
+    def interpolator(self, step_pt: float = 6.0):
+        P, Z = self.samples(step_pt)
+        if P is None:
+            return None, None
         return LinearNDInterpolator(P, Z), P
+
+
+# --- surface model: piecewise-linear TIN vs CLAMPED smooth ----------------
+#
+# The default model is and remains the piecewise-linear TIN. A linear TIN
+# through contour samples is EXACT ON the contours and regresses everything
+# between them toward a plane, so on a sheet whose labelled contours are far
+# apart in elevation it terraces the site and under-reads both cut and fill.
+# Measured (out/verify/2026-08-31/terrain-audit): Stice p0 reads cut -24.4%
+# and fill -28.6% against that sheet's OWN printed RAW QUANTITIES table.
+#
+# CloughTocher2DInterpolator is scipy's C1-smooth cubic on the same Delaunay
+# triangulation, and it restores the between-contour relief. RAW CT IS
+# DISQUALIFIED BY MEASUREMENT and must never ship: on Stice it rings to a
+# 1,242 ft max dig on a 425-521 ft site (cut +180%), and on Oncor's
+# retaining-wall bundles (1-ft contours 2-3 pt apart) it takes fill from
+# 7,979 to 13,979 CY (+75%) with 71 ft of phantom fill.
+#
+# What ships is CT CLAMPED per evaluated point to the z-range of the
+# CLAMP_K nearest contour samples. The clamp is what makes the model safe:
+# curvature between contours is kept, but an elevation outside the local
+# contour bracket cannot be invented, because the bracket is read off the
+# sheet's own labels. Measured on Stice p0: cut 1,690,910 -> 2,015,688
+# (-24.4% -> -9.9%) and fill 1,164,619 -> 1,484,150 (-28.6% -> -9.0%),
+# both moving toward the printed table simultaneously - the signature of a
+# systematic terracing bias being removed rather than noise.
+#
+# k = 12 is the audit's own bracket width, used unchanged so the shipped
+# numbers reproduce its measurement exactly. It is a LOCAL bound, so it can
+# slightly under-state ringing in a mixed-elevation neighbourhood; the
+# volume rows, not the clamp, are the evidence that it holds.
+CLAMP_K = 12
+
+# Above this median nearest-distinct-z band, "auto" picks the clamped
+# smooth model. Chosen from the separation the two reference jobs actually
+# show, and it is a two-job denominator - say so wherever it decides:
+#   Oncor C-04  median band 1.0 ft existing / 1.0 ft proposed  -> linear
+#   Stice p0    median band 3.2 ft existing / 4.7 ft proposed  -> clamped
+# The direction is the audit's counter-measurement, not a preference: on
+# Oncor, whose contours are dense, linear is the BETTER surface pointwise -
+# against the sheet's 20 printed proposed spot elevations linear scores
+# 0.266 ft mean |err| and clamped CT 0.352. Smoothing helps where the
+# labels are sparse and is slightly negative where they are dense, so the
+# gate is on measured label sparsity and the operator can always override.
+AUTO_BAND_FT = 2.0
+
+# Probe budget for the band statistic. Measured stable to the reported
+# digit across stride 1..41 (1,872,973 cells down to 1,105) and k 8..48 on
+# both reference jobs, so a bounded probe is not an approximation that
+# could flip the decision.
+_BAND_PROBE_MAX = 20000
+
+SURFACE_MODELS = ("auto", "linear", "clamped_ct")
+
+
+def _clamped_ct_eval(P, Z):
+    """f(gx, gy) -> z: C1 CloughTocher clipped to the local contour bracket.
+
+    Returns NaN outside the hull exactly as LinearNDInterpolator does (CT
+    shares the triangulation), so a caller's defined-region mask is
+    unaffected by the choice of model.
+    """
+    f = CloughTocher2DInterpolator(P, Z)
+    tree = cKDTree(P)
+    k = min(CLAMP_K, len(P))
+
+    def ev(gx, gy):
+        gx = np.asarray(gx, dtype=float)
+        shape = gx.shape
+        gxf = gx.ravel()
+        gyf = np.asarray(gy, dtype=float).ravel()
+        z = f(gxf, gyf)
+        _, idx = tree.query(np.column_stack([gxf, gyf]), k=k, workers=-1)
+        if idx.ndim == 1:
+            idx = idx[:, None]
+        zn = Z[idx]
+        # np.clip propagates NaN, so cells outside the hull stay undefined
+        return np.clip(z, zn.min(axis=1), zn.max(axis=1)).reshape(shape)
+
+    return ev
+
+
+def label_band_ft(P, Z, gx, gy) -> dict:
+    """How far apart in ELEVATION the labels around each cell are.
+
+    For each probed cell: the z of the nearest contour sample, and the z of
+    the nearest sample carrying a DIFFERENT elevation. Their difference is
+    the vertical gap the TIN is interpolating blindly across at that cell -
+    the measured footprint of terracing. Reported as a median over a
+    bounded probe of the cells the volume is actually integrated over.
+    """
+    n = len(gx)
+    if n == 0 or len(P) < 2:
+        return {"median_ft": None, "n_probe": 0}
+    step = max(1, int(np.ceil(n / _BAND_PROBE_MAX)))
+    qx, qy = gx[::step], gy[::step]
+    k = min(max(CLAMP_K, 2), len(P))
+    tree = cKDTree(P)
+    _, idx = tree.query(np.column_stack([qx, qy]), k=k, workers=-1)
+    if idx.ndim == 1:
+        idx = idx[:, None]
+    zn = Z[idx]
+    z1 = zn[:, 0]
+    diff = np.abs(zn - z1[:, None]) > 1e-9
+    has2 = diff.any(axis=1)
+    if not has2.any():
+        return {"median_ft": None, "n_probe": int(len(qx))}
+    z2 = zn[np.arange(len(zn)), np.argmax(diff, axis=1)]
+    band = np.abs(z2 - z1)[has2]
+    return {"median_ft": round(float(np.median(band)), 2),
+            "mean_ft": round(float(band.mean()), 2),
+            "p90_ft": round(float(np.percentile(band, 90)), 2),
+            "n_probe": int(len(qx))}
 
 
 def _points_in_poly(GX, GY, poly):
@@ -90,7 +215,8 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
              cell_ft: float = 2.0, existing_offset_ft: float = 0.0,
              proposed_offset_ft: float = 0.0,
              return_grid: bool = False,
-             boundary: "list | None" = None) -> dict:
+             boundary: "list | None" = None,
+             surface_model: str = "auto") -> dict:
     """Grid-integrate (proposed - existing) where both TINs are defined.
 
     Offsets LOWER a surface before differencing (z - offset). The client's
@@ -121,7 +247,19 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
 
     Passing None is not a special case that is merely handled; it is the
     original code path untouched, so every existing number is unchanged.
+
+    surface_model picks how each surface is EVALUATED between its contours
+    (see SURFACE_MODELS above): "linear" is the piecewise-linear TIN this
+    module has always used, "clamped_ct" is the C1-smooth model clipped to
+    the local contour bracket, and "auto" measures the sheet's own label
+    sparsity and picks one. Whichever runs, the result says so in
+    surface_model / surface_model_source / surface_model_why - a volume
+    must never leave here without naming the surface that produced it.
     """
+    model_req = str(surface_model or "auto")
+    if model_req not in SURFACE_MODELS:
+        return {"error": f"surface_model must be one of "
+                         f"{', '.join(SURFACE_MODELS)}"}
     fe, pe = existing.interpolator()
     fp, pp = proposed.interpolator()
     if fe is None or fp is None:
@@ -159,6 +297,65 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         ok = ok & inside
     if not ok.any():
         return {"error": "surfaces overlap in plan but their TINs do not"}
+    # THE DEFINED REGION IS DECIDED BY THE LINEAR TIN, ALWAYS. `ok` above is
+    # computed from the linear evaluation and is never recomputed for a
+    # different model, so area_sf, the boundary clip and the map's extent
+    # are identical whichever surface model runs and a before/after is a
+    # comparison of elevations only. (CT shares the Delaunay hull, so this
+    # costs nothing - it removes a floating-point edge case, not a region.)
+    Pex, Zex = existing.samples()
+    Ppr, Zpr = proposed.samples()
+    gxi, gyi = GX[ok], GY[ok]
+    band_ex = label_band_ft(Pex, Zex, gxi, gyi)
+    band_pr = label_band_ft(Ppr, Zpr, gxi, gyi)
+    bands = [b["median_ft"] for b in (band_ex, band_pr)
+             if b.get("median_ft") is not None]
+    band_ft = max(bands) if bands else None
+    if model_req == "auto":
+        # Decided per JOB, not per surface: the two reference measurements
+        # show the clamped model wins on BOTH surfaces together or neither
+        # (Stice one-surface-only variants both score worse than doing
+        # both), and the volume is a difference of the two.
+        if band_ft is None:
+            model = "linear"
+            why = ("linear: this sheet's contours carry too few distinct "
+                   "elevations to measure label sparsity")
+        elif band_ft >= AUTO_BAND_FT:
+            model = "clamped_ct"
+            why = (f"clamped smooth: labels are sparse - the median gap "
+                   f"between the two nearest contour elevations is "
+                   f"{band_ft} ft, at or over the {AUTO_BAND_FT} ft "
+                   f"threshold, so a linear TIN would terrace the ground "
+                   f"between them")
+        else:
+            model = "linear"
+            why = (f"linear TIN: labels are dense - the median gap between "
+                   f"the two nearest contour elevations is {band_ft} ft, "
+                   f"under the {AUTO_BAND_FT} ft threshold, and on a dense "
+                   f"sheet the linear surface matched printed spot "
+                   f"elevations better than the smooth one")
+        source = "auto (measured label sparsity)"
+    else:
+        model = model_req
+        source = "operator"
+        why = ("linear TIN: chosen on the panel"
+               if model == "linear" else
+               "clamped smooth: chosen on the panel")
+    if model == "clamped_ct":
+        # evaluated only on the cells that already count, so the smooth
+        # model costs one CT build + one k-nearest query per surface
+        ze = np.where(ok, np.nan, np.nan)
+        zp = np.where(ok, np.nan, np.nan)
+        ze[ok] = _clamped_ct_eval(Pex, Zex)(gxi, gyi)
+        zp[ok] = _clamped_ct_eval(Ppr, Zpr)(gxi, gyi)
+        # a clamped value can still come back NaN where CT declines a
+        # degenerate triangle; those cells leave the defined region
+        still = ~(np.isnan(ze) | np.isnan(zp))
+        ok = ok & still
+        if not ok.any():
+            return {"error": "the smooth surface model could not evaluate "
+                             "this sheet - switch the surface model to "
+                             "Linear on the panel"}
     # guarded so the zero-offset path is the exact expression it always was
     if existing_offset_ft:
         ze = ze - float(existing_offset_ft)
@@ -188,6 +385,17 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         "cell_ft": round(cell_ft, 2),
         "existing_contours": len(existing.contours),
         "proposed_contours": len(proposed.contours),
+        # WHICH SURFACE PRODUCED THIS NUMBER. The two models disagree by
+        # +19% cut on a sparse sheet, so a volume that does not name its
+        # interpolant is a volume an operator cannot check. Reported on
+        # every call, including the linear default, so the field's absence
+        # never has to mean anything.
+        "surface_model": model,
+        "surface_model_source": source,
+        "surface_model_why": why,
+        "label_band_ft": band_ft,
+        "label_band_existing_ft": band_ex.get("median_ft"),
+        "label_band_proposed_ft": band_pr.get("median_ft"),
     }
     if return_grid:
         # row i / col j of dz covers page-pt box
@@ -1694,6 +1902,340 @@ def split_rows_surface(rows: list, chain_info: dict,
         r["split_by"] = "width"
         counts["width"] += 1
     return counts
+
+
+# --- interval infill: the unlabelled contours between two labelled ones ---
+#
+# A grading sheet labels a MINORITY of its contours. The draughtsman writes
+# 556 and 561 and draws the four lines between them unlabelled, because a
+# reader counts them: the contour interval is stated on the sheet, so the
+# four in between can only be 557, 558, 559, 560. The engine has been
+# throwing that information away and interpolating blindly across the gap.
+#
+# Measured cost of throwing it away, Oncor C-04 (the offline analyst did
+# this fan by hand; his row set is the answer key, report.json how="interp"):
+# rebuilding with LABELLED ROWS ONLY against the full human set, same cells,
+# gives cut 1,781.0 -> 2,001.9 CY (+12.4%) and fill 6,871.5 -> 6,932.2
+# (+0.9%); the infilled rows also EXTEND the defined surface from 79,248 to
+# 83,796 SF, worth ~1,047 CY more fill, so the full effect is +16.1% fill.
+#
+# THE REFUSAL RULE IS THE LOAD-BEARING PART, and it is the analyst's own
+# (report.json's `dropped` list shows him applying exactly it): assign the
+# monotone fan ONLY when the number of unlabelled siblings crossed between
+# two labelled contours equals dz/interval - 1. If a line is missing, or an
+# extra line got in, or the transect clipped a curve twice, the count does
+# not match and NOTHING is assigned. Ambiguity is worse than absence: an
+# absent contour leaves the TIN to interpolate, a wrong one puts a confident
+# wrong elevation into a bid.
+#
+# The interval is READ, never invented - from the sheet's own CONTOUR
+# INTERVAL note if the caller has one, else the modal delta between adjacent
+# distinct labelled elevations. Where that modal delta is design-label noise
+# rather than a contour interval, the count test simply never matches and
+# the whole pass abstains, which is the correct outcome. Measured: on Stice
+# p0 the modal adjacent-delta is 0.1 ft (219 of 331 deltas) because the
+# existing side carries decimal design labels, and this pass assigns zero
+# rows there rather than inventing a 0.1 ft fan.
+
+# How far a transect may reach looking for the flanking labelled contour,
+# as a multiple of the sheet's own median inter-contour spacing. Only the
+# FIRST labelled crossing on each side is ever used, so a generous reach
+# costs search, not accuracy.
+_INFILL_REACH_SPACINGS = 30.0
+# Stations per labelled chain: the transect is cast perpendicular at each.
+# More stations = more independent votes per candidate; they must AGREE.
+_INFILL_STATIONS = 8
+# A fan wider than this is not something a crossing count can honestly
+# resolve on a real sheet - one missed line and every elevation in it is
+# wrong. Refuse rather than guess.
+_INFILL_MAX_FAN = 12
+# dz/interval must land on an integer this closely to count as a whole
+# number of contour steps.
+_INFILL_STEP_TOL = 0.02
+# Transect budget, so a 1,500-contour sheet cannot stall the request.
+_INFILL_MAX_TRANSECTS = 6000
+
+
+def contour_interval(zs, note_ft=None) -> dict:
+    """The sheet's contour interval - read off the labels, never invented.
+
+    note_ft, when the caller has read the sheet's own CONTOUR INTERVAL
+    note, wins outright: the sheet stating its interval is better evidence
+    than any statistic over the labels we happened to resolve.
+
+    Otherwise: the modal delta between ADJACENT DISTINCT labelled
+    elevations. `share` is what fraction of those deltas the modal value
+    accounts for - reported, not thresholded, so the caller and the
+    operator can see how much consensus is behind it. Measured: Oncor C-04
+    existing 1.0 ft on 33 of 34 deltas (0.97); Stice p0 existing 0.1 ft on
+    219 of 331 (0.66), which is decimal design-label noise and is exactly
+    why the count rule, not this share, decides whether anything ships.
+    """
+    if note_ft:
+        try:
+            v = float(note_ft)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > 0:
+            return {"interval_ft": v, "source": "sheet's contour-interval "
+                    "note", "modal_count": 0, "n_deltas": 0, "share": None}
+    u = np.unique(np.round(np.asarray(list(zs), dtype=float), 3))
+    if len(u) < 3:
+        return {"interval_ft": None, "source": "too few distinct labelled "
+                "elevations to read an interval", "modal_count": 0,
+                "n_deltas": 0, "share": None}
+    d = np.round(np.diff(u), 2)
+    d = d[d > 1e-6]
+    if not len(d):
+        return {"interval_ft": None, "source": "labelled elevations do not "
+                "step", "modal_count": 0, "n_deltas": 0, "share": None}
+    vals, cnt = np.unique(d, return_counts=True)
+    i = int(cnt.argmax())
+    return {"interval_ft": float(vals[i]),
+            "source": "modal step between adjacent labelled elevations",
+            "modal_count": int(cnt[i]), "n_deltas": int(len(d)),
+            "share": round(float(cnt[i]) / len(d), 3)}
+
+
+def _seg_crossings(a, b, pts):
+    """Parameters t in (0,1) where segment a->b crosses polyline pts.
+
+    Plain segment-segment intersection, vectorised over the polyline. A
+    grazing/parallel touch (denominator ~0) is dropped rather than counted:
+    a transect that runs along a contour has not crossed it.
+    """
+    d = b - a
+    p0 = pts[:-1]
+    p1 = pts[1:]
+    e = p1 - p0
+    den = d[0] * e[:, 1] - d[1] * e[:, 0]
+    live = np.abs(den) > 1e-12
+    if not live.any():
+        return np.empty(0)
+    w = p0[live] - a
+    den = den[live]
+    t = (w[:, 0] * e[live][:, 1] - w[:, 1] * e[live][:, 0]) / den
+    u = (w[:, 0] * d[1] - w[:, 1] * d[0]) / den
+    m = (t > 1e-9) & (t < 1 - 1e-9) & (u >= 0.0) & (u <= 1.0)
+    return t[m]
+
+
+def _median_contour_spacing(items) -> float:
+    """Median distance from a contour sample to the nearest sample of a
+    DIFFERENT chain - how far apart this sheet draws its contours, in pt."""
+    xs, ids = [], []
+    for cid, pts, _z in items:
+        s, _ = _sample_polyline(np.asarray(pts, float), step=12.0,
+                                max_n=4000)
+        if len(s):
+            xs.append(s)
+            ids.append(np.full(len(s), cid))
+    if not xs:
+        return 0.0
+    P = np.vstack(xs)
+    I = np.concatenate(ids)
+    if len(P) < 4:
+        return 0.0
+    k = min(24, len(P))
+    dist, idx = cKDTree(P).query(P, k=k, workers=-1)
+    other = I[idx] != I[:, None]
+    has = other.any(axis=1)
+    if not has.any():
+        return 0.0
+    first = np.argmax(other, axis=1)
+    d = dist[np.arange(len(P)), first][has]
+    return float(np.median(d))
+
+
+def infill_intervals(assigned: list, candidates: list,
+                     interval_ft=None, note_ft=None) -> dict:
+    """Suggest elevations for unlabelled contours between two labelled ones.
+
+    assigned:   [{chain_id, pts Nx2 page pt, z, family}] on ONE surface
+    candidates: [{chain_id, pts, family}] unlabelled chains, same surface
+
+    `family` is the chain's style family (style_id): A TRANSECT COUNTS ONLY
+    SAME-FAMILY SIBLINGS. A contour's unlabelled neighbours are drawn in the
+    same linetype it is - that is what makes them countable - and without
+    the restriction every property line, swale and lot line the transect
+    crosses is counted as a sibling and the fan never matches. Measured on
+    Oncor C-04 with the restriction OFF, feeding all 589 chains as
+    candidates: the proposed surface (whose contours are a single family,
+    style 41) assigned 0 of the analyst's 14 rows. With it on, see
+    out/verify/2026-08-31/cutfill-accuracy/a3_infill.json.
+
+    Returns {"rows": [...], "interval": {...}, "refused": {...},
+             "n_transects": int}. Each row is
+    {chain_id, z, how: "interval-infill", inferred: True, votes, src}
+    where `src` is the sentence shown to the operator - it names the two
+    labelled contours the fan was counted between, so the suggestion can be
+    checked against the sheet without leaving the panel.
+
+    Nothing here decides anything: these are SUGGESTIONS the operator
+    confirms, and every one is flagged inferred so an inferred elevation is
+    never mistaken for a printed one.
+    """
+    out = {"rows": [], "refused": {"count_mismatch": 0, "no_flanking_label": 0,
+                                   "fan_too_wide": 0, "not_whole_steps": 0,
+                                   "repeat_crossing": 0, "vote_conflict": 0,
+                                   "adjacent_labels_nothing_between": 0},
+           "n_transects": 0}
+
+    def _prep(rows, want_z):
+        out2 = []
+        for d in rows or []:
+            p = np.asarray(d.get("pts"), dtype=float)
+            if p.ndim != 2 or len(p) < 2:
+                continue
+            z = d.get("z")
+            if want_z:
+                if z is None:
+                    continue
+                z = float(z)
+            else:
+                z = None
+            out2.append((int(d["chain_id"]), p, z, d.get("family")))
+        return out2
+
+    assigned = _prep(assigned, True)
+    candidates = _prep(candidates, False)
+    iv = contour_interval([z for _, _, z, _ in assigned], note_ft=note_ft)
+    out["interval"] = iv
+    if interval_ft:
+        iv = {"interval_ft": float(interval_ft), "source": "caller",
+              "modal_count": 0, "n_deltas": 0, "share": None}
+        out["interval"] = iv
+    step = iv.get("interval_ft")
+    if not step or step <= 0 or not assigned or not candidates:
+        return out
+
+    # A contour's countable siblings are the families its own LABELLED
+    # members are drawn in. Anything else on the sheet is invisible to the
+    # transect - not skipped over, simply not a contour of this surface.
+    fams = {f for _, _, _, f in assigned if f is not None}
+    allc = list(assigned)
+    allc += [(cid, p, None, f) for cid, p, _z, f in candidates
+             if (not fams) or f in fams]
+    out["n_candidates_in_family"] = len(allc) - len(assigned)
+    out["families"] = sorted(str(f) for f in fams)
+    if len(allc) == len(assigned):
+        return out
+    # geometry index: bbox per chain, so a transect only tests the chains it
+    # could possibly reach
+    box = np.asarray([[p[:, 0].min(), p[:, 1].min(),
+                       p[:, 0].max(), p[:, 1].max()] for _, p, _, _ in allc])
+    zof = {cid: z for cid, _, z, _ in allc}
+    reach = _INFILL_REACH_SPACINGS * (_median_contour_spacing(
+        [(c, p, z) for c, p, z, _ in assigned]) or 0.0)
+    if reach <= 0:
+        return out
+
+    votes: dict = {}
+    conflicted: set = set()
+    for oid, opts, oz, _of in assigned:
+        if out["n_transects"] >= _INFILL_MAX_TRANSECTS:
+            break
+        n = len(opts)
+        idxs = np.unique(np.linspace(0, n - 1, _INFILL_STATIONS).astype(int))
+        for i in idxs:
+            j0 = max(0, i - 2)
+            j1 = min(n - 1, i + 2)
+            tan = opts[j1] - opts[j0]
+            L = float(np.hypot(*tan))
+            if L < 1e-9:
+                continue
+            nrm = np.array([-tan[1] / L, tan[0] / L])
+            origin = opts[i]
+            out["n_transects"] += 1
+            for sign in (1.0, -1.0):
+                a = origin
+                b = origin + sign * reach * nrm
+                lo = np.minimum(a, b)
+                hi = np.maximum(a, b)
+                near = ((box[:, 0] <= hi[0]) & (box[:, 2] >= lo[0])
+                        & (box[:, 1] <= hi[1]) & (box[:, 3] >= lo[1]))
+                hits = []
+                for k in np.nonzero(near)[0]:
+                    cid = allc[k][0]
+                    if cid == oid:
+                        continue
+                    for t in _seg_crossings(a, b, allc[k][1]):
+                        hits.append((float(t), cid))
+                if not hits:
+                    continue
+                hits.sort()
+                # walk outward to the first LABELLED crossing
+                run = []
+                zend = None
+                cend = None
+                for t, cid in hits:
+                    if zof.get(cid) is None:
+                        run.append(cid)
+                    else:
+                        zend = zof[cid]
+                        cend = cid
+                        break
+                if zend is None:
+                    out["refused"]["no_flanking_label"] += 1
+                    continue
+                if len(run) != len(set(run)):
+                    # the transect clipped one contour twice - it is running
+                    # along a curve, not across the fan
+                    out["refused"]["repeat_crossing"] += 1
+                    continue
+                dz = zend - oz
+                steps = dz / step
+                rs = round(steps)
+                if abs(steps - rs) > _INFILL_STEP_TOL:
+                    out["refused"]["not_whole_steps"] += 1
+                    continue
+                if abs(rs) < 2:
+                    # the two labels are one interval apart: there is
+                    # nothing between them. Not a refusal - a walk with
+                    # nothing to say. Counted separately so the refusal
+                    # buckets stay readable as failures.
+                    out["refused"]["adjacent_labels_nothing_between"] += 1
+                    continue
+                if abs(rs) - 1 > _INFILL_MAX_FAN:
+                    out["refused"]["fan_too_wide"] += 1
+                    continue
+                # THE RULE: crossed unlabelled siblings must be exactly
+                # dz/interval - 1, or nothing is assigned
+                if len(run) != abs(rs) - 1:
+                    out["refused"]["count_mismatch"] += 1
+                    continue
+                sgn = 1.0 if dz > 0 else -1.0
+                for m, cid in enumerate(run, start=1):
+                    z = round(oz + sgn * m * step, 4)
+                    prev = votes.get(cid)
+                    if prev is None:
+                        votes[cid] = {"z": z, "n": 1,
+                                      "src": (oid, oz, cend, zend)}
+                    elif abs(prev["z"] - z) > 1e-6:
+                        # two transects read this line differently: refuse it
+                        conflicted.add(cid)
+                    else:
+                        prev["n"] += 1
+    for cid in conflicted:
+        votes.pop(cid, None)
+    out["refused"]["vote_conflict"] = len(conflicted)
+    for cid, v in sorted(votes.items()):
+        oid, oz, cend, zend = v["src"]
+        nz = _fmt_z(v["z"])
+        out["rows"].append({
+            "chain_id": int(cid), "z": v["z"], "how": "interval-infill",
+            "inferred": True, "votes": v["n"],
+            "src": (f"counted between labelled {_fmt_z(oz)} (line {oid}) "
+                    f"and {_fmt_z(zend)} (line {cend}) at the sheet's "
+                    f"{_fmt_z(step)} ft contour interval - not a printed "
+                    f"label, confirm against the sheet"),
+            "label": f"{nz} (inferred)"})
+    return out
+
+
+def _fmt_z(v: float) -> str:
+    f = float(v)
+    return str(int(round(f))) if abs(f - round(f)) < 1e-6 else f"{f:g}"
 
 
 # --- spot grades: the elevations a grading sheet actually prints ----------

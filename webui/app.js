@@ -5511,6 +5511,12 @@ function calcStatePayload() {
         z: calcNum(r.z), surface: r.surface || null,
         width: r.width || 0, dist: r.dist == null ? null : r.dist,
         manual: !!r.manual,
+        // an INFERRED elevation stays inferred across a reload. Without
+        // this the badge and the report's inferred-count line vanish on
+        // the next visit and a counted elevation reads as a printed one -
+        // the same class of defect as the resurrected-junk-rows bug.
+        ...(r.inferred ? { inferred: true,
+                           inferred_why: r.inferredWhy || "" } : {}),
       })),
       layers: {
         existing: state.ew.layers.existing.map(l => Object.assign({}, l)),
@@ -5716,6 +5722,12 @@ function ewApplySaved() {
       if (row) {
         if (calcNum(r.z) !== null) row.z = r.z;
         row.surface = surf;
+        // the saved record is the authority on provenance: a row the
+        // operator accepted as inferred keeps saying so
+        if (r.inferred) {
+          row.inferred = true;
+          if (r.inferred_why) row.inferredWhy = r.inferred_why;
+        }
         applied++;
       } else if (ch && !ch.custom) {
         // usually a hand-added contour: its chain is still on the sheet
@@ -5723,7 +5735,9 @@ function ewApplySaved() {
           z: calcNum(r.z) !== null ? r.z : NaN,
           width: calcNum(r.width) !== null ? r.width : (ch.width || 0),
           dist: r.dist == null ? null : r.dist,
-          surface: surf, manual: !!r.manual });
+          surface: surf, manual: !!r.manual,
+          ...(r.inferred ? { inferred: true,
+                             inferredWhy: r.inferred_why || "" } : {}) });
         applied++;
       } else dropped++;
     }
@@ -9667,7 +9681,20 @@ async function ewEnsure() {
         // default split by stroke weight - existing plots lighter than
         // proposed on most grading sheets; every row is user-flippable
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
-      })),
+      })).map((row, i) => {
+        // INTERVAL-INFILL rows: an elevation nobody printed, worked out by
+        // counting the unlabelled contours between two labelled ones. It
+        // arrives on SKIP - it contributes no volume until the operator
+        // reads the sentence and clicks EXIST or PROP - and it carries
+        // that sentence so the check can be made without leaving the row.
+        const s = j.suggestions[i];
+        if (!s || !s.inferred) return row;
+        row.inferred = true;
+        row.inferredWhy = s.src || "";
+        row.inferredFor = s.for_surface || null;
+        row.surface = null;
+        return row;
+      }),
       result: null,
       // suggest-seeded rows the operator deleted, BY chain id - persisted
       // so a fresh suggest on the next visit cannot resurrect them
@@ -10211,6 +10238,9 @@ function ewBody() {
     proposed: state.ew.rows.filter(r => r.surface === "proposed" && isFinite(r.z))
       .map(r => ({ chain_id: r.chain_id, z: r.z })),
     cell_ft: 2.0,
+    // Which surface runs between the contours. Sent every time so the
+    // request records the choice; the answer names the model it used.
+    surface_model: ($("ewModelSel") && $("ewModelSel").value) || "auto",
     // The limit of work, if the operator set one. Omitted when they have not,
     // so the server takes the original path and every existing number stands.
     boundary: state.ewBound ? state.ewBound.pts : null,
@@ -10452,7 +10482,25 @@ function renderEw() {
     meta.className = "ew-meta";
     meta.textContent = row.manual
       ? `chain ${row.chain_id} · w ${row.width} · manual`
+      : row.inferred
+      ? `chain ${row.chain_id} · w ${row.width} · elevation INFERRED, not printed`
       : `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
+    if (row.inferred) {
+      // The badge and the sentence, on the row, not in a tooltip: an
+      // inferred elevation must never be able to pass for a read one.
+      div.classList.add("ew-inferred");
+      z.classList.add("inferred");
+      const tag = document.createElement("span");
+      tag.className = "ew-inf-tag";
+      tag.textContent = "inferred";
+      meta.prepend(tag);
+      if (row.inferredWhy) {
+        const why = document.createElement("div");
+        why.className = "ew-inf-why";
+        why.textContent = row.inferredWhy;
+        meta.appendChild(why);
+      }
+    }
     const seg = document.createElement("div");
     seg.className = "seg";
     for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"], [null, "skip"]]) {
@@ -10675,6 +10723,53 @@ function renderEwBasis(j, body) {
     + "contours — so it cuts across every notch in the real limit of "
     + "disturbance. No input on this panel can bound it.");
   u.className = "unbounded";
+  // WHICH SURFACE PRODUCED THIS NUMBER. The two models differ by tens of
+  // percent on a sparse sheet, so the model rides beside the volume and
+  // not in a tooltip: an operator must never be unable to tell which one
+  // ran, or that it was picked for them.
+  if (j.surface_model) {
+    const m = line(`Between the contours: <b>${ewModelName(j.surface_model)}</b>`
+      + ` — ${esc(j.surface_model_source || "")}.`
+      + (j.surface_model_why ? ` ${esc(j.surface_model_why)}.` : "")
+      + (j.label_band_ft == null ? "" :
+        ` Measured label sparsity ${j.label_band_ft} ft`
+        + ` (existing ${j.label_band_existing_ft}, proposed `
+        + `${j.label_band_proposed_ft}).`));
+    m.className = "ew-basis-model";
+  }
+  renderEwModelNote(j);
+}
+
+// How many INFERRED elevations the operator actually accepted into a
+// surface. Counted off the live rows, not off the suggest payload: a row
+// the operator left on SKIP or deleted contributes nothing and must not be
+// disclosed as if it did.
+function ewInferredAccepted() {
+  const rows = (state.ew && state.ew.rows) || [];
+  return rows.filter(r => r.inferred && isFinite(r.z)
+    && (r.surface === "existing" || r.surface === "proposed")).length;
+}
+
+// The two names the operator sees, used everywhere a model is named so the
+// control, the basis line and the printed report cannot drift apart.
+function ewModelName(m) {
+  return m === "clamped_ct" ? "smooth surface, clamped to the contours"
+       : m === "linear" ? "linear TIN"
+       : String(m || "");
+}
+
+// Live note beside the picker: after a Calculate, say what AUTO decided and
+// on what measurement, so choosing "Auto" is not choosing blind.
+function renderEwModelNote(j) {
+  const n = $("ewModelNote");
+  if (!n) return;
+  if (!j || !j.surface_model) { n.textContent = ""; return; }
+  const sel = $("ewModelSel");
+  const chosen = sel ? sel.value : "auto";
+  n.textContent = chosen === "auto"
+    ? `auto picked ${ewModelName(j.surface_model)}`
+      + (j.label_band_ft == null ? "" : ` (labels ${j.label_band_ft} ft apart)`)
+    : `using ${ewModelName(j.surface_model)}`;
 }
 
 // The lines the approve payload carries onto the printed report, so a reader
@@ -10696,9 +10791,24 @@ function approveNotesDropped() {
 function ewApproveNotes() {
   const j = state.ew && state.ew.added && state.ew.result;
   if (!j) return [];
+  // Which surface produced the number, on the face of the report. A reader
+  // of the printed PDF never saw the panel, and the two models differ by
+  // tens of percent on a sparse sheet - so the model, WHY it was chosen and
+  // the measurement behind the choice travel with the volume. Inferred
+  // elevations get their own line only when some were actually accepted.
+  const nInf = ewInferredAccepted();
   return [
     "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
     + "rows) is a contour interpolation, not a measured volume.",
+    `Surface between the contours: ${ewModelName(j.surface_model)}`
+    + ` — ${j.surface_model_source || "default"}.`
+    + (j.surface_model_why ? ` ${j.surface_model_why}.` : "")
+    + (j.label_band_ft == null ? "" :
+      ` Measured label sparsity ${j.label_band_ft} ft.`),
+    ...(nInf ? [`${nInf} of the contour elevations in this volume were `
+      + "INFERRED by counting unlabelled contours between two labelled "
+      + "ones at the sheet's contour interval, not read from a printed "
+      + "label, and were accepted by the reviewer."] : []),
     `Interpolated from ${j.existing_contours} existing and `
     + `${j.proposed_contours} proposed contours over `
     + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `

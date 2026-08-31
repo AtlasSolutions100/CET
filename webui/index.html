@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=61">
+<link rel="stylesheet" href="style.css?v=62">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -457,6 +457,21 @@
            the client, so a scale change after Calculate leaves them stale.
            This says so and offers the redo. -->
       <div id="ewStale" class="ew-stale" hidden></div>
+      <!-- Surface model. Between its contours a linear TIN is a flat plane,
+           which terraces a sheet whose labels are far apart in elevation;
+           the smooth model restores that relief but is clipped to the local
+           contour bracket so it cannot invent an elevation. Auto measures
+           the sheet's own label sparsity and picks. Whichever runs, the
+           basis line below the result names it. -->
+      <div class="ew-model" id="ewModel">
+        <label for="ewModelSel">Surface between contours</label>
+        <select id="ewModelSel">
+          <option value="auto">Auto (measure this sheet)</option>
+          <option value="linear">Linear TIN</option>
+          <option value="clamped_ct">Smooth, clamped</option>
+        </select>
+        <span class="ew-model-note" id="ewModelNote"></span>
+      </div>
       <div class="ew-actions" id="ewActions">
         <button id="ewCalc">Calculate cut &amp; fill</button>
         <span id="ewResult" class="ew-result"></span>
@@ -953,6 +968,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=136"></script>
+<script src="app.js?v=137"></script>
 </body>
 </html>
