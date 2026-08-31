@@ -522,7 +522,7 @@ async function selectPage(p) {
   // grading zones belong to ONE sheet, drafts included; this page's own
   // saved zones come back via gzApplySaved in calcStateLoad
   gzPageReset();
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
   // check-offs are per page and per detection; loadResult reseeds them, but
@@ -805,7 +805,7 @@ async function loadResult(gen = state.gen) {
   state.multiSel = new Set(); state.marquee = null;
   undoClear(undoStack);
   state.tool = null; state.measurePts = []; state.vScale = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   state.ew = null; state.hotChain = null; state.extraItems = [];
   // a limit of work belongs to ONE sheet: the next page's grading line is
   // a different polygon, and carrying this one over would clip the new
@@ -9661,7 +9661,7 @@ function aiDismissBtn() {
   x.title = "Hide this analysis (the Analyze button brings it back on this page)";
   x.onclick = () => {
     state.aiHidden = true;
-    $("aiBtn").textContent = "Analyze ▾";
+    toolRowLabel("aiBtn", "Analyze ▾");
     renderAiBanner();
   };
   return x;
@@ -9761,7 +9761,7 @@ function aiGradeChip(g) {
 function renderAiBanner() {
   const banner = $("aiBanner"), j = state.ai;
   if (!j || state.aiHidden) { banner.hidden = true; return; }
-  $("aiBtn").textContent = "Analyze";
+  toolRowLabel("aiBtn", "Analyze");
   banner.hidden = false;
   banner.classList.remove("slim");
   banner.innerHTML = "";
@@ -13638,6 +13638,31 @@ function toolsMenuNextIdx(n, i, delta) {
 }
 // TOOLS-MENU-END -------------------------------------------------------------
 
+// A menu row is now icon + name + description + dot, so the row's NAME is a
+// span, not the button's whole text content. Every place that used to assign
+// the Analyze row's label directly onto the button has to write the span
+// instead, or it deletes the icon and the description along with it. This is
+// the one write-through point; the fallback keeps working if the span is
+// ever absent.
+function toolRowLabel(id, text) {
+  const b = $(id);
+  if (!b) return;
+  const nm = b.querySelector(".tm-nm");
+  if (nm) nm.textContent = text; else b.textContent = text;
+}
+
+// Each row's description is its own title attribute, read VERBATIM - the
+// title stays the single source of truth (and the accessible description),
+// so the one string can never drift from the one the hover shows.
+function toolsMenuDescribe() {
+  for (const [id] of TOOLS_MENU_ITEMS) {
+    const b = $(id);
+    if (!b) continue;
+    const ds = b.querySelector(".tm-ds");
+    if (ds) ds.textContent = b.getAttribute("title") || "";
+  }
+}
+
 function toolsMenuSync() {
   const model = toolsMenuModel(TOOLS_MENU_ITEMS.map(([id, panel]) => ({
     id,
@@ -13646,6 +13671,7 @@ function toolsMenuSync() {
   })));
   for (const [id] of TOOLS_MENU_ITEMS)
     $(id).classList.toggle("t-on", !!model.dots[id]);
+  toolsMenuDescribe();
   $("toolsNote").hidden = !model.note;
   return model;
 }
@@ -13666,6 +13692,9 @@ function toolsMenuClose(focusBack) {
   $("toolsBtn").setAttribute("aria-expanded", "false");
   if (focusBack) $("toolsBtn").focus();
 }
+// fill the description spans once at boot as well as on every open, so the
+// rows are never briefly nameless on the first paint
+toolsMenuDescribe();
 $("toolsBtn").onclick = () => {
   if ($("toolsMenu").hidden) toolsMenuOpen(); else toolsMenuClose();
 };
@@ -13693,7 +13722,14 @@ $("toolsWrap").addEventListener("keydown", (e) => {
   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
   e.preventDefault();
   if ($("toolsMenu").hidden) toolsMenuOpen();
-  const btns = TOOLS_MENU_ITEMS.map(([id]) => $(id)).filter(b => !b.hidden);
+  // DOM order, not TOOLS_MENU_ITEMS order. The rows are now grouped
+  // Calculators / Counts / Document, so the registry order and the order a
+  // person SEES are no longer the same list - walking the registry made
+  // ArrowDown jump from the button to the bottom row. The arrow keys have to
+  // follow the eye, and the menu markup is the only thing that knows that
+  // order. (The wrap arithmetic in toolsMenuNextIdx is unchanged.)
+  const btns = [...$("toolsMenu").querySelectorAll("button")]
+    .filter(b => !b.hidden);
   if (!btns.length) return;
   const i = btns.indexOf(document.activeElement);
   btns[toolsMenuNextIdx(btns.length, i, e.key === "ArrowDown" ? 1 : -1)].focus();
@@ -13741,6 +13777,74 @@ function projShowsSharedBadge(rows) {
 function projCountLine(shown, total) {
   if (!shown) return "";
   return total > shown ? "showing " + shown + " of " + total : String(shown);
+}
+
+// ---- search + sort, both over the rows the SERVER ACTUALLY SENT ------------
+// /api/projects returns `projects: out[:200]` with `total` = the true count.
+// So the browser never holds more than 200 rows and a filter box can only
+// ever reach those 200. Saying "search 420 plans" over a 200-row array would
+// be the worst kind of lie this app can tell - "no match" would read as "not
+// on this server" for the 220 rows that were never sent. Every function
+// below is therefore explicit about `loaded` vs `total`.
+
+// case- and whitespace-insensitive substring on the plan name. Multi-word
+// queries match when EVERY word appears somewhere in the name, so
+// "oncor grading" finds "Oncor Cloudcrest ... Grading Plan" - a plain
+// substring test would not.
+function projMatches(row, q) {
+  const words = String(q == null ? "" : q).toLowerCase().split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return true;
+  const hay = String((row && row.name) || "").toLowerCase();
+  return words.every(w => hay.includes(w));
+}
+function projFilter(rows, q) {
+  return (rows || []).filter(r => projMatches(r, q));
+}
+
+// Sort modes offered by #pvSort. Every mode is TOTAL (it falls back to
+// last-activity, then to name) so the grid order is deterministic and two
+// equal rows never swap between renders.
+const PROJ_SORTS = ["when", "name", "pages", "detected"];
+function projSort(rows, mode) {
+  const byName = (a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""),
+                                       undefined, { sensitivity: "base" })
+    || String(a.name || "").localeCompare(String(b.name || ""));
+  const byWhen = (a, b) => (b.when || 0) - (a.when || 0) || byName(a, b);
+  const cmp = {
+    when: byWhen,
+    name: (a, b) => byName(a, b) || byWhen(a, b),
+    pages: (a, b) => (b.pages || 0) - (a.pages || 0) || byWhen(a, b),
+    detected: (a, b) => (b.detected || 0) - (a.detected || 0) || byWhen(a, b),
+  }[PROJ_SORTS.includes(mode) ? mode : "when"];
+  return [...(rows || [])].sort(cmp);
+}
+
+// The reach line under the controls. This is the sentence that keeps the
+// search box honest, so it always names BOTH numbers when they differ.
+//   loaded  = rows this browser holds (<= the server's 200 cap)
+//   total   = rows that exist on the server
+//   matched = rows the current query kept
+//   q       = the query ("" when the box is empty)
+function projReachLine(matched, loaded, total, q) {
+  const capped = total > loaded;
+  const query = String(q == null ? "" : q).trim();
+  if (!query) {
+    if (!loaded) return "";
+    return capped
+      ? "Newest " + loaded + " of " + total + " plans — search and sort reach "
+        + "these " + loaded + ", not the other " + (total - loaded) + "."
+      : "All " + loaded + " plan" + (loaded === 1 ? "" : "s")
+        + " on this server — search and sort reach all of them.";
+  }
+  const head = matched + " of " + loaded + " match “" + query + "”";
+  return capped
+    ? head + " — searched the newest " + loaded + " of " + total
+      + " plans; the other " + (total - loaded) + " were never sent to this "
+      + "browser, so a plan missing here may still be on the server."
+    : head + " — searched all " + loaded + " plan"
+      + (loaded === 1 ? "" : "s") + " on this server.";
 }
 // PROJECTS-PURE-END ----------------------------------------------------------
 
@@ -13794,21 +13898,55 @@ async function loadProjects() {
   renderProjects(d);
 }
 
+// The rows the server sent, cached so search and sort are pure re-renders
+// and never a refetch. pvTotal is the server's TRUE count, which may be
+// larger than pvRows.length whenever the 200 cap bit.
+let pvRows = [];
+let pvTotal = 0;
+
 function renderProjects(d) {
+  pvRows = d.projects || [];
+  pvTotal = typeof d.total === "number" ? d.total : pvRows.length;
+  pvPaint();
+}
+
+// filter -> sort -> cards. Called by renderProjects and by the two controls.
+function pvPaint() {
   const grid = $("pvGrid"), empty = $("pvEmpty");
-  const rows = d.projects;
-  $("pvCount").textContent = projCountLine(rows.length, d.total);
+  const q = $("pvSearch") ? $("pvSearch").value : "";
+  const mode = $("pvSort") ? $("pvSort").value : "when";
+  const shown = projSort(projFilter(pvRows, q), mode);
+
+  // #pvCount keeps saying what the SERVER sent (the cap disclosure the
+  // landing page has always carried); #pvReach says what search reached.
+  $("pvCount").textContent = projCountLine(pvRows.length, pvTotal);
+  if ($("pvReach"))
+    $("pvReach").textContent =
+      projReachLine(shown.length, pvRows.length, pvTotal, q);
+
   grid.innerHTML = "";
-  if (!rows.length) {
+  if (!pvRows.length) {
     empty.hidden = false;
     empty.textContent =
       "No plans yet — drop a PDF anywhere or use Upload.";
     return;
   }
+  if (!shown.length) {
+    // a query that matched nothing is NOT "no plans" - say which it is, and
+    // say the cap out loud so the operator knows where else to look
+    empty.hidden = false;
+    empty.textContent = pvTotal > pvRows.length
+      ? "No plan among the newest " + pvRows.length + " matches “"
+        + String(q).trim() + "”. " + (pvTotal - pvRows.length)
+        + " older plan(s) on this server were not sent to this browser and "
+        + "were not searched."
+      : "No plan matches “" + String(q).trim() + "”.";
+    return;
+  }
   empty.hidden = true;
-  const badge = projShowsSharedBadge(rows);
+  const badge = projShowsSharedBadge(pvRows);
   const nowS = Date.now() / 1000;
-  for (const r of rows) grid.appendChild(pvCard(r, badge, nowS));
+  for (const r of shown) grid.appendChild(pvCard(r, badge, nowS));
 }
 
 function pvCard(r, sharedBadge, nowS) {
@@ -13857,13 +13995,48 @@ function pvCard(r, sharedBadge, nowS) {
     card.appendChild(b);
   }
   if (r.deletable) {
-    const x = document.createElement("button");
-    x.className = "pv-x";
-    x.textContent = "×";
-    x.title = "Remove “" + r.name + "” from this server — "
+    // Delete is server-wide and permanent, so it does NOT sit armed on the
+    // face of every card any more (CRITIQUE fix 10). It lives one click in,
+    // behind a ⋯ that appears on hover/focus. pvRemove() and its confirm
+    // wording are untouched - same flow, same words, one more deliberate
+    // click in front of it.
+    const more = document.createElement("button");
+    more.className = "pv-more";
+    more.setAttribute("aria-haspopup", "true");
+    more.setAttribute("aria-expanded", "false");
+    more.title = "More actions for “" + r.name + "”";
+    more.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+      + '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/>'
+      + '<circle cx="19" cy="12" r="1.4"/></svg>';
+
+    const menu = document.createElement("div");
+    menu.className = "pv-menu";
+    menu.hidden = true;
+    const del = document.createElement("button");
+    del.className = "pv-menu-del";
+    del.textContent = "Delete from this server…";
+    del.title = "Remove “" + r.name + "” from this server — "
       + "the uploaded PDF and everything detected from it";
-    x.onclick = (e) => { e.stopPropagation(); pvRemove(r); };
-    card.appendChild(x);
+    del.onclick = (e) => { e.stopPropagation(); pvCloseMenus(); pvRemove(r); };
+    const hint = document.createElement("div");
+    hint.className = "pv-menu-hint";
+    hint.textContent = "asks to confirm; removes the plan and everything "
+      + "detected from it, for every seat";
+    menu.append(del, hint);
+
+    more.onclick = (e) => {
+      e.stopPropagation();
+      const wasOpen = !menu.hidden;
+      pvCloseMenus();
+      if (wasOpen) return;
+      menu.hidden = false;
+      card.classList.add("pv-menu-open");
+      more.setAttribute("aria-expanded", "true");
+    };
+    // the card is itself a button; a click inside the popover must not open
+    // the plan underneath it
+    menu.onclick = (e) => e.stopPropagation();
+    card.append(more, menu);
   }
   card.onclick = () => pvOpenJob(r);
   card.onkeydown = (e) => {
@@ -13922,6 +14095,40 @@ async function pvRemove(r) {
     setStatus("could not remove it — the server did not answer", "err");
   }
 }
+
+// close every open card overflow popover (only ever one, but the DOM is the
+// source of truth here rather than a variable that can go stale on a
+// re-render that throws the cards away)
+function pvCloseMenus() {
+  for (const m of document.querySelectorAll(".pv-menu")) m.hidden = true;
+  for (const c of document.querySelectorAll(".pv-menu-open"))
+    c.classList.remove("pv-menu-open");
+  for (const b of document.querySelectorAll(".pv-more"))
+    b.setAttribute("aria-expanded", "false");
+}
+// a click anywhere else dismisses it - same grammar as the Tools menu. The
+// pvIsOpen guard keeps this listener off the workbench's click path entirely:
+// the cards stay in the DOM while the view is hidden, and there is no reason
+// to walk them on every click on the sheet.
+addEventListener("click", (e) => {
+  if (!pvIsOpen()) return;
+  if (!e.target.closest || !e.target.closest(".pv-more, .pv-menu"))
+    pvCloseMenus();
+});
+
+// ---- search + sort controls ------------------------------------------------
+// Both are pure re-renders over the cached rows: no refetch, no server round
+// trip, and nothing about the open document is touched.
+$("pvSearch").addEventListener("input", pvPaint);
+// Esc inside the box clears it before the view-level Esc can leave the page
+$("pvSearch").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !$("pvSearch").value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  $("pvSearch").value = "";
+  pvPaint();
+});
+$("pvSort").addEventListener("change", pvPaint);
 
 $("projectsLink").onclick = (e) => {
   e.preventDefault();
@@ -14171,45 +14378,132 @@ function renderSvBook() {
       + "sheet." + (live.length ? "" : " (No document open, so all rows are "
       + "stored-only.)");
   if (!rows.length) return;
-  for (const h of ["label", "unit", "$ / unit", "where", ""]) {
-    const th = document.createElement("div");
-    th.className = "sv-th"; th.textContent = h;
-    box.appendChild(th);
+
+  // A real <table> inside its own scroller, so the head can be sticky and
+  // the rows can zebra (CRITIQUE fix 10). The ROWS are the same rows
+  // svBookRows() already returned and every write below is the same write
+  // as before - this is the frame, not the book.
+  //
+  // Two groups, and only two: "on this sheet" (r.inUse) and "stored only".
+  // The approved mock also split the on-sheet group into legend-named vs
+  // unnamed families. That split is NOT reproduced here on purpose: the
+  // price book only knows a label STRING, and the only way to guess which
+  // kind it is from a string is to sniff for a "(legend)" suffix - which
+  // would file a hand-typed trade name like "Silt Fence" under "Unnamed"
+  // and print an operator's own words as if they were an engine id. Where
+  // no honest ranking exists, abstain (CLAUDE.md §5) - the naming provenance
+  // lives on the style row, not on the label.
+  const groups = [
+    { key: "on", head: "On this sheet",
+      note: "in the open document's itemized takeoff",
+      rows: rows.filter(r => r.inUse) },
+    { key: "stored", head: "Stored only",
+      note: "priced earlier, not on this sheet",
+      rows: rows.filter(r => !r.inUse) },
+  ];
+
+  const scroll = document.createElement("div");
+  scroll.className = "sv-book-scroll";
+  const table = document.createElement("table");
+  table.className = "sv-book-table";
+
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const [h, cls] of [["label", ""], ["unit", ""], ["$ / unit", "sv-r"],
+                          ["where", ""], ["", "sv-r"]]) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    if (cls) th.className = cls;
+    hr.appendChild(th);
   }
-  for (const r of rows) {
-    const lab = document.createElement("div");
-    lab.className = "sv-lab"; lab.textContent = r.label; lab.title = r.label;
-    const unit = document.createElement("div");
-    unit.className = "sv-unit"; unit.textContent = r.unit || "";
-    const pin = document.createElement("input");
-    pin.type = "number"; pin.step = "0.01"; pin.min = "0"; pin.placeholder = "—";
-    pin.name = "sv-price-" + r.label;
-    const cur = store.getItem(priceKey(r.label));
-    if (cur !== null && cur !== "") pin.value = cur;
-    // the same write the itemized panel's price input does: store on every
-    // keystroke (the store itself drops no-change writes), full re-render
-    // only on blur so the control being typed in is never detached
-    pin.oninput = () => {
-      if (pin.value.trim() === "") store.removeItem(priceKey(r.label));
-      else store.setItem(priceKey(r.label), pin.value);
-    };
-    pin.onchange = () => { renderSvBook(); renderSvFoot(); };
-    pin.addEventListener("wheel",
-      (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
-      { passive: false });
-    const where = document.createElement("div");
-    where.className = "sv-where";
-    where.textContent = r.inUse ? "on this sheet" : "stored only";
-    const x = document.createElement("button");
-    x.className = "sv-x"; x.textContent = "×";
-    x.title = "Clear the stored price for “" + r.label + "”";
-    x.disabled = !r.stored && !(cur !== null && cur !== "");
-    x.onclick = () => {
-      store.removeItem(priceKey(r.label));
-      renderSvBook(); renderSvFoot();
-    };
-    box.append(lab, unit, pin, where, x);
+  thead.appendChild(hr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const g of groups) {
+    if (!g.rows.length && g.key === "on") continue;   // no document open
+    const gr = document.createElement("tr");
+    gr.className = "sv-grp";
+    const gd = document.createElement("td");
+    gd.colSpan = 5;
+    gd.textContent = g.head + " — " + g.note;
+    const cnt = document.createElement("span");
+    cnt.className = "sv-grp-n";
+    cnt.textContent = " · " + g.rows.length;
+    gd.appendChild(cnt);
+    gr.appendChild(gd);
+    tbody.appendChild(gr);
+
+    if (!g.rows.length) {
+      const er = document.createElement("tr");
+      er.className = "sv-grp-empty";
+      const ed = document.createElement("td");
+      ed.colSpan = 5;
+      ed.textContent = "nothing stored yet — prices typed above, or on any "
+        + "sheet's itemized takeoff, will appear here for the next document";
+      er.appendChild(ed);
+      tbody.appendChild(er);
+      continue;
+    }
+
+    for (const r of g.rows) {
+      const tr = document.createElement("tr");
+
+      const lab = document.createElement("td");
+      lab.className = "sv-lab"; lab.textContent = r.label; lab.title = r.label;
+
+      const unit = document.createElement("td");
+      unit.className = "sv-unit"; unit.textContent = r.unit || "";
+
+      const ptd = document.createElement("td");
+      ptd.className = "sv-r";
+      const pinWrap = document.createElement("span");
+      pinWrap.className = "sv-pin";
+      const cus = document.createElement("span");
+      cus.className = "sv-cur"; cus.textContent = "$";
+      const pin = document.createElement("input");
+      pin.type = "number"; pin.step = "0.01"; pin.min = "0"; pin.placeholder = "set";
+      pin.name = "sv-price-" + r.label;
+      pin.setAttribute("aria-label", "$ per unit for " + r.label);
+      const cur = store.getItem(priceKey(r.label));
+      if (cur !== null && cur !== "") pin.value = cur;
+      // the same write the itemized panel's price input does: store on every
+      // keystroke (the store itself drops no-change writes), full re-render
+      // only on blur so the control being typed in is never detached
+      pin.oninput = () => {
+        if (pin.value.trim() === "") store.removeItem(priceKey(r.label));
+        else store.setItem(priceKey(r.label), pin.value);
+      };
+      pin.onchange = () => { renderSvBook(); renderSvFoot(); };
+      pin.addEventListener("wheel",
+        (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+        { passive: false });
+      pinWrap.append(cus, pin);
+      ptd.appendChild(pinWrap);
+
+      const where = document.createElement("td");
+      where.className = "sv-where" + (r.inUse ? " sv-where-on" : "");
+      where.textContent = r.inUse ? "on this sheet" : "stored only";
+
+      const xtd = document.createElement("td");
+      xtd.className = "sv-r";
+      const x = document.createElement("button");
+      x.className = "sv-x"; x.textContent = "×";
+      x.title = "Clear the stored price for “" + r.label + "”";
+      x.disabled = !r.stored && !(cur !== null && cur !== "");
+      x.onclick = () => {
+        store.removeItem(priceKey(r.label));
+        renderSvBook(); renderSvFoot();
+      };
+      xtd.appendChild(x);
+
+      tr.append(lab, unit, ptd, where, xtd);
+      tbody.appendChild(tr);
+    }
   }
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  box.appendChild(scroll);
 }
 
 $("svAddBtn").onclick = () => {

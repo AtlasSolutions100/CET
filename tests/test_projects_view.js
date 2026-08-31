@@ -30,7 +30,8 @@ const a = appSrc.indexOf("// PROJECTS-PURE-BEGIN");
 const b = appSrc.indexOf("// PROJECTS-PURE-END");
 check(a >= 0 && b > a, "PROJECTS-PURE markers present in webui/app.js");
 const P = new Function(appSrc.slice(a, b) +
-  " return { projMetaLine, projAgo, projShowsSharedBadge, projCountLine };")();
+  " return { projMetaLine, projAgo, projShowsSharedBadge, projCountLine,"
+  + " projMatches, projFilter, projSort, projReachLine, PROJ_SORTS };")();
 
 // ---- the card's meta line -----------------------------------------------
 check(P.projMetaLine(12, 5, 0) === "12 pages · 5 detected",
@@ -79,6 +80,73 @@ check(P.projCountLine(7, 7) === "7", "count: uncapped shows the count");
 check(P.projCountLine(200, 320) === "showing 200 of 320",
   "count: a capped list SAYS it is capped");
 
+// ---- search: matching --------------------------------------------------------
+{
+  const r = { name: "Oncor Cloudcrest Substation Civils - 20251212.pdf" };
+  check(P.projMatches(r, "") === true, "search: empty query matches everything");
+  check(P.projMatches(r, "   ") === true, "search: blank query matches everything");
+  check(P.projMatches(r, "oncor") === true, "search: case-insensitive");
+  check(P.projMatches(r, "CLOUDCREST") === true, "search: upper-case query");
+  check(P.projMatches(r, "crest") === true, "search: mid-word substring");
+  check(P.projMatches(r, "oncor civils") === true,
+    "search: every word must appear, order-independent");
+  check(P.projMatches(r, "oncor barn") === false,
+    "search: one missing word is no match");
+  check(P.projMatches({ name: null }, "x") === false,
+    "search: a nameless row never matches a real query");
+  check(P.projFilter([r, { name: "stice.pdf" }], "stice").length === 1,
+    "filter: keeps only matching rows");
+  check(P.projFilter(null, "x").length === 0, "filter: no rows in, none out");
+}
+
+// ---- sort: every mode is total and deterministic -----------------------------
+{
+  const rows = [
+    { name: "Oncor", when: 100, pages: 9, detected: 2 },
+    { name: "belle", when: 300, pages: 3, detected: 2 },
+    { name: "Kayden", when: 200, pages: 48, detected: 1 },
+  ];
+  check(P.projSort(rows, "when").map(r => r.when).join(",") === "300,200,100",
+    "sort: last activity is newest first");
+  check(P.projSort(rows, "name").map(r => r.name).join(",") === "belle,Kayden,Oncor",
+    "sort: name is case-insensitive A-Z");
+  check(P.projSort(rows, "pages").map(r => r.pages).join(",") === "48,9,3",
+    "sort: pages is most first");
+  check(P.projSort(rows, "detected").map(r => r.when).join(",") === "300,100,200",
+    "sort: detected ties break on last activity, not input order");
+  check(P.projSort(rows, "nonsense").map(r => r.when).join(",") === "300,200,100",
+    "sort: an unknown mode falls back to last activity");
+  check(P.projSort(rows, "when") !== rows, "sort: returns a copy, never in place");
+  check(rows[0].name === "Oncor", "sort: the cached row order is untouched");
+  check(P.PROJ_SORTS.length === 4, "sort: four modes offered");
+}
+
+// ---- the reach line: the search box may never overstate what it searched -----
+// /api/projects replies with out[:200] plus the true total, so whenever
+// total > loaded the browser is filtering a subset and MUST say so.
+{
+  check(P.projReachLine(0, 0, 0, "") === "",
+    "reach: an empty server says nothing");
+  const un = P.projReachLine(7, 7, 7, "");
+  check(un.includes("All 7 plans") && un.includes("reach all of them"),
+    "reach: uncapped list claims full reach");
+  const cap = P.projReachLine(200, 200, 420, "");
+  check(cap.includes("Newest 200 of 420") && cap.includes("not the other 220"),
+    "reach: a capped list names the rows search CANNOT reach");
+  const capQ = P.projReachLine(3, 200, 420, "onc");
+  check(capQ.includes("3 of 200 match")
+    && capQ.includes("searched the newest 200 of 420")
+    && capQ.includes("may still be on the server"),
+    "reach: a query over a capped list says a miss is not proof of absence");
+  const unQ = P.projReachLine(1, 7, 7, "onc");
+  check(unQ.includes("1 of 7 match") && unQ.includes("searched all 7 plans"),
+    "reach: a query over an uncapped list claims full reach");
+  check(P.projReachLine(1, 1, 1, "").includes("All 1 plan on this server"),
+    "reach: singular plan reads 'plan', not 'plans'");
+  check(P.projReachLine(5, 5, 5, "  ") === P.projReachLine(5, 5, 5, ""),
+    "reach: a whitespace-only query is not a query");
+}
+
 // ---- structure -------------------------------------------------------------
 check(/<main>[\s\S]*id="projectsView"/.test(htmlSrc),
   "#projectsView lives inside <main>");
@@ -92,9 +160,35 @@ check(cssSrc.includes("main.pv-open #pageStrip")
   && cssSrc.includes("main.pv-open #sidebar")
   && cssSrc.includes("main.pv-open #stage"),
   "the CSS toggle hides exactly the three workbench columns");
-for (const id of ["pvGrid", "pvEmpty", "pvBack", "pvCount"]) {
+for (const id of ["pvGrid", "pvEmpty", "pvBack", "pvCount",
+                  "pvSearch", "pvSort", "pvReach"]) {
   check(htmlSrc.includes(`id="${id}"`), `#${id} exists in index.html`);
 }
+// the sort <select> offers exactly the modes PROJ_SORTS knows how to apply -
+// an option with no comparator would silently fall back to last activity
+for (const m of P.PROJ_SORTS)
+  check(htmlSrc.includes(`<option value="${m}"`),
+    `#pvSort offers the "${m}" mode`);
+check((htmlSrc.match(/<option value="[a-z]+"/g) || []).length
+  === P.PROJ_SORTS.length,
+  "#pvSort offers no mode PROJ_SORTS cannot sort");
+// search and sort are re-renders over the cached rows, never a refetch: a
+// fetch on either control would re-hit /api/projects on every keystroke
+const paint = appSrc.slice(appSrc.indexOf("function pvPaint()"),
+                           appSrc.indexOf("function pvCard("));
+check(!paint.includes("fetch("),
+  "pvPaint filters the cached rows and never refetches");
+check(appSrc.includes('$("pvSearch").addEventListener("input", pvPaint)'),
+  "the search box repaints on every keystroke");
+check(appSrc.includes('$("pvSort").addEventListener("change", pvPaint)'),
+  "the sort control repaints on change");
+// delete moved behind the overflow menu, but the confirm flow did not change
+check(appSrc.includes("pvCloseMenus(); pvRemove(r);"),
+  "the overflow menu's delete still calls pvRemove");
+check(appSrc.includes('confirm("Remove \\"" + r.name + "\\" from this server?'),
+  "pvRemove keeps #docRemoveBtn's confirm wording");
+check(!appSrc.includes('x.className = "pv-x"'),
+  "the always-armed card ✕ is gone (delete is behind the ⋯ menu)");
 // the empty state's promised wording is in the renderer
 check(appSrc.includes("No plans yet — drop a PDF anywhere or use Upload."),
   "empty state wording present");

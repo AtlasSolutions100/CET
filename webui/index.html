@@ -5,7 +5,7 @@
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=53">
+<link rel="stylesheet" href="style.css?v=54">
 </head>
 <body>
 <header>
@@ -27,16 +27,37 @@
        DETECT LINES stays outside: it is the workflow, not a tool. -->
   <div class="tools-wrap" id="toolsWrap">
     <button id="toolsBtn" aria-haspopup="true" aria-expanded="false" title="Calculators and document readers. Everything in here opens a panel you drive; nothing runs on its own.">Tools &#9662;</button>
+    <!-- Menu ROWS, not bare verbs (CRITIQUE fix 9). Each button now carries
+         a 20px stroke icon (currentColor, same geometry language as the
+         toolkit rail), its name, and the one-line description that was
+         ALREADY in its title attribute and that nobody could see. The
+         description span is filled by toolsMenuSync() from the button's own
+         title, read verbatim - the title stays the single source of truth
+         and the accessible description, so nothing that keys off titles
+         breaks. The .tm-dot span is the open-panel dot the ::before
+         pseudo-element used to draw; .t-on still toggles it.
+         The three group headers are PRESENTATIONAL ONLY - the nine buttons
+         keep their ids, their handlers, their titles and their `hidden`
+         bookkeeping, and a hidden button is still simply an absent row.
+         #aiBtn had NO title (the only one); the line below is newly written
+         from what runAnalyze() actually does - it POSTs the sheet, the model
+         returns keep/drop/rename suggestions, and state.aiAuto is hard-set
+         false so nothing is ever applied without the operator accepting it. -->
     <div id="toolsMenu" class="tools-menu" hidden>
-      <button id="aiBtn" hidden>Analyze</button>
-      <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
-      <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
-      <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
-      <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
-      <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes">Across sheets</button>
-      <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
-      <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
-      <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
+      <div class="tm-group" aria-hidden="true">Calculators</div>
+      <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16c4-3 6 1 10-2s5-6 8-7"/><path d="M3 20h18"/></svg><span class="tm-txt"><span class="tm-nm">Earthwork</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v10l4 4M20 5v10l-4 4M8 19h8"/><path d="M9 9h6" stroke-dasharray="2 2"/></svg><span class="tm-txt"><span class="tm-nm">Trench</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="9" width="14" height="10"/><path d="M3 9 12 3l9 6M9 19v-5h6v5"/></svg><span class="tm-txt"><span class="tm-nm">Structure</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <div class="tm-sep" aria-hidden="true"></div>
+      <div class="tm-group" aria-hidden="true">Counts</div>
+      <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3.4"/><circle cx="16" cy="16" r="3.4"/><path d="M16 4.6v6.8M12.6 8h6.8"/></svg><span class="tm-txt"><span class="tm-nm">Count</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="10" rx="1"/><rect x="13" y="8" width="8" height="10" rx="1"/><path d="M5 18v2h10"/></svg><span class="tm-txt"><span class="tm-nm">Whole job</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="7" height="9" rx="1"/><rect x="14" y="10" width="7" height="9" rx="1"/><path d="M10 9h4M14 15h-4"/></svg><span class="tm-txt"><span class="tm-nm">Across sheets</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <div class="tm-sep" aria-hidden="true"></div>
+      <div class="tm-group" aria-hidden="true">Document</div>
+      <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19 14 9M14 9h-4M14 9v4"/><rect x="14" y="4" width="7" height="5" rx="1"/></svg><span class="tm-txt"><span class="tm-nm">Callouts</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h3M13 9h3M8 13h3M13 13h3" stroke-dasharray="2 1.6"/></svg><span class="tm-txt"><span class="tm-nm">Legend sheet</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
+      <button id="aiBtn" hidden title="A model reads the sheet and flags styles it would keep or drop — suggestions only, never applied by itself"><svg class="tm-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2 4.5L18.5 9 14 11l-2 4.5L10 11 5.5 9 10 7.5z"/><path d="M18 15l1 2.2L21 18l-2 .9-1 2.1-1-2.1-2-.9 2.1-.8z"/></svg><span class="tm-txt"><span class="tm-nm">Analyze</span><span class="tm-ds"></span></span><span class="tm-dot" aria-hidden="true"></span></button>
       <div class="tools-note" id="toolsNote">Sheet tools appear once a page has detected lines.</div>
     </div>
   </div>
@@ -79,6 +100,28 @@
       <span id="pvCount" class="pv-count"></span>
       <button id="pvBack" class="mini" hidden>Back to the sheet</button>
     </div>
+    <!-- Search + sort. BOTH act on the rows the server actually sent, which
+         /api/projects caps at 200 of however many exist. That cap is the
+         reason #pvReach spells out what search can and cannot reach: a
+         filter box that silently searches 200 of 420 plans is worse than no
+         filter box, because "no match" then reads as "not on this server".
+         Neither control refetches - filtering and sorting are pure passes
+         over the cached rows in pvRows. -->
+    <div class="pv-controls">
+      <span class="pv-search">
+        <svg class="pv-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="pvSearch" type="search" placeholder="Search plans by name…" spellcheck="false" autocomplete="off">
+      </span>
+      <label class="pv-sort" for="pvSort">Sort
+        <select id="pvSort">
+          <option value="when">Last activity</option>
+          <option value="name">Name A&ndash;Z</option>
+          <option value="pages">Pages</option>
+          <option value="detected">Detected</option>
+        </select>
+      </label>
+    </div>
+    <div id="pvReach" class="pv-reach"></div>
     <div id="pvGrid" class="pv-grid"></div>
     <div id="pvEmpty" class="pv-empty" hidden></div>
   </div>
@@ -97,7 +140,7 @@
     <section class="sv-section">
       <h2>Unit price book</h2>
       <div class="sv-note" id="svBookNote"></div>
-      <div id="svBookTable" class="sv-table"></div>
+      <div id="svBookTable" class="sv-book"></div>
       <div class="sv-addrow">
         <input id="svAddLabel" type="text" placeholder="line-item label" spellcheck="false">
         <input id="svAddPrice" type="number" min="0" step="0.01" placeholder="$ / unit">
@@ -611,6 +654,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=128"></script>
+<script src="app.js?v=129"></script>
 </body>
 </html>

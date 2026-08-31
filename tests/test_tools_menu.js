@@ -28,6 +28,9 @@ const appSrc = fs.readFileSync(
   path.join(__dirname, "..", "webui", "app.js"), "utf8");
 const htmlSrc = fs.readFileSync(
   path.join(__dirname, "..", "webui", "index.html"), "utf8");
+// the redesigned row (fix 9) is markup + CSS, so the CSS is part of the pin
+const cssSrc = fs.readFileSync(
+  path.join(__dirname, "..", "webui", "style.css"), "utf8");
 
 let failures = 0;
 function check(cond, msg) {
@@ -114,6 +117,84 @@ check(htmlSrc.includes('id="detectBtn"'), "#detectBtn still exists");
 for (const id of WANT) {
   const wired = appSrc.includes(`$("${id}").onclick`);
   check(wired, `app.js still attaches a click handler to #${id}`);
+}
+
+// ---- the redesigned row: icon + name + description + dot ---------------------
+// Fix 9 turned nine bare verbs into rows that show the one-line description
+// the title attribute already carried. Three things have to stay true or the
+// row is lying: every button still HAS a title (it is the description's only
+// source and the accessible name), the description is read from that title
+// verbatim at runtime rather than duplicated into the markup, and the row's
+// NAME lives in its own span so a textContent write cannot eat the icon.
+for (const id of WANT) {
+  const m = htmlSrc.match(
+    new RegExp(`<button[^>]*id="${id}"[^>]*title="([^"]{10,})"`));
+  check(!!m, `#${id} carries a real title (the row's description)`);
+  const row = htmlSrc.slice(htmlSrc.indexOf(`id="${id}"`),
+                            htmlSrc.indexOf("</button>", htmlSrc.indexOf(`id="${id}"`)));
+  check(row.includes('class="tm-ico"'), `#${id} row has a 20px stroke icon`);
+  check(row.includes('class="tm-nm"'), `#${id} row keeps its name in .tm-nm`);
+  check(row.includes('class="tm-ds"'), `#${id} row has a description slot`);
+  check(row.includes('class="tm-dot"'), `#${id} row has the state dot`);
+  // the description must NOT be typed into the markup as well - one string,
+  // one place, or the hover and the row drift apart
+  const title = m ? m[1] : "";
+  check(!row.includes(">" + title + "<"),
+    `#${id} description is not duplicated into the markup`);
+}
+check(appSrc.includes('ds.textContent = b.getAttribute("title") || ""'),
+  "descriptions are read from the button's own title, verbatim");
+check(/function toolsMenuSync\(\)[\s\S]{0,400}toolsMenuDescribe\(\)/.test(appSrc),
+  "toolsMenuSync refreshes the descriptions on every open");
+// #aiBtn was the ONE button with no title; it has one now, written from what
+// runAnalyze() does. If it ever loses it again the Analyze row goes blank.
+check(/id="aiBtn"[^>]*title="[^"]{10,}"/.test(htmlSrc),
+  "#aiBtn now has a title (it was the only button without one)");
+// the label writes that used to blow the icon away go through the span helper
+check(!/\$\("aiBtn"\)\.textContent\s*=/.test(appSrc),
+  "nothing writes $(\"aiBtn\").textContent (it would delete the icon)");
+check((appSrc.match(/toolRowLabel\("aiBtn"/g) || []).length === 4,
+  "all four Analyze label writes go through toolRowLabel");
+
+// ---- the three group headers are presentation only --------------------------
+// They must not be focusable, must not be buttons, and must not change which
+// ids the menu contains - a header that became a menu item would break the
+// arrow-key walk, which enumerates TOOLS_MENU_ITEMS and nothing else.
+const menuStart2 = htmlSrc.indexOf('id="toolsMenu"');
+const menuEnd2 = htmlSrc.indexOf("</div>", htmlSrc.indexOf('id="toolsNote"'));
+const menuHtml2 = htmlSrc.slice(menuStart2, menuEnd2);
+for (const g of ["Calculators", "Counts", "Document"])
+  check(menuHtml2.includes(`<div class="tm-group" aria-hidden="true">${g}</div>`),
+    `"${g}" group header is an aria-hidden div, not a menu item`);
+check((menuHtml2.match(/<button/g) || []).length === 9,
+  "the menu still holds exactly nine buttons, headers included");
+check((menuHtml2.match(/class="tm-sep"/g) || []).length === 2,
+  "two separators for three groups");
+check(cssSrc.includes(".tm-group") && /\.tm-group\s*{[^}]*pointer-events:\s*none/
+  .test(cssSrc), "group headers take no pointer");
+// the old ::before dot is explicitly retired, not left to double-draw
+check(/\.tools-menu button::before\s*{\s*content:\s*none/.test(cssSrc),
+  "the old ::before dot is turned off (the dot is a real span now)");
+
+// ---- arrow keys follow the EYE, not the registry -----------------------------
+// Grouping the rows made DOM order diverge from TOOLS_MENU_ITEMS order (the
+// registry still starts at aiBtn; the menu now ends there). The arrow walk
+// must read the markup, or ArrowDown jumps from the button to the last row.
+check(appSrc.includes('[...$("toolsMenu").querySelectorAll("button")]'),
+  "the arrow walk enumerates the menu's buttons in DOM order");
+check(!/const btns = TOOLS_MENU_ITEMS\.map/.test(appSrc),
+  "the arrow walk no longer enumerates the registry");
+{
+  // the two orders really are different now, which is why the above matters
+  const domOrder = [...menuHtml2.matchAll(/<button[^>]*id="(\w+)"/g)].map(m => m[1]);
+  check(domOrder.length === 9, "nine rows read out of the markup");
+  check(domOrder.join() !== got.join(),
+    "DOM order and registry order differ (grouping moved Analyze last)");
+  check(domOrder[domOrder.length - 1] === "aiBtn",
+    "Analyze is the last row on screen");
+  check(domOrder[0] === "ewBtn", "Earthwork is the first row on screen");
+  check(new Set(domOrder).size === 9 && WANT.every(id => domOrder.includes(id)),
+    "grouping moved the rows but lost none of them");
 }
 
 // ---- click simulation: handler fires, THEN the menu closes -------------------

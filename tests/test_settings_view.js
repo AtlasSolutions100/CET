@@ -160,6 +160,47 @@ for (const id of ["svBack", "svBookNote", "svBookTable", "svAddLabel",
   check(htmlSrc.includes(`id="${id}"`), `#${id} exists in index.html`);
 }
 
+// ---- the redesigned price book (fix 10) --------------------------------------
+// A real <table> in its own scroller so the head can stick and the rows can
+// zebra. What must NOT change: the rows come from svBookRows, the writes go
+// through priceKey/store, and the honesty footer keeps its wording.
+const book = appSrc.slice(appSrc.indexOf("function renderSvBook()"),
+                          appSrc.indexOf('$("svAddBtn").onclick'));
+check(book.includes('createElement("table")')
+  && book.includes('className = "sv-book-table"'),
+  "book: rendered as a real table, not a div grid");
+check(book.includes('className = "sv-book-scroll"'),
+  "book: the table sits in its own scroller (so thead can stick)");
+check(/\.sv-book-table thead th\s*{[^}]*position:\s*sticky/.test(cssSrc),
+  "book: the table head is sticky");
+check(/\.sv-book-table tbody tr:nth-child\(even\) td/.test(cssSrc),
+  "book: rows zebra");
+check(book.includes('head: "On this sheet"') && book.includes('head: "Stored only"'),
+  "book: grouped on-this-sheet vs stored-only");
+check(book.includes("rows.filter(r => r.inUse)")
+  && book.includes("rows.filter(r => !r.inUse)"),
+  "book: the two groups partition svBookRows' own inUse flag");
+// the price cell reads as editable even when empty - "set", not a bare dash
+check(book.includes('pin.placeholder = "set"'),
+  "book: an unpriced row shows an editable affordance, not a bare dash");
+check(book.includes('className = "sv-cur"'), "book: the $ sits beside the field");
+// the store contract is untouched: same key helper, same three writes
+check(book.includes("store.setItem(priceKey(r.label), pin.value)")
+  && book.includes("store.removeItem(priceKey(r.label))"),
+  "book: writes through priceKey/store exactly as before");
+check(!book.includes('"price:"'), "book: no hand-built price: key");
+check(book.includes("pin.onchange = () => { renderSvBook(); renderSvFoot(); }"),
+  "book: re-render on blur, not on keystroke (the field stays attached)");
+check(book.includes('ev.preventDefault()') && book.includes('"wheel"'),
+  "book: the wheel guard on a focused number field survives");
+// material citations still come straight out of ew_defaults.js
+const mat = appSrc.slice(appSrc.indexOf("function renderSvMaterials()"),
+                         appSrc.indexOf("function renderSvFoot()"));
+check(mat.includes("m.src") && mat.includes('"local prior: " + sd.local'),
+  "materials: citations rendered verbatim from EW_RESEARCH");
+check(mat.includes("EW_RESEARCH.materials"),
+  "materials: the table is ew_defaults.js, not a copy");
+
 // the swallow block: the projects view's list, Ctrl+Z/Y included
 const sv = appSrc.slice(appSrc.indexOf("SV_SWALLOW_KEYS"),
                         appSrc.indexOf("end PRICING SETTINGS"));

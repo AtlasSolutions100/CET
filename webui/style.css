@@ -1605,3 +1605,313 @@ body { --w1-warn: #d79b3a; }
 .style-nameit:hover { border-bottom-color: var(--t-accent, var(--accent)); }
 /* the same absence, marked the same way, on the on-sheet mini legend */
 .ml-lab.unnamed { color: var(--t-warn, var(--w1-warn)); font-style: italic; }
+/* ==========================================================================
+   WAVE 1 REDESIGN - the three self-contained surfaces
+   (Projects landing, Pricing page, Tools menu rows)
+
+   Appended as NEW rules rather than edits to the blocks above, so the
+   originals stay readable as the thing being replaced and a revert is one
+   deletion. Everything here is presentation: not one rule changes a
+   quantity, a threshold, or what any control does.
+
+   Tokens come from webui/tokens.css (Builder A1). Every reference carries
+   an inline fallback - `var(--t-fs-base, 14px)` - for two reasons: this
+   block must render correctly if it lands before tokens.css does, and the
+   fallback documents the intended value next to its use. When tokens.css is
+   present its values win; nothing here re-declares a --t-* name, so this
+   file can never freeze A1's palette.
+   ========================================================================== */
+
+/* ---------- PROJECTS: search, sort, and the reach disclosure ------------- */
+.pv-controls { display: flex; gap: var(--t-sp-3, 12px); align-items: center;
+  flex-wrap: wrap; max-width: 1100px; margin: 0 auto var(--t-sp-2, 8px); }
+.pv-search { display: flex; align-items: center; gap: var(--t-sp-2, 8px);
+  background: var(--t-surface-2, var(--panel));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-2, 8px); padding: 6px 12px;
+  width: 380px; max-width: 100%; }
+.pv-search:focus-within { border-color: var(--t-accent, var(--accent)); }
+.pv-search .pv-ico { width: 18px; height: 18px; flex: none; fill: none;
+  stroke: var(--t-text-faint, var(--dim)); stroke-width: 1.7;
+  stroke-linecap: round; }
+.pv-search input { flex: 1; min-width: 0; background: transparent; border: 0;
+  outline: 0; color: var(--t-text, var(--text));
+  font: var(--t-fs-sm, 13px)/1.4 var(--t-font-ui, inherit); padding: 0; }
+.pv-search input::placeholder { color: var(--t-text-faint, var(--dim)); }
+/* the native search clear affordance, themed rather than hidden */
+.pv-search input::-webkit-search-cancel-button { cursor: pointer;
+  filter: grayscale(1) opacity(.6); }
+.pv-sort { display: flex; align-items: center; gap: var(--t-sp-2, 8px);
+  font-size: var(--t-fs-sm, 13px); color: var(--t-text-dim, var(--dim)); }
+.pv-sort select { background: var(--t-surface-2, var(--panel));
+  color: var(--t-text, var(--text));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-2, 8px); padding: 6px 10px;
+  font: var(--t-fs-sm, 13px)/1.4 var(--t-font-ui, inherit); }
+/* The sentence that keeps the search box honest: it names what was searched
+   and what was NOT, because /api/projects caps its reply at 200 rows. */
+.pv-reach { max-width: 1100px; margin: 0 auto var(--t-sp-4, 16px);
+  color: var(--t-text-dim, var(--dim)); font-size: var(--t-fs-xs, 12px);
+  line-height: 1.5; }
+.pv-reach:empty { margin: 0 auto; }
+
+/* ---------- PROJECTS: the card grid, restyled ---------------------------- */
+.projects-view { padding: var(--t-sp-5, 24px) var(--t-sp-6, 32px)
+  var(--t-sp-7, 48px); }
+.pv-head { margin-bottom: var(--t-sp-3, 12px); }
+.pv-head h1 { font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-lg, 20px); font-weight: 600; text-transform: none;
+  letter-spacing: 0; }
+.pv-count { font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-dim, var(--dim));
+  font-family: var(--t-font-data, var(--mono)); }
+.pv-grid { gap: var(--t-sp-4, 16px);
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); }
+.pv-card { background: var(--t-surface-1, var(--panel));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-3, 12px); padding: 0 0 var(--t-sp-3, 12px); }
+.pv-card:hover, .pv-card:focus-visible {
+  border-color: var(--t-border-strong, var(--accent));
+  box-shadow: var(--t-el-2, 0 4px 14px rgba(0,0,0,.35)); }
+.pv-card.pv-current { border-color: var(--t-accent, var(--accent));
+  box-shadow: inset 0 2px 0 var(--t-accent, var(--accent)); }
+.pv-thumb { height: 130px; background: var(--t-surface-3, var(--chip));
+  border-bottom: 1px solid var(--t-border, var(--line)); }
+.pv-ph { font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px); letter-spacing: 0; text-transform: none;
+  color: var(--t-text-faint, var(--dim));
+  border: 1px dashed var(--t-border-strong, var(--line));
+  border-radius: var(--t-r-1, 4px); padding: 3px 9px; }
+.pv-name { font-size: var(--t-fs-sm, 13px); font-weight: 600;
+  padding: var(--t-sp-3, 12px) var(--t-sp-3, 12px) 2px; line-height: 1.35; }
+.pv-meta { font-size: var(--t-fs-xs, 12px); padding: 0 var(--t-sp-3, 12px);
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums);
+  color: var(--t-text-dim, var(--dim)); }
+.pv-when { font-size: var(--t-fs-xs, 12px);
+  padding: 2px var(--t-sp-3, 12px) 0;
+  font-family: var(--t-font-ui, inherit); letter-spacing: 0;
+  color: var(--t-text-faint, var(--dim)); }
+.pv-badge { font-size: var(--t-fs-xs, 12px); letter-spacing: 0;
+  text-transform: none; border-radius: var(--t-r-1, 4px); padding: 1px 7px;
+  background: var(--t-surface-3, var(--panel));
+  border-color: var(--t-border, var(--line)); }
+.pv-empty { font-size: var(--t-fs-sm, 13px); line-height: 1.6;
+  max-width: 640px; }
+
+/* Delete, one deliberate click in. The ... appears on hover or keyboard
+   focus; it is never armed on the face of a card the way the old X was. */
+.pv-more { position: absolute; top: 8px; right: 8px; width: 30px; height: 28px;
+  padding: 0; display: none; align-items: center; justify-content: center;
+  border-radius: var(--t-r-1, 4px);
+  background: var(--t-surface-1, var(--panel));
+  border: 1px solid var(--t-border-strong, var(--line)); }
+.pv-card:hover .pv-more, .pv-card:focus-within .pv-more,
+.pv-card.pv-menu-open .pv-more { display: flex; }
+.pv-more svg { width: 18px; height: 18px; fill: currentColor; stroke: none;
+  color: var(--t-text-dim, var(--dim)); }
+.pv-more:hover { border-color: var(--t-accent, var(--accent)); }
+.pv-more:hover svg { color: var(--t-text, var(--text)); }
+/* The card clipped its own children (`overflow: hidden`, for the thumbnail's
+   rounded top corners). The overflow popover fits inside a default card with
+   ~64px to spare, but "fits today" is not a contract: a longer hint, a
+   browser text-zoom or a narrower column would clip it with no warning. So
+   the clipping moves to the thumbnail, which is the only child that needs
+   it, and the card is free to let the popover out. */
+.pv-card { overflow: visible; }
+.pv-thumb { overflow: hidden;
+  border-radius: calc(var(--t-r-3, 12px) - 1px) calc(var(--t-r-3, 12px) - 1px) 0 0; }
+/* an open card floats over its later siblings, which paint after it */
+.pv-card.pv-menu-open { z-index: 31; }
+.pv-menu { position: absolute; top: 40px; right: 8px; z-index: 30;
+  width: 232px; background: var(--t-surface-3, var(--panel));
+  border: 1px solid var(--t-border-strong, var(--line));
+  border-radius: var(--t-r-3, 12px); padding: 5px;
+  box-shadow: var(--t-el-3, 0 12px 40px rgba(0,0,0,.45)); cursor: default; }
+.pv-menu-del { display: block; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--t-r-2, 8px); padding: 7px 10px;
+  font-size: var(--t-fs-sm, 13px); color: var(--t-danger, #e0574a); }
+.pv-menu-del:hover { background: var(--t-stop-bg, rgba(224,87,74,.13));
+  border-color: var(--t-danger, #e0574a); }
+.pv-menu-hint { font-size: var(--t-fs-xs, 12px); line-height: 1.45;
+  color: var(--t-text-faint, var(--dim)); padding: 3px 10px 5px; }
+
+/* ---------- PRICING: page frame ----------------------------------------- */
+.settings-view { padding: var(--t-sp-5, 24px) var(--t-sp-6, 32px)
+  var(--t-sp-7, 48px); }
+.sv-head { max-width: 1040px; margin: 0 auto var(--t-sp-4, 16px); }
+.sv-head h1 { font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-lg, 20px); font-weight: 600; text-transform: none;
+  letter-spacing: 0; }
+.sv-section { max-width: 1040px; border-radius: var(--t-r-3, 12px);
+  background: var(--t-surface-1, var(--panel));
+  border-color: var(--t-border, var(--line));
+  padding: var(--t-sp-3, 12px) 0 0; overflow: hidden;
+  margin-bottom: var(--t-sp-4, 16px); }
+.sv-section h2 { font-family: var(--t-font-ui, inherit);
+  font-size: 15px; font-weight: 600; text-transform: none; letter-spacing: 0;
+  color: var(--t-text, var(--text));
+  margin: 0 var(--t-sp-4, 16px) var(--t-sp-1, 4px); }
+.sv-note { font-size: var(--t-fs-xs, 12px); line-height: 1.5;
+  color: var(--t-text-dim, var(--dim));
+  margin: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-addrow, .sv-io { padding: var(--t-sp-3, 12px) var(--t-sp-4, 16px);
+  border-top: 1px solid var(--t-border, var(--line)); margin-top: 0; }
+.sv-addrow .sv-note { margin: 0; }
+.sv-preview { margin: 0;
+  padding: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-foot { max-width: 1040px; font-size: var(--t-fs-xs, 12px);
+  line-height: 1.55; color: var(--t-text-dim, var(--dim));
+  padding: var(--t-sp-3, 12px) 14px;
+  border: 1px dashed var(--t-border-strong, var(--line));
+  border-radius: var(--t-r-3, 12px); }
+
+/* ---------- PRICING: the grouped price book ------------------------------ */
+.sv-book-scroll { max-height: 430px; overflow-y: auto;
+  border-top: 1px solid var(--t-border, var(--line)); }
+.sv-book-table { width: 100%; border-collapse: collapse;
+  font-size: var(--t-fs-sm, 13px); }
+/* sticky head: the column meanings stay on screen through a 200-row book */
+.sv-book-table thead th { position: sticky; top: 0; z-index: 3;
+  background: var(--t-surface-2, var(--chip));
+  border-bottom: 1px solid var(--t-border-strong, var(--line));
+  color: var(--t-text-faint, var(--dim)); text-align: left;
+  font-family: var(--t-font-ui, inherit); font-size: var(--t-fs-xs, 12px);
+  font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 8px var(--t-sp-3, 12px); }
+.sv-book-table th.sv-r, .sv-book-table td.sv-r { text-align: right; }
+.sv-book-table tbody td { padding: 5px var(--t-sp-3, 12px);
+  border-bottom: 1px solid var(--t-border, var(--line)); }
+.sv-book-table tbody tr:nth-child(even) td {
+  background: rgba(127,127,127,.045); }
+.sv-book-table tbody tr:hover td {
+  background: var(--t-surface-3, var(--hover)); }
+.sv-book-table .sv-grp td, .sv-book-table .sv-grp:hover td {
+  background: var(--t-surface-2, var(--chip));
+  color: var(--t-text-dim, var(--dim)); font-weight: 600;
+  font-size: var(--t-fs-xs, 12px); letter-spacing: .03em;
+  padding: 7px var(--t-sp-3, 12px); }
+.sv-book-table .sv-grp-n { font-family: var(--t-font-data, var(--mono));
+  font-weight: 400; color: var(--t-text-faint, var(--dim)); }
+.sv-book-table .sv-grp-empty td, .sv-book-table .sv-grp-empty:hover td {
+  color: var(--t-text-faint, var(--dim)); font-size: var(--t-fs-xs, 12px);
+  font-style: italic; background: transparent; }
+.sv-book-table td.sv-lab { font-weight: 500; max-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.sv-book-table td.sv-unit { width: 56px;
+  font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px); color: var(--t-text-dim, var(--dim)); }
+/* "on this sheet" measures 94px in the data face and had 92px of content
+   box at 116px - a 2px shortfall that wrapped EVERY row and doubled its
+   height to 46px. Both strings in this column are fixed and short, so it is
+   nowrap with headroom rather than a width that has to be re-guessed each
+   time the face changes. */
+.sv-book-table td.sv-where { width: 132px; white-space: nowrap;
+  font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px); color: var(--t-text-dim, var(--dim)); }
+.sv-book-table td.sv-where-on { color: var(--t-ok, var(--ok)); }
+/* the price cell reads as editable even when empty: a $ affordance and a
+   real field, not a bare dash */
+.sv-pin { display: inline-flex; align-items: center; gap: 5px;
+  justify-content: flex-end; }
+.sv-pin .sv-cur { color: var(--t-text-faint, var(--dim));
+  font-size: var(--t-fs-xs, 12px); }
+.sv-book-table td.sv-r .sv-pin input { width: 82px; text-align: right;
+  padding: 3px 8px; border-radius: var(--t-r-1, 4px);
+  background: var(--t-field, var(--field));
+  border: 1px solid var(--t-border, var(--line));
+  color: var(--t-text, var(--text));
+  font: var(--t-fs-sm, 13px) var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums); }
+.sv-book-table .sv-pin input::placeholder {
+  color: var(--t-text-faint, var(--dim)); }
+.sv-book-table .sv-pin input:focus { outline: 0;
+  border-color: var(--t-accent, var(--accent)); }
+.sv-book-table td .sv-x { width: 22px; height: 22px; padding: 0;
+  line-height: 1; border-radius: 50%; font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-faint, var(--dim)); background: transparent;
+  border: 1px solid transparent; }
+.sv-book-table td .sv-x:hover:not(:disabled) {
+  color: var(--t-danger, #e0574a);
+  border-color: var(--t-border-strong, var(--line)); background: transparent; }
+.sv-book-table td .sv-x:disabled { opacity: .3; cursor: default; }
+
+/* ---------- PRICING: material defaults ----------------------------------- */
+#svMatBox { padding: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-mat { grid-template-columns: 1fr 90px 116px 130px;
+  font-size: var(--t-fs-sm, 13px); gap: 2px var(--t-sp-3, 12px);
+  border-top: 1px solid var(--t-border, var(--line));
+  padding-top: var(--t-sp-2, 8px); }
+.sv-mat .sv-th { font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-xs, 12px); font-weight: 600; letter-spacing: .04em;
+  color: var(--t-text-faint, var(--dim)); }
+/* citations are rendered verbatim from ew_defaults.js - readable, not 10.5px */
+.sv-cite { font-size: var(--t-fs-xs, 12px); line-height: 1.5;
+  color: var(--t-text-faint, var(--dim));
+  padding: 1px 0 var(--t-sp-2, 8px) var(--t-sp-3, 12px); }
+.sv-ovr { font-size: var(--t-fs-sm, 13px); gap: var(--t-sp-2, 8px);
+  margin-top: var(--t-sp-2, 8px); }
+.sv-ovr .sv-note { flex-basis: 100%; margin: 0; }
+.sv-preview .sv-badline { font-size: var(--t-fs-xs, 12px); }
+
+/* ---------- TOOLS MENU: icon + name + description + dot ------------------ */
+.tools-menu { min-width: 384px; max-width: min(408px, calc(100vw - 16px));
+  background: var(--t-surface-3, var(--panel));
+  border-color: var(--t-border-strong, var(--line));
+  border-radius: var(--t-r-3, 12px); padding: 6px;
+  box-shadow: var(--t-el-3, 0 12px 40px rgba(0,0,0,.45)); }
+/* Group headers are labels on a menu, not menu items - they are
+   aria-hidden in the markup and take no pointer. */
+.tm-group { font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-xs, 12px); font-weight: 600; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--t-text-faint, var(--dim));
+  padding: 8px 12px 3px; pointer-events: none; }
+.tm-sep { height: 1px; background: var(--t-border, var(--line));
+  margin: 4px 8px; }
+/* The row itself: 20px icon | name over description | state dot.
+   `header button` (style.css line 39) puts mono + 11px + UPPERCASE +
+   letter-spacing on every button in the header, and these rows live in the
+   header, so a sentence-long description would render as spaced-out capital
+   monospace. Retiring that blanket app-wide is the token pass's hand-edit
+   #2 and belongs to whoever owns the header; here it is neutralised for
+   these rows only, explicitly, so this surface reads correctly either way. */
+.tools-menu button { display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 8px;
+  gap: var(--t-sp-3, 12px); align-items: center; width: 100%;
+  text-align: left; padding: 7px 10px; border-radius: var(--t-r-2, 8px);
+  border: 1px solid transparent; background: transparent;
+  font-family: var(--t-font-ui, inherit); font-size: var(--t-fs-sm, 13px);
+  text-transform: none; letter-spacing: normal; }
+.tools-menu button:hover, .tools-menu button:focus-visible {
+  background: var(--t-field, var(--hover));
+  border-color: var(--t-border, var(--line)); }
+/* the dot used to be a ::before pseudo-element on the row; it is now a real
+   span in the third column, so it can sit at the row's trailing edge */
+.tools-menu button::before { content: none; }
+.tm-ico { width: 20px; height: 20px; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+  color: var(--t-text-dim, var(--dim)); }
+.tools-menu button:hover .tm-ico, .tools-menu button:focus-visible .tm-ico {
+  color: var(--t-text, var(--text)); }
+.tools-menu button.t-on .tm-ico { color: var(--t-accent, var(--accent)); }
+.tm-txt { min-width: 0; display: block; }
+.tm-nm { display: block; font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-sm, 13px); font-weight: 600;
+  text-transform: none; letter-spacing: normal;
+  color: var(--t-text, var(--text)); }
+/* the description IS the button's title attribute, written in by
+   toolsMenuSync(); it wraps rather than truncating - a half-sentence is
+   worse than two lines */
+.tm-ds { display: block; font-size: var(--t-fs-xs, 12px); line-height: 1.35;
+  margin-top: 1px; color: var(--t-text-dim, var(--dim)); font-weight: 400;
+  font-family: var(--t-font-ui, inherit);
+  text-transform: none; letter-spacing: normal; }
+.tm-ds:empty { display: none; }
+.tm-dot { width: 8px; height: 8px; border-radius: 50%; background: transparent;
+  border: 1px solid var(--t-border-strong, var(--line)); }
+.tools-menu button.t-on .tm-dot { background: var(--t-ok, var(--accent));
+  border-color: var(--t-ok, var(--accent)); }
+.tools-note { font-size: var(--t-fs-xs, 12px); line-height: 1.45;
+  max-width: none; color: var(--t-text-dim, var(--dim));
+  padding: 6px 12px 6px; }
