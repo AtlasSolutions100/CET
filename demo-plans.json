@@ -1,0 +1,79 @@
+{
+  "_readme": [
+    "THE DEMO SET: plans a visitor may open on any box, ours and only ours.",
+    "",
+    "One source of truth, read by three things:",
+    "  server.py       marks a job row demo:true when its display name is a",
+    "                  key below AND the row is owner-less (the existing",
+    "                  shared/owner visibility rule - a client upload that",
+    "                  happens to carry the same filename is NEVER a demo).",
+    "  seed-demo.sh    uploads and pre-detects these on a hosted box, and",
+    "                  refuses to run if it does not seed every name here.",
+    "  provision_demo.py  keeps owner=None on exactly these when it hands",
+    "                  every other document on the box to staff.",
+    "",
+    "The key is the DISPLAY name, which is the filename with our own",
+    "upload_<hash>_ prefix stripped (server.py _display_name). That is what",
+    "makes one list work for a laptop that opened the file by path and for a",
+    "hosted box that received it through /api/upload.",
+    "",
+    "PROVENANCE RULE, not negotiable: every file here is ours - the",
+    "TakeoffPro AI corpus (Plans, Plans 2) or the Oncor sheet beside it.",
+    "Nothing from Ryno Construction and nothing from client_meet may ever",
+    "appear in this file: those are named clients' drawings, and stice /",
+    "Liberty Park is a live bid. tests/test_projects_api.py enforces this.",
+    "",
+    "`page` is the sheet a visitor should land on (engine page index, 0-based",
+    "- printed sheet number is page+1 on these sets).",
+    "",
+    "`shows` is printed on the card. EVERY ONE OF THESE LINES WAS WRITTEN",
+    "FROM A LIVE RUN ON THAT SHEET, 2026-08-31, not from what a sheet of its",
+    "type usually carries - see out/verify/2026-08-31/projects-landing/. If",
+    "you add a plan, open it and detect it first, and describe what actually",
+    "came out. A card that promises a capability the sheet does not exercise",
+    "is the one thing a demo set must never do.",
+    "",
+    "DROPPED after testing, and why:",
+    "  window_takeoff_benchmark_plan.pdf - it opens and detects fine (44",
+    "  chains, 6 styles, scale read from its caption), but its own title",
+    "  block reads 'AUTOMATION TAKEOFF BENCHMARK PLAN - WINDOW TEST BED /",
+    "  PROJECT: MOCK-01'. It is our synthetic fixture, not a drawing, and a",
+    "  visitor who opens it sees us demonstrating on a rectangle we drew",
+    "  ourselves. It stays in the corpus as a test bed; it is not a demo.",
+    "  This leaves symbol COUNTING undemonstrated - the only counting sheets",
+    "  in the corpus (Marked Up Window Plans, Window - Storefront - Door",
+    "  schedules) are under client_meet/Bill and are excluded by the rule",
+    "  above. That gap is real and is not papered over here."
+  ],
+  "version": 1,
+  "plans": {
+    "Oncor Cloudcrest Substation Civils - 20251212.pdf_safe.pdf": {
+      "page": 2,
+      "shows": "Substation civils drawn with no CAD layer names at all — 314 runs sorted into 49 styles by line pattern alone."
+    },
+    "C4.0-SITE-GRADING-PLAN-Rev.1.pdf": {
+      "page": 0,
+      "shows": "The densest sheet we score: 1,429 runs in 113 styles, every one carrying the drafter's own layer name."
+    },
+    "Belle Farms Structural Plans.pdf": {
+      "page": 0,
+      "shows": "A building sheet, not a civil one — and the only one here whose scale is confirmed twice: printed and drawn agree."
+    },
+    "Belle Farms Upper Parcel ROAD GRADING 1 of 2.pdf": {
+      "page": 0,
+      "shows": "Heavy topography: 685 contour runs, 254k ft of line. It prints three scales, and the app refuses to pick one for you."
+    },
+    "C6.0-WATER-MAIN-PLAN-AND-PROFILE-Rev.1.pdf": {
+      "page": 0,
+      "shows": "Wet utilities, plan and profile on one page — water, gas and electric runs above, the profile band below."
+    },
+    "C8.0-STORM-LAYOUT-Rev.1.pdf": {
+      "page": 0,
+      "shows": "A storm drain network: O-PIPE runs between structures. Its scale came from OCR, and the app says not to trust that."
+    },
+    "GCHC North Stairs Plan 1 Grading.pdf": {
+      "page": 0,
+      "shows": "The cleanest read in the set — 52 of its 53 styles arrive already named by the drafter, leaving one thing to check."
+    }
+  }
+}

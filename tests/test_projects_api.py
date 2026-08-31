@@ -77,8 +77,15 @@ server.JOBS["jobdddddddddd"] = {"path": str(JOBS_DIR / "vanished.pdf"),
 
 # ---- single-password mode (user None => staff): every living job ----------
 r = server.list_projects(_Req())
-ok(isinstance(r, dict) and set(r) == {"total", "projects"},
-   "reply shape is {total, projects}", set(r))
+# CHANGED, deliberately: the shape used to be pinned as exactly
+# {total, projects}. It now carries a third key, `demo`, and that key is the
+# point of the change - the landing page tabs "Demo plans" against "Your
+# projects", and an empty demo tab has to be able to say WHY it is empty
+# (this box was never seeded) instead of just drawing nothing. The assertion
+# is tightened rather than loosened: the set is still exact, so a fourth key
+# appearing by accident still fails here.
+ok(isinstance(r, dict) and set(r) == {"total", "projects", "demo"},
+   "reply shape is {total, projects, demo}", set(r))
 rows = {p["job_id"]: p for p in r["projects"]}
 ok(r["total"] == 3 and len(rows) == 3,
    "single-password mode: 3 cards, the vanished PDF dropped", r["total"])
@@ -117,6 +124,118 @@ ok(al["jobaaaaaaaaa"]["mine"] is False and al["jobaaaaaaaaa"]["deletable"] is Fa
 r = server.list_projects(_Req(user="carol", staff=True))
 ok(len(r["projects"]) == 3, "staff see every account's plans",
    len(r["projects"]))
+
+# ---- THE DEMO SET ----------------------------------------------------------
+# A demo is a SHARED row (owner None - the visibility rule this route already
+# had) whose display name is in demo-plans.json. Both halves matter: the
+# manifest alone would let a client's private upload of the same filename
+# join the demo tab, and sharedness alone would call every pre-accounts row a
+# demo.
+server.DEMO_PLANS = {
+    "loves-lane-grading.pdf": {"page": 2, "shows": "grading, both surfaces"},
+    "never-uploaded.pdf": {"page": 0, "shows": "not on this box"},
+}
+server.JOBS.clear()
+seed("jobdemo000001", "loves-lane-grading.pdf", 9, owner=None, results=3,
+     thumb=True, mtime=NOW - 900)
+# same filename, but somebody's own upload: theirs, private, NOT a demo
+seed("jobclient00001", "upload_ffffffffffff_loves-lane-grading.pdf", 9,
+     owner="alice", results=1, thumb=True, mtime=NOW - 50)
+seed("jobplain000001", "alices-own.pdf", 4, owner="alice", mtime=NOW - 10)
+
+r = server.list_projects(_Req(user="alice"))
+rows = {p["job_id"]: p for p in r["projects"]}
+ok(rows["jobdemo000001"]["demo"] is True,
+   "a shared row named in the manifest is a demo")
+ok(rows["jobclient00001"]["demo"] is False,
+   "alice's OWN upload of the same filename is not a demo",
+   rows["jobclient00001"]["demo"])
+ok(rows["jobclient00001"]["name"] == "loves-lane-grading.pdf",
+   "...even though it displays under exactly the same name",
+   rows["jobclient00001"]["name"])
+ok(rows["jobplain000001"]["demo"] is False and
+   rows["jobplain000001"]["demo_note"] is None,
+   "an ordinary row carries demo False and no note")
+ok(rows["jobdemo000001"]["demo_note"] == "grading, both surfaces",
+   "the card's 'what this shows' line comes from the manifest",
+   rows["jobdemo000001"]["demo_note"])
+ok(rows["jobdemo000001"]["demo_page"] == 2,
+   "...and so does the page a visitor should land on")
+ok(rows["jobdemo000001"]["deletable"] is False,
+   "a plain user still may not delete a shared demo (rule unchanged)")
+
+# the set's own health, so an empty demo tab can say WHY it is empty
+ok(r["demo"] == {"expected": 2, "present": 1,
+                 "missing": ["never-uploaded.pdf"]},
+   "demo block reports expected/present/missing by name", r["demo"])
+
+# DEMO ROWS ARE NEVER CAPPED. The cards are tabbed, so a demo that fell off
+# the end of the newest-200 slice would make the demo tab quietly wrong -
+# and on the real box the demo sheets sit at position ~300 of 420.
+server.JOBS.clear()
+seed("jobdemo000001", "loves-lane-grading.pdf", 9, owner=None, results=3,
+     mtime=NOW - 999999)              # oldest thing on the box
+for i in range(230):
+    seed("jobbulk%06d" % i, "bulk%03d.pdf" % i, 1, owner=None,
+         mtime=NOW - i)
+r = server.list_projects(_Req())
+ids = [p["job_id"] for p in r["projects"]]
+ok(r["total"] == 231, "total counts every visible row", r["total"])
+ok(len(ids) == 201, "sent = every demo + the newest 200 of the rest",
+   len(ids))
+ok(ids[0] == "jobdemo000001",
+   "the demo leads the reply even though it is the OLDEST row", ids[0])
+ok(r["demo"]["present"] == 1, "and it is counted as present")
+ok(sum(1 for p in r["projects"] if not p["demo"]) == 200,
+   "the 200 cap still applies to everything that is not a demo")
+# ordering within the non-demo block is unchanged: newest activity first
+non = [p for p in r["projects"] if not p["demo"]]
+ok(non == sorted(non, key=lambda p: -p["when"]),
+   "non-demo rows keep the newest-activity-first order")
+
+# a box with no manifest at all: no demos, and it says so as 0 expected
+server.DEMO_PLANS = {}
+r = server.list_projects(_Req())
+ok(r["demo"] == {"expected": 0, "present": 0, "missing": []},
+   "no manifest -> expected 0, which the UI renders as 'no demo set "
+   "configured' rather than as an unseeded box", r["demo"])
+ok(all(p["demo"] is False for p in r["projects"]),
+   "...and no row claims to be a demo")
+
+# ---- the manifest loader is never allowed to take the service down ---------
+import json as _json  # noqa: E402
+import tempfile as _tf  # noqa: E402
+
+_bad = Path(_tf.mkdtemp()) / "demo-plans.json"
+_bad.write_text("{ this is not json")
+server.DEMO_MANIFEST = _bad
+ok(server._load_demo_plans() == {}, "a corrupt manifest loads as empty")
+_bad.write_text(_json.dumps({"plans": ["not", "a", "dict"]}))
+ok(server._load_demo_plans() == {}, "a manifest of the wrong shape too")
+_bad.unlink()
+ok(server._load_demo_plans() == {}, "an absent manifest too")
+_bad.write_text(_json.dumps({"plans": {"a.pdf": {"page": "x"},
+                                       "b.pdf": {"page": -4},
+                                       "": {"page": 1}}}))
+got = server._load_demo_plans()
+ok(set(got) == {"a.pdf", "b.pdf"}, "a blank key is dropped", set(got))
+ok(got["a.pdf"]["page"] == 0 and got["b.pdf"]["page"] == 0,
+   "an unusable or negative page falls back to 0, never crashes a card",
+   (got["a.pdf"]["page"], got["b.pdf"]["page"]))
+
+# ---- the shipped manifest is OURS, not a client's --------------------------
+# The provenance rule from the brief, enforced rather than trusted: nothing
+# from Ryno Construction and nothing from client_meet may be a demo plan.
+_shipped = Path(server.ROOT) / "demo-plans.json"
+ok(_shipped.exists(), "demo-plans.json ships with the repo")
+_names = list(_json.loads(_shipped.read_text(encoding="utf-8"))["plans"])
+_banned = ("ryno", "stice", "liberty", "beaumont", "kayden", "ellis",
+           "klayton", "swr_", "thielen", "aqua vista")
+for _n in _names:
+    ok(not any(b in _n.lower() for b in _banned),
+       "demo plan %r is not a client document" % _n)
+ok(len(_names) >= 4, "the manifest has at least the four named plans",
+   len(_names))
 
 # ---- report ---------------------------------------------------------------
 failures = 0

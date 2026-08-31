@@ -270,14 +270,28 @@ function uploadPdf(file) {
 // sample list is empty, so without this the only way back to a document is to
 // re-upload it - a 40 MB transfer, and on a large set a detection the server
 // has already done. Keyed by job id; no path ever reaches the client.
+//
+// #recentSel IS GONE. The Projects grid lists the same jobs as cards, with
+// the page count, how much is detected and a thumbnail, so a second flat
+// dropdown of the same 60 names was duplication. What is NOT gone is this
+// function: RECENT_META is the only place the browser learns whether the
+// SERVER considers the open document deletable, and #docRemoveBtn reads it.
+// So the fetch and the RECENT_META fill now happen unconditionally, and only
+// the <select> painting is guarded - the early `if (!sel) return` that used
+// to sit at the top would have silently disarmed the remove button.
 async function loadRecent() {
-  const sel = $("recentSel");
-  if (!sel) return;
+  const sel = $("recentSel");     // retired from index.html; may be absent
   let rows = [];
   try {
     const r = await fetch("/api/recent");
     if (r.ok) rows = await r.json();
   } catch (e) { return; }
+  // RECENT_META first, and from every row, so it is correct whether or not
+  // anything is drawing a list.
+  RECENT_META = {};
+  for (const d of rows) RECENT_META[d.job_id] = d;
+  syncRemoveBtn();
+  if (!sel) return;
   sel.innerHTML = "";
   const head = document.createElement("option");
   head.value = "";
@@ -287,7 +301,7 @@ async function loadRecent() {
   // Remember, per job, whether the SERVER said it may be deleted. The button
   // below only reads this to decide what to show; the service decides again
   // when asked, because a disabled button is decoration, not a permission.
-  RECENT_META = {};
+  // (Filled above now, before this <select> is even looked for.)
   const opt = (d) => {
     const o = document.createElement("option");
     o.value = d.job_id;
@@ -362,21 +376,10 @@ $("docRemoveBtn").onclick = async () => {
   }
 };
 
-$("recentSel").onchange = async () => {
-  const id = $("recentSel").value;
-  if (!id) return;
-  setStatus("opening…", "busy");
-  try {
-    const r = await fetch(`/api/job/${id}/open`);
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      return setStatus(e.detail || `could not reopen (${r.status})`, "err");
-    }
-    applyOpened(await r.json());
-  } catch (e) {
-    setStatus("could not reopen — the server did not answer", "err");
-  }
-};
+// The #recentSel change handler lived here. Its job - GET /api/job/<id>/open
+// then applyOpened() - is what pvOpenJob() in the Projects grid already does,
+// through the same route, so retiring the <select> lost no capability and
+// left no second reopen path to drift.
 loadRecent();
 
 $("uploadBtn").onclick = () => $("fileInput").click();
@@ -425,14 +428,23 @@ addEventListener("drop", (e) => {
 
 // What kind of box is this? A hosted one refuses filesystem paths, so the
 // path box is a dead control there and is removed rather than left to fail.
+// The three controls now live in Settings -> "This machine", so the whole
+// section and its nav entry go with them: an empty group under a heading
+// that says "This machine" reads as a broken page, not as a hidden feature.
 fetch("/api/config").then(r => r.ok ? r.json() : null).then(cfg => {
   if (!cfg || !cfg.hosted) return;
-  for (const id of ["pathInput", "openBtn", "sampleSel"]) {
+  for (const id of ["pathInput", "openBtn", "sampleSel",
+                    "svGroupMachine", "svMachineSection", "svNavMachine"]) {
     const el = $(id);
     if (el) el.hidden = true;
   }
-  $("uploadBtn").textContent = "Upload plans";
-  $("uploadBtn").title = "Choose a PDF, or drag one anywhere onto this window.";
+  // #uploadBtn is the "+ New project" button now. Its LABEL is not rewritten
+  // here any more - it said "Upload plans" on a hosted box and "Upload plans"
+  // everywhere else, so the assignment only ever restated the markup, and
+  // today it would quietly undo the new label. The title still earns its
+  // place: on a hosted box this really is the only way in.
+  $("uploadBtn").title = "Upload a PDF from this computer, or drag one "
+    + "anywhere onto this window. This server does not open files by path.";
 }).catch(() => { /* a local box with no /api/config: leave the UI alone */ });
 
 async function openPath(path) {
@@ -453,7 +465,11 @@ async function openPath(path) {
 // opened by path on a local box, or uploaded on the hosted one. Extracted so
 // the two entry points cannot drift - the upload path used to be unreachable
 // from the UI at all, which on a hosted server meant there was no way in.
-function applyOpened(j) {
+// `landOn` is an OPTIONAL engine page index to open on. Every existing caller
+// passes nothing and gets page 0, exactly as before; the Projects grid passes
+// a demo plan's own page, so clicking "Oncor Cloudcrest" opens the grading
+// sheet the card describes rather than the cover sheet in front of it.
+function applyOpened(j, landOn) {
   // the landing page yields to a document, whichever way it arrived: card
   // click, recents pick, sample, path, upload, or a drop on the window
   showProjects(false);
@@ -492,7 +508,19 @@ function applyOpened(j) {
   renderPageStrip();
   refreshPageStatuses();
   loadTriage(state.job);
-  selectPage(0);
+  // Guarded: an out-of-range hint (a manifest that names page 4 of a set that
+  // has since been re-exported to 2 pages) falls back to page 0 rather than
+  // leaving the canvas on a page that does not exist.
+  const land = Number.isInteger(landOn) && landOn >= 0 && landOn < j.pages
+    ? landOn : 0;
+  // selectPage() does NOT write the masthead picker - the page strip's own
+  // click handler has always done that itself, and this call site got away
+  // with it only because a freshly rebuilt <select> already reads 0 and the
+  // page opened was always 0. Landing anywhere else without this line puts
+  // the canvas on sheet 3 while the picker says page 1, which is precisely
+  // the kind of quiet disagreement a takeoff cannot afford. Caught live.
+  $("pageSel").value = land;
+  selectPage(land);
   setStatus(`${j.pages} pages`);
   if (!j.kinds) pollKinds(state.job, state.gen);
 }
@@ -17980,6 +18008,72 @@ function projAgo(nowS, whenS) {
 function projShowsSharedBadge(rows) {
   return rows.some(r => r.mine) && rows.some(r => r.shared);
 }
+
+// ---- THE TWO TABS ----------------------------------------------------------
+// "Demo plans" are OURS: /api/projects sets demo:true on a row that is already
+// shared (owner is None) AND whose name is in demo-plans.json. Everything else
+// this account may see is "Your projects". The split is read off the server's
+// flag, never re-derived here from the name - a client who uploads a file
+// called C8.0-STORM-LAYOUT-Rev.1.pdf owns it, and it is not a demo.
+const PROJ_TABS = ["demo", "mine"];
+function projIsDemo(row) { return !!(row && row.demo); }
+function projTabRows(rows, tab) {
+  const want = tab === "demo";
+  return (rows || []).filter(r => projIsDemo(r) === want);
+}
+// What this tab's rows are CALLED, for the reach line. Two tabs over one
+// grid means the same sentence has to describe two populations, and calling
+// a demo plan "a plan on this server" is how that sentence starts lying.
+function projTabNoun(tab) {
+  return tab === "demo"
+    ? { one: "demo plan", many: "demo plans" }
+    : { one: "project", many: "projects" };
+}
+// Which tab to land on, given what is actually here. A visitor with nothing
+// of their own must not meet an empty page when there are demos to open; a
+// user with work in progress must not have to click past a demo tab to reach
+// it. So: your own projects win when you have any, demos otherwise.
+function projDefaultTab(rows) {
+  const mine = projTabRows(rows, "mine").length;
+  if (mine) return "mine";
+  return projTabRows(rows, "demo").length ? "demo" : "mine";
+}
+// The tab's own label count. Demo rows are never capped by the server, so
+// the demo count is exact; "Your projects" can be showing the newest 200 of
+// more, and then says so rather than printing a number that is not the total.
+function projTabCount(loaded, total) {
+  if (!total) return "";
+  return total > loaded ? String(loaded) + " of " + total : String(total);
+}
+// What the empty "Your projects" tab says on a box where nobody has uploaded
+// anything yet. It is the first thing a new account sees, so it says the one
+// action that works and where else there is something to look at.
+function projEmptyMine(demoCount) {
+  const start = "Nothing here yet — every plan you upload lands on this tab. "
+    + "Use + New project, or drop a PDF anywhere on this window.";
+  return demoCount
+    ? start + " Nothing to bid on yet? Open one of the " + demoCount
+      + " demo plans to see what a finished takeoff looks like."
+    : start;
+}
+// ...and what the Demo tab says when the demo files are NOT on this box.
+// A hosted box gets the plan library by running seed-demo.sh; until then this
+// tab has to say that, because an empty tab reads as "this product has no
+// demos" rather than "this server was never seeded".
+function projEmptyDemo(expected, present, missing) {
+  if (!expected)
+    return "This server has no demo set configured (demo-plans.json is "
+      + "missing or empty), so there is nothing to show here. Your own "
+      + "plans are on the other tab.";
+  const head = "None of the " + expected + " demo plans are on this server "
+    + "yet. They are files, not fixtures: a box gets them by running "
+    + "seed-demo.sh against it, which uploads and pre-detects each one.";
+  const some = present + " of " + expected + " demo plans are on this "
+    + "server; the rest have not been uploaded to it yet.";
+  const names = (missing || []).length
+    ? " Missing: " + missing.join(", ") + "." : "";
+  return (present ? some : head) + names;
+}
 // the header line under the H1: silent below the cap, explicit above it
 function projCountLine(shown, total) {
   if (!shown) return "";
@@ -18030,28 +18124,37 @@ function projSort(rows, mode) {
 
 // The reach line under the controls. This is the sentence that keeps the
 // search box honest, so it always names BOTH numbers when they differ.
-//   loaded  = rows this browser holds (<= the server's 200 cap)
-//   total   = rows that exist on the server
+//   loaded  = rows this browser holds FOR THE ACTIVE TAB (<= the 200 cap)
+//   total   = rows of that tab's kind that exist on the server
 //   matched = rows the current query kept
 //   q       = the query ("" when the box is empty)
-function projReachLine(matched, loaded, total, q) {
+//   noun    = what this tab's rows are called, {one, many}. Optional, and
+//             defaulting to plan/plans - the wording before there were tabs.
+//             It is not decoration: with two tabs over one grid, "All 8
+//             plans on this server" said on the Demo tab of a box holding 12
+//             is a false sentence, and this line exists to not say those.
+const PROJ_NOUN = { one: "plan", many: "plans" };
+function projReachLine(matched, loaded, total, q, noun) {
+  const n = noun && noun.one && noun.many ? noun : PROJ_NOUN;
   const capped = total > loaded;
   const query = String(q == null ? "" : q).trim();
   if (!query) {
     if (!loaded) return "";
     return capped
-      ? "Newest " + loaded + " of " + total + " plans — search and sort reach "
+      ? "Newest " + loaded + " of " + total + " " + n.many
+        + " — search and sort reach "
         + "these " + loaded + ", not the other " + (total - loaded) + "."
-      : "All " + loaded + " plan" + (loaded === 1 ? "" : "s")
+      : "All " + loaded + " " + (loaded === 1 ? n.one : n.many)
         + " on this server — search and sort reach all of them.";
   }
   const head = matched + " of " + loaded + " match “" + query + "”";
   return capped
     ? head + " — searched the newest " + loaded + " of " + total
-      + " plans; the other " + (total - loaded) + " were never sent to this "
-      + "browser, so a plan missing here may still be on the server."
-    : head + " — searched all " + loaded + " plan"
-      + (loaded === 1 ? "" : "s") + " on this server.";
+      + " " + n.many + "; the other " + (total - loaded)
+      + " were never sent to this "
+      + "browser, so a " + n.one + " missing here may still be on the server."
+    : head + " — searched all " + loaded + " "
+      + (loaded === 1 ? n.one : n.many) + " on this server.";
 }
 // PROJECTS-PURE-END ----------------------------------------------------------
 
@@ -18110,50 +18213,127 @@ async function loadProjects() {
 // larger than pvRows.length whenever the 200 cap bit.
 let pvRows = [];
 let pvTotal = 0;
+// The server's account of the demo SET (not of the rows): how many
+// demo-plans.json names, how many are actually here, which are not. This is
+// what lets the Demo tab say "this server was never seeded" instead of
+// drawing nothing. Defaults describe a server that never answered.
+let pvDemoInfo = { expected: 0, present: 0, missing: [] };
+// Which tab is showing. Null until the first render picks one from the data;
+// after that the operator's choice sticks across refreshes of the same view.
+let pvTab = null;
 
 function renderProjects(d) {
   pvRows = d.projects || [];
   pvTotal = typeof d.total === "number" ? d.total : pvRows.length;
+  const di = d.demo || {};
+  pvDemoInfo = {
+    expected: typeof di.expected === "number" ? di.expected : 0,
+    present: typeof di.present === "number" ? di.present : 0,
+    missing: Array.isArray(di.missing) ? di.missing : [],
+  };
+  // These rows carry the same name/pages/detected/deletable the recents route
+  // returns, so folding them in keeps the header's Remove button correct for
+  // a document that is older than the newest 60 /api/recent sends.
+  for (const r of pvRows) if (!RECENT_META[r.job_id]) RECENT_META[r.job_id] = r;
+  if (!pvTab || !PROJ_TABS.includes(pvTab)) pvTab = projDefaultTab(pvRows);
   pvPaint();
 }
 
-// filter -> sort -> cards. Called by renderProjects and by the two controls.
+// filter -> sort -> cards, WITHIN the active tab. Called by renderProjects,
+// by the two controls and by the tabs.
 function pvPaint() {
   const grid = $("pvGrid"), empty = $("pvEmpty");
   const q = $("pvSearch") ? $("pvSearch").value : "";
   const mode = $("pvSort") ? $("pvSort").value : "when";
-  const shown = projSort(projFilter(pvRows, q), mode);
+  if (!pvTab) pvTab = projDefaultTab(pvRows);
 
-  // #pvCount keeps saying what the SERVER sent (the cap disclosure the
-  // landing page has always carried); #pvReach says what search reached.
+  // Per-tab populations. The server never caps demo rows, so every demo it
+  // holds is in pvRows; the cap can only ever bite "Your projects", and the
+  // totals below are split the same way so the honesty line stays true per
+  // tab rather than quoting the whole-server numbers at both of them.
+  const demoRows = projTabRows(pvRows, "demo");
+  const mineRows = projTabRows(pvRows, "mine");
+  const demoTotal = demoRows.length;
+  const mineTotal = Math.max(mineRows.length, pvTotal - demoTotal);
+
+  const rows = pvTab === "demo" ? demoRows : mineRows;
+  const total = pvTab === "demo" ? demoTotal : mineTotal;
+  const shown = projSort(projFilter(rows, q), mode);
+
+  pvSyncTabs(demoRows.length, demoTotal, mineRows.length, mineTotal);
+
+  // #pvCount sits beside the H1 "Projects" and so keeps describing the WHOLE
+  // page, unchanged: what the server sent against what it holds. Quoting the
+  // active tab's number there would read as the page's total and be wrong on
+  // both tabs. The per-tab numbers are on the tabs, and #pvReach - the line
+  // the search box is judged by - is per tab, in that tab's own noun.
   $("pvCount").textContent = projCountLine(pvRows.length, pvTotal);
   if ($("pvReach"))
-    $("pvReach").textContent =
-      projReachLine(shown.length, pvRows.length, pvTotal, q);
+    $("pvReach").textContent = projReachLine(shown.length, rows.length,
+                                             total, q, projTabNoun(pvTab));
 
   grid.innerHTML = "";
-  if (!pvRows.length) {
+  if (!rows.length) {
+    // An empty TAB is not an empty server, and the two tabs are empty for
+    // completely different reasons - one has had nothing uploaded, the other
+    // has not been seeded. Say which.
     empty.hidden = false;
-    empty.textContent =
-      "No plans yet — drop a PDF anywhere or use Upload.";
+    empty.textContent = pvTab === "demo"
+      ? projEmptyDemo(pvDemoInfo.expected, pvDemoInfo.present,
+                      pvDemoInfo.missing)
+      : projEmptyMine(demoTotal);
     return;
   }
   if (!shown.length) {
     // a query that matched nothing is NOT "no plans" - say which it is, and
     // say the cap out loud so the operator knows where else to look
     empty.hidden = false;
-    empty.textContent = pvTotal > pvRows.length
-      ? "No plan among the newest " + pvRows.length + " matches “"
-        + String(q).trim() + "”. " + (pvTotal - pvRows.length)
+    empty.textContent = total > rows.length
+      ? "No plan among the newest " + rows.length + " matches “"
+        + String(q).trim() + "”. " + (total - rows.length)
         + " older plan(s) on this server were not sent to this browser and "
         + "were not searched."
-      : "No plan matches “" + String(q).trim() + "”.";
+      : "No plan matches “" + String(q).trim() + "”"
+        + (pvTab === "demo" ? " among the demo plans." : ".");
     return;
   }
   empty.hidden = true;
-  const badge = projShowsSharedBadge(pvRows);
+  // The "shared demo" badge is redundant on a tab whose heading already says
+  // Demo plans, so it stays for the mixed "Your projects" list only - where a
+  // row can still be shared without being one of ours (anything registered
+  // before logins were switched on).
+  const badge = pvTab !== "demo" && projShowsSharedBadge(pvRows);
   const nowS = Date.now() / 1000;
   for (const r of shown) grid.appendChild(pvCard(r, badge, nowS));
+}
+
+// The tab strip: selected state, live counts, ARIA. Counts come from the
+// same two numbers pvPaint just used, so a tab label can never disagree with
+// the reach line under it.
+function pvSyncTabs(demoLoaded, demoTotal, mineLoaded, mineTotal) {
+  const set = (btn, on) => {
+    if (!btn) return;
+    btn.classList.toggle("pv-tab-on", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+    btn.tabIndex = on ? 0 : -1;
+  };
+  set($("pvTabDemo"), pvTab === "demo");
+  set($("pvTabMine"), pvTab === "mine");
+  if ($("pvTabDemoN"))
+    $("pvTabDemoN").textContent = projTabCount(demoLoaded, demoTotal);
+  if ($("pvTabMineN"))
+    $("pvTabMineN").textContent = projTabCount(mineLoaded, mineTotal);
+}
+
+// Switching tabs is a re-render over rows the browser already holds - no
+// refetch, and the search box is cleared because a query typed against one
+// population reads as a broken filter against the other.
+function pvSetTab(tab) {
+  if (!PROJ_TABS.includes(tab) || tab === pvTab) return;
+  pvTab = tab;
+  if ($("pvSearch")) $("pvSearch").value = "";
+  pvCloseMenus();
+  pvPaint();
 }
 
 function pvCard(r, sharedBadge, nowS) {
@@ -18171,7 +18351,12 @@ function pvCard(r, sharedBadge, nowS) {
     const img = document.createElement("img");
     img.loading = "lazy";
     img.alt = "";
-    img.src = url(`/api/job/${r.job_id}/page/0/image?dpi=28`);
+    // r.thumb_page is the page the server CONFIRMED it has a 28-dpi cache
+    // for - page 0 for everything except a demo, which pictures its own
+    // sheet. Falling back to 0 keeps an older server (which sends no
+    // thumb_page) drawing exactly what it drew before.
+    img.src = url(`/api/job/${r.job_id}/page/`
+      + (Number.isInteger(r.thumb_page) ? r.thumb_page : 0) + `/image?dpi=28`);
     thumb.appendChild(img);
   } else {
     // never rendered on this box: requesting the image would rasterize a
@@ -18194,6 +18379,19 @@ function pvCard(r, sharedBadge, nowS) {
   when.className = "pv-when";
   when.textContent = "last activity " + projAgo(nowS, r.when);
   card.append(name, meta, when);
+
+  // WHAT THIS DEMO SHOWS. One line, written per plan in demo-plans.json and
+  // served with the row, because "Oncor Cloudcrest Substation Civils -
+  // 20251212.pdf_safe.pdf" tells a visitor nothing about why it is worth
+  // opening. Only demo rows carry one; the filename is left to speak for a
+  // plan the operator uploaded themselves, since they know what it is.
+  if (r.demo && r.demo_note) {
+    const shows = document.createElement("div");
+    shows.className = "pv-shows";
+    shows.textContent = r.demo_note;
+    shows.title = r.demo_note;      // the clamp hides line 4+; hover has it
+    card.appendChild(shows);
+  }
 
   if (sharedBadge && r.shared) {
     const b = document.createElement("span");
@@ -18267,7 +18465,10 @@ async function pvOpenJob(r) {
       const e = await resp.json().catch(() => ({}));
       return setStatus(e.detail || `could not open (${resp.status})`, "err");
     }
-    applyOpened(await resp.json());   // applyOpened leaves the projects view
+    // applyOpened leaves the projects view. A demo opens on the sheet its
+    // card describes; anything else opens on page 0, as it always has.
+    applyOpened(await resp.json(),
+                r.demo ? r.demo_page : undefined);
   } catch (e) {
     setStatus("could not open — the server did not answer", "err");
   }
@@ -18336,6 +18537,22 @@ $("pvSearch").addEventListener("keydown", (e) => {
   pvPaint();
 });
 $("pvSort").addEventListener("change", pvPaint);
+
+// ---- the tabs --------------------------------------------------------------
+// Same grammar as the two controls above: a pure re-render over cached rows.
+// Arrow keys walk the strip because it is a role="tablist" and that is what a
+// screen reader user will try; the roving tabIndex is set by pvSyncTabs.
+$("pvTabDemo").onclick = () => pvSetTab("demo");
+$("pvTabMine").onclick = () => pvSetTab("mine");
+for (const id of ["pvTabDemo", "pvTabMine"]) {
+  $(id).addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const other = id === "pvTabDemo" ? "pvTabMine" : "pvTabDemo";
+    pvSetTab(other === "pvTabDemo" ? "demo" : "mine");
+    $(other).focus();
+  });
+}
 
 $("projectsLink").onclick = (e) => {
   e.preventDefault();

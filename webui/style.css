@@ -59,10 +59,12 @@ aside::-webkit-scrollbar-thumb, .thumb-list::-webkit-scrollbar-thumb,
    the severity badges. */
 .status, .side-head h2 { font-size: var(--t-fs-xs); }
 /* The one filled button per screen. #uploadBtn joined it when the file-open
-   plumbing moved to the Projects page (CRITIQUE fix 4): Upload is that
-   page's primary action exactly as Detect is the workbench's, and sharing
-   the rule is how they cannot drift apart - or grow a second literal. */
-#detectBtn, .pv-open-strip .pv-up { background: var(--accent-deep);
+   plumbing moved to the Projects page (CRITIQUE fix 4): it is that page's
+   primary action exactly as Detect is the workbench's, and sharing the rule
+   is how they cannot drift apart - or grow a second literal. The selector
+   moved with the button, from `.pv-open-strip .pv-up` to `.pv-new`, when
+   the strip around it was retired and it became "+ New project". */
+#detectBtn, .pv-new { background: var(--accent-deep);
   border-color: var(--accent);
   color: #fff; font-weight: 600; }
 .doc-name { color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1872,10 +1874,19 @@ body { --w1-warn: #d79b3a; }
 /* ---------- PROJECTS: the card grid, restyled ---------------------------- */
 .projects-view { padding: var(--t-sp-5, 24px) var(--t-sp-6, 32px)
   var(--t-sp-7, 48px); }
-.pv-head { margin-bottom: var(--t-sp-3, 12px); }
+.pv-head { margin-bottom: var(--t-sp-3, 12px); max-width: 1100px;
+  margin-left: auto; margin-right: auto; }
 .pv-head h1 { font-family: var(--t-font-ui, inherit);
   font-size: var(--t-fs-lg, 20px); font-weight: 600; text-transform: none;
   letter-spacing: 0; }
+/* "+ New project" is the page's primary action and takes the right end of
+   the head row; "Back to the sheet" sits beside it. The older rule pushed
+   whatever .mini was here to the right with margin-left:auto - with two
+   buttons in the row that would split the gap between them and leave the
+   pair floating in the middle, so the auto moves to the first of them and
+   the second is told, in as many words, not to add a second one. */
+.pv-head .pv-new { margin-left: auto; align-self: center; flex: none; }
+.pv-head .pv-new + .mini { margin-left: var(--t-sp-2, 8px); }
 .pv-count { font-size: var(--t-fs-xs, 12px);
   color: var(--t-text-dim, var(--dim));
   font-family: var(--t-font-data, var(--mono)); }
@@ -2199,28 +2210,56 @@ header #pageSel { flex: none; max-width: 220px; }
 .hdr-right { margin-left: auto; flex: none;
   display: flex; align-items: center; gap: var(--t-sp-2, 8px); }
 
-/* ---------- OPEN A PLAN: the strip on the Projects page ------------------ */
-.pv-open-strip { display: flex; flex-wrap: wrap; align-items: center;
-  gap: var(--t-sp-2, 8px); max-width: 1100px;
-  margin: 0 auto var(--t-sp-2, 8px);
-  background: var(--t-surface-1, var(--panel));
-  border: 1px solid var(--t-border, var(--line));
-  border-radius: var(--t-r-3, 12px);
-  padding: var(--t-sp-3, 12px) var(--t-sp-4, 16px); }
-.pv-open-lab { flex: none; font-size: var(--t-fs-sm, 13px); font-weight: 600;
-  color: var(--t-text-dim, var(--dim)); }
-/* the two <select>s carry long plan names; let them take the slack and
-   ellipsize rather than forcing the strip onto a second row on a laptop */
-.pv-open-strip #sampleSel, .pv-open-strip #recentSel {
-  flex: 1 1 240px; min-width: 0; max-width: 100%; }
-.pv-open-strip #pathInput { flex: 1 1 180px; min-width: 0; width: auto; }
-.pv-open-strip #openBtn, .pv-open-strip .pv-up { flex: none; }
-/* Drag-and-drop is the only way in on a hosted box, and the strip is where
-   someone looks for a way in - so the window-wide drop target is named here
-   in words rather than left to be discovered. */
-.pv-open-note { max-width: 1100px; margin: 0 auto var(--t-sp-5, 24px);
-  font-size: var(--t-fs-xs, 12px); line-height: 1.5;
-  color: var(--t-text-dim, var(--dim)); }
+/* ---------- OPEN A PLAN: what replaced the strip ------------------------- */
+/* The "Open a plan" strip - a label and five controls in a bordered box
+   above the plan library - is gone. Three of its controls are now in
+   Settings -> This machine (.sv-machine, below), one was retired as a
+   duplicate of the cards, and #uploadBtn stayed as the single primary
+   action in the page head. */
+.sv-machine { display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--t-sp-2, 8px); margin: var(--t-sp-3, 12px) 0; }
+/* the sample <select> carries long plan names; let it take the slack and
+   ellipsize rather than forcing the row onto a second line on a laptop */
+.sv-machine #sampleSel { flex: 1 1 240px; min-width: 0; max-width: 100%; }
+.sv-machine #pathInput { flex: 1 1 180px; min-width: 0; width: auto; }
+.sv-machine #openBtn { flex: none; }
+
+/* ---------- PROJECTS: the two tabs --------------------------------------- */
+/* One grid, two populations. Underline rather than pill because these sit
+   directly over the grid and a filled chip at this size reads as a button
+   that does something, not as a place you already are. */
+.pv-tabs { display: flex; align-items: flex-end; gap: var(--t-sp-4, 16px);
+  max-width: 1100px; margin: 0 auto var(--t-sp-3, 12px);
+  border-bottom: 1px solid var(--t-border, var(--line)); }
+.pv-tab { background: none; border: 0; border-radius: 0; padding: 8px 2px;
+  margin-bottom: -1px; cursor: pointer;
+  font: 600 var(--t-fs-sm, 13px)/1.4 var(--t-font-ui, inherit);
+  letter-spacing: 0; text-transform: none;
+  color: var(--t-text-dim, var(--dim));
+  border-bottom: 2px solid transparent; }
+.pv-tab:hover { color: var(--t-text, var(--text)); }
+.pv-tab:focus-visible { outline: 2px solid var(--t-accent, var(--accent));
+  outline-offset: 2px; }
+.pv-tab-on { color: var(--t-text, var(--text));
+  border-bottom-color: var(--t-accent, var(--accent)); }
+/* the live count rides the label, dim and in the data face so it reads as a
+   quantity rather than as part of the tab's name */
+.pv-tabn { margin-left: 6px; font-weight: 400;
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums);
+  font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-faint, var(--dim)); }
+.pv-tabn:empty { display: none; }
+/* WHAT THIS DEMO SHOWS - one sentence per demo plan, from demo-plans.json.
+   Clamped at three lines so a long line cannot make one card taller than
+   its row; the full text stays in the card's own title attribute. */
+.pv-shows { font-size: var(--t-fs-xs, 12px); line-height: 1.45;
+  padding: var(--t-sp-2, 8px) var(--t-sp-3, 12px) 0;
+  color: var(--t-text-dim, var(--dim));
+  border-top: 1px solid var(--t-border, var(--line));
+  margin-top: var(--t-sp-2, 8px);
+  overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; }
 
 /* ---------- THE STATUS BAR ----------------------------------------------- */
 /* One 34px strip at the foot of the window, outside <main>, so it survives

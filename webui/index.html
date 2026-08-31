@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=62">
+<link rel="stylesheet" href="style.css?v=63">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -26,7 +26,15 @@
      about it, with its handler, its title and its `hidden` bookkeeping
      untouched:
        sampleSel / pathInput / openBtn / recentSel / uploadBtn / fileInput
-                              -> the "Open a plan" strip on #projectsView
+                              -> the "Open a plan" strip on #projectsView,
+                                 and then (2026-08-31) that strip was retired
+                                 in favour of the tabbed plan library. Where
+                                 each of the five went is written out at the
+                                 head of #projectsView below: uploadBtn and
+                                 fileInput stayed as "+ New project",
+                                 sampleSel/pathInput/openBtn went on to
+                                 Settings -> This machine, and recentSel was
+                                 retired (the cards are the recents).
        status / docRemoveBtn / fbBtn / fbExportBtn / memBtn / Terms / Privacy
                               -> the #statusBar below <main>
        whoami / signOutBtn    -> the #statusBar, and then (2026-09-01) on to
@@ -106,34 +114,51 @@
        fought over and the workbench keeps its full state while out of sight.
        Built by loadProjects()/renderProjects() in app.js from /api/projects. -->
   <div id="projectsView" class="projects-view" hidden>
-    <!-- OPEN A PLAN (CRITIQUE fix 4). The four ways into a document used to
-         sit in the masthead of every screen forever, including while a sheet
-         was on the canvas and none of them could be wanted. They are the
-         same five nodes, MOVED - #sampleSel, #pathInput, #openBtn,
-         #recentSel, #uploadBtn and the hidden #fileInput they drive. Not one
-         id, handler, title or option list changed, so loadRecent(),
-         applyOpened(), openPath(), uploadPdf() and the hosted-box branch of
-         /api/config (which hides the three path controls) all still find
-         exactly what they wrote to before.
-         Reachable WITH a document open: the Projects link rides the brand
-         block in the masthead, one click away from the sheet, and
-         applyOpened() already closes this view the moment a plan arrives.
-         Dropping a PDF anywhere on the window still works from both views -
+    <!-- THE FRONT DOOR. What stood here was an "Open a plan" strip carrying
+         five controls: a sample-plan dropdown, a path box, Open, a recents
+         dropdown and Upload. Four of the five were laptop plumbing sitting
+         above the product, and the fifth duplicated the cards below it -
+         the grid IS the recents list, sorted by last activity.
+         WHERE EACH ONE WENT (nothing was silently dropped):
+           #uploadBtn   stays right here, REPURPOSED as the one primary
+                        action: "+ New project". Same id, same handler
+                        (click -> #fileInput), same hidden #fileInput, so
+                        uploadPdf() and the drag-and-drop path are untouched.
+           #sampleSel / #pathInput / #openBtn
+                        MOVED to Settings -> "This machine", which is what
+                        they are: filesystem affordances a hosted box refuses
+                        outright (server.py open_path 403s when HOSTED).
+                        Same ids, same handlers, same option list.
+           #recentSel   RETIRED. It listed the newest 60 jobs in a <select>;
+                        these cards list them as cards, with the page count,
+                        how much is detected and a thumbnail. loadRecent()
+                        REMAINS - it is what fills RECENT_META, which the
+                        header's Remove-from-server button reads - and now
+                        tolerates the <select> being absent.
+         Dropping a PDF anywhere on the window still works from both views:
          that listener is on `window`, not on anything here. -->
-    <div class="pv-open-strip">
-      <span class="pv-open-lab">Open a plan</span>
-      <select id="sampleSel"><option value="">Open sample plan…</option></select>
-      <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
-      <button id="openBtn">Open</button>
-      <select id="recentSel" title="Plan sets already on this server. Reopening one is instant and keeps whatever has already been detected."><option value="">Recent plans…</option></select>
-      <button id="uploadBtn" class="pv-up" title="Choose a PDF from this computer. You can also just drag one onto the window.">Upload plans</button>
+    <div class="pv-head">
+      <h1>Projects</h1>
+      <span id="pvCount" class="pv-count"></span>
+      <button id="uploadBtn" class="pv-new" title="Upload a PDF from this computer and start a takeoff on it. You can also drag a PDF anywhere onto this window.">+ New project</button>
+      <button id="pvBack" class="mini" hidden>Back to the sheet</button>
       <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
     </div>
-    <div class="pv-open-note">Or drop a PDF anywhere on this window &mdash; from here or from a sheet you already have open.</div>
-    <div class="pv-head">
-      <h1>Plans on this server</h1>
-      <span id="pvCount" class="pv-count"></span>
-      <button id="pvBack" class="mini" hidden>Back to the sheet</button>
+    <!-- THE TWO TABS. One grid, two populations, and the difference is in
+         the DATA, not in the markup: /api/projects marks a row demo:true
+         when it is SHARED (owner is None - the visibility rule this app has
+         always had) and its name is in demo-plans.json. "Your projects" is
+         every other row this account may see.
+         Search, sort and the #pvReach honesty line all act WITHIN the active
+         tab; pvTabRows() is the only thing that knows which. The counts on
+         the tabs are live and are the same numbers the reach line quotes. -->
+    <div class="pv-tabs" role="tablist" aria-label="Which projects to show">
+      <button id="pvTabDemo" class="pv-tab" role="tab" aria-selected="false"
+              aria-controls="pvGrid"
+              title="Plans of ours you can open right now to see what the engine does. Nothing here is a client's drawing.">Demo plans<span id="pvTabDemoN" class="pv-tabn"></span></button>
+      <button id="pvTabMine" class="pv-tab" role="tab" aria-selected="true"
+              aria-controls="pvGrid"
+              title="Everything you have uploaded or opened on this server.">Your projects<span id="pvTabMineN" class="pv-tabn"></span></button>
     </div>
     <!-- Search + sort. BOTH act on the rows the server actually sent, which
          /api/projects caps at 200 of however many exist. That cap is the
@@ -204,6 +229,7 @@
       <a href="#scope">Scope</a>
       <a href="#pricing">Pricing</a>
       <a href="#account">Account</a>
+      <a href="#machine" id="svNavMachine">This machine</a>
     </nav>
 
     <h2 class="sv-grouptitle" id="svGroupCompany">Company</h2>
@@ -317,6 +343,37 @@
         <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
       </div>
       <div class="sv-note sv-note-b" id="svAccountFoot"></div>
+    </section>
+
+    <!-- THIS MACHINE. The three filesystem controls that used to open the
+         Projects page. They are a LAPTOP affordance, not a product feature:
+         POST /api/open-path takes a path from the client, which a hosted box
+         refuses outright (403, server.py open_path), and GET /api/samples
+         returns [] there. So they belong on a settings page that says what
+         they are, not above the plan library on every visitor's first screen.
+         MOVED, not rebuilt - #sampleSel, #pathInput and #openBtn keep their
+         ids, their handlers and the option list /api/samples fills, and the
+         hosted branch of /api/config still hides them (it now hides this
+         whole section and its nav link, because an empty group titled "This
+         machine" is worse than no group). -->
+    <h2 class="sv-grouptitle" id="svGroupMachine">This machine</h2>
+    <section class="sv-section" id="svMachineSection">
+      <h2>Open a plan by path</h2>
+      <div class="sv-note">For working on this laptop: open a PDF that is
+        already on this computer&rsquo;s disk, without uploading a copy.
+        <b>A hosted server refuses this</b> &mdash; taking a filesystem path
+        from a browser would let one tenant read another&rsquo;s files &mdash;
+        so on <code>core.workoptional.studio</code> this section is not shown
+        at all and <b>+ New project</b> is the only way in.</div>
+      <div class="sv-machine">
+        <select id="sampleSel"><option value="">Open sample plan…</option></select>
+        <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
+        <button id="openBtn">Open</button>
+      </div>
+      <div class="sv-note sv-note-b">The dropdown lists the PDFs under this
+        server&rsquo;s configured plan roots (<code>TAKEOFF_PLAN_ROOTS</code>).
+        Opening one registers it exactly as an upload does, so it appears on
+        the Projects page as a card the moment it is open.</div>
     </section>
   </div>
   <nav id="pageStrip" class="page-strip" hidden>
@@ -968,6 +1025,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=137"></script>
+<script src="app.js?v=138"></script>
 </body>
 </html>

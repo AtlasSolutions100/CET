@@ -31,7 +31,9 @@ const b = appSrc.indexOf("// PROJECTS-PURE-END");
 check(a >= 0 && b > a, "PROJECTS-PURE markers present in webui/app.js");
 const P = new Function(appSrc.slice(a, b) +
   " return { projMetaLine, projAgo, projShowsSharedBadge, projCountLine,"
-  + " projMatches, projFilter, projSort, projReachLine, PROJ_SORTS };")();
+  + " projMatches, projFilter, projSort, projReachLine, PROJ_SORTS,"
+  + " projIsDemo, projTabRows, projTabNoun, projDefaultTab, projTabCount,"
+  + " projEmptyMine, projEmptyDemo, PROJ_TABS };")();
 
 // ---- the card's meta line -----------------------------------------------
 check(P.projMetaLine(12, 5, 0) === "12 pages · 5 detected",
@@ -147,6 +149,108 @@ check(P.projCountLine(200, 320) === "showing 200 of 320",
     "reach: a whitespace-only query is not a query");
 }
 
+// ---- the two tabs ------------------------------------------------------------
+// The split is read off the SERVER's demo flag and never re-derived from the
+// name here: a client's own upload that happens to be called
+// C8.0-STORM-LAYOUT-Rev.1.pdf is theirs, and must not join the demo tab.
+{
+  const rows = [
+    { name: "Oncor.pdf", demo: true, mine: false, shared: true },
+    { name: "C4.0.pdf", demo: true, mine: false, shared: true },
+    { name: "mine-a.pdf", demo: false, mine: true, shared: false },
+    { name: "C8.0-STORM-LAYOUT-Rev.1.pdf", demo: false, mine: true,
+      shared: false },
+  ];
+  check(P.PROJ_TABS.join(",") === "demo,mine", "tabs: exactly two, demo first");
+  check(P.projTabRows(rows, "demo").length === 2, "tab: demo keeps demo rows");
+  check(P.projTabRows(rows, "mine").length === 2,
+    "tab: mine keeps everything that is not a demo");
+  check(P.projTabRows(rows, "mine").some(
+    r => r.name === "C8.0-STORM-LAYOUT-Rev.1.pdf"),
+    "tab: a NON-demo row keeping a demo plan's filename stays on Your projects");
+  check(P.projIsDemo({ demo: true }) === true
+    && P.projIsDemo({ demo: false }) === false
+    && P.projIsDemo({}) === false && P.projIsDemo(null) === false,
+    "tab: demo-ness is the server's flag, absent reads false");
+  check(P.projTabRows(null, "demo").length === 0, "tab: no rows in, none out");
+
+  // which tab a visitor lands on
+  check(P.projDefaultTab(rows) === "mine",
+    "default tab: an account with its own work lands on Your projects");
+  check(P.projDefaultTab(rows.filter(r => r.demo)) === "demo",
+    "default tab: an account with nothing of its own lands on Demo plans");
+  check(P.projDefaultTab([]) === "mine",
+    "default tab: an empty server lands on Your projects (whose empty state "
+    + "names the one action that works)");
+  check(P.projDefaultTab(rows.filter(r => !r.demo)) === "mine",
+    "default tab: no demos on this box -> Your projects");
+}
+
+// ---- the tab labels' counts --------------------------------------------------
+check(P.projTabCount(0, 0) === "", "tab count: an empty tab shows no number");
+check(P.projTabCount(8, 8) === "8", "tab count: uncapped shows the total");
+check(P.projTabCount(200, 416) === "200 of 416",
+  "tab count: a capped tab says so on the tab itself");
+
+// ---- the reach line, per tab -------------------------------------------------
+// The whole point of the tabs is that ONE grid shows two populations, so the
+// sentence under the search box has to describe the population it is looking
+// at. "All 8 plans on this server" on the Demo tab of a box holding 12 rows
+// is false, and this line exists to not say false things.
+{
+  const D = P.projTabNoun("demo"), M = P.projTabNoun("mine");
+  check(D.many === "demo plans" && M.many === "projects",
+    "reach: each tab has its own noun");
+  const d = P.projReachLine(8, 8, 8, "", D);
+  check(d.includes("All 8 demo plans on this server")
+    && !d.includes("All 8 plans"),
+    "reach: the demo tab says 'demo plans', not 'plans'");
+  const m = P.projReachLine(4, 4, 4, "", M);
+  check(m.includes("All 4 projects on this server"),
+    "reach: Your projects says 'projects'");
+  const dq = P.projReachLine(2, 8, 8, "belle", D);
+  check(dq.includes("2 of 8 match") && dq.includes("searched all 8 demo plans"),
+    "reach: a query on the demo tab counts the demo population");
+  const mc = P.projReachLine(200, 200, 416, "", M);
+  check(mc.includes("Newest 200 of 416 projects")
+    && mc.includes("not the other 216"),
+    "reach: the cap disclosure survives the noun change");
+  const mcq = P.projReachLine(3, 200, 416, "onc", M);
+  check(mcq.includes("a project missing here may still be on the server"),
+    "reach: the singular noun is used in the 'may still be there' clause");
+  check(P.projReachLine(1, 1, 1, "", D).includes("All 1 demo plan on this"),
+    "reach: singular demo plan reads 'plan'");
+}
+// ...and the pre-tab wording is untouched when no noun is passed, so nothing
+// that calls this with four arguments changed behaviour.
+check(P.projReachLine(7, 7, 7, "").includes("All 7 plans on this server"),
+  "reach: the 4-argument call still says 'plans' exactly as before");
+
+// ---- the two empty states are different sentences ----------------------------
+// An empty tab is not an empty server, and these two tabs are empty for
+// unrelated reasons: nothing uploaded vs. the box was never seeded.
+{
+  const mine = P.projEmptyMine(8);
+  check(mine.includes("+ New project") && mine.includes("drop a PDF"),
+    "empty (yours): names the action that works");
+  check(mine.includes("8 demo plans"),
+    "empty (yours): points at the demo tab when there is one");
+  check(!P.projEmptyMine(0).includes("demo"),
+    "empty (yours): says nothing about demos on a box that has none");
+
+  const none = P.projEmptyDemo(8, 0, ["a.pdf", "b.pdf"]);
+  check(none.includes("None of the 8 demo plans")
+    && none.includes("seed-demo.sh"),
+    "empty (demo): an unseeded box says it is unseeded, and how to fix it");
+  check(none.includes("Missing: a.pdf, b.pdf."),
+    "empty (demo): names which files are missing");
+  const some = P.projEmptyDemo(8, 3, ["c.pdf"]);
+  check(some.includes("3 of 8 demo plans are on this server"),
+    "empty (demo): a partly-seeded box says how far it got");
+  check(P.projEmptyDemo(0, 0, []).includes("no demo set configured"),
+    "empty (demo): no manifest is its own message, not a seeding nag");
+}
+
 // ---- structure -------------------------------------------------------------
 check(/<main>[\s\S]*id="projectsView"/.test(htmlSrc),
   "#projectsView lives inside <main>");
@@ -161,9 +265,100 @@ check(cssSrc.includes("main.pv-open #pageStrip")
   && cssSrc.includes("main.pv-open #stage"),
   "the CSS toggle hides exactly the three workbench columns");
 for (const id of ["pvGrid", "pvEmpty", "pvBack", "pvCount",
-                  "pvSearch", "pvSort", "pvReach"]) {
+                  "pvSearch", "pvSort", "pvReach",
+                  "pvTabDemo", "pvTabMine", "pvTabDemoN", "pvTabMineN"]) {
   check(htmlSrc.includes(`id="${id}"`), `#${id} exists in index.html`);
 }
+
+// ---- WHERE THE "OPEN A PLAN" STRIP WENT --------------------------------------
+// The strip is gone from the top of #projectsView. Every id it held is either
+// still reachable somewhere honest or provably referenced nowhere - a dead id
+// that another file still calls is the failure mode this block guards.
+const pvView = htmlSrc.slice(htmlSrc.indexOf('id="projectsView"'),
+                             htmlSrc.indexOf('id="settingsView"'));
+const svView = htmlSrc.slice(htmlSrc.indexOf('id="settingsView"'),
+                             htmlSrc.indexOf('id="pageStrip"'));
+check(!htmlSrc.includes("pv-open-strip") && !htmlSrc.includes("pv-open-note"),
+  "the 'Open a plan' strip is gone from the markup");
+check(!/\.pv-open-(strip|note|lab)\s*[,{]/.test(cssSrc),
+  "...and its CSS rules went with it, rather than styling nothing");
+// UPLOAD: repurposed in place as the page's one primary action.
+check(pvView.includes('id="uploadBtn"') && pvView.includes("+ New project"),
+  "#uploadBtn stayed on the Projects page as '+ New project'");
+check(pvView.includes('id="fileInput"'),
+  "#fileInput came with it - the button is inert without the input it clicks");
+check(appSrc.includes('$("uploadBtn").onclick = () => $("fileInput").click()'),
+  "the upload handler is unchanged");
+check(cssSrc.includes("#detectBtn, .pv-new"),
+  "the primary-button rule follows the button (.pv-up -> .pv-new), so the "
+  + "page still has exactly one filled button");
+// PATH / SAMPLE / OPEN: relocated to Settings, same ids and handlers.
+for (const id of ["sampleSel", "pathInput", "openBtn"]) {
+  check(!pvView.includes(`id="${id}"`), `#${id} left the Projects page`);
+  check(svView.includes(`id="${id}"`), `#${id} arrived in Settings`);
+}
+check(svView.includes('id="svMachineSection"')
+  && svView.includes('id="svGroupMachine"')
+  && htmlSrc.includes('id="svNavMachine"'),
+  "Settings has a 'This machine' group, and a nav entry for it");
+check(appSrc.includes('"svGroupMachine", "svMachineSection", "svNavMachine"'),
+  "the hosted-box branch hides the whole section, not just its three "
+  + "controls - an empty group headed 'This machine' reads as a broken page");
+check(!appSrc.includes('$("uploadBtn").textContent = "Upload plans"'),
+  "the hosted branch no longer rewrites the button's label over '+ New project'");
+// RECENTS: retired. Nothing may still reach for it.
+check(!htmlSrc.includes('id="recentSel"'), "#recentSel is retired from the markup");
+check(!cssSrc.includes("#recentSel"), "...and from the stylesheet");
+check(!appSrc.includes('$("recentSel").onchange'),
+  "...and its reopen handler is gone (pvOpenJob uses the same /open route)");
+// loadRecent() itself must SURVIVE: RECENT_META is what tells #docRemoveBtn
+// whether the server considers the open document deletable, and an early
+// return on a missing <select> would have silently disarmed that button.
+check(appSrc.includes("async function loadRecent()"),
+  "loadRecent() survives the <select> it used to fill");
+{
+  const lr = appSrc.slice(appSrc.indexOf("async function loadRecent()"),
+                          appSrc.indexOf("// job_id -> the row"));
+  const metaAt = lr.indexOf("RECENT_META = {}");
+  const guardAt = lr.indexOf("if (!sel) return;");
+  check(metaAt > 0 && guardAt > metaAt,
+    "loadRecent fills RECENT_META BEFORE it gives up on the absent <select>");
+  check(lr.indexOf("syncRemoveBtn()") > metaAt,
+    "...and re-syncs the remove button from it");
+}
+// the grid's rows also feed RECENT_META, so a document older than the newest
+// 60 /api/recent returns still knows whether it may be deleted
+check(appSrc.includes("if (!RECENT_META[r.job_id]) RECENT_META[r.job_id] = r"),
+  "renderProjects folds its rows into RECENT_META");
+
+// ---- the demo set is DATA, not a hard-coded list in the UI --------------------
+check(fs.existsSync(path.join(__dirname, "..", "demo-plans.json")),
+  "demo-plans.json exists");
+{
+  const man = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "demo-plans.json"), "utf8"));
+  const names = Object.keys(man.plans);
+  check(names.length >= 4, "manifest lists at least the four plans asked for");
+  for (const want of ["Oncor Cloudcrest Substation Civils - 20251212.pdf_safe.pdf",
+                      "C4.0-SITE-GRADING-PLAN-Rev.1.pdf",
+                      "Belle Farms Structural Plans.pdf",
+                      "Belle Farms Upper Parcel ROAD GRADING 1 of 2.pdf"])
+    check(names.includes(want), `manifest carries the named demo "${want}"`);
+  for (const n of names) {
+    check(typeof man.plans[n].shows === "string" && man.plans[n].shows.length > 20,
+      `"${n}" says what it demonstrates`);
+    check(Number.isInteger(man.plans[n].page) && man.plans[n].page >= 0,
+      `"${n}" names the page to land on`);
+  }
+  // PROVENANCE. A client's drawing must never become a demo. These are the
+  // two directories the brief excludes by name, plus the live-bid filenames.
+  for (const n of names)
+    check(!/ryno|stice|liberty|beaumont|kayden|ellis|klayton|swr_/i.test(n),
+      `"${n}" is not a client document`);
+}
+// the UI must not carry its own copy of the list
+check(!appSrc.includes("C4.0-SITE-GRADING-PLAN-Rev.1.pdf"),
+  "app.js hard-codes no demo filename - the server sends the flag");
 // the sort <select> offers exactly the modes PROJ_SORTS knows how to apply -
 // an option with no comparator would silently fall back to last activity.
 //
@@ -200,9 +395,21 @@ check(appSrc.includes('confirm("Remove \\"" + r.name + "\\" from this server?'),
   "pvRemove keeps #docRemoveBtn's confirm wording");
 check(!appSrc.includes('x.className = "pv-x"'),
   "the always-armed card ✕ is gone (delete is behind the ⋯ menu)");
-// the empty state's promised wording is in the renderer
-check(appSrc.includes("No plans yet — drop a PDF anywhere or use Upload."),
-  "empty state wording present");
+// The empty state's promised wording is in the renderer.
+// CHANGED, deliberately: this used to pin the single string "No plans yet —
+// drop a PDF anywhere or use Upload." There is no longer ONE empty state.
+// The grid now has two tabs and they are empty for unrelated reasons - "you
+// have not uploaded anything" and "this box was never seeded with the demo
+// set" - so one sentence covering both would have to be vague about which,
+// which is the thing the landing page's honesty rules exist to prevent. The
+// two replacements are pinned by projEmptyMine/projEmptyDemo above; what is
+// pinned HERE is that pvPaint still reaches for them and still names the
+// upload path in the one an empty box actually shows.
+check(appSrc.includes("projEmptyMine(demoTotal)")
+  && appSrc.includes("projEmptyDemo(pvDemoInfo.expected"),
+  "empty state: pvPaint picks the message that fits the empty tab");
+check(P.projEmptyMine(0).includes("drop a PDF anywhere on this window"),
+  "empty state: the drop target is still named in words, as it was");
 // opening a card goes through the same reopen route the recents select uses
 check(appSrc.includes("/api/job/${r.job_id}/open"),
   "cards open through the recents' own /open route");

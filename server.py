@@ -755,10 +755,22 @@ def list_projects(request: Request):
     The reply says its own coverage ({total, projects}): if the list is ever
     longer than the cap, the landing page can say "showing N of M" instead of
     silently reading as "my plans are gone".
+
+    DEMO ROWS ARE NEVER CAPPED. The landing page tabs "Demo plans" against
+    "Your projects", and a demo that fell off the end of the newest-200 slice
+    would make the demo tab quietly wrong - on this laptop the demo sheets sit
+    at position 300-odd of 420. So the slice applies to the OTHER rows only
+    and every demo row is sent, which is also what lets the demo tab claim
+    full search reach honestly.
+
+    `demo` reports the set's health: how many the manifest expects, how many
+    are actually on this box, and which are missing - so the UI can say "the
+    demo plans are not on this server" instead of drawing an empty tab.
     """
     me = _who(request)
     staff = _is_staff(request)
     out = []
+    demos = []
     with JOBS_LOCK:
         items = list(JOBS.items())
     for jid, j in items:
@@ -772,6 +784,13 @@ def list_projects(request: Request):
             when = src.stat().st_mtime
         except OSError:
             continue
+        name = _display_name(src)
+        dm = _demo_meta(name, owner)
+        # A demo card pictures the sheet its card describes, not the cover
+        # sheet in front of it: Oncor page 0 is a title block and page 2 is
+        # the grading plan the demo is about. Everything else still pictures
+        # page 0, which is what an operator recognises their own upload by.
+        thumb_page = int(dm.get("page") or 0) if dm else 0
         d = JOBS_DIR / jid
         detected = 0
         approved = 0
@@ -781,25 +800,57 @@ def list_projects(request: Request):
                 when = max(when, d.stat().st_mtime)
                 detected = len(list(d.glob("p*_result.json")))
                 approved = len(list(d.glob("p*_elements.json")))
-                has_thumb = (d / "p0_28.png").exists()
+                has_thumb = (d / ("p%d_28.png" % thumb_page)).exists()
+                if not has_thumb and thumb_page:
+                    # the demo page has never been rendered but page 0 has:
+                    # a picture of the wrong page beats "not opened yet"
+                    thumb_page = 0
+                    has_thumb = (d / "p0_28.png").exists()
         except OSError:
             pass
-        out.append({
+        row = {
             "job_id": jid,
-            "name": _display_name(src),
+            "name": name,
             "pages": int(j.get("pages") or 0),
             "detected": detected,
             "approved": approved,
             "when": when,
             "has_thumb": has_thumb,
+            # which page has_thumb is talking about (0 for everything that is
+            # not a demo, so no existing reader changes behaviour)
+            "thumb_page": thumb_page,
             "uploaded": bool(_UPLOAD_PREFIX.match(src.name)),
             "owner": owner,
             "mine": owner is not None and owner == me,
             "shared": owner is None,
+            # A demo is a SHARED row whose name is in demo-plans.json. It is
+            # the "shared demo" the badge has always named, now said in the
+            # data instead of guessed at in JavaScript.
+            "demo": dm is not None,
+            # one line for the card: what this sheet demonstrates
+            "demo_note": (dm or {}).get("shows") or None,
+            # the sheet a visitor should land on (engine page index)
+            "demo_page": (dm or {}).get("page") if dm else None,
+            # UNCHANGED. Deleting a demo is still the server's call and still
+            # the rule it already had (DELETE /api/job refuses an owner-less
+            # row to anyone who is not staff), so a hosted client sees no
+            # delete on a demo card and our own box still can clean one off.
             "deletable": staff or (owner == me),
-        })
+        }
+        (demos if dm is not None else out).append(row)
+
+    demos.sort(key=lambda r: -r["when"])
     out.sort(key=lambda r: -r["when"])
-    return {"total": len(out), "projects": out[:200]}
+    have = {r["name"] for r in demos}
+    return {
+        # unchanged meaning: every row this account may see
+        "total": len(out) + len(demos),
+        # every demo, then the newest 200 of everything else
+        "projects": demos + out[:200],
+        "demo": {"expected": len(DEMO_PLANS),
+                 "present": len(have),
+                 "missing": sorted(n for n in DEMO_PLANS if n not in have)},
+    }
 
 
 # FEEDBACK. Replaces a phone call. Stored as JSONL beside the job store so it
@@ -989,6 +1040,56 @@ def _display_name(path) -> str:
     plumbing and must not appear in it, or the same plan set would look like
     a different document every time it arrived."""
     return _UPLOAD_PREFIX.sub("", Path(path).name)
+
+
+# THE DEMO SET. demo-plans.json is the one list of plans that are OURS and may
+# be shown to anyone; see the _readme inside it for the provenance rule.
+#
+# This is NOT a second visibility notion. A row is a demo only when it is
+# already SHARED under the rule /api/recent and /api/projects have always
+# used - owner is None - and its display name is in the manifest. So a client
+# who uploads a file called "C8.0-STORM-LAYOUT-Rev.1.pdf" gets their own
+# private job (owner = them), exactly as before, and it is not a demo.
+#
+# Read once at import. A box that ships without the file simply has no demo
+# set, which the landing page then says out loud rather than drawing an empty
+# tab (/api/projects reports expected/present/missing).
+DEMO_MANIFEST = ROOT / "demo-plans.json"
+
+
+def _load_demo_plans() -> dict:
+    """{display name -> {"page": int, "shows": str}}. Never raises: a broken
+    or absent manifest costs the demo tab, it must not cost the service."""
+    try:
+        raw = json.loads(DEMO_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    plans = raw.get("plans")
+    if not isinstance(plans, dict):
+        return {}
+    out = {}
+    for name, meta in plans.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        meta = meta if isinstance(meta, dict) else {}
+        try:
+            page = int(meta.get("page") or 0)
+        except (TypeError, ValueError):
+            page = 0
+        out[name] = {"page": max(0, page),
+                     "shows": str(meta.get("shows") or "")}
+    return out
+
+
+DEMO_PLANS = _load_demo_plans()
+
+
+def _demo_meta(name: str, owner) -> dict | None:
+    """The manifest entry for a job row, or None when it is not a demo.
+    Shared-ness is the gate; the name only selects WHICH demo."""
+    if owner is not None:
+        return None
+    return DEMO_PLANS.get(name)
 
 
 def _register(path: Path, classify: bool = True, owner=None) -> dict:
