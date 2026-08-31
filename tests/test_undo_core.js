@@ -16,7 +16,14 @@
 //     (exercised by split-then-delete-the-piece sequences);
 //   - depth cap eviction (oldest falls off, the rest still apply);
 //   - a fresh edit kills the redo future;
-//   - page-switch clear empties both stacks.
+//   - page-switch clear empties both stacks;
+//   - (added 2026-09-01) the STYLE region: an edit may also list style ROWS
+//     it adds or rewrites, so creating an operator line family and moving a
+//     line into it is ONE entry that one Ctrl+Z reverses whole. Same
+//     round-trip exactness as the chain region, over the style array AND the
+//     positional per-style maps in doc.smaps. Every pre-existing assertion
+//     above is unchanged: the region defaults to empty, so a chain-only edit
+//     snapshots exactly what it always did.
 //
 // webui/app.js is not a module and touches the DOM at load, so this evals
 // ONLY the block between the UNDO-CORE markers - that block is kept pure
@@ -351,6 +358,104 @@ for (const [name, mutate] of Object.entries(EDITS)) {
     "a one-chain snapshot is smaller than a whole-doc snapshot");
   check(one.chains.length === 1 && one.excluded.length === 1 && one.labels.length === 1,
     "a one-chain snapshot lists exactly one chain");
+}
+
+// ---------- 8. the STYLE region (operator-created line families) ---------
+// A created family is a real row in state.result.styles plus four per-style
+// map entries (labels / include / measureMode / seedLabels). If undo reversed
+// the LINE MOVE but not the ROW, the sheet would keep an empty family the
+// operator never asked for - and if it reversed the row but not the maps, the
+// include map would keep a tick pointing at a style_id that no longer exists.
+// Both are silent. This pins them.
+function mkStyleDoc() {
+  const doc = mkDoc();
+  doc.styles = [
+    { style_id: 10, suggested_label: "CURB", class: "solid", color: [0, 0, 0] },
+    { style_id: 20, suggested_label: "CONTOUR", class: "dash1", color: [1, 0, 0] },
+    { style_id: 30, suggested_label: "FENCE", class: "dash2", color: [0, 1, 0] },
+  ];
+  const labels = new Map([[10, "CURB"], [20, "CONTOUR"]]);
+  const include = new Map([[10, true], [20, true], [30, false]]);
+  const measure = new Map([[30, "object"]]);
+  const seeds = new Map([[10, "solid solid"], [20, "dash1 d9g5"]]);
+  doc.smaps = [labels, include, measure, seeds];
+  doc._m = { labels, include, measure, seeds };
+  return doc;
+}
+function snapStyles(doc) {
+  return JSON.stringify({
+    styles: doc.styles,
+    maps: doc.smaps.map(m => [...m.entries()].sort((x, y) => x[0] - y[0])),
+  });
+}
+{
+  const doc = mkStyleDoc();
+  const stack = U.undoNewStack(50);
+  const before = snap(doc) + "|" + snapStyles(doc);
+
+  // the famCreate gesture: capture the row that does not exist yet PLUS the
+  // chain about to move, then create the row, its map entries, and reclass
+  U.undoPush(stack, U.undoCapture(doc, [3], 'new family "DITCH"', [99]));
+  doc.styles.push({ style_id: 99, suggested_label: "DITCH", class: "dash1",
+                    color: [1, 0, 0], operator_created: true, length_pt: 0, n: 0 });
+  doc._m.labels.set(99, "DITCH");
+  doc._m.include.set(99, true);
+  doc._m.seeds.set(99, "");
+  const moved = materialize(doc, byId(doc, 3));
+  moved.style_id = 99;
+  doc.selected = moved.chain_id;
+  const after = snap(doc) + "|" + snapStyles(doc);
+
+  check(doc.styles.length === 4, "the created family is on the sheet");
+  check(doc._m.include.get(99) === true, "…and ticked on");
+
+  for (let pass = 1; pass <= 2; pass++) {
+    step(stack, doc, "undo");
+    check(snap(doc) + "|" + snapStyles(doc) === before,
+      `new-family undo restores the document byte-identically (pass ${pass})`);
+    check(doc.styles.every(s2 => s2.style_id !== 99),
+      `…the family row is gone, not left empty (pass ${pass})`);
+    check(!doc._m.include.has(99) && !doc._m.labels.has(99)
+          && !doc._m.seeds.has(99),
+      `…and no per-style map keeps an entry for it (pass ${pass})`);
+    step(stack, doc, "redo");
+    check(snap(doc) + "|" + snapStyles(doc) === after,
+      `new-family redo reapplies the row AND the move (pass ${pass})`);
+    check(doc._m.labels.get(99) === "DITCH",
+      `…including the name the operator typed (pass ${pass})`);
+  }
+}
+{
+  // a style row REWRITTEN rather than created (the same region, other branch):
+  // the row must come back with its old content and at its old index
+  const doc = mkStyleDoc();
+  const stack = U.undoNewStack(50);
+  const before = snapStyles(doc);
+  U.undoPush(stack, U.undoCapture(doc, [], "rename", [20]));
+  doc.styles[1].suggested_label = "CONTOUR (renamed)";
+  doc._m.labels.set(20, "CONTOUR (renamed)");
+  doc._m.measure.set(20, "object");
+  step(stack, doc, "undo");
+  check(snapStyles(doc) === before,
+    "a rewritten style row and its map entries restore exactly");
+  check(doc.styles[1].style_id === 20,
+    "…at its original index, not appended to the end");
+}
+{
+  // the region must be inert for every edit that does not use it - this is
+  // what keeps the 476 B median snapshot in the comment above honest
+  const doc = mkStyleDoc();
+  const e = U.undoCapture(doc, [1], "delete 1");
+  check(Array.isArray(e.styles) && e.styles.length === 0,
+    "a chain-only capture carries an EMPTY style region");
+  const bare = mkDoc();            // no .styles, no .smaps at all
+  const e2 = U.undoCapture(bare, [1], "delete 1");
+  check(e2.styles.length === 0,
+    "a doc with no style region at all captures cleanly rather than throwing");
+  bare.excluded.add(1);
+  const r = U.undoApply(bare, e2);
+  check(r && bare.excluded.size === 0,
+    "…and applies cleanly too");
 }
 
 if (failures) {

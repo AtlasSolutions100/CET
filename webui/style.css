@@ -2205,3 +2205,67 @@ main.sv-open ~ .status-bar .sb-facts { display: none; }
 .fp-row.fp-new { border-style: dashed; color: var(--dim); }
 .fp-actions { display: flex; justify-content: flex-end;
   margin-top: var(--t-sp-3); }
+/* ================= operator line families + per-family line list ==========
+   Wave 3 (owner feedback 2026-08-31, items 4/5/6). Every colour here is a
+   shipped --t-* token; nothing new is declared.
+
+   THE GRID. .style-row was `16px 46px 1fr auto auto` (tick, swatch, main,
+   LF/EA, class badge). The expander is a SIXTH column at the right-hand end
+   rather than a new one on the left, because .style-layer, .style-scope and
+   .item-split all span `grid-column: 3 / -1` - a column added at the front
+   would have shifted their start off the main column and misaligned three
+   sub-lines on every layered row. Appended at the end, `3 / -1` still runs
+   to the row's edge and the row keeps its height. The "yours" provenance
+   badge shares the badge column's auto sizing (a created family has no class
+   badge suppressed, so both are present and both are `auto`). */
+.style-row { grid-template-columns: 16px 46px 1fr auto auto auto; }
+/* Kept as narrow as a click target can honestly be: the row's `gap: 8px`
+   plus this button is what the flexible main column gives up, and that column
+   is where the trade name lives. Measured live on stice1 p0 (189 rows, 400px
+   sidebar): 207px -> 187px of main column at padding 0 4px, 207 -> 196 with
+   the tightening below. The remaining 11px is the honest price of the
+   control. */
+.fam-toggle { padding: 0 2px; margin-left: -5px;
+  font-size: var(--t-fs-xs); line-height: 1.2;
+  background: transparent; border: 1px solid transparent; border-radius: var(--t-r-1);
+  color: var(--dim); }
+.fam-toggle:hover:not(:disabled) { color: var(--text); border-color: var(--line);
+  background: var(--hover); }
+.fam-toggle.open { color: var(--t-accent); }
+/* provenance: this family did not come out of the detector */
+.badge.mine { background: var(--t-warn-bg); color: var(--t-warn); }
+/* `.style-row-unnamed > .badge { display: none }` hides the CLASS badge on a
+   row nothing named, because the mono evidence chip already begins with the
+   class. Provenance is not that: an operator who clears the name box of a
+   family they created must not also lose the only mark saying they created
+   it. */
+.style-row-unnamed > .badge.mine { display: inline; }
+.style-row-mine { box-shadow: inset 2px 0 0 var(--t-warn); }
+
+/* The list itself is a SIBLING of the row inside #styleList, not a child of
+   it: the row is a grid whose columns are measured for one line of content,
+   and nesting a 50-row list inside it would inherit that grid. Bounded to 50
+   rows at a time by famLines(); the footer states the true total. */
+.fam-lines { margin: 0 8px 6px 30px; border-left: 2px solid var(--line);
+  padding: 2px 0 2px 8px; }
+.fam-line { display: grid; grid-template-columns: 58px auto 1fr; gap: 8px;
+  align-items: baseline; padding: 3px 6px; border-radius: var(--t-r-1);
+  cursor: pointer; font-size: var(--t-fs-xs); line-height: 1.3; }
+.fam-line:hover { background: var(--hover); }
+.fam-id { font-family: var(--t-font-data); color: var(--dim);
+  font-variant-numeric: var(--t-numeric); }
+.fam-len { font-family: var(--t-font-data); color: var(--text); font-weight: 600;
+  font-variant-numeric: var(--t-numeric); white-space: nowrap; }
+.fam-meta { color: var(--dim); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.fam-foot { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 4px 6px 2px; font-size: var(--t-fs-xs); line-height: 1.35;
+  color: var(--dim); }
+.fam-none { padding: 4px 6px; font-size: var(--t-fs-xs); color: var(--dim); }
+
+/* the scope panel's close control, and the header button that reopens it */
+.scope-head .mini.x { flex: none; padding: 0 6px; line-height: 1.4;
+  background: transparent; border-color: transparent; color: var(--dim); }
+.scope-head .mini.x:hover { color: var(--text); border-color: var(--line);
+  background: var(--hover); }
+#scopeToggle.active { border-color: var(--t-accent); color: var(--t-accent); }

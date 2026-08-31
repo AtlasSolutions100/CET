@@ -535,6 +535,12 @@
     <div class="side-head" id="stylesHead">
       <h2>Line styles <span class="card-n" id="stylesCount"></span></h2>
       <div class="side-actions">
+        <!-- The reopen control for "Whose scope is this?" below. Always
+             present so a closed panel can never become unreachable; it also
+             carries the declared-trade count while the panel is closed, so a
+             filter that is still narrowing the list is never silent.
+             renderScopeToggle() in app.js owns its text/title/state. -->
+        <button id="scopeToggle" class="mini" aria-expanded="true" hidden>scope</button>
         <button id="allBtn" class="mini">all</button>
         <button id="noneBtn" class="mini">none</button>
       </div>

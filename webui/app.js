@@ -35,7 +35,15 @@ const state = window.state = {
   job: null, page: 0, kinds: [],
   triage: null,             // /triage reply: per-page excavation tiers
   img: null, result: null,
-  include: new Map(), labels: new Map(), isolate: null, hot: null,
+  include: new Map(), labels: new Map(), isolate: null,
+  // FAMILY HOVER. null, or a Set of style_ids to light up on the canvas.
+  // It was a single style_id (state.hot) and one caller already needed more:
+  // a Bid view row pools several styles under one bid line and could only
+  // highlight m.sids[0], so hovering "Storm drain" lit one of its three CAD
+  // layers and the operator was shown a third of the thing they pointed at.
+  // A Set is the generalisation; every writer goes through hotFam/hotFamOff.
+  // Pure display - never read by an edit, a quantity or the undo stack.
+  hotStyle: null,
   inheritedInc: new Map(),  // style_id -> tick that came from ANOTHER sheet's
                             // hand decision (set-level inherit); drives the
                             // one-line disclosure in renderStyles()
@@ -739,28 +747,44 @@ function renderTriageBar() {
   const unk = (d.counts && d.counts.unknown) || 0;
   const hl = localStorage.getItem("core-triage-hl") === "on";
   bar.innerHTML = "";
-  const txt = document.createElement("span");
-  txt.className = "tri-text";
-  txt.textContent =
-    `${n} of ${d.pages.length} sheets look like excavation work`
-    + (unk ? ` (${unk} not triaged: no text)` : "");
-  bar.appendChild(txt);
+  // REMOVED 2026-09-01, owner's words: "lets also remove the 'x out of y
+  // sheets look like excavation work' because ive upload general construction
+  // blueprints and it still said it so it just looks odd".
+  //
+  // The scorer is a keyword count over each sheet's text (server.py triage).
+  // On a set that is not civil it still returns SOME best-scoring sheets, and
+  // printing that as "N sheets look like excavation work" turned a relative
+  // ranking of this set into an assertion about the document. The ranking
+  // itself is honest and still earns its place: it drives the per-thumb tier
+  // tint, the sheet-number tag and the per-thumb tooltip (applyTriageToStrip
+  // / triageTitle), all of which say what they are when you look at them.
+  // What went is the sentence that read the ranking as a verdict.
+  //
+  // The dim toggle stays: it is opt-in, it dims nothing until pressed, and it
+  // is now named for what it DOES rather than for what the sheets ARE.
   if (dim > 0) {
     const b = document.createElement("button");
     b.className = "mini";
-    b.textContent = hl ? `undim ${dim}` : "highlight";
+    b.textContent = hl ? `undim ${dim} sheets` : `dim ${dim} sheets`;
     b.title = hl
-      ? "Restore full brightness on the dimmed pages"
-      : `Dim the ${dim} pages that look like other trades (or have no`
-        + ` text). Nothing is hidden or excluded — every page still opens,`
-        + ` and detection and quantities are untouched.`;
+      ? "Restore full brightness on the dimmed sheets."
+      : `Dim the ${dim} sheet${dim === 1 ? "" : "s"} whose text scores lowest`
+        + ` against excavation keywords`
+        + (unk ? ` (${unk} of them carry no readable text at all)` : "")
+        + `. That is a ranking of THIS set, not a judgement that the work is`
+        + ` or is not excavation. Nothing is hidden or excluded — every page`
+        + ` still opens, and detection and quantities are untouched.`;
     b.onclick = () => {
       localStorage.setItem("core-triage-hl", hl ? "off" : "on");
       applyTriageToStrip();
     };
     bar.appendChild(b);
+    bar.hidden = false;
+    return;
   }
-  bar.hidden = false;
+  // nothing to dim and nothing left to say: an empty bordered strip is worse
+  // than no strip
+  bar.hidden = true;
 }
 $("stripToggle").onclick = () => {
   const min = $("pageStrip").classList.toggle("collapsed");
@@ -830,6 +854,9 @@ async function loadResult(gen = state.gen) {
   state.tool = null; state.measurePts = []; state.vScale = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   state.ew = null; state.hotChain = null; state.extraItems = [];
+  // hover highlight and per-family expansion are page state like the rest:
+  // a style_id means nothing outside the result it came from
+  state.hotStyle = null; famOpen.clear();
   // a limit of work belongs to ONE sheet: the next page's grading line is
   // a different polygon, and carrying this one over would clip the new
   // sheet's volumes to an outline drawn somewhere else
@@ -3600,11 +3627,65 @@ function scopeTally() {
   return t;
 }
 
+// OWNER (2026-08-31): "the ability to close the -'whose scope is this' tab".
+// Closed, not deleted: the declaration is a real provenance input and the
+// panel's own filter keeps running on whatever was already declared. The
+// record is per browser in the existing store, beside core-pagestrip /
+// core-minilegend / core-sidebar-*.
+//
+// HOW IT COMES BACK: a "Scope" button that is ALWAYS in the Line styles card
+// header, next to all / none. It is on whenever the panel is showing, so the
+// control that closed the panel and the control that reopens it are the same
+// visible thing - the feature can never be lost behind a preference nobody
+// can find. Closing while a trade is declared says so on the button and in
+// its tooltip, because a filter that is still narrowing the list must not go
+// quiet just because its panel is folded away.
+const SCOPE_HIDE_KEY = "core-scope-hidden";
+function scopeHidden() {
+  try { return localStorage.getItem(SCOPE_HIDE_KEY) === "1"; }
+  catch (e) { return false; }
+}
+function scopeSetHidden(on) {
+  try { localStorage.setItem(SCOPE_HIDE_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
+  renderScopeBar();
+  const n = scopeRec().trades.length;
+  setStatus(on
+    ? "scope panel closed" + (n
+        ? ` — the ${n} trade${n === 1 ? " you declared is" : "s you declared are"}`
+          + " STILL filtering the list; the Scope button in the Line styles "
+          + "header reopens it"
+        : " — the Scope button in the Line styles header reopens it")
+    : "scope panel open");
+}
+// The always-present reopen control. Rendered from renderScopeBar so the two
+// can never disagree about whether the panel is up.
+function renderScopeToggle() {
+  const btn = $("scopeToggle");
+  if (!btn) return;
+  if (!state.result) { btn.hidden = true; return; }
+  btn.hidden = false;
+  const hid = scopeHidden();
+  const n = scopeRec().trades.length;
+  btn.classList.toggle("active", !hid);
+  btn.textContent = (hid && n) ? `scope (${n})` : "scope";
+  btn.setAttribute("aria-expanded", hid ? "false" : "true");
+  btn.title = hid
+    ? (n ? `Reopen "Whose scope is this?". It is closed, but the ${n} trade`
+           + `${n === 1 ? " you declared is" : "s you declared are"} still `
+           + "filtering this list."
+         : 'Reopen "Whose scope is this?" — declare whose trade this sheet is '
+           + "and the list narrows to it.")
+    : 'Close the "Whose scope is this?" panel. Nothing is cleared: whatever '
+      + "you declared keeps filtering, and this button brings the panel back.";
+}
+
 function renderScopeBar() {
   const box = $("scopeBar");
   if (!box) return;
   box.innerHTML = "";
+  renderScopeToggle();
   if (!state.result) { box.hidden = true; return; }
+  if (scopeHidden()) { box.hidden = true; return; }
   box.hidden = false;
   const rec = scopeRec(), t = scopeTally();
   const declared = rec.trades.length > 0;
@@ -3623,6 +3704,16 @@ function renderScopeBar() {
     clr.onclick = () => scopeSetTrades([]);
     head.appendChild(clr);
   }
+  const x = document.createElement("button");
+  x.className = "mini x";
+  x.id = "scopeClose";
+  x.textContent = "\u00d7";
+  x.title = 'Close this panel. It does NOT clear your declaration \u2014 '
+    + "whatever you declared keeps filtering the list. The Scope button in "
+    + "the Line styles header above brings it back, and says how many trades "
+    + "are still declared while it is closed.";
+  x.onclick = () => scopeSetHidden(true);
+  head.appendChild(x);
   box.appendChild(head);
 
   const chips = document.createElement("div");
@@ -4153,7 +4244,52 @@ function renderStyles() {
           : sv.why;
     }
 
+    // PROVENANCE, on the row: a family the operator invented must never be
+    // readable as one the detector found. It rides in the badge column, next
+    // to the pattern class, so it is impossible to miss while scanning.
+    let mineEl = null;
+    if (famIsMine(s)) {
+      row.classList.add("style-row-mine");
+      mineEl = document.createElement("span");
+      mineEl.className = "badge mine";
+      mineEl.textContent = "yours";
+      mineEl.title = "You created this line family on this sheet \u2014 the "
+        + "detector did not find it. Its lines were moved in by hand, and "
+        + "every foot in it is measured from those lines exactly like any "
+        + "other row." + LF + LF
+        + "It exports: each line carries this name, and the export (and the "
+        + "face of the report PDF) states that a reviewer created the family. "
+        + "It lives with this page's other edits \u2014 a page switch or "
+        + "reload clears it, the same way it clears a split or a deleted line.";
+    }
+
+    // THE PER-FAMILY LINE LIST toggle (owner: "can we get a drop down of each
+    // line in each line style/family?"). It is its own grid column at the
+    // right-hand end, so the sub-lines below (.style-layer / .style-scope /
+    // .item-split, all `grid-column: 3 / -1`) still span to the row's edge and
+    // no row gets taller for it.
+    const nLive = styleLiveCount(s.style_id);
+    const famBtn = document.createElement("button");
+    famBtn.className = "fam-toggle" + (famOpen.has(s.style_id) ? " open" : "");
+    famBtn.dataset.sid = String(s.style_id);
+    famBtn.textContent = famOpen.has(s.style_id) ? "\u25be" : "\u25b8";
+    famBtn.setAttribute("aria-expanded", famOpen.has(s.style_id) ? "true" : "false");
+    famBtn.disabled = !nLive;
+    famBtn.title = nLive
+      ? `List the ${nLive} individual line${nLive === 1 ? "" : "s"} in this `
+        + "family \u2014 hover a row to light it on the sheet, click it to "
+        + "select and centre on it. Nothing in the list changes a quantity."
+      : "No lines in this family right now, so there is nothing to list.";
+    famBtn.onclick = (e) => {
+      e.stopPropagation();      // the row's own click isolates; this must not
+      if (famOpen.has(s.style_id)) famOpen.delete(s.style_id);
+      else famOpen.set(s.style_id, FAM_PAGE);
+      famRenderList(s);
+    };
+
     row.append(cb, sw, main, mm, badge);
+    if (mineEl) row.appendChild(mineEl);
+    row.appendChild(famBtn);
     if (layerEl) row.appendChild(layerEl);
     const sp = splits.get(s.style_id);
     if (sp) {
@@ -4196,8 +4332,8 @@ function renderStyles() {
       row.appendChild(el);
     }
     if (scopeEl) row.appendChild(scopeEl);
-    row.onmouseenter = () => { state.hot = s.style_id; draw(); };
-    row.onmouseleave = () => { state.hot = null; draw(); };
+    row.onmouseenter = () => hotFam([s.style_id]);
+    row.onmouseleave = () => hotFamOff();
     // Isolating from the style list had NO on-screen indicator of any kind.
     // The mini legend's green cue is only repainted by the mini legend's own
     // click handler and by the I key, and it only lists the top eight styles
@@ -4207,6 +4343,15 @@ function renderStyles() {
     // itself now carries the state, which is the one place the operator is
     // certain to be looking, and the status line names what is isolated.
     if (state.isolate === s.style_id) row.classList.add("iso");
+    // an operator-created family has no CAD layer and no engine seed, so the
+    // label memory (labelKey -> styleFp) cannot tell two of them apart. It is
+    // page state by design; skip memSave for it rather than write a record
+    // that a later family with the same pattern would read back as its own.
+    if (famIsMine(s)) lab.oninput = () => {
+      state.labels.set(s.style_id, lab.value);
+      clearTimeout(lab._t);
+      lab._t = setTimeout(() => { renderItemized(); renderMiniLegend(); }, 350);
+    };
     row.onclick = () => {
       const on = state.isolate !== s.style_id;
       state.isolate = on ? s.style_id : null;
@@ -4221,7 +4366,106 @@ function renderStyles() {
       renderMiniLegend(); draw();
     };
     box.appendChild(row);
+    if (famOpen.has(s.style_id)) famRenderList(s);
   }
+}
+
+// ---------- the per-family line list ----------------------------------
+// One block, inserted directly after its style row inside #styleList, built
+// and torn down in place. NOT through renderStyles(): that does
+// box.innerHTML = "" and rebuilds every row, which on a 280-row sheet throws
+// away the operator's scroll position under the cursor (the same reason the
+// isolate handler already refuses to call it).
+//
+// BOUNDED. famLines() builds at most `cap` rows, longest first, and returns
+// the true total; the footer states "showing 50 of 214" and offers the next
+// 50. A family with hundreds of lines therefore costs 50 nodes, not 214, and
+// nothing is ever hidden without a count beside it.
+function famRenderList(s) {
+  const sid = s.style_id;
+  const box = $("styleList");
+  const row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  const old = box.querySelector('.fam-lines[data-sid="' + sid + '"]');
+  if (old) old.remove();
+  const btn = row && row.querySelector(".fam-toggle");
+  if (!famOpen.has(sid)) {
+    if (btn) {
+      btn.classList.remove("open");
+      btn.textContent = "\u25b8";
+      btn.setAttribute("aria-expanded", "false");
+    }
+    return;
+  }
+  if (btn) {
+    btn.classList.add("open");
+    btn.textContent = "\u25be";
+    btn.setAttribute("aria-expanded", "true");
+  }
+  const cap = famOpen.get(sid) || FAM_PAGE;
+  const d = famLines(state.result.chains, sid,
+    { cap, excluded: state.excluded, lenOf: chainLenPt });
+  const wrap = document.createElement("div");
+  wrap.className = "fam-lines";
+  wrap.dataset.sid = String(sid);
+  if (!d.total) {
+    const none = document.createElement("div");
+    none.className = "fam-none";
+    none.textContent = "no lines in this family right now";
+    wrap.appendChild(none);
+  }
+  for (const r of d.rows) {
+    const li = document.createElement("div");
+    li.className = "fam-line";
+    li.dataset.cid = String(r.chain_id);
+    const id = document.createElement("span");
+    id.className = "fam-id";
+    id.textContent = "#" + r.chain_id;
+    const len = document.createElement("span");
+    len.className = "fam-len";
+    len.textContent = fmtQty(r.len);
+    const meta = document.createElement("span");
+    meta.className = "fam-meta";
+    // enough to tell two lines of one family apart: how long, how many
+    // vertices, and whether it is a line you edited rather than a detected one
+    meta.textContent = r.nPts + " pts" + (r.custom ? " \u00b7 edited" : "");
+    li.append(id, len, meta);
+    li.title = "Hover: light this line on the sheet. Click: select it and "
+      + "centre the view on it. Neither changes anything.";
+    li.onmouseenter = () => { state.hotChain = r.chain_id; draw(); };
+    li.onmouseleave = () => { state.hotChain = null; draw(); };
+    li.onclick = (e) => {
+      e.stopPropagation();
+      if (!revealChain(r.chain_id))
+        setStatus("that line is gone \u2014 an edit consumed or deleted it", "err");
+    };
+    wrap.appendChild(li);
+  }
+  if (d.total) {
+    const foot = document.createElement("div");
+    foot.className = "fam-foot";
+    const txt = document.createElement("span");
+    txt.textContent = d.hidden
+      ? `showing ${d.shown} of ${d.total} lines (longest first) \u00b7 `
+        + `${fmtQty(d.totalLen)} in the family`
+      : `${d.total} line${d.total === 1 ? "" : "s"} \u00b7 ${fmtQty(d.totalLen)}`;
+    foot.appendChild(txt);
+    if (d.hidden) {
+      const more = document.createElement("button");
+      more.className = "mini";
+      more.textContent = `show ${Math.min(d.hidden, FAM_PAGE)} more`;
+      more.title = "Nothing is being withheld \u2014 the list is capped so a "
+        + "family with hundreds of lines does not build hundreds of rows at "
+        + "once. This adds the next " + FAM_PAGE + ".";
+      more.onclick = (e) => {
+        e.stopPropagation();
+        famOpen.set(sid, cap + FAM_PAGE);
+        famRenderList(s);
+      };
+      foot.appendChild(more);
+    }
+    wrap.appendChild(foot);
+  }
+  if (row) row.after(wrap); else box.appendChild(wrap);
 }
 // ---------- filled AREA regions: the square-foot takeoff ----------
 // Hardscape is bought by the square foot - Beaumont's own Estimate #853
@@ -4629,8 +4873,8 @@ function renderLegend() {
     chip.title = applied
       ? `applied to style ${sid}`
       : `click to label style ${sid} "${e.label}" — hover to highlight`;
-    chip.onmouseenter = () => { state.hot = sid; draw(); };
-    chip.onmouseleave = () => { state.hot = null; draw(); };
+    chip.onmouseenter = () => hotFam([sid]);
+    chip.onmouseleave = () => hotFamOff();
     chip.onclick = () => {
       state.labels.set(sid, e.label + " (legend)");
       setInclude(sid, true);
@@ -4639,6 +4883,9 @@ function renderLegend() {
     box.appendChild(chip);
   }
 }
+
+if ($("scopeToggle"))
+  $("scopeToggle").onclick = () => scopeSetHidden(!scopeHidden());
 
 $("styleSearch").oninput = () => renderStyles();
 // The box now matches CAD layer names too, and a capability nobody is told
@@ -6896,8 +7143,11 @@ function renderBidView(groups, ftPerIn) {
       row.appendChild(pick);
       if (m.sids.length) {
         row.onclick = () => bidIsolate(m, row);
-        row.onmouseenter = () => { state.hot = m.sids[0]; draw(); };
-        row.onmouseleave = () => { state.hot = null; draw(); };
+        // EVERY style pooled under this bid line, not m.sids[0]. See the
+        // state.hotStyle comment: highlighting one of three CAD layers and
+        // calling it the bid line was a display lie.
+        row.onmouseenter = () => hotFam(m.sids);
+        row.onmouseleave = () => hotFamOff();
       }
       d.appendChild(row);
     }
@@ -8746,6 +8996,19 @@ function renderEwBasis(j, body) {
 // The lines the approve payload carries onto the printed report, so a reader
 // of the PDF who never saw this panel learns the same three things. Empty
 // unless the estimator actually added earthwork - no earthwork row, no note.
+// Every free-text note the export carries, in priority order, plus the ONE
+// place that knows the server's cap. server.py `approve` keeps
+// `body.notes[:6]`; anything past that is dropped with no message, so the
+// count is checked here and disclosed on the status line rather than
+// discovered later on a report that is missing its caveat.
+const APPROVE_NOTES_MAX = 6;   // mirrors server.py approve(): body.notes[:6]
+function approveNotes() {
+  return [...famApproveNotes(), ...ewApproveNotes()];
+}
+function approveNotesDropped() {
+  return Math.max(0, approveNotes().length - APPROVE_NOTES_MAX);
+}
+
 function ewApproveNotes() {
   const j = state.ew && state.ew.added && state.ew.result;
   if (!j) return [];
@@ -9686,6 +9949,25 @@ function centerOn(xPt, yPt) {
   state.view.y = cv.clientHeight / 2 - yPt * f * k;
   draw();
 }
+
+// SELECT + CENTRE, one path. The callout list already did select-then-centre
+// by hand; the per-family line list needs exactly the same gesture, so it is
+// this function rather than a second copy that can drift.
+//   atPt  centre here instead of on the chain (the callout list centres on
+//         the leader's glyph, which is what the operator clicked).
+// Returns false when the chain is gone (deleted, or consumed by an edit).
+function revealChain(cid, atPt) {
+  if (cid === null || cid === undefined || !state.result) return false;
+  const ch = chainById(cid);
+  if (!ch) return false;
+  state.selected = cid;
+  state.selPt = null;
+  updateSelBar(ch);
+  const p = atPt || (ch.points && ch.points.length
+    ? ch.points[Math.floor(ch.points.length / 2)] : null);
+  if (p) centerOn(p[0], p[1]); else draw();
+  return true;
+}
 $("coBtn").onclick = async () => {
   const panel = $("coPanel");
   if (!panel.hidden) { panel.hidden = true; return; }
@@ -9729,11 +10011,10 @@ function renderCo() {
     };
     div.onmouseleave = () => { state.hotChain = null; state.symMarks = null; draw(); };
     div.onclick = () => {
-      if (c.target_chain_id !== null) {
-        state.selected = c.target_chain_id;
-        updateSelBar(chainById(c.target_chain_id));
-      }
-      centerOn(c.gx, c.gy);
+      // same select-then-centre-on-the-glyph it always did, through the
+      // shared path now (revealChain falls through to the bare centre when
+      // the leader points at no line)
+      if (!revealChain(c.target_chain_id, [c.gx, c.gy])) centerOn(c.gx, c.gy);
     };
     box.appendChild(div);
   }
@@ -10248,7 +10529,11 @@ $("approveBtn").onclick = async () => {
       // statement. Earthwork is the only writer today: a CY figure that is
       // an interpolation has to say so where it is READ, not only in the
       // panel where it was computed. Empty when no earthwork was added.
-      notes: ewApproveNotes(),
+      // Operator-created families go FIRST: `approve` keeps only the first
+      // six notes, and a provenance statement that gets trimmed is worse
+      // than one that displaces a caveat the panel also prints on screen.
+      // approveNotesDropped() below reports the trim if one happens.
+      notes: approveNotes(),
       prices: Object.fromEntries(
         [...Object.values(labels), ...state.chainLabels.values()]
           .map(l => [l, parseFloat(store.getItem(priceKey(l)) || "") || 0])
@@ -10279,6 +10564,7 @@ $("approveBtn").onclick = async () => {
   // row turns the line red rather than passing unmentioned.
   const ovN = (j.overrides || []).length;
   const ovW = j.override_warnings || [];
+  const nDropped = approveNotesDropped();
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : "") +
     (ovN ? ` · ${ovN} quantity you typed ${ovN === 1 ? "is" : "are"} in the export`
@@ -10286,8 +10572,11 @@ $("approveBtn").onclick = async () => {
     (j.scale && j.scale.setBy === "reviewer"
       ? " · footage computed from the scale YOU set, not the engine's"
       : "") +
-    (ovW.length ? " — " + ovW.join("  ") : ""),
-    ovW.length ? "err" : undefined);
+    (ovW.length ? " — " + ovW.join("  ") : "") +
+    (nDropped ? ` — ${nDropped} disclosure note${nDropped === 1 ? "" : "s"}`
+       + ` did NOT fit the export (the server keeps ${APPROVE_NOTES_MAX});`
+       + ` they are still on screen` : ""),
+    (ovW.length || nDropped) ? "err" : undefined);
   const a = $("dlLink");
   a.href = url(`/api/job/${state.job}/page/${state.page}/elements`);
   a.hidden = false;
@@ -10525,7 +10814,8 @@ function draw() {
       if (state.excluded.has(ch.chain_id)) continue;
       if (state.isolate !== null && sid !== state.isolate) continue;
       if (state.isolate === null && !state.include.get(sid)) continue;
-      const hot = state.hot === sid || state.hotChain === ch.chain_id;
+      const hot = (state.hotStyle !== null && state.hotStyle.has(sid))
+        || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
       // marquee members light up in the same magenta family as the single
       // selection, a step thinner so the picked line still reads apart
@@ -10541,6 +10831,29 @@ function draw() {
       // selection recolors but keeps the true pattern - a solid magenta
       // overlay reads as "this line became solid", which it has not
       const pts = ch.points;
+      // FAMILY HOVER HALO. Doubling the stroke (lineWidth above) is what a
+      // hot chain used to get, and on a 0.35pt hairline in a crowded sheet
+      // that is invisible - which is the owner's complaint (2026-08-31:
+      // "when we hover over a line style it should highlight all lines of
+      // that family/style"). A hot chain now gets one extra pass first: a
+      // wide, SOLID, translucent ribbon in the family's OWN colour, under
+      // the real line. Solid on purpose, so a dashed family reads as one
+      // continuous run rather than as more dashes. No new colour constant is
+      // introduced and nothing about the measured line changes - the true
+      // pattern is still drawn on top, at its true weight.
+      if (hot && !sel && !msel) {
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.30;
+        ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.lineWidth = Math.max(wPt * 6, 10 / k);
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+        for (let i = 1; i < pts.length; i++)
+          ctx.lineTo(pts[i][0] * f, pts[i][1] * f);
+        ctx.stroke();
+        ctx.restore();
+      }
       // seg_counts partitions points into the SOURCE ink marks: draw each
       // mark as its own solid subpath so every dash lands exactly where
       // the sheet printed it. A repeating template can only approximate -
@@ -12302,8 +12615,14 @@ $("reclassBtn").onclick = () => {
     return setStatus("select the misclassified line first, then hit reclassify", "err");
   state.tool = state.tool === "reclass" ? null : "reclass";
   $("reclassBtn").classList.toggle("active", state.tool === "reclass");
+  // The pick-click can only target a family that EXISTS - you cannot click a
+  // line of a family with no lines in it. So the create affordance stays on
+  // the selection bar's picker, and the armed tool points at it rather than
+  // leaving the operator to discover it.
   setStatus(state.tool === "reclass"
-    ? "reclassify: click a line of the family this one SHOULD belong to (Esc cancels)"
+    ? "reclassify: click a line of the family this one SHOULD belong to "
+      + "(Esc cancels) — or pick “+ New family…” in the "
+      + "family box on the selection bar to make one"
     : "reclassify cancelled");
 };
 
@@ -12454,9 +12773,11 @@ function updateSelBar(ch) {
   // family switcher, right on the bar: the SAME mutation the Reclassify
   // tool ends in (reclassCore), without the pick-click trip across the
   // canvas. Listed by footage so the family you want is near the top.
-  const fam = familySelect(ch.style_id, null, (sid) => familySwitch(sid));
+  const fam = familySelect(ch.style_id, null, (sid) => familySwitch(sid),
+                           () => famNewFromSelection());
   fam.title = "Move this line into another family — same edit as the "
-    + "Reclassify tool, and Ctrl+Z undoes it.";
+    + "Reclassify tool, and Ctrl+Z undoes it. “+ New family…” makes a family "
+    + "of your own, named by you, and puts this line in it.";
   info.appendChild(fam);
 }
 
@@ -12505,6 +12826,20 @@ function refreshStyleRows() {
     if (chip && sp)
       chip.textContent = fmtQty(sp.total) + " total, from "
         + sp.parts.length + " layers";
+    // The per-family list is a live view of the same chains this function is
+    // re-reading, so a delete/undo that moved the row's count must move the
+    // list too. Rebuilt in place, like everything else here - no renderStyles.
+    const ft = row.querySelector(".fam-toggle");
+    if (ft) {
+      const nLive = styleLiveCount(s.style_id);
+      ft.disabled = !nLive;
+      ft.title = nLive
+        ? `List the ${nLive} individual line${nLive === 1 ? "" : "s"} in this `
+          + "family \u2014 hover a row to light it on the sheet, click it to "
+          + "select and centre on it. Nothing in the list changes a quantity."
+        : "No lines in this family right now, so there is nothing to list.";
+    }
+    if (famOpen.has(s.style_id)) famRenderList(s);
   }
 }
 
@@ -12587,11 +12922,22 @@ function undoDeep(x) {
 
 // Snapshot the named chain ids out of doc, plus the scalar bookkeeping.
 // doc = { chains: Array, excluded: Set, labels: Map(chain_id -> label),
-//         nextChainId, selected, selPt }
+//         nextChainId, selected, selPt,
+//         styles?: Array, smaps?: Array<Map(style_id -> anything)> }
 // Taken BEFORE a mutation; ids lists every PRE-EXISTING chain the edit may
 // touch (mutate, exclude, splice, or relabel). null/undefined ids are
 // dropped so callers can pass optional participants straight through.
-function undoCapture(doc, ids, label) {
+//
+// STYLE REGION (added for operator-created line families). `sids` names the
+// style ROWS an edit may add, remove or rewrite, listed exactly the way ids
+// lists chains - including a row that does not exist yet, which snapshots as
+// present:false so undo removes it and redo puts it back. Every chain-only
+// edit passes nothing and the region is `[]`, so an ordinary snapshot pays
+// nothing (the 476 B median above is unchanged). doc.smaps is a FIXED-ORDER
+// list of per-style Maps that must travel with the row (labels, include,
+// measure mode, seed labels); the order is the caller's contract - see
+// undoDoc().
+function undoCapture(doc, ids, label, sids) {
   const seen = new Set();
   const chains = [], excluded = [], labels = [];
   for (const id of ids) {
@@ -12603,9 +12949,21 @@ function undoCapture(doc, ids, label) {
     excluded.push([id, doc.excluded.has(id)]);
     labels.push([id, doc.labels.has(id), doc.labels.get(id)]);
   }
+  const sseen = new Set();
+  const styles = [];
+  const smaps = doc.smaps || [];
+  for (const sid of (sids || [])) {
+    if (sid === null || sid === undefined || sseen.has(sid)) continue;
+    sseen.add(sid);
+    const arr = doc.styles || [];
+    const idx = arr.findIndex(s => s.style_id === sid);
+    styles.push({ sid, idx, present: idx >= 0,
+                  data: idx >= 0 ? undoDeep(arr[idx]) : null,
+                  maps: smaps.map(m => [m.has(sid), undoDeep(m.get(sid))]) });
+  }
   return { label: label || "edit", nextChainId: doc.nextChainId,
            selected: doc.selected, selPt: doc.selPt,
-           chains, excluded, labels };
+           chains, excluded, labels, styles };
 }
 
 // Restore `entry` onto doc IN PLACE (arrays/sets/maps are mutated, scalars
@@ -12618,7 +12976,8 @@ function undoApply(doc, entry) {
     if (c.chain_id >= entry.nextChainId) ids.add(c.chain_id);
   for (const k of doc.labels.keys())
     if (typeof k === "number" && k >= entry.nextChainId) ids.add(k);
-  const inverse = undoCapture(doc, [...ids], entry.label);
+  const inverse = undoCapture(doc, [...ids], entry.label,
+                              (entry.styles || []).map(s => s.sid));
   // 1. chains the edit created go away entirely (ids >= the pre-edit
   //    counter can only have come from this edit - see LIFO note above)
   for (let i = doc.chains.length - 1; i >= 0; i--)
@@ -12646,8 +13005,33 @@ function undoApply(doc, entry) {
   for (const [id, had, val] of entry.labels) {
     if (had) doc.labels.set(id, val); else doc.labels.delete(id);
   }
+  // 4. the STYLE region, restored exactly the way the chains were: listed
+  //    rows return to their snapshotted content and position, a row that was
+  //    absent is spliced out again, and every per-style map entry goes back
+  //    to had/value. Nothing here is derived - a family created by the edit
+  //    was captured as present:false, so this deletes it, and the inverse
+  //    built above captured it present, so redo puts it back byte-identical.
+  const sorder = [...(entry.styles || [])].sort((a, b) => a.idx - b.idx);
+  const smaps2 = doc.smaps || [];
+  for (const s of sorder) {
+    const arr = doc.styles || [];
+    const at = arr.findIndex(x => x.style_id === s.sid);
+    if (s.present) {
+      const data = undoDeep(s.data);
+      if (at >= 0) arr[at] = data;
+      else arr.splice(Math.min(Math.max(s.idx, 0), arr.length), 0, data);
+    } else if (at >= 0) {
+      arr.splice(at, 1);
+    }
+    smaps2.forEach((m, i) => {
+      const rec = s.maps && s.maps[i];
+      if (!rec) return;
+      if (rec[0]) m.set(s.sid, undoDeep(rec[1])); else m.delete(s.sid);
+    });
+  }
   return { inverse, nextChainId: entry.nextChainId,
-           selected: entry.selected, selPt: entry.selPt };
+           selected: entry.selected, selPt: entry.selPt,
+           nStyles: (entry.styles || []).length };
 }
 
 function undoPush(stack, entry) {
@@ -12666,7 +13050,7 @@ function undoStep(stack, doc, dir) {
   const r = undoApply(doc, entry);
   to.push(r.inverse);
   return { label: entry.label, nextChainId: r.nextChainId,
-           selected: r.selected, selPt: r.selPt };
+           selected: r.selected, selPt: r.selPt, nStyles: r.nStyles };
 }
 
 function undoClear(stack) { stack.undo.length = 0; stack.redo.length = 0; }
@@ -12677,15 +13061,26 @@ function undoEntryBytes(entry) { return JSON.stringify(entry).length; }
 
 const undoStack = undoNewStack(UNDO_DEPTH);
 
+// smaps ORDER IS THE CONTRACT between this function and undoCapture: the
+// snapshot stores one [had, value] pair per map, positionally. Append only,
+// never reorder or remove - an entry captured before a reorder would restore
+// a label into the include map. (Entries die with the page, so the window is
+// one session, but the failure would be silent, which is worse than loud.)
+const UNDO_SMAPS = ["labels", "include", "measureMode", "seedLabels"];
 function undoDoc() {
   return { chains: state.result.chains, excluded: state.excluded,
            labels: state.chainLabels, nextChainId: state.nextChainId,
-           selected: state.selected, selPt: state.selPt };
+           selected: state.selected, selPt: state.selPt,
+           styles: state.result.styles,
+           smaps: UNDO_SMAPS.map(k => state[k]) };
 }
 
-function captureUndo(label, ids) {
+// `sids` is optional and only the family edits pass it (see famCreate): it
+// names the style ROWS the edit adds or rewrites, so one Ctrl+Z reverses the
+// row and the line move together rather than leaving an orphan family.
+function captureUndo(label, ids, sids) {
   if (!state.result) return;
-  undoPush(undoStack, undoCapture(undoDoc(), ids, label));
+  undoPush(undoStack, undoCapture(undoDoc(), ids, label, sids));
 }
 
 // A mid-gesture tool holds references into the chains an undo may remove
@@ -12730,11 +13125,291 @@ function undoRedo(dir) {
   setStatus((dir === "redo" ? "redo: " : "undo: ") + r.label
     + (dir === "redo" ? " — reapplied" : " — reversed"));
   renderItemized();
-  refreshStyleRows();
+  // refreshStyleRows() only rewrites text on rows that already exist, so it
+  // cannot show a family this step just created or hide one it just removed.
+  // A step that carried a style region gets the full rebuild; every other
+  // step keeps the in-place update (and the operator's scroll position).
+  if (r.nStyles) { famPrune(); renderStyles(); } else refreshStyleRows();
   renderChips();
   renderMiniLegend();
   renderMultiBar();
   draw();
+}
+
+// =============== operator-created line families + per-family list ========
+// OWNER (2026-08-31): "missing the ability to label lines into its own line
+// style/family from the menu, I guess also can we get a drop down of each
+// line in each line style/family?"
+//
+// A previous builder deliberately refused to offer "(new family)" because
+// nothing in the app could create a style. This is that missing half. What a
+// created family IS, exactly:
+//
+//   * a real entry in state.result.styles, carrying the same fields the
+//     engine's rows carry, so every surface that walks styles (the list, the
+//     chips, the mini legend, splitItems, the itemized takeoff, the CSV, the
+//     approve payload) treats it like any other family with no special case;
+//   * marked `operator_created: true` - the row wears a "yours" tag and the
+//     export carries a disclosure note. It is never dressed up as detected;
+//   * counted and priced from its CHAINS, like every other row. styleLenPt /
+//     styleLiveCount read the live chains, so a fresh family is honestly
+//     0 lines / 0 ft until a line is moved into it;
+//   * page state, exactly like every other edit (added chains, exclusions,
+//     chain labels all die on a page switch or reload). It survives an
+//     Approve & export because the export is taken from what is on screen.
+//
+// EXPORT (measured against server.py, not assumed): `approve` builds each
+// element's label with `body.chain_labels.get(cid) or body.labels.get(sid)`,
+// a plain dict lookup over the style_id the client sent, and never consults
+// res["styles"]. Chains moved into a created family are `custom`, so they
+// travel in `added_chains` carrying the new style_id, and `labels` carries
+// that style_id because state.include has it ticked. So the NAME survives
+// export today with no server change. What does NOT survive is the
+// machine-readable fact that a human invented the family: ApproveBody has no
+// field for it. Rather than invent one, famApproveNotes() states it in
+// `notes` - the existing free-text channel the earthwork caveat already uses,
+// which the server copies verbatim into export["notes"] and prints on the
+// face of the report PDF. Listed as a followup, not faked here.
+//
+// LINE-FAMILY-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_family.js can eval
+// the block, like TRENCH-MATH / WZ-MATH / UNDO-CORE.
+
+// A style_id no row and no chain on this page is using. Style ids are
+// ordinals inside one page's style table, so "one past the highest in use"
+// is the only rule that cannot collide - and it must scan CHAINS too, not
+// just styles: an id present on a chain but not on a style row would
+// otherwise be handed out and silently relabel that chain on export.
+function famAllocStyleId(styles, chains) {
+  let hi = 0;
+  for (const s of styles || [])
+    if (Number.isFinite(s.style_id) && s.style_id > hi) hi = s.style_id;
+  for (const c of chains || [])
+    if (Number.isFinite(c.style_id) && c.style_id > hi) hi = c.style_id;
+  return hi + 1;
+}
+
+// The style row for a family the operator named. `donor` is the line that was
+// selected when they created it (or null): the new family inherits its
+// PATTERN - class, colour, width, dash signature - because those describe how
+// the linework is drawn, and the whole point is that these lines already look
+// alike and were filed wrong. length_pt/n are 0 because nothing is in it yet
+// and both are recomputed live from the chains anyway.
+function famNewStyle(styles, chains, name, donor) {
+  const d = donor || {};
+  return {
+    style_id: famAllocStyleId(styles, chains),
+    suggested_label: name,
+    length_pt: 0,
+    n: 0,
+    class: d.class || "solid",
+    color: d.color ? d.color.slice() : [0, 0, 0],
+    width: d.width || 0.5,
+    layer: "",                 // no drafter filed this; say so by absence
+    signature: d.dash_signature || d.signature || "solid",
+    texture: false,
+    operator_created: true,
+  };
+}
+
+// The per-family line list, BOUNDED. Longest first (an estimator scanning a
+// family wants the pieces that carry the footage), chain_id ascending as the
+// tiebreak so the order is deterministic across repaints.
+//
+// `cap` bounds what is BUILT, not what exists: the return states total and
+// hidden so the caller can print "showing 50 of 214" and offer more. Nothing
+// is ever dropped without a count.
+//   excluded: Set of chain_ids the reviewer deleted - they are not lines of
+//             this family any more and must not be listed.
+//   lenOf:    length accessor (the app passes chainLenPt, which honours a
+//             vertical-scale axis); defaults to the raw length_pt.
+function famLines(chains, sid, opt) {
+  const o = opt || {};
+  const cap = Number.isFinite(o.cap) && o.cap > 0 ? o.cap : 50;
+  const ex = o.excluded || null;
+  const lenOf = o.lenOf || (c => c.length_pt || 0);
+  const all = [];
+  for (const c of chains || []) {
+    if (c.style_id !== sid) continue;
+    if (ex && ex.has(c.chain_id)) continue;
+    all.push({ chain_id: c.chain_id, len: lenOf(c),
+               nPts: (c.points || []).length,
+               cls: c.class, custom: !!c.custom });
+  }
+  all.sort((a, b) => (b.len - a.len) || (a.chain_id - b.chain_id));
+  const rows = all.slice(0, cap);
+  return { rows, shown: rows.length, total: all.length,
+           hidden: all.length - rows.length,
+           totalLen: all.reduce((t, r) => t + r.len, 0) };
+}
+// LINE-FAMILY-END
+
+// live page state for the two surfaces above: which style rows are expanded,
+// and how many lines each expanded row is currently showing. Display only -
+// nothing here is ever read by an edit, a quantity or the export.
+const famOpen = new Map();          // style_id -> cap currently in force
+const FAM_PAGE = 50;                // rows added per "show more"
+
+// drop expansion state for rows that no longer exist (an undo can remove a
+// created family out from under an open list)
+function famPrune() {
+  if (!state.result) return;
+  const live = new Set(state.result.styles.map(s => s.style_id));
+  for (const sid of [...famOpen.keys()]) if (!live.has(sid)) famOpen.delete(sid);
+}
+
+// The ONLY writers of state.hotStyle. Display, never an edit: no captureUndo,
+// no afterEdit, no recompute - a repaint and nothing else. Kept as functions
+// so every hover surface (style row, legend chip, bid row) states the same
+// fact one way and a future family that spans styles needs no new plumbing.
+function hotFam(sids) {
+  const next = new Set((sids || []).filter(v => v !== null && v !== undefined));
+  if (!next.size) return hotFamOff();
+  // skip the repaint when nothing moved: mouseenter can fire repeatedly on a
+  // row whose children take the pointer, and draw() on a 2,000-chain sheet is
+  // not free
+  const cur = state.hotStyle;
+  if (cur && cur.size === next.size && [...next].every(v => cur.has(v))) return;
+  state.hotStyle = next;
+  draw();
+}
+function hotFamOff() {
+  if (state.hotStyle === null) return;
+  state.hotStyle = null;
+  draw();
+}
+
+// Create a family the operator named. ONE captureUndo entry covers the new
+// style ROW (listed in the `sids` region) AND every chain the caller is about
+// to move into it, so a single Ctrl+Z reverses the whole gesture and never
+// leaves an orphan empty family behind. The caller does the moves through
+// reclassCore - the same mutation the Reclassify tool, the selection-bar
+// switch and the bulk move already end in. There is no second reclass path.
+function famCreate(name, donor, undoLabel, moveIds) {
+  const nm = String(name || "").trim();
+  if (!state.result || !nm) return null;
+  const st = famNewStyle(state.result.styles, state.result.chains, nm, donor);
+  captureUndo(undoLabel || `new family "${nm}"`, moveIds || [], [st.style_id]);
+  state.result.styles.push(st);
+  state.labels.set(st.style_id, nm);
+  state.seedLabels.set(st.style_id, "");   // nothing seeded it; it was typed
+  // ticked ON: an operator who just named a family means to count it. Written
+  // straight into the map, NOT through setInclude - setInclude records the
+  // tick in the browser store against includeKey(st), and a per-page record
+  // for a style_id that only exists while this page is open would be read
+  // back by memApply on a LATER result that happens to reach the same id.
+  state.include.set(st.style_id, true);
+  return st;
+}
+
+function famIsMine(s) { return !!(s && s.operator_created); }
+
+// A family whose NAME already exists is legal and sometimes wanted, but the
+// takeoff adds up BY NAME (splitItems / computeTakeoffRows pool on the label),
+// so the two rows will total together in the itemized panel, the CSV and the
+// export. Say so at the moment it happens rather than let the operator find a
+// doubled figure later.
+function famNameClash(nm, skipSid) {
+  const want = nm.trim().toUpperCase();
+  if (!want || !state.result) return null;
+  for (const s of state.result.styles) {
+    if (s.style_id === skipSid) continue;
+    const have = (state.labels.get(s.style_id) || s.suggested_label || "").trim();
+    if (have.toUpperCase() === want) return s;
+  }
+  return null;
+}
+
+// The shared naming step for both entry points. Returns the trimmed name, or
+// null when the operator cancelled or typed nothing.
+function famAskName(promptText) {
+  const raw = prompt(promptText, "");
+  if (raw === null) return null;                       // cancelled
+  const nm = String(raw).trim();
+  if (!nm) { setStatus("a family needs a name — nothing was created"); return null; }
+  return nm;
+}
+
+// what the status line says after a family is created, including the
+// provenance and the export story, because both are decisions the operator
+// is entitled to see at the moment they are made
+// `mine` is the style_id of the family JUST created and must be excluded from
+// the clash test - without it the new row matches its own name and every
+// creation reported a collision with itself.
+function famCreatedMsg(nm, nLines, qty, mine) {
+  const clash = famNameClash(nm, mine);
+  return `new family "${nm}" — ${nLines} line${nLines === 1 ? "" : "s"}, `
+    + `${qty} moved into it. Marked as created by you, not detected: the `
+    + `export carries the name and a note saying a reviewer made it. `
+    + `Ctrl+Z reverses the family and the move together.`
+    + (clash ? `  NOTE: another line type is already called "${nm}" — the `
+        + `takeoff adds up by name, so the two will total together.` : "");
+}
+
+// SELECTION BAR: new family from the one selected line.
+function famNewFromSelection() {
+  const ch = state.selected !== null ? chainById(state.selected) : null;
+  if (!ch) return setStatus("select a line first — the new family starts with it", "err");
+  const nm = famAskName("Name the new line family. The selected line moves "
+    + "into it; other lines can be moved in after.");
+  if (nm === null) return;
+  const st = famCreate(nm, ch,
+    `new family "${nm}" — ${fmtQty(chainLenPt(ch))} moved into it`, [ch.chain_id]);
+  if (!st) return;
+  const qty = fmtQty(chainLenPt(ch));
+  const c = reclassCore(ch, st.style_id, null);
+  state.selected = c.chain_id;
+  updateSelBar(c);
+  famOpen.set(st.style_id, FAM_PAGE);   // open its line list, so the operator
+                                        // sees what landed in it
+  afterEdit(famCreatedMsg(nm, 1, qty, st.style_id));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// MARQUEE BAR: new family from every line in the marquee selection.
+function famNewFromMulti() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const nm = famAskName(`Name the new line family. All ${chs.length} selected `
+    + "lines move into it.");
+  if (nm === null) return;
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  const st = famCreate(nm, chs[0],
+    `new family "${nm}" — ${chs.length} line${chs.length === 1 ? "" : "s"}, `
+      + fmtQty(totalPt), chs.map(c => c.chain_id));
+  if (!st) return;
+  const newIds = [];
+  for (const c of chs) newIds.push(reclassCore(c, st.style_id, null).chain_id);
+  state.multiSel = new Set(newIds);   // members were re-materialized under new ids
+  if (state.selected !== null &&
+      (state.excluded.has(state.selected) || !chainById(state.selected))) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  famOpen.set(st.style_id, FAM_PAGE);
+  afterEdit(famCreatedMsg(nm, chs.length, fmtQty(totalPt), st.style_id));
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// Every operator-created family that has anything in it, for the export
+// disclosure. Empty families are left out on purpose: an empty family exports
+// nothing, so a note about it would be noise on the face of a report.
+function famApproveNotes() {
+  if (!state.result) return [];
+  const mine = [];
+  for (const s of state.result.styles) {
+    if (!famIsMine(s)) continue;
+    const n = styleLiveCount(s.style_id);
+    if (!n || !state.include.get(s.style_id)) continue;
+    mine.push(`"${state.labels.get(s.style_id) || s.suggested_label}" `
+      + `(${n} line${n === 1 ? "" : "s"}, ${fmtQty(styleLenPt(s))})`);
+  }
+  if (!mine.length) return [];
+  // ONE note line, whatever the count: `approve` keeps only the first 6 notes
+  // and earthwork already spends 3 of them.
+  return ["Line families created by the reviewer on this sheet (the detector "
+    + "did not find them as separate families; their lines were moved in by "
+    + "hand): " + mine.join("; ") + "."];
 }
 
 // ================== reclassify core + family switcher =====================
@@ -12780,10 +13455,14 @@ function familyName(s) {
 
 // compact <select> over the page's families, footage-first. placeholder
 // non-null makes it an action picker (bulk move); null preselects
-// currentSid (single-line switcher). No "(new family)" option on purpose:
-// nothing in the app creates a style today, and a picker must not promise
-// an edit that has no implementation behind it.
-function familySelect(currentSid, placeholder, onPick) {
+// currentSid (single-line switcher).
+//
+// `onNew` is optional and, when passed, adds the "＋ New family…" entry the
+// owner asked for. The old comment here said there was no such option "on
+// purpose: nothing in the app creates a style today" - that is no longer
+// true (famCreate above), and the refusal only stood while it was.
+const FAM_NEW_OPT = "+new";   // sentinel option value; never a style_id
+function familySelect(currentSid, placeholder, onPick, onNew) {
   const sel = document.createElement("select");
   sel.className = "fam-sel";
   sel.name = "family-switch";   // typing() sees SELECT focus; shortcuts pause
@@ -12792,18 +13471,32 @@ function familySelect(currentSid, placeholder, onPick) {
     o.value = ""; o.textContent = placeholder; o.selected = true;
     sel.appendChild(o);
   }
+  if (onNew) {
+    const o = document.createElement("option");
+    o.value = FAM_NEW_OPT;
+    o.textContent = "+ New family…";
+    sel.appendChild(o);
+  }
   const styles = [...state.result.styles]
     .sort((a, b) => styleLenPt(b) - styleLenPt(a));
   for (const s of styles) {
     const o = document.createElement("option");
     o.value = String(s.style_id);
-    o.textContent = familyName(s);
+    o.textContent = familyName(s) + (famIsMine(s) ? "  (yours)" : "");
     if (placeholder === null && s.style_id === currentSid) o.selected = true;
     sel.appendChild(o);
   }
   sel.onchange = () => {
     const v = sel.value;
     sel.blur();   // hand the keyboard back to the canvas shortcuts
+    if (v === FAM_NEW_OPT) {
+      // put the picker back where it was FIRST: naming can be cancelled, and
+      // a switcher left reading "＋ New family…" would assert an edit that
+      // did not happen. On success the caller re-renders this control anyway.
+      sel.value = placeholder !== null ? "" : String(currentSid);
+      onNew();
+      return;
+    }
     if (v !== "") onPick(+v);
   };
   return sel;
@@ -12889,9 +13582,11 @@ function renderMultiBar() {
   del.textContent = "Delete all";
   del.title = "Remove every selected line from the takeoff — one Ctrl+Z brings them all back";
   del.onclick = multiDeleteAll;
-  const move = familySelect(null, "Move all to family…", (sid) => multiMoveAll(sid));
+  const move = familySelect(null, "Move all to family…", (sid) => multiMoveAll(sid),
+                            () => famNewFromMulti());
   move.title = "Move every selected line into one family — same edit as "
-    + "Reclassify, one Ctrl+Z reverses the whole move";
+    + "Reclassify, one Ctrl+Z reverses the whole move. “+ New family…” makes "
+    + "a family of your own and puts all of them in it.";
   const clr = document.createElement("button");
   clr.className = "mini";
   clr.textContent = "Clear";
