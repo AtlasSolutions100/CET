@@ -1747,8 +1747,12 @@ def _is_plan_chain(c) -> bool:
 # ~204 "PE 486.0" pad callouts and every one was invisible to this reader
 # (out/verify/2026-08-30/stice-recipe/RECIPE.md). A pad elevation is
 # PROPOSED ground, like FG.
+# EW = end of wall, added 2026-08-30: Oncor Cloudcrest C-04's own legend
+# prints "EW 100.0  PROPOSED END OF WALL ELEVATION" and the sheet carries
+# 4 printed EW callouts (568.6/569.8/558.8/557.6) that were invisible for
+# want of the tag. Sheet vocabulary, same standard as the rest.
 _SPOT_TAG = re.compile(
-    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|PE)\s*:?$",
+    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|PE|EW)\s*:?$",
     re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
@@ -1761,9 +1765,21 @@ _FULL_ELEV = re.compile(r"^\d{3,4}$")
 # neighbour's value is on a DIFFERENT line and can no longer be captured.
 # The glued form `FIN:05.25'` is the one the sheet's own legend prints as its
 # example, and the word-pair reader could never see it.
+# PE is deliberately absent here (unlike _SPOT_TAG): Stice's 191 PE pads all
+# read through the word pass today, and adding PE to the line pass would move
+# every one of those rows' anchor coordinates for no change in value.
 _SPOT_LINE = re.compile(
-    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP)"
+    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)"
     r"\s*[:=]?\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s*$", re.I)
+# The same whole-line label with the VALUE PRINTED FIRST: "583.5 ME".
+# Oncor Cloudcrest C-04 prints every plan callout this way (21 of them)
+# while its legend prints the samples tag-first ("ME 100.0") - the reader
+# parsed only the tag-first order and returned nothing but the legend's own
+# illustration. Both orders are the drafter's choice, not a convention.
+_SPOT_LINE_VT = re.compile(
+    r"^\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s+"
+    r"(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)\s*[:=]?\s*$",
+    re.I)
 # These sheets DECLARE their datum in the spot-elevation legend:
 #   "NOTE: ALL SPOT ELEVATIONS ARE TRUNCATED CIVIL ELEVATIONS
 #    (IE. EXAMPLE: TOP OF PATIO @ 7705.25' = FIN:05.25')"
@@ -1799,11 +1815,87 @@ def read_spot_datum(lines: list) -> float | None:
 # 10 pt separates them with room on both sides.
 _SPOT_SAME_R2 = 10.0 ** 2
 
+# --- legend-box exclusion: the legend's sample rows are not ground --------
+#
+# legend_detect hands back one sample box PER LINE-STYLE ROW, but a legend's
+# spot-elevation rows carry no line swatch, so they sit in the vertical GAP
+# between detected boxes. Measured on Oncor C-04: line-sample boxes end at
+# y=114.9 and resume at y=212.7, and the five spot-sample rows ("100.0",
+# "ME 100.0" ... "EW 100.0", 19.2 pt pitch) live in that 97.8 pt gap.
+# Bridging vertically-stacked boxes into one block covers them; 120 pt holds
+# the measured 97.8 with margin and is far below any gap a plan area between
+# two separate legend blocks would open (the C-04 sheet is 1728 pt tall).
+# Boxes only merge when their x-ranges overlap, so two legends in different
+# corners of a sheet stay two blocks.
+_LEGEND_ROW_BRIDGE = 120.0
+
+
+def _legend_blocks(boxes) -> list:
+    """Merge per-row legend sample boxes into whole-legend blocks."""
+    bs = sorted((tuple(float(v) for v in b[:4]) for b in (boxes or ())),
+                key=lambda b: (b[1], b[0]))
+    blocks: list = []
+    for b in bs:
+        if blocks:
+            x0, y0, x1, y1 = blocks[-1]
+            if (b[1] - y1 <= _LEGEND_ROW_BRIDGE
+                    and not (b[2] < x0 or b[0] > x1)):
+                blocks[-1] = (min(x0, b[0]), y0, max(x1, b[2]),
+                              max(y1, b[3]))
+                continue
+        blocks.append(b)
+    return blocks
+
+
+# Fallback legend signature for when no legend boxes are available (the
+# confidence endpoint reads only the text layer; older cached results may
+# predate legend_samples). A legend prints ONE sample row per tag, every row
+# the SAME sample value, in one tight column: C-04's read as ME/TW/BW/EW all
+# exactly 100.0, x-centres within 0.6 pt, rows 19.2 pt apart. The rule below
+# asks for >= 3 spots with an identical value in a <= 6 pt column at <= 30 pt
+# consecutive spacing (10x / 1.5x the measured figures). False-positive risk,
+# stated: three REAL callouts printing the same elevation, column-aligned
+# within 6 pt and packed at under 30 pt pitch, would be swallowed - that is a
+# wall/kerb run at constant grade with its labels stacked touching each
+# other, which none of the four measured sheets (C-04, Barn C3.0/C3.1,
+# Stice p0) exhibits. Walked with gap tests, not bucketed (CLAUDE.md 5).
+_LEGEND_COL_DX = 6.0
+_LEGEND_COL_DY = 30.0
+
+
+def _legend_sample_rows(spots: list) -> set:
+    """Indices of spots that look like a legend's own sample column."""
+    by_val: dict = {}
+    for i, g in enumerate(spots):
+        by_val.setdefault(g["value"], []).append(i)
+    drop: set = set()
+    for ii in by_val.values():
+        if len(ii) < 3:
+            continue
+        ii = sorted(ii, key=lambda i: spots[i]["y"])
+        run = [ii[0]]
+
+        def _flush(run):
+            if len(run) >= 3:
+                drop.update(run)
+
+        for prev, cur in zip(ii, ii[1:]):
+            xs = [spots[i]["x"] for i in run] + [spots[cur]["x"]]
+            if (spots[cur]["y"] - spots[prev]["y"] <= _LEGEND_COL_DY
+                    and max(xs) - min(xs) <= _LEGEND_COL_DX):
+                run.append(cur)
+            else:
+                _flush(run)
+                run = [cur]
+        _flush(run)
+    return drop
+
 
 def read_spot_grades(words: list, max_dx: float = 26.0,
                      row_tol: float = 6.0, lines: list | None = None,
-                     datum_info: dict | None = None) -> list:
-    """Spot elevations printed as `FG: 15.96` / `TW: 7918.60`.
+                     datum_info: dict | None = None,
+                     legend_boxes: list | None = None) -> list:
+    """Spot elevations printed as `FG: 15.96` / `TW: 7918.60` / `583.5 ME`.
 
     Civil sheets abbreviate: the value carries only the last two digits and
     the hundreds come from the nearest full contour label (`7715` written in
@@ -1835,7 +1927,18 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     pass takeoff_engine.extract.page_words(page), not page.get_text("words"),
     or rotated sheets silently mis-place every grade.
 
-    Returns [{tag, value, z, base, x, y, resolved}].
+    legend_boxes: the detect result's `legend_samples` row boxes, when the
+    caller has them. Spot labels inside the merged legend block are the
+    legend's own sample rows (C-04 prints "ME 100.0"... as its illustration),
+    not ground; they are dropped BEFORE the datum machinery so their sample
+    values cannot vote, and the count is disclosed in
+    datum_info["legend_excluded"]. Without boxes the column-cluster fallback
+    (_legend_sample_rows) still runs.
+
+    Returns [{tag, value, z, base, x, y, resolved}]; an unresolved spot also
+    carries why="no_datum" (z is None ONLY there, and the count is disclosed
+    in datum_info["z_missing"] - 0.0 is a real elevation, never a missing
+    one).
     """
     ws = [w for w in words if str(w[4]).strip()]
     raw_anchors = [((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, float(w[4]))
@@ -1848,6 +1951,14 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     # p2: 12 labels double-counted at 2.5-3.4 pt apart. A radius test is what
     # the question actually is.
     line_at: dict = {}
+    # Line bboxes pass A consumed. A matched line IS one whole label (both
+    # regexes are anchored), so a tag word inside one is already read and
+    # must not source a second pairing in pass B - on C-04 the tag of
+    # "585.3 ME" otherwise re-grabs the NEXT callout's 585.7 printed 18.7 pt
+    # to its right, a duplicate 36 pt from where that value truly sits (the
+    # 10 pt same-label radius cannot catch it because it is not the same
+    # position; this is the cross-capture defect, one level up).
+    consumed: list = []
 
     # Pass A - whole PDF text lines. The PDF's own line grouping is
     # rotation-independent, so this reads the labels written up the side of a
@@ -1856,15 +1967,23 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     for ln in (lines or ()):
         t = str(ln[4]).strip()
         m = _SPOT_LINE.match(t)
-        if not m:
-            continue
-        tag = m.group(1).upper()
+        if m:
+            tag, val = m.group(1).upper(), float(m.group(2))
+        else:
+            # value-first print order ("583.5 ME") - same label, the
+            # drafter's other choice. See _SPOT_LINE_VT.
+            m = _SPOT_LINE_VT.match(t)
+            if not m:
+                continue
+            tag, val = m.group(2).upper(), float(m.group(1))
         x = (ln[0] + ln[2]) / 2.0
         y = (ln[1] + ln[3]) / 2.0
-        out.append({"tag": tag, "value": float(m.group(2)),
+        out.append({"tag": tag, "value": val,
                     "x": round(float(x), 1), "y": round(float(y), 1),
                     "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
         line_at.setdefault(tag, []).append((x, y))
+        consumed.append((float(ln[0]), float(ln[1]),
+                         float(ln[2]), float(ln[3])))
 
     # Pass B - the original word-pair reader, for anything the line grouping
     # split (a tag and its value emitted as two lines). Anything already found
@@ -1876,7 +1995,11 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         if not m:
             continue
         tag = m.group(1).upper()
+        cx = (w[0] + w[2]) / 2
         cy = (w[1] + w[3]) / 2
+        # this tag word sits inside a line pass A already read whole - done
+        if any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3] for r in consumed):
+            continue
         best = None
         for v in ws:
             if v is w:
@@ -1890,6 +2013,15 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
                 continue
             if best is None or dx < best[0]:
                 best = (dx, v)
+        # DELIBERATELY right-side only. The value-first order ("583.5 ME")
+        # is handled by the whole-line pass above (_SPOT_LINE_VT), where the
+        # PDF's own line grouping vouches that value and tag belong together.
+        # A left-side WORD search was tried here 2026-08-30 and measured
+        # harmful on both regression sheets: Stice p0's rotated pad clusters
+        # put a neighbouring pad's value 0.6 pt left of a PE tag while the
+        # tag's own value sat 5.8 pt right (10 of 191 pads flipped to the
+        # neighbour's elevation, one junk PE 103.0), and Barn C3.1 grew 17
+        # duplicate rows from second tags re-reading a neighbour's value.
         if best is None:
             continue
         val = float(best[1][4])
@@ -1906,6 +2038,22 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         out.append({"tag": tag, "value": val, "x": round(float(x), 1),
                     "y": round(float(y), 1),
                     "side": "existing" if tag in _SPOT_EXISTING else "proposed"})
+
+    # --- legend-sample exclusion, BEFORE any datum voting ----------------
+    # The legend's sample rows carry a made-up value (C-04: 100.0 on every
+    # row). Left in, they do not just pollute the list - they vote in the
+    # datum consensus below and can mutually "corroborate" each other.
+    blocks = _legend_blocks(legend_boxes)
+    # same 6/8 pt pad the contour-suggestion legend filter uses in server.py
+    in_block = set()
+    for i, g in enumerate(out):
+        if any(b[0] - 6 <= g["x"] <= b[2] + 6 and b[1] - 8 <= g["y"] <= b[3] + 8
+               for b in blocks):
+            in_block.add(i)
+    drop = in_block | _legend_sample_rows(out)
+    n_legend = len(drop)
+    if drop:
+        out = [g for i, g in enumerate(out) if i not in drop]
 
     # --- page datum by consensus (see the docstring) ---
     partial = [g["value"] for g in out if g["value"] < 1000.0]
@@ -1972,11 +2120,28 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     # A lone 3-digit value on a 7,000-ft sheet still falls through to the
     # datum machinery / honest unresolved.
     full3 = sorted(av for _, _, av in raw_anchors)
+    # The spot population can also corroborate ITSELF: Oncor C-04 prints all
+    # 21 tagged callouts in full (551.2-586.4, one 35-ft family) and not one
+    # bare 3-digit word anywhere on the page (its contour labels are exploded
+    # vector glyphs, invisible to the text layer), so the anchor rule alone
+    # left every correct printed value unresolved. Three or more tagged spots
+    # agreeing within 100 ft is the same standard the anchor band already
+    # uses (truncated values are always < 100, so a 3-digit family is a
+    # printed-in-full family); a LONE 3-digit value still falls through to
+    # the datum machinery / honest unresolved, and two values cannot vouch
+    # for each other. Stated residual risk: three non-elevation tag-value
+    # pairs landing inside one 100-ft window would self-corroborate - none of
+    # the four measured sheets prints even one such pair.
+    spot3 = sorted(g["value"] for g in out if 100.0 <= g["value"] < 1000.0)
     def _corroborated(v):
         import bisect
         i = bisect.bisect_left(full3, v - 100.0)
         j = bisect.bisect_right(full3, v + 100.0)
-        return (j - i) >= 2
+        if (j - i) >= 2:
+            return True
+        i = bisect.bisect_left(spot3, v - 100.0)
+        j = bisect.bisect_right(spot3, v + 100.0)
+        return (j - i) >= 3   # v itself is in spot3: itself + 2 others
 
     for g in out:
         val = g["value"]
@@ -1992,5 +2157,12 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
             k = round((av - val) / 100.0)
             g.update(z=val + 100.0 * k, base=av, resolved=True)
         else:
-            g.update(z=None, base=None, resolved=False)
+            # z is None ONLY here, and each such spot says so itself. This
+            # is "genuinely absent": the value printed truncated and no
+            # credible page datum exists. (0.0 is a real elevation; every
+            # missing-z test downstream must be `is None`, CLAUDE.md 5.)
+            g.update(z=None, base=None, resolved=False, why="no_datum")
+    if datum_info is not None:
+        datum_info["legend_excluded"] = n_legend
+        datum_info["z_missing"] = sum(1 for g in out if g["z"] is None)
     return out

@@ -1717,6 +1717,10 @@ def page_confidence(job_id: str, page: int):
             "from_sheet_note": n_note,
             "inferred": n_inferred,
             "unresolved": n_unresolved,
+            # legend sample rows the reader dropped (text-layer fallback
+            # rule here - this endpoint has no detect result to hand the
+            # reader legend boxes from)
+            "legend_excluded": dinfo.get("legend_excluded", 0),
             "declared_datum": declared,
             # Both candidates and the disagreement, so no banner ever again
             # asserts "the drafter's statement" while the sheet's own
@@ -3585,8 +3589,12 @@ def earthwork_suggest(job_id: str, page: int):
     # elevations, so they ride alongside the contour rows.
     from takeoff_engine.earthwork import read_spot_grades
     spot_datum_info = {}
+    # legend_samples: the reader drops spot labels inside the merged legend
+    # block (the legend's own sample rows - C-04 prints "ME 100.0"/"TW
+    # 100.0"/... as its illustration) and discloses the count.
     spots = read_spot_grades(words, lines=lines,
-                             datum_info=spot_datum_info)
+                             datum_info=spot_datum_info,
+                             legend_boxes=res.get("legend_samples") or [])
 
     # Two junk sources make the contour suggestions untrustworthy on sparse
     # sheets (Barn C3.4 offered 6 rows of which 4 were noise):
@@ -3661,6 +3669,12 @@ def earthwork_suggest(job_id: str, page: int):
             "split_counts": split_counts,
             "spot_grades": spots,
             "spot_datum": spot_datum_info,
+            # disclosed heuristics: how many legend sample rows were dropped
+            # and how many spots came back with no z at all ("N legend
+            # samples excluded" / "N spots unresolved" in the UI). Additive
+            # keys; the per-spot rows still carry resolved/why themselves.
+            "spot_legend_excluded": spot_datum_info.get("legend_excluded", 0),
+            "spot_z_missing": spot_datum_info.get("z_missing", 0),
             "spot_datum_needed": bool(spots) and not any(
                 g.get("resolved") for g in spots),
             "scale": res.get("scale"),
