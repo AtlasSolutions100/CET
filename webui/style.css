@@ -1214,3 +1214,22 @@ main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
   letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
   text-decoration: none; margin-top: 2px; }
 .projects-link:hover { text-decoration: underline; }
+/* --- editing core: family switch on the selection bar + marquee bar ------
+   .canvas-status is pointer-events:none so the pills never block the sheet;
+   these three grew CONTROLS (family select, bulk buttons, the calibrate
+   input) and must take the pointer back on just their own footprint. */
+#selInfo, #measureInfo, .multi-bar { pointer-events: auto; }
+#selInfo { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+#selInfo:empty { display: none; }   /* the id rule above outranks .tk-info:empty */
+.sel-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fam-sel { flex: none; max-width: 180px; font-size: 11px; padding: 2px 6px;
+  border-radius: 6px; background: var(--chip); color: var(--text);
+  border: 1px solid var(--line); cursor: pointer; }
+.fam-sel:hover { border-color: var(--accent); }
+.multi-bar { display: inline-flex; align-items: center; gap: 8px;
+  border-color: #ff00cc; }
+.multi-bar[hidden] { display: none; }   /* author display beats [hidden] otherwise */
+.multi-bar .mini { flex: none; }
+.multi-bar .mini.danger { color: #ff9a90; }
+.multi-bar .mini.danger:hover { background: #b3362c; color: #fff;
+  border-color: #b3362c; }

@@ -58,6 +58,9 @@ const state = window.state = {
   drawSrc: null,            // chain_id whose family a drawn line joins
   hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
+  multiSel: new Set(),      // marquee multi-select: chain_ids boxed by
+                            // Shift+drag; bulk delete / bulk reclass act on it
+  marquee: null,            // in-progress Shift+drag box {a:[x,y], b:[x,y]} pt
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
   conf: null,               // /confidence payload for the current page:
@@ -490,6 +493,11 @@ async function selectPage(p) {
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
+  // chains are per page: an undo stack that outlived the sheet would
+  // "restore" chains onto a page they never belonged to. Same rule as the
+  // work area below - page switch is the reliable chokepoint.
+  state.multiSel = new Set(); state.marquee = null;
+  undoClear(undoStack);
   // The WORK AREA belongs to ONE sheet. loadResult also clears it, but
   // loadResult only runs when the new page HAS a loadable result - an
   // undetected page skipped it and kept the PREVIOUS sheet's boxes armed
@@ -510,7 +518,7 @@ async function selectPage(p) {
   scopeApply();
   renderSheetHead();
   renderScopeBar();
-  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); fitOnLoad();
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderItemized(); renderMiniLegend(); renderMultiBar(); fitOnLoad();
   const img = new Image();
   img.onload = () => {
     if (gen !== state.gen) return;   // a later page won the race
@@ -776,6 +784,10 @@ async function loadResult(gen = state.gen) {
   state.include = new Map(); state.labels = new Map();
   state.selected = null; state.excluded = new Set();
   state.chainLabels = new Map(); state.clickPt = null;
+  // a fresh result invalidates every snapshot on the undo stack ("Reset
+  // edits" reloads through here, and re-detect replaces every chain object)
+  state.multiSel = new Set(); state.marquee = null;
+  undoClear(undoStack);
   state.tool = null; state.measurePts = []; state.vScale = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; $("aiBtn").textContent = "Analyze";
   state.ew = null; state.hotChain = null; state.extraItems = [];
@@ -859,7 +871,7 @@ async function loadResult(gen = state.gen) {
   scopeApply();   // verdicts before the first paint; see scopeApply()
   renderSheetHead();
   renderScopeBar();
-  renderStyles(); renderChips(); renderLegend(); renderAreas();
+  renderStyles(); renderChips(); renderLegend(); renderAreas(); renderMultiBar();
   // arApplyItems, not renderItemized: calcRestore brought back WHICH areas the
   // operator ticked, and the priced rows are DERIVED from that selection at
   // the scale in force. Rendering without re-deriving would show the
@@ -10018,12 +10030,17 @@ function draw() {
       if (state.isolate === null && !state.include.get(sid)) continue;
       const hot = state.hot === sid || state.hotChain === ch.chain_id;
       const sel = state.selected === ch.chain_id;
+      // marquee members light up in the same magenta family as the single
+      // selection, a step thinner so the picked line still reads apart
+      const msel = !sel && state.multiSel.size > 0 && state.multiSel.has(ch.chain_id);
       const st2 = state.result.styles.find(x => x.style_id === ch.style_id);
     ctx.globalAlpha = st2 && (st2.texture || st2.class === "annotation") ? 0.25 : 1.0;
-    ctx.strokeStyle = sel ? "#ff00cc" : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
+    ctx.strokeStyle = (sel || msel) ? "#ff00cc" : cssColor(styleColor(sid), ch.width || (st2 && st2.width));
       // real plotted weight, floored so a hairline stays visible zoomed out
       const wPt = Math.max(ch.width || 0.35, 0.35) * f;
-      ctx.lineWidth = sel ? 4.5 / k : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
+      ctx.lineWidth = sel ? 4.5 / k
+        : msel ? 3.2 / k
+        : Math.max(hot ? wPt * 2.0 : wPt, 1.4 / k);
       // selection recolors but keeps the true pattern - a solid magenta
       // overlay reads as "this line became solid", which it has not
       const pts = ch.points;
@@ -10185,6 +10202,20 @@ function draw() {
       ctx.setLineDash([]);
     }
   }
+  // marquee multi-select box, while the Shift+drag is in flight
+  if (state.marquee) {
+    const fq = IMG_DPI / 72;
+    const a = state.marquee.a, b = state.marquee.b;
+    const rx = Math.min(a[0], b[0]) * fq, ry = Math.min(a[1], b[1]) * fq;
+    const rw = Math.abs(b[0] - a[0]) * fq, rh = Math.abs(b[1] - a[1]) * fq;
+    ctx.fillStyle = "rgba(255,0,204,0.07)";
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeStyle = "#ff00cc";
+    ctx.lineWidth = 1.6 / k;
+    ctx.setLineDash([6 / k, 4 / k]);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.setLineDash([]);
+  }
   // cut-span first anchor
   if (state.tool === "cutspan" && state.cutA) {
     const f2 = IMG_DPI / 72;
@@ -10324,6 +10355,7 @@ function cssColor(c, w) {
 
 let panning = null;
 let downAt = null;
+let dragCap = false;   // one undo snapshot per point-drag, taken on first move
 cv.addEventListener("mousedown", (e) => {
   // work-area tool: mousedown STARTS a box, it never pans - the whole
   // gesture is the drag, so the generic pan below must not see it
@@ -10332,12 +10364,21 @@ cv.addEventListener("mousedown", (e) => {
     state.wzDrag = { a: p, b: p.slice() };
     return;
   }
+  // marquee multi-select: Shift+drag boxes whole lines into a selection
+  // set. Shift was free (pan never read it), and the gesture only arms when
+  // NO tool owns the canvas, so wz-draw/st-draw/measure keep their drags.
+  if (e.shiftKey && !state.tool && state.result && state.img) {
+    const p = ptFromEvent(e);
+    state.marquee = { a: p, b: p.slice() };
+    return;
+  }
   // while a click-tool is armed, clicks land IN the tool - a click on a
   // vertex dot is a cut/draw/measure anchor, never a point-drag
   const v = state.tool ? null : vertexAt(e);
   if (v !== null) {           // grab the handle rather than pan the sheet
     state.selPt = v;
     state.dragPt = true;
+    dragCap = false;          // snapshot happens on the first actual move
     updateSelBar(chainById(state.selected));
     draw();
     return;
@@ -10352,9 +10393,18 @@ addEventListener("mousemove", (e) => {
     draw();
     return;
   }
+  if (state.marquee) {
+    state.marquee.b = ptFromEvent(e);
+    draw();
+    return;
+  }
   if (state.dragPt) {
     const ch = chainById(state.selected);
     if (ch && state.selPt !== null) {
+      if (!dragCap) {   // BEFORE the first mutation of this drag, only once
+        captureUndo("point move", [ch.chain_id]);
+        dragCap = true;
+      }
       const m = ch.custom ? ch : materialize(ch);
       if (m !== ch) { state.selected = m.chain_id; }
       m.points[state.selPt] = ptFromEvent(e);
@@ -10390,8 +10440,32 @@ addEventListener("mouseup", (e) => {
     wzStatusAfterBox();
     return;
   }
+  if (state.marquee) {
+    const mq = state.marquee;
+    state.marquee = null;
+    const x0 = Math.min(mq.a[0], mq.b[0]), x1 = Math.max(mq.a[0], mq.b[0]);
+    const y0 = Math.min(mq.a[1], mq.b[1]), y1 = Math.max(mq.a[1], mq.b[1]);
+    // a click is not a box - same 2 pt rule as the work-area tool
+    if (x1 - x0 < 2 && y1 - y0 < 2) {
+      setStatus("multi-select: hold Shift and DRAG a box around whole lines", "busy");
+      draw();
+      return;
+    }
+    let added = 0;
+    for (const ch of marqueePick([x0, y0, x1, y1]))
+      if (!state.multiSel.has(ch.chain_id)) { state.multiSel.add(ch.chain_id); added++; }
+    renderMultiBar();
+    if (!state.multiSel.size)
+      setStatus("no whole line inside that box — a line joins only when it is FULLY inside", "err");
+    else
+      setStatus(`${added} line(s) added — ${state.multiSel.size} selected `
+        + "(Shift+drag adds more, Esc clears)");
+    draw();
+    return;
+  }
   if (state.dragPt) {
     state.dragPt = false;
+    dragCap = false;
     const ch = chainById(state.selected);
     if (ch) {
       ch.length_pt = polyLen(ch.points);
@@ -10499,6 +10573,8 @@ function mergeClick(px, py) {
     }
   }
 
+  captureUndo(`merge of 2 lines — ${fmtQty(combined + best.d)}`,
+    [sel.chain_id, tgt.chain_id]);
   const c = materialize(sel);
   const pa = c.points.map(p => p.slice());
   if (best.revA) pa.reverse();
@@ -10573,16 +10649,13 @@ function handleCanvasClick(e) {
     const sel = chainById(state.selected);
     if (!tgt || !sel) { setStatus("click a line of the family this one belongs to", "err"); return; }
     if (tgt.style_id === sel.style_id) { setStatus("already in that family"); state.tool = null; $("reclassBtn").classList.remove("active"); return; }
-    const c = materialize(sel);
-    c.style_id = tgt.style_id;
-    c.class = tgt.class; c.color = tgt.color; c.width = tgt.width;
-    c.dash_signature = tgt.dash_signature;
-    if (tgt.template) c.template = JSON.parse(JSON.stringify(tgt.template));
+    const lab = state.labels.get(tgt.style_id) || "its new family";
+    captureUndo(`reclass into ${lab} — ${fmtQty(chainLenPt(sel))}`, [sel.chain_id]);
+    const c = reclassCore(sel, tgt.style_id, tgt);
     state.tool = null;
     $("reclassBtn").classList.remove("active");
     state.selected = c.chain_id;
     updateSelBar(c);
-    const lab = state.labels.get(tgt.style_id) || "its new family";
     afterEdit(`moved ${fmtLen(c.length_pt)} into ${lab}`);
     renderStyles(); renderChips(); renderMiniLegend();
     return;
@@ -10675,6 +10748,8 @@ function afterEdit(msg) {
   state.wzRev++;
   setStatus(msg);
   renderItemized();
+  renderMultiBar();   // an edit can consume a multi-selected chain; the
+                      // bar's count and footage must not go stale
   draw();
 }
 
@@ -10697,6 +10772,7 @@ function splitSelected() {
   const ptsB = [bq].concat(pts.slice(bi));
   if (polyLen(ptsA) < 0.5 || polyLen(ptsB) < 0.5)
     return setStatus("click further from the end of the line to split it");
+  captureUndo(`split of a ${fmtQty(chainLenPt(ch))} line`, [ch.chain_id]);
   const full = polyLen(pts) || 1;
   const mk = (p) => {
     const c = JSON.parse(JSON.stringify(ch));
@@ -10727,6 +10803,7 @@ $("extendBtn").onclick = () => {
   setStatus("click where the line should extend to (Esc cancels)", "busy");
 };
 function extendTo(px, py) {
+  captureUndo("extend", [state.selected]);
   const ch = materialize(chainById(state.selected));
   const pts = ch.points;
   const dFirst = Math.hypot(px - pts[0][0], py - pts[0][1]);
@@ -10800,6 +10877,7 @@ function cutSpanClick(px, py) {
     cancelCut(); updateSelBar(ch); draw();
     return setStatus("those two points touch — nothing to cut", "err");
   }
+  captureUndo(`cut of ${fmtQty(removed)} out of a line`, [ch.chain_id]);
   const mk = (p) => {
     const c = JSON.parse(JSON.stringify(ch));
     c.chain_id = state.nextChainId++;
@@ -10865,6 +10943,10 @@ function finishDraw() {
   };
   const head = endMatch(pts[0], null);
   let tail = endMatch(pts[pts.length - 1], head ? head.ch.chain_id : null);
+  // BEFORE consume() excludes the fused ends; a plain draw touches no
+  // existing chain and snapshots nothing but the id counter
+  captureUndo("drawn line",
+    [head ? head.ch.chain_id : null, tail ? tail.ch.chain_id : null]);
   let merged = pts, label = null, fused = 0;
   const consume = (m) => {
     if (!m.ch.custom) state.excluded.add(m.ch.chain_id);
@@ -10917,6 +10999,7 @@ $("sepBtn").onclick = () => {
   const name = prompt("Name for this line (its own row + price):",
     current ? current + " — separated" : "separated line");
   if (!name) return;
+  captureUndo(`separate as "${name.trim()}"`, [ch.chain_id]);
   state.chainLabels.set(ch.chain_id, name.trim());
   updateSelBar(ch);
   afterEdit(`"${name.trim()}" now has its own itemized row`);
@@ -11042,7 +11125,19 @@ function updateSelBar(ch) {
     ? (wf > 0 ? ` · ${fmtQty(chainCountedPt(ch))} in work area`
               : " · outside work area (counts 0)")
     : "";
-  $("selInfo").textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}${el}`;
+  const info = $("selInfo");
+  info.textContent = "";
+  const txt = document.createElement("span");
+  txt.className = "sel-txt";
+  txt.textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}${el}`;
+  info.appendChild(txt);
+  // family switcher, right on the bar: the SAME mutation the Reclassify
+  // tool ends in (reclassCore), without the pick-click trip across the
+  // canvas. Listed by footage so the family you want is near the top.
+  const fam = familySelect(ch.style_id, null, (sid) => familySwitch(sid));
+  fam.title = "Move this line into another family — same edit as the "
+    + "Reclassify tool, and Ctrl+Z undoes it.";
+  info.appendChild(fam);
 }
 
 function deleteVertex() {
@@ -11052,6 +11147,7 @@ function deleteVertex() {
     setStatus("too few points left — remove the whole line instead", "err");
     return true;
   }
+  captureUndo("point delete", [ch.chain_id]);
   const m = materialize(ch);
   const before = polyLen(m.points);
   m.points.splice(state.selPt, 1);
@@ -11095,14 +11191,19 @@ function refreshStyleRows() {
 function removeSelected() {
   if (state.selected === null) return;
   if (deleteVertex()) return;   // a picked point goes first, not the line
+  const ch = chainById(state.selected);
+  captureUndo(`delete of 1 line — ${ch ? fmtQty(chainLenPt(ch)) : "?"}`,
+    [state.selected]);
   state.excluded.add(state.selected);
+  state.multiSel.delete(state.selected);   // it can no longer be bulk-acted on
   state.selected = null; state.selPt = null;
   updateSelBar(null);
-  setStatus(`${state.excluded.size} line(s) removed`);
+  setStatus(`${state.excluded.size} line(s) removed — Ctrl+Z restores`);
   $("restoreBtn").hidden = state.excluded.size === 0;
   renderItemized();
   refreshStyleRows();   // the row's own footage and line count moved too
   renderMiniLegend();
+  renderMultiBar();
   draw();
 }
 $("removeBtn").onclick = removeSelected;
@@ -11115,19 +11216,423 @@ $("restoreBtn").onclick = () => {
     return;
   }
   state.excluded.clear();
+  // Reset is the bigger hammer and it wins: the undo stack's snapshots
+  // describe a history that no longer exists (the loadResult path above
+  // clears it the same way, inside loadResult)
+  undoClear(undoStack);
+  state.multiSel = new Set();
   $("restoreBtn").hidden = true;
   setStatus("removed lines restored");
   renderItemized();
   refreshStyleRows();
   renderMiniLegend();
+  renderMultiBar();
   draw();
 };
+// ==================== UNDO - the chain-edit undo stack ====================
+// Before this, the only recovery from a wrong edit was "Reset edits", which
+// nukes EVERY edit on the sheet to fix one. Ctrl+Z reverses just the last
+// chain edit: delete (line or point), split, extend, cut span, draw,
+// reclassify, merge, separate, and the bulk marquee actions.
+//
+// Design: every mutation site calls captureUndo() BEFORE it touches
+// anything, naming ONLY the chains it is about to touch - a snapshot is a
+// handful of deep-copied chain entries plus their membership in
+// state.excluded and state.chainLabels, never a copy of the whole sheet.
+// Measured on Barn C3.1 (1,638 chains): a single-chain snapshot is
+// 476 B min / 633 B median / 29.0 KB max (a 1,701-point contour), against
+// 1.49 MB for a whole-sheet copy per edit - the design this replaces.
+// Chains the edit CREATES need no listing: their ids are >= the snapshot's
+// nextChainId, and entries restore strictly LIFO, so at undo time any
+// higher id present belongs to exactly the edit being reversed.
+//
+// undoApply is its own inverse builder: applying an entry first captures
+// the current state of the same region, so undo and redo are one operation
+// walking two stacks. The stack dies with the page (chains are per page)
+// and with "Reset edits" (the bigger hammer wins).
+//
+// tests/test_undo_core.js evals ONLY the block between the UNDO-CORE
+// markers - keep it pure (no DOM, no state.*), like TRENCH-MATH/WZ-MATH.
+// UNDO-CORE-BEGIN
+
+const UNDO_DEPTH = 50;   // bounded: ~50 edits of history, oldest evicted
+
+function undoNewStack(depth) {
+  return { depth: depth > 0 ? depth : UNDO_DEPTH, undo: [], redo: [] };
+}
+
+function undoDeep(x) {
+  return x === undefined ? undefined : JSON.parse(JSON.stringify(x));
+}
+
+// Snapshot the named chain ids out of doc, plus the scalar bookkeeping.
+// doc = { chains: Array, excluded: Set, labels: Map(chain_id -> label),
+//         nextChainId, selected, selPt }
+// Taken BEFORE a mutation; ids lists every PRE-EXISTING chain the edit may
+// touch (mutate, exclude, splice, or relabel). null/undefined ids are
+// dropped so callers can pass optional participants straight through.
+function undoCapture(doc, ids, label) {
+  const seen = new Set();
+  const chains = [], excluded = [], labels = [];
+  for (const id of ids) {
+    if (id === null || id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    const idx = doc.chains.findIndex(c => c.chain_id === id);
+    chains.push({ id, idx, present: idx >= 0,
+                  data: idx >= 0 ? undoDeep(doc.chains[idx]) : null });
+    excluded.push([id, doc.excluded.has(id)]);
+    labels.push([id, doc.labels.has(id), doc.labels.get(id)]);
+  }
+  return { label: label || "edit", nextChainId: doc.nextChainId,
+           selected: doc.selected, selPt: doc.selPt,
+           chains, excluded, labels };
+}
+
+// Restore `entry` onto doc IN PLACE (arrays/sets/maps are mutated, scalars
+// are returned for the caller to write back) and return the inverse entry
+// that puts doc back to the moment before this call.
+function undoApply(doc, entry) {
+  // the full affected region: listed ids + everything the edit created
+  const ids = new Set(entry.chains.map(c => c.id));
+  for (const c of doc.chains)
+    if (c.chain_id >= entry.nextChainId) ids.add(c.chain_id);
+  for (const k of doc.labels.keys())
+    if (typeof k === "number" && k >= entry.nextChainId) ids.add(k);
+  const inverse = undoCapture(doc, [...ids], entry.label);
+  // 1. chains the edit created go away entirely (ids >= the pre-edit
+  //    counter can only have come from this edit - see LIFO note above)
+  for (let i = doc.chains.length - 1; i >= 0; i--)
+    if (doc.chains[i].chain_id >= entry.nextChainId) doc.chains.splice(i, 1);
+  for (const k of [...doc.labels.keys()])
+    if (typeof k === "number" && k >= entry.nextChainId) doc.labels.delete(k);
+  for (const id of [...doc.excluded])
+    if (id >= entry.nextChainId) doc.excluded.delete(id);
+  // 2. listed chains return to their snapshotted content and position
+  const order = [...entry.chains].sort((a, b) => a.idx - b.idx);
+  for (const c of order) {
+    const at = doc.chains.findIndex(x => x.chain_id === c.id);
+    if (c.present) {
+      const data = undoDeep(c.data);
+      if (at >= 0) doc.chains[at] = data;
+      else doc.chains.splice(Math.min(Math.max(c.idx, 0), doc.chains.length), 0, data);
+    } else if (at >= 0) {
+      doc.chains.splice(at, 1);
+    }
+  }
+  // 3. membership and labels exactly as recorded
+  for (const [id, wasIn] of entry.excluded) {
+    if (wasIn) doc.excluded.add(id); else doc.excluded.delete(id);
+  }
+  for (const [id, had, val] of entry.labels) {
+    if (had) doc.labels.set(id, val); else doc.labels.delete(id);
+  }
+  return { inverse, nextChainId: entry.nextChainId,
+           selected: entry.selected, selPt: entry.selPt };
+}
+
+function undoPush(stack, entry) {
+  stack.undo.push(entry);
+  if (stack.undo.length > stack.depth) stack.undo.shift();
+  stack.redo.length = 0;   // a fresh edit forks history; the old future dies
+}
+
+// dir: "undo" | "redo". Applies the top entry of that stack onto doc and
+// pushes the inverse onto the other. Returns null when the stack is empty.
+function undoStep(stack, doc, dir) {
+  const from = dir === "redo" ? stack.redo : stack.undo;
+  const to = dir === "redo" ? stack.undo : stack.redo;
+  if (!from.length) return null;
+  const entry = from.pop();
+  const r = undoApply(doc, entry);
+  to.push(r.inverse);
+  return { label: entry.label, nextChainId: r.nextChainId,
+           selected: r.selected, selPt: r.selPt };
+}
+
+function undoClear(stack) { stack.undo.length = 0; stack.redo.length = 0; }
+
+// rough per-entry cost in bytes (serialized size of the snapshot)
+function undoEntryBytes(entry) { return JSON.stringify(entry).length; }
+// UNDO-CORE-END
+
+const undoStack = undoNewStack(UNDO_DEPTH);
+
+function undoDoc() {
+  return { chains: state.result.chains, excluded: state.excluded,
+           labels: state.chainLabels, nextChainId: state.nextChainId,
+           selected: state.selected, selPt: state.selPt };
+}
+
+function captureUndo(label, ids) {
+  if (!state.result) return;
+  undoPush(undoStack, undoCapture(undoDoc(), ids, label));
+}
+
+// A mid-gesture tool holds references into the chains an undo may remove
+// (cut anchors, merge/reclass sources, a draw's family line) - release the
+// chain-owning tools first, the same way stArm() does before arming.
+function undoDisarmTools() {
+  if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "merge") cancelMerge();
+  else if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "reclass") {
+    state.tool = null;
+    $("reclassBtn").classList.remove("active");
+  } else if (state.tool === "extend") state.tool = null;
+}
+
+function undoRedo(dir) {
+  if (!state.result) return;
+  if (!(dir === "redo" ? undoStack.redo : undoStack.undo).length) {
+    setStatus(dir === "redo" ? "nothing to redo" : "nothing to undo");
+    return;   // an empty stack must not disarm a tool as a side effect
+  }
+  undoDisarmTools();
+  const r = undoStep(undoStack, undoDoc(), dir);
+  if (!r) return;   // cannot happen after the length check; belt and braces
+  state.nextChainId = r.nextChainId;
+  state.selected = r.selected; state.selPt = r.selPt; state.clickPt = null;
+  const selCh = state.selected !== null ? chainById(state.selected) : null;
+  if (!selCh || state.excluded.has(state.selected)) {
+    state.selected = null; state.selPt = null;
+  }
+  // the set held ids from the state being stepped away from; keeping it
+  // would let a bulk action fire on chains the undo just replaced
+  state.multiSel = new Set();
+  state.wzRev++;   // geometry may have moved; the work-area memo must not survive
+  $("restoreBtn").hidden = !(state.excluded.size || state.chainLabels.size
+    || state.result.chains.some(c => c.custom));
+  updateSelBar(state.selected !== null ? chainById(state.selected) : null);
+  setStatus((dir === "redo" ? "redo: " : "undo: ") + r.label
+    + (dir === "redo" ? " — reapplied" : " — reversed"));
+  renderItemized();
+  refreshStyleRows();
+  renderChips();
+  renderMiniLegend();
+  renderMultiBar();
+  draw();
+}
+
+// ================== reclassify core + family switcher =====================
+// The one mutation that moves a line between families, shared by the
+// Reclassify pick-click, the selection-bar <select>, and the bulk "Move all
+// to family". donorChain is the exact chain the operator clicked when there
+// is one; otherwise a representative of the target family stands in, so the
+// moved line inherits the same class/color/width/pattern either way.
+function reclassCore(sel, targetSid, donorChain) {
+  const donor = donorChain
+    || state.result.chains.find(ch => ch.style_id === targetSid
+         && ch.chain_id !== sel.chain_id && !state.excluded.has(ch.chain_id))
+    || state.result.chains.find(ch => ch.style_id === targetSid
+         && ch.chain_id !== sel.chain_id)
+    || null;
+  const c = materialize(sel);
+  c.style_id = targetSid;
+  if (donor) {
+    c.class = donor.class; c.color = donor.color; c.width = donor.width;
+    c.dash_signature = donor.dash_signature;
+    if (donor.template) c.template = JSON.parse(JSON.stringify(donor.template));
+  } else {
+    // a family whose every chain is gone: fall back to the style row itself
+    const st = state.result.styles.find(s => s.style_id === targetSid);
+    if (st) {
+      c.class = st.class; c.color = st.color; c.width = st.width;
+      c.dash_signature = st.signature;
+      delete c.template;
+    }
+  }
+  return c;
+}
+
+// what a family is CALLED, one rule for every picker built here: the
+// reviewer's label, else the seeded suggestion, else the CAD layer leaf,
+// else the pattern itself
+function familyName(s) {
+  if (!s) return "";
+  return state.labels.get(s.style_id) || s.suggested_label
+    || ((s.layer || "").trim() ? layerSplit(String(s.layer).trim()).leaf : "")
+    || `${s.class} · ${s.signature}`;
+}
+
+// compact <select> over the page's families, footage-first. placeholder
+// non-null makes it an action picker (bulk move); null preselects
+// currentSid (single-line switcher). No "(new family)" option on purpose:
+// nothing in the app creates a style today, and a picker must not promise
+// an edit that has no implementation behind it.
+function familySelect(currentSid, placeholder, onPick) {
+  const sel = document.createElement("select");
+  sel.className = "fam-sel";
+  sel.name = "family-switch";   // typing() sees SELECT focus; shortcuts pause
+  if (placeholder !== null) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = placeholder; o.selected = true;
+    sel.appendChild(o);
+  }
+  const styles = [...state.result.styles]
+    .sort((a, b) => styleLenPt(b) - styleLenPt(a));
+  for (const s of styles) {
+    const o = document.createElement("option");
+    o.value = String(s.style_id);
+    o.textContent = familyName(s);
+    if (placeholder === null && s.style_id === currentSid) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    const v = sel.value;
+    sel.blur();   // hand the keyboard back to the canvas shortcuts
+    if (v !== "") onPick(+v);
+  };
+  return sel;
+}
+
+// the selection-bar switch: same mutation, same undo, same status line as
+// the Reclassify tool's pick-click
+function familySwitch(sid) {
+  const sel0 = state.selected !== null ? chainById(state.selected) : null;
+  if (!sel0) return;
+  if (sel0.style_id === sid) { setStatus("already in that family"); return; }
+  const lab = familyName(state.result.styles.find(s => s.style_id === sid))
+    || "its new family";
+  captureUndo(`reclass into ${lab} — ${fmtQty(chainLenPt(sel0))}`, [sel0.chain_id]);
+  const c = reclassCore(sel0, sid, null);
+  state.selected = c.chain_id;
+  updateSelBar(c);
+  afterEdit(`moved ${fmtLen(c.length_pt)} into ${lab}`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
+// ================== marquee multi-select + bulk actions ===================
+// chains FULLY INSIDE the box (every vertex), same visibility rules as a
+// plain canvas click: excluded/hidden/isolated-away lines cannot join
+function marqueePick(rect) {
+  const out = [];
+  for (const ch of state.result.chains) {
+    if (state.excluded.has(ch.chain_id)) continue;
+    if (state.isolate !== null ? ch.style_id !== state.isolate
+                               : !state.include.get(ch.style_id)) continue;
+    const P = ch.points;
+    if (!P || !P.length) continue;
+    let inside = true;
+    for (const q of P)
+      if (q[0] < rect[0] || q[0] > rect[2] || q[1] < rect[1] || q[1] > rect[3]) {
+        inside = false;
+        break;
+      }
+    if (inside) out.push(ch);
+  }
+  return out;
+}
+
+// the live members: ids still present and not excluded (an edit can consume
+// a member; the set self-prunes here rather than going stale)
+function multiLive() {
+  if (!state.result || !state.multiSel || !state.multiSel.size) return [];
+  const out = [];
+  for (const id of state.multiSel) {
+    if (state.excluded.has(id)) continue;
+    const ch = chainById(id);
+    if (ch) out.push(ch);
+  }
+  return out;
+}
+
+function renderMultiBar() {
+  const bar = $("multiBar");
+  if (!bar) return;
+  const chs = multiLive();
+  if (state.multiSel.size !== chs.length)
+    state.multiSel = new Set(chs.map(c => c.chain_id));
+  if (!chs.length) { bar.hidden = true; bar.textContent = ""; return; }
+  bar.hidden = false;
+  bar.textContent = "";
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  const txt = document.createElement("span");
+  txt.className = "sel-txt";
+  txt.textContent = `${chs.length} line${chs.length === 1 ? "" : "s"} selected — ${fmtQty(totalPt)}`;
+  const del = document.createElement("button");
+  del.className = "mini danger";
+  del.textContent = "Delete all";
+  del.title = "Remove every selected line from the takeoff — one Ctrl+Z brings them all back";
+  del.onclick = multiDeleteAll;
+  const move = familySelect(null, "Move all to family…", (sid) => multiMoveAll(sid));
+  move.title = "Move every selected line into one family — same edit as "
+    + "Reclassify, one Ctrl+Z reverses the whole move";
+  const clr = document.createElement("button");
+  clr.className = "mini";
+  clr.textContent = "Clear";
+  clr.title = "Drop the selection (changes nothing on the sheet) — Esc does this too";
+  clr.onclick = () => {
+    state.multiSel = new Set();
+    renderMultiBar();
+    setStatus("selection cleared — nothing changed");
+    draw();
+  };
+  bar.append(txt, del, move, clr);
+}
+
+function multiDeleteAll() {
+  const chs = multiLive();
+  if (!chs.length) return;
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  // ONE undo entry for the whole set, and the same per-chain mutation the
+  // trash button uses (exclude the id) - never a forked delete path
+  captureUndo(`delete of ${chs.length} line${chs.length === 1 ? "" : "s"} — ${fmtQty(totalPt)}`,
+    chs.map(c => c.chain_id));
+  for (const c of chs) state.excluded.add(c.chain_id);
+  if (state.selected !== null && state.excluded.has(state.selected)) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  state.multiSel = new Set();
+  setStatus(`${chs.length} line${chs.length === 1 ? "" : "s"} deleted — `
+    + `${fmtQty(totalPt)} out of the takeoff (Ctrl+Z restores all of them)`);
+  $("restoreBtn").hidden = false;
+  renderItemized();
+  refreshStyleRows();
+  renderMiniLegend();
+  renderMultiBar();
+  draw();
+}
+
+function multiMoveAll(sid) {
+  const chs = multiLive().filter(c => c.style_id !== sid);
+  if (!chs.length) { setStatus("every selected line is already in that family"); return; }
+  const lab = familyName(state.result.styles.find(s => s.style_id === sid))
+    || "its new family";
+  const totalPt = chs.reduce((t, c) => t + chainLenPt(c), 0);
+  // ONE undo entry; each line goes through the same reclassCore as the
+  // Reclassify tool and the selection-bar switch
+  captureUndo(`reclass of ${chs.length} line${chs.length === 1 ? "" : "s"} into ${lab}`,
+    chs.map(c => c.chain_id));
+  const newIds = [];
+  for (const c of chs) newIds.push(reclassCore(c, sid, null).chain_id);
+  state.multiSel = new Set(newIds);   // members were re-materialized under new ids
+  if (state.selected !== null &&
+      (state.excluded.has(state.selected) || !chainById(state.selected))) {
+    state.selected = null; state.selPt = null;
+    updateSelBar(null);
+  }
+  afterEdit(`moved ${chs.length} line${chs.length === 1 ? "" : "s"} — `
+    + `${fmtQty(totalPt)} into ${lab} (Ctrl+Z reverses the whole move)`);
+  renderStyles(); renderChips(); renderMiniLegend();
+}
+
 function typing() {
   const el = document.activeElement;
   return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
     || el.tagName === "SELECT" || el.isContentEditable);
 }
 addEventListener("keydown", (e) => {
+  // undo / redo. Ctrl+Z (Cmd+Z on a Mac); Ctrl+Shift+Z or Ctrl+Y redoes.
+  // Never while typing - a focused input keeps the browser's own text undo.
+  if (!typing() && (e.ctrlKey || e.metaKey) && !e.altKey) {
+    const kz = e.key.toLowerCase();
+    if (kz === "z" || kz === "y") {
+      e.preventDefault();
+      undoRedo((kz === "y" || e.shiftKey) ? "redo" : "undo");
+      return;
+    }
+  }
   // single-key review shortcuts; never while typing in a field
   if (!typing() && !e.metaKey && !e.ctrlKey && !e.altKey) {
     const k = e.key.toLowerCase();
@@ -11163,7 +11668,10 @@ addEventListener("keydown", (e) => {
   }
   if ((e.key === "Delete" || e.key === "Backspace") && !typing()) {
     e.preventDefault();
-    removeSelected();
+    // a marquee selection outranks the single selection: the operator built
+    // the set on purpose, and the bar's Delete all is the same action
+    if (state.multiSel && state.multiSel.size) multiDeleteAll();
+    else removeSelected();
   }
   if ((e.key === "j" || e.key === "J") && !typing() && state.selected !== null) {
     e.preventDefault();
@@ -11181,6 +11689,12 @@ addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     if (!$("kbdHelp").hidden) { $("kbdHelp").hidden = true; return; }
+    if (state.marquee) {   // a box mid-drag dies without selecting anything
+      state.marquee = null;
+      setStatus("multi-select cancelled");
+      draw();
+      return;
+    }
     if (state.tool === "cutspan") {
       cancelCut();
       setStatus("cut cancelled");
@@ -11219,6 +11733,15 @@ addEventListener("keydown", (e) => {
     } else if (state.tool === "extend") {
       state.tool = null;
       setStatus("");
+    }
+    // the marquee set clears one layer before the single selection - same
+    // tools-first grammar; the next Esc still reaches selPt/selected below
+    if (state.multiSel && state.multiSel.size) {
+      state.multiSel = new Set();
+      renderMultiBar();
+      setStatus("selection cleared — nothing changed");
+      draw();
+      return;
     }
     if (state.selPt !== null) { state.selPt = null; updateSelBar(chainById(state.selected)); }
     else { state.selected = null; updateSelBar(null); }

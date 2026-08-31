@@ -399,7 +399,9 @@
         <kbd>I</kbd><span>Isolate selected line's type (again to clear)</span>
         <kbd>F</kbd><span>Faithful pattern rendering on/off</span>
         <kbd>L</kbd><span>On-sheet legend on/off</span>
-        <kbd>&#9003;</kbd><span>Delete picked point, or whole line</span>
+        <kbd>&#9003;</kbd><span>Delete picked point, whole line, or every multi-selected line</span>
+        <kbd>Ctrl+Z</kbd><span>Undo the last edit (Ctrl+Shift+Z or Ctrl+Y redoes)</span>
+        <kbd>&#8679;+drag</kbd><span>Multi-select: box whole lines (drag again adds; Esc clears)</span>
         <kbd>Esc</kbd><span>Cancel tool / clear selection</span>
         <kbd>?</kbd><span>This help</span>
       </div>
@@ -425,6 +427,10 @@
     </div>
     <div class="canvas-status">
       <span id="selInfo" class="tk-info"></span>
+      <!-- marquee multi-select readout: "N lines selected" + the bulk
+           actions. Built by renderMultiBar() in app.js; hidden whenever the
+           selection set is empty. -->
+      <span id="multiBar" class="tk-info multi-bar" hidden></span>
       <span id="measureInfo" hidden></span>
     </div>
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
