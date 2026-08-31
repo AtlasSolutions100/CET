@@ -179,44 +179,33 @@
     <div id="thumbList" class="thumb-list"></div>
   </nav>
   <aside id="sidebar">
-    <div id="sheetHead" class="sheet-head" hidden></div>
-    <!-- What to doubt on this sheet, in the operator's language, before any
-         number below it is priced. Built by renderConfidence() in app.js. -->
-    <div id="confBanner" class="conf" hidden></div>
-    <!-- The confidence-ranked review queue (EXCAVATION-PLAN.md section 7
-         item 2). The banner above says what to doubt about the SHEET; this
-         lists the specific THINGS the engine is least sure about, most
-         consequential first, each with a click that goes there. Derived
-         entirely from data the app already holds - it never fetches, and it
-         says which checks could not run yet. Built by renderCheckQueue()
-         in app.js. -->
-    <div id="ckPanel" class="ew-panel ck-panel" hidden>
-      <div class="side-head" id="ckHead"><h2 id="ckTitle">Check these</h2>
-        <button id="ckToggle" class="mini">hide</button></div>
-      <div id="ckBody">
-        <div class="ew-hint" id="ckHint">What the engine is least sure about on
-          this sheet, most consequential first. Click a row to go to the thing
-          &mdash; that marks it checked. Everything not listed came through the
-          checks that have run without a doubt to report.</div>
-        <div id="ckRows" class="ck-rows"></div>
-        <button id="ckMore" class="ck-more" hidden></button>
-        <div id="ckPending" class="ck-pending" hidden></div>
-      </div>
-    </div>
-    <div class="side-head" id="legendHead" hidden><h2>Sheet legend</h2></div>
-    <div id="legendBox" class="legend-box" hidden></div>
-    <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet</h2>
-      <div class="side-actions">
-        <button id="arAllBtn" class="mini">all</button>
-        <button id="arNoneBtn" class="mini">none</button>
-      </div>
-    </div>
-    <div id="arScale" class="ar-scale" hidden></div>
-    <div id="arList" class="ar-list" hidden></div>
-    <div id="arUnmatched" class="ar-unmatched" hidden></div>
-    <!-- Tool panels live ABOVE the style list (audit item 8): a 209-style
-         sheet pushed them 22,000 px down, so pressing EARTHWORK or TRENCH
-         appeared to do nothing. The buttons also scrollIntoView on open. -->
+    <!-- CARD ARCHITECTURE (CRITIQUE fix 5). The column used to be one
+         infinite scroll: sheet head, CHECK THESE, 65 style rows, 30
+         itemized rows and ten tool panels stacked in a single 330px
+         scrollport 12,468 px tall with the earthwork panel open. It is now
+         a fixed-width, RESIZABLE frame (.side-body) whose middle is the
+         only thing that scrolls (#sideScroll), holding one card per
+         section, with the approve footer and the links bar outside the
+         scroll where they cannot be scrolled away from.
+
+         Nothing here changes who owns a panel. Every id, every class hook
+         and every hidden contract below is the element that was already
+         there, moved. -->
+    <div class="side-body">
+      <div id="sideScroll" class="side-scroll">
+        <!-- TOOL DOCK. An opened tool panel is the thing the operator just
+             asked for, so it renders FIRST in the column instead of after
+             the style list. This is markup order only: each panel is still
+             shown and hidden by its own button and its own close handler,
+             and a hidden panel contributes no height, so an empty dock is
+             invisible. -->
+        <div id="toolDock" class="tool-dock">
+    <!-- Tool panels dock at the TOP of the column (audit item 8, finished by
+         CRITIQUE fix 5). They used to sit above the style list, which on a
+         209-style sheet still left them 22,000 px down; now they are the
+         first thing in the scrollport, so pressing EARTHWORK or TRENCH puts
+         the panel where the operator is already looking. The buttons also
+         scrollIntoView on open, which now lands at the top of #sideScroll. -->
     <div id="ewPanel" class="ew-panel" hidden>
       <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
         <button id="ewClose" class="mini">close</button></div>
@@ -292,7 +281,7 @@
           <button id="ewBoundClear" class="mini" hidden title="Go back to the whole overlap of the two surfaces">clear</button>
         </div>
       </div>
-      <div class="ew-rows-head"><span>Contours</span>
+      <div class="ew-rows-head"><span>Contours <span class="card-n" id="ewRowsCount"></span></span>
         <button id="ewAddRow" class="mini" title="Sheet prints no elevation on a contour? Click the line yourself and type the value (from the overview sheet)">+ Add contour</button></div>
       <div id="ewRows" class="ew-rows"></div>
       <div id="ewSpots" class="ew-spots" hidden></div>
@@ -386,7 +375,7 @@
       </div>
     </div>
     <div id="coPanel" class="ew-panel" hidden>
-      <div class="side-head" id="coHead"><h2>Sheet callouts</h2>
+      <div class="side-head" id="coHead"><h2>Sheet callouts <span class="card-n" id="coCount"></span></h2>
         <button id="coClose" class="mini">close</button></div>
       <div class="ew-hint" id="coHint">Every leader on the sheet, paired with the note at its tail
         and the line it points at. Click a row to jump there. Callouts never count in the takeoff.</div>
@@ -425,7 +414,7 @@
       <div id="xsTotal" class="sym-total" hidden></div>
     </div>
     <div id="symPanel" class="ew-panel" hidden>
-      <div class="side-head" id="symHead"><h2>Count symbols</h2>
+      <div class="side-head" id="symHead"><h2>Count symbols <span class="card-n" id="symCount"></span></h2>
         <button id="symClose" class="mini">close</button></div>
       <div class="ew-hint" id="symHint">Every repeated shape found on the sheet. Hover a row to see
         every instance marked; name it and Add to put "&times; N EA" in the takeoff. The count comes
@@ -451,6 +440,51 @@
         <span id="stResult" class="ew-result"></span>
       </div>
     </div>
+        </div>
+        <section class="card" id="cardSheet">
+    <div id="sheetHead" class="sheet-head" hidden></div>
+    <!-- What to doubt on this sheet, in the operator's language, before any
+         number below it is priced. Built by renderConfidence() in app.js. -->
+    <div id="confBanner" class="conf" hidden></div>
+        </section>
+        <section class="card" id="cardCheck">
+    <!-- The confidence-ranked review queue (EXCAVATION-PLAN.md section 7
+         item 2). The banner above says what to doubt about the SHEET; this
+         lists the specific THINGS the engine is least sure about, most
+         consequential first, each with a click that goes there. Derived
+         entirely from data the app already holds - it never fetches, and it
+         says which checks could not run yet. Built by renderCheckQueue()
+         in app.js. -->
+    <div id="ckPanel" class="ew-panel ck-panel" hidden>
+      <div class="side-head" id="ckHead"><h2 id="ckTitle">Check these</h2>
+        <button id="ckToggle" class="mini">hide</button></div>
+      <div id="ckBody">
+        <div class="ew-hint" id="ckHint">What the engine is least sure about on
+          this sheet, most consequential first. Click a row to go to the thing
+          &mdash; that marks it checked. Everything not listed came through the
+          checks that have run without a doubt to report.</div>
+        <div id="ckRows" class="ck-rows"></div>
+        <button id="ckMore" class="ck-more" hidden></button>
+        <div id="ckPending" class="ck-pending" hidden></div>
+      </div>
+    </div>
+        </section>
+        <section class="card" id="cardLegend">
+    <div class="side-head" id="legendHead" hidden><h2>Sheet legend <span class="card-n" id="legendCount"></span></h2></div>
+    <div id="legendBox" class="legend-box" hidden></div>
+        </section>
+        <section class="card" id="cardAreas">
+    <div class="side-head" id="arHead" hidden><h2>Areas &mdash; square feet <span class="card-n" id="areasCount"></span></h2>
+      <div class="side-actions">
+        <button id="arAllBtn" class="mini">all</button>
+        <button id="arNoneBtn" class="mini">none</button>
+      </div>
+    </div>
+    <div id="arScale" class="ar-scale" hidden></div>
+    <div id="arList" class="ar-list" hidden></div>
+    <div id="arUnmatched" class="ar-unmatched" hidden></div>
+        </section>
+        <section class="card" id="cardBid">
     <!-- BID VIEW (EXCAVATION-PLAN.md section 7 item 1): the itemized takeoff
          regrouped into the handful of line families an excavator actually
          bids, above the style drill-down. Grouping is a deterministic
@@ -461,12 +495,14 @@
          the three cannot disagree. Rows no rule names land in UNASSIGNED,
          counted and footaged, never silently. Built by renderBidView(). -->
     <div class="side-head bid-head" id="bidHead" hidden>
-      <h2>Bid view</h2>
+      <h2>Bid view <span class="card-n" id="bidCount"></span></h2>
       <span class="bid-honesty">grouped by name rules &mdash; every number is the sum of the measured rows below it</span>
     </div>
     <div id="bidBox" class="bid-view" hidden></div>
+        </section>
+        <section class="card" id="cardStyles">
     <div class="side-head" id="stylesHead">
-      <h2>Line styles</h2>
+      <h2>Line styles <span class="card-n" id="stylesCount"></span></h2>
       <div class="side-actions">
         <button id="allBtn" class="mini">all</button>
         <button id="noneBtn" class="mini">none</button>
@@ -479,8 +515,12 @@
     <div id="scopeBar" class="scope-bar" hidden></div>
     <input id="styleSearch" class="style-search" placeholder="Filter line types… (water, dash, solid)" spellcheck="false">
     <div id="styleList" class="style-list"></div>
-    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff</h2></div>
+        </section>
+        <section class="card" id="cardTakeoff">
+    <div class="takeoff-head" id="takeoffHead"><h2>Itemized takeoff <span class="card-n" id="takeoffCount"></span></h2></div>
     <div id="itemized" class="itemized"></div>
+        </section>
+      </div>
     <div class="approve-bar">
       <span id="tallyBar" class="tally"></span>
       <button id="csvBtn" class="mini" disabled title="Download the itemized takeoff as CSV (label, trade, count, feet, $/ft, ext $)">CSV</button>
@@ -489,6 +529,17 @@
     <div class="links-bar">
       <a id="dlLink" hidden download>elements.json</a>
       <a id="reportLink" hidden>Report PDF (all approved pages)</a>
+    </div>
+    </div>
+    <!-- The resize grip: the column's inner edge is draggable, and the
+         chevron folds the whole column away so the sheet gets the width.
+         Both remembered per browser (core-sidebar-w / core-sidebar-fold)
+         beside the page strip and mini-legend prefs. -->
+    <div id="sideGrip" class="side-grip" role="separator" aria-orientation="vertical"
+         tabindex="0" aria-label="Panel width"
+         title="Drag to set the panel width. Double-click resets it, arrow keys nudge it 16px.">
+      <button id="sideFold" class="side-fold" aria-label="Hide the panel"
+        title="Hide the panel and give the sheet the width (click again to bring it back)">&#10094;</button>
     </div>
   </aside>
   <section id="stage">

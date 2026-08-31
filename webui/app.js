@@ -7472,8 +7472,14 @@ $("csvBtn").onclick = () => {
 };
 
 // ---------- collapsible sidebar sections ----------
-// every section header toggles the elements listed for it; state is
-// per-session only (a refresh reopens everything)
+// every section header toggles the elements listed for it.
+//
+// FOLD_KEEP marks the sections whose folded state SURVIVES A RELOAD: the
+// standing cards, the ones the operator scrolls past every session. The tool
+// panels (ewHead / trHead / symHead / coHead) are deliberately NOT in it. A
+// tool panel is opened by an explicit press and a remembered fold inside one
+// would mean pressing EARTHWORK produced a bare header - which is the exact
+// symptom audit item 8 was raised for. Their folds stay per-session.
 const SECTIONS = [
   ["legendHead", ["legendBox"]],
   ["arHead", ["arList", "arScale", "arUnmatched"]],
@@ -7486,19 +7492,165 @@ const SECTIONS = [
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
 ];
+const FOLD_KEEP = new Set(["legendHead", "arHead", "bidHead", "stylesHead",
+                           "takeoffHead"]);
+// same "core-" localStorage prefix the page strip, mini legend and theme use
+const foldKey = (headId) => "core-fold-" + headId;
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
   if (!head) continue;
   const h2 = head.querySelector("h2");
   if (!h2) continue;
-  h2.onclick = () => {
-    const closed = head.classList.toggle("closed");
+  const apply = (closed) => {
+    head.classList.toggle("closed", closed);
     for (const cid of contentIds) {
       const el = document.getElementById(cid);
       if (el) el.hidden = closed;
     }
   };
+  if (FOLD_KEEP.has(headId)) {
+    let saved = null;
+    try { saved = localStorage.getItem(foldKey(headId)); } catch (e) {}
+    if (saved === "closed") apply(true);
+  }
+  h2.onclick = () => {
+    const closed = !head.classList.contains("closed");
+    apply(closed);
+    if (!FOLD_KEEP.has(headId)) return;
+    try { localStorage.setItem(foldKey(headId), closed ? "closed" : "open"); }
+    catch (e) { /* private mode: the fold is then per-session, as before */ }
+  };
 }
+
+// ---------- SIDEBAR CHROME: width, fold, card counts (CRITIQUE fix 5) -----
+// Three pieces of state that belong to the column itself rather than to any
+// panel in it. All three persist in localStorage under the same "core-"
+// prefix the page strip, the mini legend and the theme already use - this
+// browser only, no new store, and every read/write is inside try/catch so a
+// storage-blocked browser degrades to per-session instead of throwing.
+const SIDE_W_DEFAULT = 400;   // the width the redesign was reviewed at
+const SIDE_W_MIN = 320;       // below this the 5-column money grid clips
+const sideWMax = () => Math.max(SIDE_W_MIN, Math.round(innerWidth * 0.40));
+function sideSetWidth(px, save) {
+  const w = Math.max(SIDE_W_MIN, Math.min(sideWMax(), Math.round(px)));
+  $("sidebar").style.setProperty("--side-w", w + "px");
+  if (save) { try { localStorage.setItem("core-sidebar-w", String(w)); } catch (e) {} }
+  // The canvas element is 100% of a stage that just changed width, so its
+  // backing buffer has to be reallocated. syncBuffer() does exactly that and
+  // redraws WITHOUT fitView(), so a drag never throws away the operator's
+  // pan and zoom the way a window resize does.
+  if (typeof syncBuffer === "function") requestAnimationFrame(syncBuffer);
+}
+function sideSetFolded(folded) {
+  $("sidebar").classList.toggle("side-folded", folded);
+  const b = $("sideFold");
+  if (b) {
+    b.setAttribute("aria-label", folded ? "Show the panel" : "Hide the panel");
+    b.title = folded
+      ? "Bring the panel back"
+      : "Hide the panel and give the sheet the width (click again to bring it back)";
+  }
+  try { localStorage.setItem("core-sidebar-fold", folded ? "off" : "on"); } catch (e) {}
+  if (typeof syncBuffer === "function") requestAnimationFrame(syncBuffer);
+}
+(function initSideChrome() {
+  const grip = $("sideGrip");
+  if (!grip) return;
+  let saved = null, savedFold = null;
+  try {
+    saved = parseInt(localStorage.getItem("core-sidebar-w"), 10);
+    savedFold = localStorage.getItem("core-sidebar-fold");
+  } catch (e) {}
+  sideSetWidth(Number.isFinite(saved) ? saved : SIDE_W_DEFAULT, false);
+  if (savedFold === "off") sideSetFolded(true);
+
+  let dragging = false;
+  grip.addEventListener("pointerdown", (ev) => {
+    if (ev.target.closest("#sideFold")) return;      // the chevron is a button
+    if ($("sidebar").classList.contains("side-folded")) return;
+    dragging = true;
+    grip.classList.add("dragging");
+    grip.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  grip.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    // the grip is the column's inner edge, so the width is simply the
+    // distance from the sidebar's left edge to the pointer
+    sideSetWidth(ev.clientX - $("sidebar").getBoundingClientRect().left, false);
+  });
+  const end = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove("dragging");
+    try { grip.releasePointerCapture(ev.pointerId); } catch (e) {}
+    sideSetWidth($("sidebar").getBoundingClientRect().width, true);
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("dblclick", () => sideSetWidth(SIDE_W_DEFAULT, true));
+  grip.addEventListener("keydown", (ev) => {
+    const step = ev.shiftKey ? 48 : 16;
+    const w = $("sidebar").getBoundingClientRect().width;
+    if (ev.key === "ArrowLeft") sideSetWidth(w - step, true);
+    else if (ev.key === "ArrowRight") sideSetWidth(w + step, true);
+    else if (ev.key === "Home") sideSetWidth(SIDE_W_DEFAULT, true);
+    else return;
+    ev.preventDefault();
+    ev.stopPropagation();          // never reaches the sheet's key handlers
+  });
+  $("sideFold").onclick = (ev) => {
+    ev.stopPropagation();
+    sideSetFolded(!$("sidebar").classList.contains("side-folded"));
+  };
+  // a narrower window can put the stored width past the 40vw ceiling
+  addEventListener("resize", () => {
+    const w = $("sidebar").getBoundingClientRect().width;
+    if (w > sideWMax()) sideSetWidth(sideWMax(), false);
+  });
+})();
+
+// CARD COUNTS. A list that scrolls inside its card no longer shows its own
+// end, so the header says how many rows are under it. Every figure here is
+// COUNTED FROM THE ROWS THE RENDER FUNCTIONS ALREADY BUILT - nothing is
+// computed, nothing is derived from engine data a second time, so a count
+// cannot disagree with the list it labels. Where a filter is hiding rows the
+// label says so ("12 of 65") rather than quietly reporting the smaller number.
+const CARD_COUNTS = [
+  ["stylesCount", "#styleList .style-row",
+   () => (state.result && state.result.styles) ? state.result.styles.length : 0],
+  ["takeoffCount", ".itemized .item-row:not(.head):not(.total)", null],
+  ["ewRowsCount", "#ewRows .ew-row", null],
+  ["legendCount", "#legendBox .legend-chip", null],
+  ["areasCount", "#arList .ar-row", null],
+  ["bidCount", "#bidBox .bid-bucket", null],
+  ["coCount", "#coRows .co-row", null],
+  ["symCount", "#symRows .sym-row", null],
+];
+function syncCardCounts() {
+  for (const [spanId, sel, totalFn] of CARD_COUNTS) {
+    const span = $(spanId);
+    if (!span) continue;
+    const shown = document.querySelectorAll(sel).length;
+    const total = totalFn ? totalFn() : shown;
+    span.textContent = !total ? ""
+      : (shown < total ? shown + " of " + total : String(total));
+  }
+}
+(function watchCardCounts() {
+  let queued = false;
+  const mo = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; syncCardCounts(); });
+  });
+  for (const id of ["styleList", "itemized", "ewRows", "legendBox", "arList",
+                    "bidBox", "coRows", "symRows"]) {
+    const el = $(id);
+    if (el) mo.observe(el, { childList: true, subtree: true });
+  }
+  syncCardCounts();
+})();
 
 // ---------- earthwork calculator ----------
 $("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; ewDisarmPick(); draw(); };

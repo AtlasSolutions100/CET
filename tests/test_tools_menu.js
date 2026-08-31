@@ -221,5 +221,39 @@ check(!/const btns = TOOLS_MENU_ITEMS\.map/.test(appSrc),
   check(fired.length === 9, "all nine simulated clicks reached a handler");
 }
 
+// ---- STRUCTURE: every tool panel lives in the dock at the top -------------
+// Added with the sidebar card architecture (CRITIQUE fix 5). The menu rows
+// above are only half the contract: pressing one has to put its panel where
+// the operator is looking. That is markup order now - #toolDock is the first
+// child of #sideScroll and every panel sits inside it - so a future edit that
+// moves a panel back out of the dock, or slips a card above the dock, is what
+// this pins. It does NOT pin who shows or hides a panel: that is still each
+// panel's own button and close handler, unchanged.
+{
+  const PANELS = ["ewPanel", "trPanel", "coPanel", "rollPanel", "xsPanel",
+                  "symPanel", "stPanel"];
+  const dockAt = htmlSrc.indexOf('<div id="toolDock"');
+  const scrollAt = htmlSrc.indexOf('<div id="sideScroll"');
+  check(dockAt > 0 && scrollAt > 0 && dockAt > scrollAt,
+    "#toolDock is inside #sideScroll");
+  // nothing may be rendered between the scrollport opening and the dock
+  const between = htmlSrc.slice(htmlSrc.indexOf(">", scrollAt) + 1, dockAt);
+  check(!/<(section|div|input|button|h2)\b/.test(between.replace(/<!--[\s\S]*?-->/g, "")),
+    "#toolDock is the FIRST element in #sideScroll — an opened panel is at the top");
+  // the dock closes before the first card
+  const firstCard = htmlSrc.indexOf('<section class="card"');
+  check(firstCard > dockAt, "the standing cards come after the dock, not before");
+  for (const p of PANELS) {
+    const at = htmlSrc.indexOf(`<div id="${p}"`);
+    check(at > dockAt && at < firstCard, `${p} is inside #toolDock`);
+  }
+  // ckPanel is NOT a tool: it is the doubt queue and keeps its own card
+  const ckAt = htmlSrc.indexOf('<div id="ckPanel"');
+  check(ckAt > firstCard,
+    "#ckPanel stays in its own standing card, not in the tool dock");
+  check(/\.tool-dock > \.ew-panel:not\(\[hidden\]\)/.test(cssSrc),
+    "the dock styles the OPEN panel only, so a hidden one still takes no space");
+}
+
 if (failures) { console.error(`\n${failures} FAILURE(S)`); process.exit(1); }
 console.log("\nall tools menu checks passed");
