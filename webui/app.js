@@ -439,6 +439,9 @@ function applyOpened(j) {
   state.kinds = j.kinds || new Array(j.pages).fill(null);
   state.legendNames = []; $("legendVocab").innerHTML = "";
   $("docName").textContent = j.name;
+  // the masthead ellipsizes a long plan name (it always did); the full one
+  // has to stay readable on hover now that the name is the header's subject
+  $("docName").title = j.name;
   state.docName = j.name;
   const sel = $("pageSel");
   sel.innerHTML = "";
@@ -503,6 +506,12 @@ async function selectPage(p) {
   // itself over the current one - which is how a Belle Farms sheet ended up
   // under another plan with the old itemised takeoff still listed.
   const gen = ++state.gen;
+  // The transient line belongs to the page that produced it. While the sheet
+  // facts rode setStatus, loadResult's own sentence overwrote whatever was
+  // there on every page switch; now that the facts have their own segment,
+  // nothing does - so "detecting…" or an error from the PREVIOUS sheet would
+  // sit under the new one, describing work on a page nobody is looking at.
+  setStatus("");
   state.page = p; state.result = null; state.isolate = null;
   state.img = null;
   state.selected = null; state.selPt = null;
@@ -902,14 +911,15 @@ async function loadResult(gen = state.gen) {
   scaleRestore(gen);
   document.getElementById("aiBtn").hidden = false;
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
-  const sc = state.result.scale;
-  setStatus(`${state.result.chains.length} lines in ${state.result.styles.length} styles` +
-    (sc ? ` · scale ${sc.text} (${sc.source}` +
-      (sc.agrees === true ? ", matches the drawn bar"
-        : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
-        : "") + ")"
-      : " · no scale found"),
-    sc && sc.agrees === false ? "err" : "");
+  // The sheet facts used to be announced here, through setStatus, where the
+  // next transient message erased them. They live in the status bar's own
+  // segment now - same sentence, built by sheetFactsText() - and they stay
+  // up for as long as the sheet does. renderSheetHead() above already
+  // painted them once; this repaint keeps the old call ORDER (the sentence
+  // was always the last thing loadResult said), and if the async
+  // scaleRestore() above later corrects the scale, its scaleRepaint() ->
+  // renderSheetHead() -> renderSheetFacts() chain repaints this too.
+  renderSheetFacts();
 }
 
 // ---------- sidebar ----------
@@ -1254,6 +1264,11 @@ function fmtQty(pt) {
   return (ft >= 1000 ? (ft / 1000).toFixed(1) + "k" : ft.toFixed(0)) + " LF";
 }
 function renderSheetHead() {
+  // The status bar's persistent half is the same set of facts this header
+  // draws, so it repaints on exactly the same beats: every detect, every
+  // page switch, every scale change (renderSheetHead is what all eleven of
+  // those call). Before the early return, so an empty app clears it too.
+  renderSheetFacts();
   const el = $("sheetHead");
   if (!state.job) { el.hidden = true; return; }
   el.hidden = false;
@@ -10410,6 +10425,10 @@ function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   $("hint").style.display = state.img ? "none" : "";
+  // the status bar's zoom readout follows the view, so it is painted here
+  // (before the no-image early return, which is also when it must clear).
+  // renderZoomFact() no-ops unless the rounded percentage actually moved.
+  renderZoomFact();
   if (!state.img) return;
   const { x, y, k } = state.view;
   ctx.save();
@@ -12372,7 +12391,61 @@ cv.addEventListener("wheel", (e) => {
 function fmtLen(pt) {
   return pt > 8000 ? `${(pt / 1000).toFixed(1)}k pt` : `${Math.round(pt)} pt`;
 }
+// UNCHANGED CONTRACT, NEW ADDRESS. #status moved out of the masthead and
+// into #statusBar below <main> (index.html, CRITIQUE fix 4); this function
+// keeps its name, its (text, cls) signature and every one of its call sites.
+// Nothing here looks up a parent, so the move is invisible to all of them.
 function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.className = "status " + (cls || ""); }
+
+// ---------- the status bar's PERSISTENT half ------------------------------
+// The sheet facts used to be pushed through setStatus() by loadResult(), so
+// the sentence that says how many lines were found and - the part that
+// matters - WHERE THE SCALE CAME FROM survived only until the next transient
+// message overwrote it. It is its own element now and it stays put.
+//
+// sheetFactsText() is loadResult()'s old string, character for character:
+// same counts, same " · scale ", same source in parentheses, same
+// ", matches the drawn bar" / ", but the drawn bar says N ft/in" /
+// " · no scale found". Nothing is summarised away and nothing new is
+// asserted. The red "err" state for a contradiction moves with it, and now
+// persists instead of flashing once.
+function sheetFactsText() {
+  if (!state.result) return "";
+  const sc = state.result.scale;
+  return `${state.result.chains.length} lines in ${state.result.styles.length} styles`
+    + (sc ? ` · scale ${sc.text} (${sc.source}`
+        + (sc.agrees === true ? ", matches the drawn bar"
+          : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
+          : "") + ")"
+      : " · no scale found");
+}
+function renderSheetFacts() {
+  const el = $("sheetFacts"), seg = $("sbSheet");
+  if (!el || !seg) return;
+  const sc = state.result && state.result.scale;
+  seg.textContent = sheetFactsText();
+  // the same class setStatus() was given for this sentence, on the element
+  // that now carries it
+  el.className = "sb-facts" + (sc && sc.agrees === false ? " err" : "");
+  renderZoomFact();
+}
+// Zoom. state.view.k is the multiplier between the page raster's own pixels
+// and CSS pixels, so 100% is exactly one raster pixel per CSS pixel - which
+// is what the segment's title says out loud rather than implying a paper
+// "actual size" this app has no way to know. Presentation only: no quantity
+// anywhere reads it. Painted from draw(), so it follows every wheel and pan,
+// and only touched when the rounded number actually moved.
+let zoomShown = null;
+function renderZoomFact() {
+  const el = $("sbZoom");
+  if (!el) return;
+  const pct = (state.img && state.view.k > 0)
+    ? Math.round(state.view.k * 100) : null;
+  if (pct === zoomShown) return;
+  zoomShown = pct;
+  el.hidden = pct === null;
+  el.textContent = pct === null ? "" : `zoom ${pct}%`;
+}
 
 // ---------- structure calculator: footprint dig + perimeter layback ----------
 // The excavator's bid-sheet formulas (client_meet/beaumont, "Bid sheet" p1,

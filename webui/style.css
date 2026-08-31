@@ -58,7 +58,12 @@ aside::-webkit-scrollbar-thumb, .thumb-list::-webkit-scrollbar-thumb,
    dim, sentence case. Mono is reserved for data, uppercase for the brand and
    the severity badges. */
 .status, .side-head h2 { font-size: var(--t-fs-xs); }
-#detectBtn { background: var(--accent-deep); border-color: var(--accent);
+/* The one filled button per screen. #uploadBtn joined it when the file-open
+   plumbing moved to the Projects page (CRITIQUE fix 4): Upload is that
+   page's primary action exactly as Detect is the workbench's, and sharing
+   the rule is how they cannot drift apart - or grow a second literal. */
+#detectBtn, .pv-open-strip .pv-up { background: var(--accent-deep);
+  border-color: var(--accent);
   color: #fff; font-weight: 600; }
 .doc-name { color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { color: var(--dim); }
@@ -2029,3 +2034,136 @@ body { --w1-warn: #d79b3a; }
 .tools-note { font-size: var(--t-fs-xs, 12px); line-height: 1.45;
   max-width: none; color: var(--t-text-dim, var(--dim));
   padding: 6px 12px 6px; }
+
+/* ==========================================================================
+   WAVE 2 — CRITIQUE fix 4: the masthead stops being a junk drawer
+   --------------------------------------------------------------------------
+   Measured before this block, live at 1920x1080 on Oncor C-04: the header
+   held 17 rendered top-level children, wrapped to THREE rows, stood 147px
+   tall, and grew to 234px the moment a long status string arrived - taking
+   87px straight out of the sheet, in exchange for controls that are only
+   wanted before a document exists.
+   Nothing was deleted. index.html moved the file-open plumbing onto the
+   Projects page (which is FOR opening plans) and the status line plus the
+   quiet utilities into a status bar under <main>. This block is the styling
+   for those two new homes and the one-row masthead that is left.
+   Tokens only - no colour literal anywhere below.
+   ========================================================================== */
+
+/* ---------- the masthead: identity + document context, one row ----------- */
+header { flex-wrap: nowrap; height: 52px; min-height: 52px;
+  gap: var(--t-sp-3, 12px); padding: 0 var(--t-sp-4, 16px);
+  background: var(--t-surface-1, var(--panel)); }
+/* The brand was three stacked blocks (wordmark / subtitle / two links), 85px
+   of vertical on its own. It is a single row now, carrying the rule that
+   used to be a wrapping gap between control groups. The wordmark got a span
+   so the flex container does not treat "C", "O" and "RE" as three items. */
+.brand { display: flex; align-items: center; gap: var(--t-sp-2, 8px);
+  flex: none; margin-right: 0; align-self: stretch;
+  padding-right: var(--t-sp-4, 16px);
+  border-right: 1px solid var(--t-border, var(--line)); }
+.brand .brand-mark { flex: none; }
+/* one row means one row: at 1280 the fixed height made "Detect lines" and
+   "Tools" wrap INSIDE their buttons rather than pushing the header taller
+   (caught on the live narrow-window pass, not by reading the CSS) */
+header button { white-space: nowrap; }
+.brand .brand-sub { display: inline; margin-top: 0; white-space: nowrap; }
+/* the Projects / Pricing links still ride the brand block (the projects and
+   settings views both pin that contract) - they just sit beside it now, and
+   they are the path back to the file-open controls while a sheet is open */
+.brand .projects-link { display: inline; letter-spacing: normal;
+  font-family: var(--t-font-ui, inherit); font-weight: 600;
+  font-size: var(--t-fs-sm, 13px); white-space: nowrap; }
+/* a little air between the wordmark's subtitle and the two navigation links,
+   because Projects is now the way BACK to the file-open controls */
+.brand .projects-link:first-of-type { margin-left: var(--t-sp-1, 4px); }
+/* the document on screen: the masthead's subject, so it reads as a title */
+.doc-name { font-family: var(--t-font-ui, inherit);
+  font-size: var(--t-fs-base, 14px); font-weight: 600;
+  color: var(--t-text, var(--text)); max-width: 340px;
+  flex: 0 1 auto; min-width: 0; }
+.doc-name:empty { display: none; }
+header #pageSel { flex: none; max-width: 220px; }
+/* utilities park on the right rail: the BETA chip and the theme toggle, and
+   nothing else - everything that used to crowd in here is in the status bar */
+.hdr-right { margin-left: auto; flex: none;
+  display: flex; align-items: center; gap: var(--t-sp-2, 8px); }
+
+/* ---------- OPEN A PLAN: the strip on the Projects page ------------------ */
+.pv-open-strip { display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--t-sp-2, 8px); max-width: 1100px;
+  margin: 0 auto var(--t-sp-2, 8px);
+  background: var(--t-surface-1, var(--panel));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-3, 12px);
+  padding: var(--t-sp-3, 12px) var(--t-sp-4, 16px); }
+.pv-open-lab { flex: none; font-size: var(--t-fs-sm, 13px); font-weight: 600;
+  color: var(--t-text-dim, var(--dim)); }
+/* the two <select>s carry long plan names; let them take the slack and
+   ellipsize rather than forcing the strip onto a second row on a laptop */
+.pv-open-strip #sampleSel, .pv-open-strip #recentSel {
+  flex: 1 1 240px; min-width: 0; max-width: 100%; }
+.pv-open-strip #pathInput { flex: 1 1 180px; min-width: 0; width: auto; }
+.pv-open-strip #openBtn, .pv-open-strip .pv-up { flex: none; }
+/* Drag-and-drop is the only way in on a hosted box, and the strip is where
+   someone looks for a way in - so the window-wide drop target is named here
+   in words rather than left to be discovered. */
+.pv-open-note { max-width: 1100px; margin: 0 auto var(--t-sp-5, 24px);
+  font-size: var(--t-fs-xs, 12px); line-height: 1.5;
+  color: var(--t-text-dim, var(--dim)); }
+
+/* ---------- THE STATUS BAR ----------------------------------------------- */
+/* One 34px strip at the foot of the window, outside <main>, so it survives
+   the Projects / Pricing view toggles: an upload that fails while the plan
+   library is up has to be able to say so. Fixed height + overflow:hidden is
+   the whole point of the move - the masthead used to REFLOW around a long
+   message and take rows away from the sheet. */
+.status-bar { flex: none; display: flex; align-items: center; gap: 0;
+  height: 34px; padding: 0 var(--t-sp-4, 16px); overflow: hidden;
+  background: var(--t-surface-1, var(--panel));
+  border-top: 1px solid var(--t-border, var(--line)); }
+/* left: the persistent facts about the sheet on screen */
+.sb-facts { flex: 0 1 auto; min-width: 0; display: flex; align-items: center;
+  white-space: nowrap; overflow: hidden;
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums);
+  font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-dim, var(--dim)); }
+/* the drawn scale bar contradicting the printed scale is the app's loudest
+   real disclosure; it used to flash past in the status line and now stays */
+.sb-facts.err { color: var(--t-stop); }
+.sb-seg { margin-right: var(--t-sp-4, 16px);
+  overflow: hidden; text-overflow: ellipsis; }
+.sb-seg:empty { display: none; }
+.sb-zoom { cursor: help; }
+/* Middle: the transient line. It CLIPS - a 350-character message ellipsizes
+   inside the bar instead of reflowing the chrome around it.
+   `flex-basis: 0` is load-bearing and was arrived at by measuring, not by
+   reasoning. With the natural `auto` basis a long message is part of the
+   line's content width, the row overflows, and the shrink is shared: the
+   first live 350-character status squeezed the persistent facts down to
+   "scale graphic bar 0-60 ft …" and the zoom to "zoo…". Weighting the shrink
+   200:1 in the facts' favour still cost them 3px - enough for BOTH segments
+   to draw an ellipsis and eat "(graphic-bar)" down to "(graphic-ba…", which
+   is precisely the scale-provenance disclosure this bar exists to keep on
+   screen. At basis 0 the transient line contributes nothing to the row's
+   content width: it takes the space left over after the facts and the
+   utilities and ellipsizes inside it, so it can never truncate them. The
+   facts still shrink (shrink: 1) if the window is narrow enough that they
+   alone do not fit. */
+.status-bar .status { flex: 1 1 0; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* right: the de-emphasised utilities, one rank down but never hidden */
+.sb-util { flex: none; display: flex; align-items: center;
+  gap: var(--t-sp-3, 12px); padding-left: var(--t-sp-4, 16px); }
+.sb-util button { padding: 2px 8px; font-size: var(--t-fs-xs, 12px);
+  border-radius: var(--t-r-1, 4px); }
+.sb-util .danger { color: var(--t-danger);
+  border-color: var(--t-danger-deep); }
+.sb-util .danger:hover { color: var(--t-text, var(--text));
+  background: var(--t-danger-deep); border-color: var(--t-danger-deep); }
+/* The sheet facts describe a sheet that is not on screen while the Projects
+   or Pricing page is up, so they stand down there. The transient line does
+   not: "uploading…" and "could not reopen" are reported from those views. */
+main.pv-open ~ .status-bar .sb-facts,
+main.sv-open ~ .status-bar .sb-facts { display: none; }

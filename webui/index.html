@@ -5,19 +5,32 @@
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=54">
+<link rel="stylesheet" href="style.css?v=55">
 </head>
 <body>
+<!-- THE MASTHEAD, after CRITIQUE fix 4.
+     It used to hold seventeen things: the brand, a sample-plan picker, a
+     path box, Open, a recents picker, Upload, the document name, the page
+     picker, Detect, Tools, the BETA chip, Feedback, Feedback CSV, Terms,
+     Privacy, the saved-work button, the theme toggle - AND the status line,
+     which is a different kind of thing entirely. At 1920px it wrapped to
+     three rows (147px tall, 234px while a long status string was up, and
+     every one of those pixels came out of the sheet).
+     It now carries only IDENTITY and DOCUMENT CONTEXT: brand (with its
+     Projects / Pricing links) · document name · sheet picker · Detect ·
+     Tools, then the BETA chip and the theme toggle on the right.
+     NOTHING WAS DELETED. Every id below moved to the view that is actually
+     about it, with its handler, its title and its `hidden` bookkeeping
+     untouched:
+       sampleSel / pathInput / openBtn / recentSel / uploadBtn / fileInput
+                              -> the "Open a plan" strip on #projectsView
+       status / docRemoveBtn / fbBtn / fbExportBtn / whoami / signOutBtn /
+       memBtn / Terms / Privacy
+                              -> the #statusBar below <main>
+     A node's position in the DOM is the only thing that changed. -->
 <header>
-  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#pricing" title="The unit price book, material defaults, and CSV import/export">Pricing</a></div>
-  <select id="sampleSel"><option value="">Open sample plan…</option></select>
-  <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
-  <button id="openBtn">Open</button>
-  <select id="recentSel" title="Plan sets already on this server. Reopening one is instant and keeps whatever has already been detected."><option value="">Recent plans…</option></select>
-  <button id="uploadBtn" title="Choose a PDF from this computer. You can also just drag one onto the window.">Upload plans</button>
-  <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+  <div class="brand"><span class="brand-mark">C<span class="brand-o">O</span>RE</span><span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#pricing" title="The unit price book, material defaults, and CSV import/export">Pricing</a></div>
   <div id="docName" class="doc-name"></div>
-  <button id="docRemoveBtn" class="danger" hidden>Remove from server</button>
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
   <!-- TOOLS. One entry point for the nine calculators/readers that used to
@@ -61,16 +74,10 @@
       <div class="tools-note" id="toolsNote">Sheet tools appear once a page has detected lines.</div>
     </div>
   </div>
-  <div id="status" class="status"></div>
-  <span id="betaBanner" class="beta-chip" tabindex="0" role="note" title="BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.">BETA &mdash; verify every quantity</span>
-  <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
-  <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
-  <span id="whoami" class="whoami" hidden></span>
-  <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
-  <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
-  <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
-  <button id="memBtn" class="mem-btn" hidden></button>
-  <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
+  <div class="hdr-right">
+    <span id="betaBanner" class="beta-chip" tabindex="0" role="note" title="BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.">BETA &mdash; verify every quantity</span>
+    <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
+  </div>
   <input id="legendPath" type="hidden">
 </header>
 <div id="aiBanner" class="ai-banner" hidden></div>
@@ -95,6 +102,30 @@
        fought over and the workbench keeps its full state while out of sight.
        Built by loadProjects()/renderProjects() in app.js from /api/projects. -->
   <div id="projectsView" class="projects-view" hidden>
+    <!-- OPEN A PLAN (CRITIQUE fix 4). The four ways into a document used to
+         sit in the masthead of every screen forever, including while a sheet
+         was on the canvas and none of them could be wanted. They are the
+         same five nodes, MOVED - #sampleSel, #pathInput, #openBtn,
+         #recentSel, #uploadBtn and the hidden #fileInput they drive. Not one
+         id, handler, title or option list changed, so loadRecent(),
+         applyOpened(), openPath(), uploadPdf() and the hosted-box branch of
+         /api/config (which hides the three path controls) all still find
+         exactly what they wrote to before.
+         Reachable WITH a document open: the Projects link rides the brand
+         block in the masthead, one click away from the sheet, and
+         applyOpened() already closes this view the moment a plan arrives.
+         Dropping a PDF anywhere on the window still works from both views -
+         that listener is on `window`, not on anything here. -->
+    <div class="pv-open-strip">
+      <span class="pv-open-lab">Open a plan</span>
+      <select id="sampleSel"><option value="">Open sample plan…</option></select>
+      <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
+      <button id="openBtn">Open</button>
+      <select id="recentSel" title="Plan sets already on this server. Reopening one is instant and keeps whatever has already been detected."><option value="">Recent plans…</option></select>
+      <button id="uploadBtn" class="pv-up" title="Choose a PDF from this computer. You can also just drag one onto the window.">Upload plans</button>
+      <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+    </div>
+    <div class="pv-open-note">Or drop a PDF anywhere on this window &mdash; from here or from a sheet you already have open.</div>
     <div class="pv-head">
       <h1>Plans on this server</h1>
       <span id="pvCount" class="pv-count"></span>
@@ -653,6 +684,49 @@
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
 </main>
+<!-- THE STATUS BAR (CRITIQUE fix 4). Two different kinds of message shared
+     one slot in the masthead and overwrote each other:
+
+       PERSISTENT sheet facts - "589 lines in 65 styles · scale graphic bar
+       0-60 ft over 144.0pt (1" = 30', ticks) (graphic-bar)" - which say what
+       is on screen and, crucially, HOW the scale was obtained. loadResult()
+       pushed that sentence through setStatus(), so the next "opening…" wiped
+       the app's single most important disclosure off the screen.
+
+       TRANSIENT messages - "detecting…", "upload failed", "removed X".
+
+     They are separate elements now. #sbSheet holds the persistent sentence,
+     rendered VERBATIM (same words, same order, same red when the drawn bar
+     contradicts the text scale) by renderSheetFacts(); #status keeps its id,
+     its class contract and all 194 setStatus() call sites and only changed
+     where it lives. It clips instead of wrapping, so a long message can no
+     longer grow the chrome and shrink the sheet.
+
+     It sits BELOW <main> rather than inside #stage on purpose: uploads,
+     opens and their failures are reported from the Projects and Pricing
+     views too, and #stage is display:none under main.pv-open / main.sv-open.
+     The sheet facts hide themselves in those views (they describe a sheet
+     nobody is looking at); the transient line never does.
+
+     The de-emphasised utilities live on the right: Feedback, Feedback CSV,
+     saved work, remove-from-server, the signed-in account, Sign out, Terms,
+     Privacy. Every one is a MOVED node - same id, same handler, same title,
+     same `hidden` bookkeeping - one visual rank down from the masthead but
+     on screen in every view, never behind a menu. -->
+<div id="statusBar" class="status-bar">
+  <div id="sheetFacts" class="sb-facts"><span id="sbSheet" class="sb-seg"></span><span id="sbZoom" class="sb-seg sb-zoom" hidden title="How big this sheet's page raster is drawn on screen. The page is rasterized at 130 dpi and 100% means one raster pixel per CSS pixel, so this is a view setting only - no counted quantity depends on it."></span></div>
+  <div id="status" class="status"></div>
+  <div class="sb-util">
+    <button id="docRemoveBtn" class="danger" hidden>Remove from server</button>
+    <button id="memBtn" class="mem-btn" hidden></button>
+    <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
+    <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
+    <span id="whoami" class="whoami" hidden></span>
+    <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
+    <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
+    <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
+  </div>
+</div>
 <!-- THE ZONE MODAL. Opened when a grading-zone outline closes (or a zone
      badge / edit button is clicked). The result block is LIVE - it calls
      the zone endpoint, debounced, on every input - but seeing a number is
@@ -705,6 +779,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=129"></script>
+<script src="app.js?v=130"></script>
 </body>
 </html>
