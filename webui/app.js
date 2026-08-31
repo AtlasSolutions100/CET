@@ -422,6 +422,9 @@ function applyOpened(j) {
   // the landing page yields to a document, whichever way it arrived: card
   // click, recents pick, sample, path, upload, or a drop on the window
   showProjects(false);
+  // ...and so does the pricing settings page (the header's upload/drop
+  // controls stay reachable while it is up)
+  if (svIsOpen()) showSettings(false);
   // the remove button belongs to whatever is on screen now
   setTimeout(syncRemoveBtn, 0);
   state.gen++;
@@ -13512,6 +13515,10 @@ function showProjects(on) {
     return;
   }
   toolsMenuClose();                  // a floating menu belongs to no view
+  // the two full-screen views are exclusive: opening Projects closes the
+  // pricing settings page (svHide is the raw toggle - no history juggling,
+  // no buffer resync; the workbench stays hidden under pv-open anyway)
+  if (on && svIsOpen()) svHide();
   $("projectsView").hidden = !on;
   document.querySelector("main").classList.toggle("pv-open", on);
   $("pvBack").hidden = !(on && state.job);
@@ -13711,3 +13718,499 @@ addEventListener("keydown", (e) => {
 // ---------- boot: land on Projects when nothing is open --------------------
 if (!state.job) showProjects(true);
 // =============== end MY PROJECTS ===========================================
+
+// =============== PRICING SETTINGS: the price book page =====================
+// The second page in the projects shell. Same pure view toggle (one class on
+// <main>, CSS hides the three workbench columns), same capture-phase key
+// swallow, Esc returns to the sheet (or to Projects when no job is open).
+// It reads and writes the SAME store the itemized panel uses - priceKey()
+// ("price:<label>") through `store` - so a price typed here shows in the
+// itemized panel on its next render and vice versa. Nothing new is stored:
+// prices live in this browser's saved work (localStorage under tk1::),
+// they do NOT sync to the server, and Export CSV is the backup path.
+
+// SETTINGS-PURE-BEGIN --------------------------------------------------------
+// Pure book/CSV logic: no DOM, no state.*, no fetch, so
+// tests/test_settings_view.js can run it under node.
+
+// Merge the labels that hold a stored price with the labels on the open
+// document's itemized takeoff. Dedupe by exact label (the store's own key
+// is the exact label), keep the live row's unit when known, sort
+// case-insensitively so "silt fence" files beside "Silt Fence".
+function svBookRows(storedLabels, liveItems) {
+  const m = new Map();
+  for (const it of liveItems || []) {
+    if (!it || !it.label) continue;
+    const got = m.get(it.label);
+    if (!got) m.set(it.label, { label: it.label, unit: it.unit || "",
+                                inUse: true, stored: false });
+    else if (!got.unit && it.unit) got.unit = it.unit;
+  }
+  for (const lab of storedLabels || []) {
+    const got = m.get(lab);
+    if (got) got.stored = true;
+    else m.set(lab, { label: lab, unit: "", inUse: false, stored: true });
+  }
+  return [...m.values()].sort((a, b) =>
+    a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
+    || a.label.localeCompare(b.label));
+}
+
+// One CSV line -> fields, honouring quotes and "" escapes. Returns null on
+// an unclosed quote so the caller can report the line rather than guess.
+// (A quoted field spanning multiple lines lands here too - reported, never
+// silently dropped.)
+function svSplitCsvLine(line) {
+  const out = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQ) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = false;
+      } else cur += c;
+    } else if (c === '"' && cur === "") inQ = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  if (inQ) return null;
+  out.push(cur);
+  return out;
+}
+
+function svCsvField(s) {
+  s = String(s == null ? "" : s);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// rows: [{label, unit, price}] -> CSV text with the label,unit,price header.
+function svSerializeCSV(rows) {
+  const lines = ["label,unit,price"];
+  for (const r of rows)
+    lines.push([svCsvField(r.label), svCsvField(r.unit || ""),
+                String(r.price)].join(","));
+  return lines.join("\n") + "\n";
+}
+
+// CSV text -> { rows: [{label, unit, price}], bad: [{line, text, reason}] }.
+// Accepts label,unit,price or label,price; a leading header row is skipped.
+// Price accepts $ and thousands separators; anything else is listed as
+// unparseable with its 1-based line number - never silently dropped.
+function svParseCSV(text) {
+  const rows = [], bad = [];
+  const lines = String(text == null ? "" : text).split(/\r\n|\r|\n/);
+  let first = true;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (!raw.trim()) continue;
+    const f = svSplitCsvLine(raw);
+    if (f === null) {
+      bad.push({ line: i + 1, text: raw, reason: "unclosed quote" });
+      first = false;
+      continue;
+    }
+    if (first) {
+      first = false;
+      const head = f.map(x => x.trim().toLowerCase()).join(",");
+      if (head === "label,unit,price" || head === "label,price") continue;
+    }
+    let label, unit, priceRaw;
+    if (f.length === 3) { label = f[0]; unit = f[1]; priceRaw = f[2]; }
+    else if (f.length === 2) { label = f[0]; unit = ""; priceRaw = f[1]; }
+    else {
+      bad.push({ line: i + 1, text: raw,
+                 reason: "expected label,unit,price (" + f.length + " field"
+                   + (f.length === 1 ? "" : "s") + ")" });
+      continue;
+    }
+    label = label.trim(); unit = unit.trim();
+    const cleaned = String(priceRaw).trim().replace(/^\$/, "").replace(/,/g, "");
+    const price = /^\d*\.?\d+$/.test(cleaned) ? parseFloat(cleaned) : NaN;
+    if (!label)
+      bad.push({ line: i + 1, text: raw, reason: "empty label" });
+    else if (!(isFinite(price) && price > 0))
+      bad.push({ line: i + 1, text: raw, reason: "price is not a number above 0" });
+    else rows.push({ label, unit, price });
+  }
+  return { rows, bad };
+}
+
+// Dry-run plan: which parsed rows ADD a label and which OVERWRITE one that
+// already holds a stored price. Duplicate labels inside the file collapse
+// to the last occurrence (the row that would win anyway), so the counts
+// shown are the counts applied.
+function svImportPlan(rows, storedLabels) {
+  const stored = new Set(storedLabels || []);
+  const byLabel = new Map();
+  for (const r of rows || []) byLabel.set(r.label, r);
+  const adds = [], overwrites = [];
+  for (const r of byLabel.values())
+    (stored.has(r.label) ? overwrites : adds).push(r);
+  return { adds, overwrites };
+}
+
+function svPreviewLine(nNew, nOver, nBad) {
+  return nNew + " new, " + nOver + " overwrite, " + nBad + " unparseable"
+    + (nBad ? " — shown below" : "");
+}
+// SETTINGS-PURE-END ----------------------------------------------------------
+
+function svIsOpen() { return !$("settingsView").hidden; }
+
+// raw toggle used by showProjects for view exclusivity: hide, nothing else
+function svHide() {
+  $("settingsView").hidden = true;
+  document.querySelector("main").classList.remove("sv-open");
+}
+
+function showSettings(on) {
+  on = !!on;
+  if (on === svIsOpen()) {
+    if (on) renderSettings();        // already there: refresh the book
+    return;
+  }
+  toolsMenuClose();                  // a floating menu belongs to no view
+  if (on && pvIsOpen()) showProjects(false);   // the two views are exclusive
+  $("settingsView").hidden = !on;
+  document.querySelector("main").classList.toggle("sv-open", on);
+  $("svBack").hidden = !(on && state.job);
+  if (on) {
+    renderSettings();
+  } else {
+    // same resync discipline as showProjects: the canvas buffer went 0x0
+    // while its column was display:none, and the operator's zoom must
+    // survive the round trip
+    syncBuffer();
+    if (state.img && !(state.view.k > 0)) { fitView(); draw(); }
+    // prices typed on the settings page must show on the itemized panel
+    // the moment it is back on screen - renderItemized re-reads the store
+    if (state.result) renderItemized();
+  }
+  try {
+    history.replaceState(null, "",
+      on ? "#pricing" : location.pathname + location.search);
+  } catch (err) { /* the hash is a convenience, never a requirement */ }
+}
+
+// labels that hold a stored price right now, from the SAME sessionMem the
+// store wrapper fronts - "price:" is priceKey()'s own prefix
+function svStoredPriceLabels() {
+  return [...sessionMem.keys()]
+    .filter(k => k.startsWith("price:"))
+    .map(k => k.slice("price:".length));
+}
+
+// the open document's itemized rows, label + unit, via the same
+// computeTakeoffRows() the itemized panel and the bid view render from
+function svLiveItems() {
+  if (!state.result) return [];
+  const t = computeTakeoffRows();
+  if (!t) return [];
+  const out = [];
+  for (const g of t.groups)
+    for (const it of g.items) out.push({ label: it.label, unit: it.unit });
+  return out;
+}
+
+function renderSettings() {
+  renderSvBook();
+  renderSvMaterials();
+  renderSvFoot();
+}
+
+function renderSvBook() {
+  const box = $("svBookTable");
+  box.innerHTML = "";
+  const live = svLiveItems();
+  const rows = svBookRows(svStoredPriceLabels(), live);
+  $("svBookNote").textContent = !rows.length
+    ? "No prices stored yet and no document open — add a line item below, "
+      + "import a CSV, or price rows on a sheet's itemized takeoff."
+    : rows.length + " label(s): every stored price plus every label on the "
+      + "open document's itemized takeoff. “on this sheet” = in the "
+      + "open takeoff; “stored only” = priced earlier, not on this "
+      + "sheet." + (live.length ? "" : " (No document open, so all rows are "
+      + "stored-only.)");
+  if (!rows.length) return;
+  for (const h of ["label", "unit", "$ / unit", "where", ""]) {
+    const th = document.createElement("div");
+    th.className = "sv-th"; th.textContent = h;
+    box.appendChild(th);
+  }
+  for (const r of rows) {
+    const lab = document.createElement("div");
+    lab.className = "sv-lab"; lab.textContent = r.label; lab.title = r.label;
+    const unit = document.createElement("div");
+    unit.className = "sv-unit"; unit.textContent = r.unit || "";
+    const pin = document.createElement("input");
+    pin.type = "number"; pin.step = "0.01"; pin.min = "0"; pin.placeholder = "—";
+    pin.name = "sv-price-" + r.label;
+    const cur = store.getItem(priceKey(r.label));
+    if (cur !== null && cur !== "") pin.value = cur;
+    // the same write the itemized panel's price input does: store on every
+    // keystroke (the store itself drops no-change writes), full re-render
+    // only on blur so the control being typed in is never detached
+    pin.oninput = () => {
+      if (pin.value.trim() === "") store.removeItem(priceKey(r.label));
+      else store.setItem(priceKey(r.label), pin.value);
+    };
+    pin.onchange = () => { renderSvBook(); renderSvFoot(); };
+    pin.addEventListener("wheel",
+      (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+      { passive: false });
+    const where = document.createElement("div");
+    where.className = "sv-where";
+    where.textContent = r.inUse ? "on this sheet" : "stored only";
+    const x = document.createElement("button");
+    x.className = "sv-x"; x.textContent = "×";
+    x.title = "Clear the stored price for “" + r.label + "”";
+    x.disabled = !r.stored && !(cur !== null && cur !== "");
+    x.onclick = () => {
+      store.removeItem(priceKey(r.label));
+      renderSvBook(); renderSvFoot();
+    };
+    box.append(lab, unit, pin, where, x);
+  }
+}
+
+$("svAddBtn").onclick = () => {
+  const label = $("svAddLabel").value.trim();
+  const p = parseFloat($("svAddPrice").value);
+  if (!label) return setStatus("give the line item a label first", "err");
+  if (!(isFinite(p) && p > 0))
+    return setStatus("give it a $ / unit above 0", "err");
+  const had = store.getItem(priceKey(label)) !== null;
+  store.setItem(priceKey(label), String(p));
+  $("svAddLabel").value = ""; $("svAddPrice").value = "";
+  setStatus((had ? "updated" : "added") + " “" + label + "” at $"
+    + p + " per unit");
+  renderSvBook(); renderSvFoot();
+};
+
+// MATERIAL DEFAULTS - webui/ew_defaults.js rendered verbatim: name, default,
+// citation, and where the operator's override actually lives today. FOUND:
+// there is NO settings-scoped override store. The strip depth override is
+// the Topsoil layer row in the Earthwork panel (per sheet, saved to the
+// server in that page's calculator-inputs sidecar); the material factor
+// override is the panel's two factor boxes (#ewFacExp/#ewFacImp), which are
+// live inputs and are NOT saved across a reload. The inputs below edit
+// exactly those places - no second store is invented here.
+function renderSvMaterials() {
+  const box = $("svMatBox");
+  box.innerHTML = "";
+  if (typeof EW_RESEARCH === "undefined") {
+    box.textContent = "ew_defaults.js did not load — no defaults to show.";
+    return;
+  }
+  // --- strip depth ---------------------------------------------------------
+  const sd = EW_RESEARCH.strip_depth_in;
+  const sdRow = document.createElement("div");
+  sdRow.className = "sv-ovr";
+  const sdName = document.createElement("span");
+  sdName.textContent = "Topsoil strip depth — default " + sd.value
+    + " in (national band " + sd.national[0] + "–" + sd.national[1] + " in)";
+  sdRow.appendChild(sdName);
+  const topsoil = state.ew
+    && state.ew.layers.existing.find(l => /topsoil/i.test(l.name));
+  const sdIn = document.createElement("input");
+  sdIn.type = "number"; sdIn.step = "0.5"; sdIn.min = "0";
+  sdIn.name = "sv-strip-depth";
+  if (topsoil) {
+    sdIn.value = topsoil.thickness_in;
+    sdIn.oninput = () => {
+      topsoil.thickness_in = parseFloat(sdIn.value);
+      renderEwLayers();              // the panel's own row shows the same number
+      calcStateDirty();              // per-page sidecar, same as other calc edits
+    };
+  } else {
+    sdIn.disabled = true; sdIn.placeholder = "—";
+  }
+  const sdUnit = document.createElement("span");
+  sdUnit.textContent = "in";
+  sdRow.append(sdIn, sdUnit);
+  const sdWhere = document.createElement("span");
+  sdWhere.className = "sv-note";
+  sdWhere.textContent = topsoil
+    ? "edits the open sheet's Topsoil layer in the Earthwork panel (saved "
+      + "with that page's calculator inputs)"
+    : "override lives on the Earthwork panel's Topsoil layer row — open a "
+      + "sheet, open Earthwork, press “Strip topsoil”";
+  sdRow.appendChild(sdWhere);
+  box.appendChild(sdRow);
+  const sdCite = document.createElement("div");
+  sdCite.className = "sv-cite";
+  sdCite.textContent = "local prior: " + sd.local;
+  box.appendChild(sdCite);
+  // --- materials table -----------------------------------------------------
+  const grid = document.createElement("div");
+  grid.className = "sv-mat";
+  for (const h of ["material", "", "bank → loose", "bank → compacted"]) {
+    const th = document.createElement("div");
+    th.className = "sv-th"; th.textContent = h;
+    grid.appendChild(th);
+  }
+  for (const name of Object.keys(EW_RESEARCH.materials)) {
+    const m = EW_RESEARCH.materials[name];
+    const n = document.createElement("div"); n.textContent = name;
+    const sp = document.createElement("div");
+    const b2l = document.createElement("div");
+    b2l.textContent = "× " + m.b2l.toFixed(2);
+    const b2c = document.createElement("div");
+    b2c.textContent = "× " + m.b2c.toFixed(2);
+    grid.append(n, sp, b2l, b2c);
+    const cite = document.createElement("div");
+    cite.className = "sv-cite"; cite.textContent = m.src;
+    grid.appendChild(cite);
+  }
+  box.appendChild(grid);
+  // --- factor override: the SAME two live boxes the preset fills ------------
+  const fac = document.createElement("div");
+  fac.className = "sv-ovr";
+  const facName = document.createElement("span");
+  facName.textContent = "Override for the open sheet — export factor";
+  const mk = (srcId, nm) => {
+    const el = document.createElement("input");
+    el.type = "number"; el.min = "0"; el.step = "0.05";
+    el.name = nm;
+    const src = $(srcId);
+    el.value = src ? src.value : "";
+    el.oninput = () => {
+      const src2 = $(srcId);
+      if (!src2) return;
+      src2.value = el.value;
+      // the same event the material preset dispatches, so the Earthwork
+      // panel reacts exactly as if the box itself had been typed in
+      src2.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    return el;
+  };
+  const facImpName = document.createElement("span");
+  facImpName.textContent = "import factor";
+  fac.append(facName, mk("ewFacExp", "sv-fac-exp"),
+             facImpName, mk("ewFacImp", "sv-fac-imp"));
+  const facNote = document.createElement("span");
+  facNote.className = "sv-note";
+  facNote.textContent = "these ARE the Earthwork panel's factor boxes — "
+    + "applied on the sheet's next Calculate, defaulting to 1.0 (per #853), "
+    + "and not saved across a reload (existing behaviour, unchanged here)";
+  fac.appendChild(facNote);
+  box.appendChild(fac);
+}
+
+// persistence honesty, from what the store actually is: `store` fronts
+// sessionMem and mirrors to localStorage under tk1:: - this browser only
+function renderSvFoot() {
+  const n = svStoredPriceLabels().length;
+  $("svFoot").textContent = "Prices live in this browser (the same "
+    + "“Saved work” record as labels and trades — localStorage on "
+    + "this machine). They do not sync to the server or to other seats, so "
+    + "Export CSV is the backup and the way to move the book to another "
+    + "machine. " + n + " price(s) stored.";
+}
+
+// ---------- import / export -------------------------------------------------
+$("svExportBtn").onclick = () => {
+  const rows = [];
+  for (const r of svBookRows(svStoredPriceLabels(), svLiveItems())) {
+    const p = parseFloat(store.getItem(priceKey(r.label)) || "");
+    if (isFinite(p) && p > 0) rows.push({ label: r.label, unit: r.unit, price: p });
+  }
+  if (!rows.length) return setStatus("nothing to export — the book is empty", "err");
+  const blob = new Blob([svSerializeCSV(rows)], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "price-book.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  setStatus("exported " + rows.length + " price(s) to price-book.csv");
+};
+
+$("svImportBtn").onclick = () => { $("svImportFile").click(); };
+$("svImportFile").onchange = async () => {
+  const f = $("svImportFile").files[0];
+  $("svImportFile").value = "";      // same file can be picked again
+  if (!f) return;
+  let text = "";
+  try { text = await f.text(); }
+  catch (e) { return setStatus("could not read the file", "err"); }
+  const { rows, bad } = svParseCSV(text);
+  const plan = svImportPlan(rows, svStoredPriceLabels());
+  const box = $("svImportPreview");
+  box.innerHTML = ""; box.hidden = false;
+  const line = document.createElement("div");
+  line.textContent = f.name + ": "
+    + svPreviewLine(plan.adds.length, plan.overwrites.length, bad.length);
+  box.appendChild(line);
+  for (const b of bad) {
+    const d = document.createElement("div");
+    d.className = "sv-badline";
+    d.textContent = "line " + b.line + " (" + b.reason + "): " + b.text;
+    box.appendChild(d);
+  }
+  const apply = document.createElement("button");
+  apply.className = "mini";
+  apply.textContent = "Apply " + (plan.adds.length + plan.overwrites.length)
+    + " price(s)";
+  apply.disabled = !(plan.adds.length + plan.overwrites.length);
+  apply.onclick = () => {
+    if (plan.overwrites.length
+        && !confirm("Import from “" + f.name + "”?\n\n"
+          + plan.overwrites.length + " existing price(s) will be OVERWRITTEN ("
+          + plan.overwrites.map(r => r.label).slice(0, 12).join(", ")
+          + (plan.overwrites.length > 12 ? ", …" : "") + ")\n"
+          + plan.adds.length + " new label(s) will be added.\n\n"
+          + "The unit column is informational — prices key on the label alone."))
+      return;
+    for (const r of plan.adds) store.setItem(priceKey(r.label), String(r.price));
+    for (const r of plan.overwrites) store.setItem(priceKey(r.label), String(r.price));
+    box.hidden = true; box.innerHTML = "";
+    setStatus("imported " + (plan.adds.length + plan.overwrites.length)
+      + " price(s) — " + plan.adds.length + " new, "
+      + plan.overwrites.length + " overwritten"
+      + (bad.length ? "; " + bad.length + " line(s) were unparseable and "
+        + "were NOT imported" : ""));
+    renderSvBook(); renderSvFoot();
+    if (state.result) renderItemized();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini";
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => { box.hidden = true; box.innerHTML = ""; };
+  const btns = document.createElement("div");
+  btns.className = "sv-io";
+  btns.append(apply, cancel);
+  box.appendChild(btns);
+};
+
+// ---------- entry points ----------------------------------------------------
+$("settingsLink").onclick = (e) => {
+  e.preventDefault();
+  if (svIsOpen()) {
+    if (state.job) showSettings(false);   // second click toggles back
+    return;
+  }
+  showSettings(true);
+};
+$("svBack").onclick = () => showSettings(false);
+
+// While the settings view is up the workbench is INVISIBLE, so none of its
+// single-key shortcuts may reach it - the same swallow discipline as the
+// projects view, Ctrl+Z / Ctrl+Y included (undo must not act on the hidden
+// sheet). Esc returns to the sheet, or to Projects when no job is open.
+const SV_SWALLOW_KEYS = new Set(["m", "f", "l", "s", "x", "e", "d", "i",
+                                 "j", "r", "?", "Delete", "Backspace"]);
+addEventListener("keydown", (e) => {
+  if (!svIsOpen() || typing()) return;
+  if (e.key === "Escape") {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    showSettings(false);
+    if (!state.job) showProjects(true);
+    return;
+  }
+  if (SV_SWALLOW_KEYS.has(e.key) || SV_SWALLOW_KEYS.has(e.key.toLowerCase())
+      || ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")))
+    e.stopImmediatePropagation();
+}, true);
+// =============== end PRICING SETTINGS ======================================

@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <title>CORE — Takeoff · Work Optional</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="style.css?v=51">
+<link rel="stylesheet" href="style.css?v=52">
 </head>
 <body>
 <div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
 <header>
-  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a></div>
+  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#pricing" title="The unit price book, material defaults, and CSV import/export">Pricing</a></div>
   <select id="sampleSel"><option value="">Open sample plan…</option></select>
   <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
   <button id="openBtn">Open</button>
@@ -80,6 +80,48 @@
     </div>
     <div id="pvGrid" class="pv-grid"></div>
     <div id="pvEmpty" class="pv-empty" hidden></div>
+  </div>
+  <!-- PRICING SETTINGS: the second page in the same shell as MY PROJECTS.
+       Same pure view toggle - main.sv-open hides the three workbench columns
+       via CSS and nothing else changes, so the sheet keeps its full state
+       while out of sight. The two views are exclusive: opening one closes
+       the other. Built by renderSettings() in app.js from the SAME price
+       store the itemized panel writes (priceKey/"price:<label>") plus the
+       EW_RESEARCH table in ew_defaults.js. -->
+  <div id="settingsView" class="settings-view" hidden>
+    <div class="sv-head">
+      <h1>Pricing</h1>
+      <button id="svBack" class="mini" hidden>Back to the sheet</button>
+    </div>
+    <section class="sv-section">
+      <h2>Unit price book</h2>
+      <div class="sv-note" id="svBookNote"></div>
+      <div id="svBookTable" class="sv-table"></div>
+      <div class="sv-addrow">
+        <input id="svAddLabel" type="text" placeholder="line-item label" spellcheck="false">
+        <input id="svAddPrice" type="number" min="0" step="0.01" placeholder="$ / unit">
+        <button id="svAddBtn" class="mini">Add line item</button>
+        <span class="sv-note">pre-price a label before it appears on any sheet</span>
+      </div>
+    </section>
+    <section class="sv-section">
+      <h2>Material defaults</h2>
+      <div class="sv-note">Researched, cited, overridable — the table below is
+        webui/ew_defaults.js verbatim. Nothing here applies silently: factors
+        stay 1.0 until an operator picks a preset in the Earthwork panel, and
+        the override always wins.</div>
+      <div id="svMatBox"></div>
+    </section>
+    <section class="sv-section">
+      <h2>Import / export</h2>
+      <div class="sv-io">
+        <button id="svExportBtn" class="mini">Export CSV</button>
+        <button id="svImportBtn" class="mini">Import CSV</button>
+        <input id="svImportFile" type="file" accept=".csv,text/csv" hidden>
+      </div>
+      <div id="svImportPreview" class="sv-preview" hidden></div>
+    </section>
+    <div class="sv-foot" id="svFoot"></div>
   </div>
   <nav id="pageStrip" class="page-strip" hidden>
     <div class="strip-head">
@@ -568,6 +610,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=125"></script>
+<script src="app.js?v=126"></script>
 </body>
 </html>

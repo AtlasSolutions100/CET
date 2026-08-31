@@ -1223,6 +1223,61 @@ main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
   letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
   text-decoration: none; margin-top: 2px; }
 .projects-link:hover { text-decoration: underline; }
+
+/* ---------- PRICING SETTINGS: second page in the projects shell ----------
+   main.sv-open hides the same three workbench columns main.pv-open does,
+   and nothing else about them changes - the sheet survives the round trip
+   untouched, exactly like the projects view. */
+main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
+  display: none !important; }
+.settings-view { flex: 1; overflow-y: auto; padding: 26px 32px 40px;
+  background: var(--stage); }
+.sv-head { display: flex; align-items: baseline; gap: 12px;
+  max-width: 900px; margin: 0 auto 14px; }
+.sv-head h1 { font-family: var(--mono); font-size: 15px;
+  text-transform: uppercase; letter-spacing: .12em; color: var(--text); }
+.sv-head .mini { margin-left: auto; }
+.sv-section { max-width: 900px; margin: 0 auto 26px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px 16px; }
+.sv-section h2 { font-family: var(--mono); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .14em; color: var(--dim);
+  margin: 0 0 8px; }
+.sv-note { color: var(--dim); font-size: 11px; margin: 2px 0 8px; }
+.sv-table { display: grid; grid-template-columns: 1fr 60px 110px 110px 26px;
+  gap: 2px 10px; align-items: center; font-size: 12px; }
+.sv-table .sv-th { font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--dim);
+  padding-bottom: 4px; }
+.sv-table .sv-lab { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.sv-table .sv-unit, .sv-table .sv-where { color: var(--dim);
+  font-family: var(--mono); font-size: 10.5px; }
+.sv-table input[type=number] { width: 100px; }
+.sv-table .sv-x { width: 22px; height: 22px; padding: 0; line-height: 1;
+  border-radius: 50%; font-size: 12px; color: var(--dim);
+  background: var(--panel); border: 1px solid var(--line); }
+.sv-table .sv-x:hover { background: #b3362c; border-color: #b3362c;
+  color: #fff; }
+.sv-addrow { display: flex; gap: 8px; align-items: center; margin-top: 12px;
+  flex-wrap: wrap; }
+.sv-addrow input[type=text] { flex: 1; min-width: 180px; }
+.sv-addrow input[type=number] { width: 100px; }
+.sv-mat { display: grid; grid-template-columns: 1fr 90px 110px 110px;
+  gap: 2px 10px; align-items: baseline; font-size: 12px; margin-top: 6px; }
+.sv-mat .sv-th { font-family: var(--mono); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .1em; color: var(--dim);
+  padding-bottom: 4px; }
+.sv-cite { grid-column: 1 / -1; color: var(--dim); font-size: 10.5px;
+  padding: 0 0 8px 12px; }
+.sv-ovr { display: flex; gap: 8px; align-items: center; margin-top: 10px;
+  flex-wrap: wrap; font-size: 12px; }
+.sv-ovr input[type=number] { width: 90px; }
+.sv-io { display: flex; gap: 10px; align-items: center; }
+.sv-preview { margin-top: 10px; font-size: 12px; }
+.sv-preview .sv-badline { color: var(--dim); font-family: var(--mono);
+  font-size: 10.5px; white-space: pre-wrap; }
+.sv-foot { max-width: 900px; margin: 0 auto; color: var(--dim);
+  font-size: 11px; padding: 0 4px; }
 /* --- editing core: family switch on the selection bar + marquee bar ------
    .canvas-status is pointer-events:none so the pills never block the sheet;
    these three grew CONTROLS (family select, bulk buttons, the calibrate
