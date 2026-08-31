@@ -33,7 +33,8 @@ const P = new Function(appSrc.slice(a, b) +
   " return { projMetaLine, projAgo, projShowsSharedBadge, projCountLine,"
   + " projMatches, projFilter, projSort, projReachLine, PROJ_SORTS,"
   + " projIsDemo, projTabRows, projTabNoun, projDefaultTab, projTabCount,"
-  + " projEmptyMine, projEmptyDemo, PROJ_TABS };")();
+  + " projEmptyMine, projEmptyDemo, PROJ_TABS,"
+  + " projDemoAvailable, projDemoMeta, projDemoWhy, PROJ_DEMO_RULE };")();
 
 // ---- the card's meta line -----------------------------------------------
 check(P.projMetaLine(12, 5, 0) === "12 pages · 5 detected",
@@ -414,41 +415,100 @@ check(P.projEmptyMine(0).includes("drop a PDF anywhere on this window"),
 check(appSrc.includes("/api/job/${r.job_id}/open"),
   "cards open through the recents' own /open route");
 
+// ---- THE DEMO TAB IS THE MANIFEST, AND A DEMO OPENS FRESH -------------------
+// CHANGED, deliberately, and it REPLACES the interim collapse test that stood
+// here. That test pinned projTabRows folding the demo tab's job rows down to
+// one card per display name - a workaround for the tab being built from job
+// rows at all, which is what the owner corrected: "the demo plans should be
+// just those couple of plans and should be fresh everytime they are opened,
+// no pre-detect or anything". The tab is now rendered from demo-plans.json,
+// so there are no duplicate rows left to collapse and the collapse is gone.
+// (That block also sat AFTER the failure report at the bottom of this file,
+// so its checks could not fail the run. These do.)
+{
+  const rows = [
+    { name: "A.pdf", demo: true, detected: 3, when: 900 },
+    { name: "A.pdf", demo: true, detected: 0, when: 100 },
+    { name: "B.pdf", demo: false, mine: true, when: 5 },
+    { name: "B.pdf", demo: false, mine: true, when: 6 },
+  ];
+  check(P.projTabRows(rows, "demo").length === 2,
+    "projTabRows no longer collapses: it is a plain filter over JOB rows, "
+    + "and nothing paints its demo branch");
+  check(!appSrc.includes("ONE CARD PER DEMO PLAN"),
+    "the interim collapse-by-name is gone from app.js");
+  check(P.projTabRows(rows, "mine").length === 2,
+    "your projects are still never collapsed - two uploads of one filename "
+    + "are two of the operator's own documents");
+
+  // the tab's population comes from the manifest route, not from pvRows
+  check(appSrc.includes('fetch("/api/demo-plans")'),
+    "the demo tab is loaded from /api/demo-plans");
+  check(/const demoRows = pvDemoPlans;/.test(appSrc),
+    "pvPaint draws the demo tab from the manifest, not from job rows");
+  // ...so a box with NO demo jobs still shows every demo card
+  check(P.projDefaultTab([{ demo: false, mine: true }], 7) === "mine"
+    && P.projDefaultTab([], 7) === "demo"
+    && P.projDefaultTab([], 0) === "mine",
+    "default tab counts demos from the manifest when it is given one");
+  check(P.projDefaultTab([{ demo: true }]) === "demo",
+    "...and falls back to counting demo rows when it is not, unchanged");
+
+  // OPENING ONE IS FRESH. The card must not use the plain reopen route: that
+  // hands back whatever this box already detected, which for a demo is a
+  // takeoff computed weeks ago replayed as though it were live.
+  check(appSrc.includes('"/api/demo/" + encodeURIComponent(p.name) + "/open"'),
+    "a demo card opens through the fresh-open route, not /api/job/{id}/open");
+  check(/async function pvOpenDemo[\s\S]{0,2400}memKeysFor\(j\.name\)/.test(appSrc),
+    "...and the fresh open also forgets THIS BROWSER's saved decisions for "
+    + "the document, or the next visitor meets the last one's labels");
+  check(/PROJ_DEMO_RULE/.test(appSrc)
+    && /pvTab === "demo"[\s\S]{0,220}PROJ_DEMO_RULE/.test(appSrc),
+    "the fresh-open rule is stated in the UI, on the demo tab");
+  check(P.PROJ_DEMO_RULE.includes("open fresh")
+    && P.PROJ_DEMO_RULE.includes("press Detect")
+    && P.PROJ_DEMO_RULE.includes("pre-detected"),
+    "the rule says what happens and what the visitor does about it");
+
+  // the card's own line. A demo has no detected count worth printing - the
+  // honest answer is always none, and "0 detected" reads as a failure.
+  check(P.projDemoMeta({ available: true, pages: 26 })
+    === "26 pages · opens undetected", "demo meta: pages plus the rule");
+  check(P.projDemoMeta({ available: true, pages: 1 })
+    === "1 page · opens undetected", "demo meta: singular page");
+  check(P.projDemoMeta({ available: true, pages: null })
+    === "opens undetected",
+    "demo meta: an unknown page count is omitted, never guessed");
+  check(!P.projDemoMeta({ available: true, pages: 26 }).includes("detected ")
+    && !/\bdetected\b/.test(P.projDemoMeta({ available: true, pages: 3 })
+        .replace("undetected", "")),
+    "demo meta: never prints a detected count");
+
+  // HONEST DEGRADATION: a demo whose PDF is not on this box still gets a
+  // card, and the card says so, rather than erroring or vanishing.
+  check(P.projDemoAvailable({ available: true }) === true
+    && P.projDemoAvailable({ available: false }) === false
+    && P.projDemoAvailable(null) === false,
+    "availability is the server's flag, absent reads false");
+  check(P.projDemoMeta({ available: false }) === "not on this server",
+    "an unavailable demo says so on its meta line");
+  check(P.projDemoWhy({}).includes("seed-demo.sh"),
+    "...and its card names how a box gets the demo library");
+  check(/pv-card" \+ \(here \? "" : " pv-away"\)/.test(appSrc),
+    "an unavailable demo card is marked, not dropped");
+  check(cssSrc.includes(".pv-card.pv-away"),
+    "and style.css gives it a look of its own");
+  check(!/pv-away[^}]*#[0-9a-fA-F]{3}/.test(
+    cssSrc.slice(cssSrc.indexOf(".pv-card.pv-away"),
+                 cssSrc.indexOf(".pv-shows"))),
+    "the new rules carry no raw hex colour - tokens only");
+
+  // the thumbnail is a page RASTER, which is honest to render ahead of time;
+  // a cached DETECTION is not, and is what the open sweeps.
+  check(appSrc.includes('"/api/demo/" + encodeURIComponent(p.name) + "/thumb"'),
+    "the demo thumbnail is the manifest page's raster");
+}
+
 if (failures) { console.error(`\n${failures} FAILURE(S)`); process.exit(1); }
 console.log("\nall projects view checks passed");
 
-// ---- the demo tab shows one card per PLAN, not per job -------------------
-// Found live: this box holds a job for every time a demo was ever opened (63
-// of Belle Farms Structural, 54 of Oncor), so the tab rendered 140 cards for
-// seven drawings. "Your projects" must NOT be collapsed - two uploads of one
-// filename are two of the operator's own documents.
-{
-  const src = require("fs").readFileSync(
-    require("path").join(__dirname, "..", "webui", "app.js"), "utf8");
-  const start = src.indexOf("function projTabRows(");
-  let depth = 0, end = -1;
-  for (let n = src.indexOf("{", start); n < src.length; n++) {
-    if (src[n] === "{") depth++;
-    else if (src[n] === "}") { depth--; if (depth === 0) { end = n + 1; break; } }
-  }
-  const decl = src.slice(start, end);
-  check(start > 0 && end > start && /if \(!want\) return hit;/.test(decl),
-    "projTabRows collapses only the demo tab");
-  const projTabRows = new Function("projIsDemo",
-    decl + "; return projTabRows;")((r) => !!(r && r.demo));
-  const rows = [
-    {name: "A.pdf", demo: true, detected: 0, when: 900},
-    {name: "A.pdf", demo: true, detected: 3, when: 100},
-    {name: "A.pdf", demo: true, detected: 3, when: 500},
-    {name: "B.pdf", demo: true, detected: 1, when: 1},
-    {name: "C.pdf", demo: false, detected: 0, when: 5},
-    {name: "C.pdf", demo: false, detected: 0, when: 6},
-  ];
-  const demo = projTabRows(rows, "demo");
-  check(demo.length === 2, "demo tab collapses 4 jobs to 2 plans (got " + demo.length + ")");
-  const a = demo.find((r) => r.name === "A.pdf");
-  check(!!a && a.detected === 3 && a.when === 500,
-    "the kept job is the most-detected, newest among ties");
-  check(projTabRows(rows, "mine").length === 2,
-    "your projects are NOT collapsed - both uploads stay");
-}

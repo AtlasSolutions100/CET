@@ -2250,6 +2250,14 @@ header #pageSel { flex: none; max-width: 220px; }
   font-size: var(--t-fs-xs, 12px);
   color: var(--t-text-faint, var(--dim)); }
 .pv-tabn:empty { display: none; }
+/* A demo plan this box does not have the PDF for. HONEST DEGRADATION: the
+   card stays - the plan IS one of ours, this server just cannot open it - and
+   it reads as unavailable rather than disappearing or throwing. Not clickable,
+   so it must not take the hover/focus affordances the openable cards have. */
+.pv-card.pv-away { opacity: .62; cursor: default; }
+.pv-card.pv-away:hover, .pv-card.pv-away:focus-visible {
+  border-color: var(--t-border, var(--line)); box-shadow: none; }
+.pv-card.pv-away .pv-name { color: var(--t-text-dim, var(--dim)); }
 /* WHAT THIS DEMO SHOWS - one sentence per demo plan, from demo-plans.json.
    Clamped at three lines so a long line cannot make one card taller than
    its row; the full text stays in the card's own title attribute. */

@@ -237,6 +237,142 @@ for _n in _names:
 ok(len(_names) >= 4, "the manifest has at least the four named plans",
    len(_names))
 
+# ---- THE DEMO TAB IS THE MANIFEST -------------------------------------------
+# /api/demo-plans answers from demo-plans.json ALONE. Exactly the plans we
+# ship, one entry each, whether this box holds zero jobs for them or sixty-
+# three - which is the correction that replaced the interim collapse-by-name
+# in the client. A demo whose PDF is not here is still listed, marked
+# unavailable, so a card can say so instead of erroring or vanishing.
+server.JOBS.clear()
+server._DEMO_SRC.clear()
+server._DEMO_SCAN_AT = 0.0
+server.DEMO_PLANS = {
+    "here.pdf": {"page": 1, "shows": "a sheet this box has"},
+    "gone.pdf": {"page": 0, "shows": "a sheet this box does not have"},
+}
+# a real one-page PDF, so _demo_pages and the raster route have something to
+# read; written into JOBS_DIR, which is one of PLAN_ROOTS
+import pymupdf as _mu  # noqa: E402
+
+_doc = _mu.open()
+_doc.new_page(width=612, height=792)
+_doc.new_page(width=612, height=792)
+_doc.save(str(JOBS_DIR / "here.pdf"))
+_doc.close()
+
+d = server.demo_plans()
+ok([p["name"] for p in d["plans"]] == ["here.pdf", "gone.pdf"],
+   "every manifest plan gets an entry, in manifest order",
+   [p["name"] for p in d["plans"]])
+_by = {p["name"]: p for p in d["plans"]}
+ok(_by["here.pdf"]["available"] is True and _by["gone.pdf"]["available"] is False,
+   "availability is per plan, and a missing PDF is said rather than dropped")
+ok(d["expected"] == 2 and d["present"] == 1 and d["missing"] == ["gone.pdf"],
+   "the set reports its own health by name", (d["expected"], d["present"],
+                                              d["missing"]))
+ok(_by["here.pdf"]["pages"] == 2 and _by["gone.pdf"]["pages"] is None,
+   "page count when cheaply known, null when not - never a guess",
+   (_by["here.pdf"]["pages"], _by["gone.pdf"]["pages"]))
+ok(_by["here.pdf"]["shows"] == "a sheet this box has"
+   and _by["here.pdf"]["page"] == 1,
+   "the card's line and landing page come straight from the manifest")
+ok(not any("path" in p or "\\" in str(p.get("name", "")) for p in d["plans"]),
+   "no filesystem path leaves this route")
+
+# ONE CARD PER PLAN even when the box holds sixty-three jobs for it. This is
+# the whole correction: the tab used to be job rows.
+for i in range(63):
+    seed("jobdup%06d" % i, "here.pdf", 2, owner=None, results=2,
+         mtime=NOW - i)
+d = server.demo_plans()
+ok(len(d["plans"]) == 2,
+   "63 jobs for one plan is still ONE entry - the tab is the manifest",
+   len(d["plans"]))
+
+# ---- OPENING A DEMO IS ALWAYS FRESH -----------------------------------------
+# The visitor must meet an UNDETECTED document and press Detect themselves.
+server.JOBS.clear()
+server._DEMO_SRC.clear()
+server._DEMO_SCAN_AT = 0.0
+seed("jobfresh00001", "here.pdf", 2, owner=None, results=2, approved=1,
+     thumb=True, mtime=NOW - 10)
+# seed() overwrites the PDF with a stub; put the real one back
+_doc = _mu.open()
+_doc.new_page(width=612, height=792)
+_doc.new_page(width=612, height=792)
+_doc.save(str(JOBS_DIR / "here.pdf"))
+_doc.close()
+server.JOBS["jobfresh00001"]["status"] = {0: "done", 1: "done"}
+_before = set(server.JOBS)
+_pre = server.list_projects(_Req())
+_prerow = [p for p in _pre["projects"] if p["job_id"] == "jobfresh00001"][0]
+ok(_prerow["detected"] == 2 and _prerow["approved"] == 1,
+   "before: the box holds a finished takeoff for this plan",
+   (_prerow["detected"], _prerow["approved"]))
+
+r1 = server.demo_open("here.pdf")
+ok(r1["job_id"] == "jobfresh00001",
+   "the fresh open REUSES the plan's one job", r1["job_id"])
+ok(r1["fresh"]["removed"] >= 4 and r1["fresh"]["failed"] == 0,
+   "...after sweeping everything derived from the PDF", r1["fresh"])
+ok(server.JOBS["jobfresh00001"]["status"] == {},
+   "...and forgetting the page statuses, or the UI shows 'detected' over "
+   "an empty directory", server.JOBS["jobfresh00001"]["status"])
+_post = server.list_projects(_Req())
+_postrow = [p for p in _post["projects"] if p["job_id"] == "jobfresh00001"][0]
+ok(_postrow["detected"] == 0 and _postrow["approved"] == 0,
+   "AFTER: the document is undetected - the visitor presses Detect",
+   (_postrow["detected"], _postrow["approved"]))
+ok((JOBS_DIR / "here.pdf").exists(),
+   "the source PDF is never touched by a fresh open")
+ok(r1["demo_page"] == 1, "it lands on the sheet the card described",
+   r1["demo_page"])
+
+# A SECOND visitor must not inherit the FIRST one's run, and the registry must
+# not grow. Three opens, one row, undetected every time.
+(JOBS_DIR / "jobfresh00001" / "p0_result.json").write_text("{}")
+(JOBS_DIR / "jobfresh00001" / "p1_result.json").write_text("{}")
+r2 = server.demo_open("here.pdf")
+_row2 = [p for p in server.list_projects(_Req())["projects"]
+         if p["job_id"] == "jobfresh00001"][0]
+ok(_row2["detected"] == 0,
+   "the SECOND open is undetected too - no inheriting the first run",
+   _row2["detected"])
+r3 = server.demo_open("here.pdf")
+ok(r1["job_id"] == r2["job_id"] == r3["job_id"],
+   "three opens, one job id", (r1["job_id"], r2["job_id"], r3["job_id"]))
+ok(set(server.JOBS) == _before,
+   "THREE OPENS GREW THE REGISTRY BY ZERO ROWS",
+   sorted(set(server.JOBS) - _before))
+
+# a demo whose PDF is not on this box refuses in words, not with a 500
+try:
+    server.demo_open("gone.pdf")
+    ok(False, "opening an absent demo must not succeed")
+except Exception as _e:
+    ok(getattr(_e, "status_code", None) == 410
+       and "seed-demo.sh" in str(getattr(_e, "detail", "")),
+       "an absent demo says which file and how a box gets it",
+       (getattr(_e, "status_code", None), getattr(_e, "detail", "")))
+try:
+    server.demo_open("not-a-demo-at-all.pdf")
+    ok(False, "a name outside the manifest must not open")
+except Exception as _e:
+    ok(getattr(_e, "status_code", None) == 404,
+       "a name outside the manifest is not a demo", _e)
+
+# the thumbnail is a page RASTER, cached OUTSIDE the job directory - the
+# fresh-open sweep must not cost a card its picture
+_t = server.demo_thumb("here.pdf")
+ok(_t.media_type == "image/png" and len(_t.body) > 0,
+   "the demo thumbnail renders the manifest page", _t.media_type)
+ok(server.DEMO_THUMBS.resolve().parent == JOBS_DIR.resolve()
+   and not str(server.DEMO_THUMBS).endswith("jobfresh00001"),
+   "thumbnails live beside the jobs, not inside one")
+server.demo_open("here.pdf")
+ok(len(list(server.DEMO_THUMBS.glob("*.png"))) >= 1,
+   "...so a fresh open leaves the card's picture alone")
+
 # ---- report ---------------------------------------------------------------
 failures = 0
 for cond, msg, got in CHECKS:

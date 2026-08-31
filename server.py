@@ -1092,6 +1092,396 @@ def _demo_meta(name: str, owner) -> dict | None:
     return DEMO_PLANS.get(name)
 
 
+def _classify_async(job_id: str, src: str, n: int) -> None:
+    """Per-page vector/raster classification, off the request thread.
+
+    Lifted verbatim out of _register so a second caller can use it: when a
+    demo re-points its one job at a source whose bytes moved, the kinds have
+    to be recomputed for the SAME job rather than by registering a new one.
+    """
+    def _classify_later():
+        try:
+            d2 = pymupdf.open(src)
+            got = []
+            for i in range(n):
+                got.append(classify_page(d2[i]).kind)
+                with JOBS_LOCK:
+                    j2 = JOBS.get(job_id)
+                    if j2 is None:
+                        d2.close()
+                        return          # job went away; stop working
+                    j2["kinds_progress"] = len(got)
+            d2.close()
+        except Exception:
+            # A classification failure must not cost the operator the job:
+            # every page falls back to "unknown", which the UI renders as
+            # no kind label at all rather than as an error.
+            got = ["unknown"] * n
+        with JOBS_LOCK:
+            j2 = JOBS.get(job_id)
+            if j2 is not None:
+                j2["kinds"] = got
+                j2["kinds_progress"] = n
+                _save_registry()
+    threading.Thread(target=_classify_later, daemon=True).start()
+
+
+# ---- THE DEMO TAB IS THE MANIFEST, NOT THIS BOX'S HISTORY ------------------
+# It used to be built from JOB ROWS whose display name matched the manifest,
+# and two things were wrong with that.
+#
+#   * It showed the box's history rather than the demo set. This laptop holds
+#     15 registered jobs for the Oncor sheet and 14 for Belle Farms
+#     Structural - one for every time the corpus PDF's mtime moved under
+#     _register's (path, mtime, owner) reuse key - so the tab read "Demo
+#     plans 140" for a manifest of seven drawings.
+#   * Every one of those rows carried a DETECTION computed weeks ago, so a
+#     visitor clicking a demo card was handed a finished takeoff instantly.
+#     That is a pre-warmed cache presented as a live run, which is the one
+#     thing this repo's demo rules forbid - the same reasoning that put
+#     POST /reset in the service in the first place.
+#
+# So /api/demo-plans below answers from demo-plans.json alone: exactly the
+# manifest's plans, one entry each, on a box with zero jobs for them or with
+# sixty-three. Jobs are an implementation detail of OPENING one, and
+# POST /api/demo/{name}/open guarantees the visitor gets an undetected
+# document. /api/projects is UNCHANGED - it still flags demo rows, which is
+# what keeps them off "Your projects".
+
+# Page rasters for the demo cards. Deliberately NOT inside a job directory:
+# the card's picture used to be the job's own p<N>_28.png page-strip cache,
+# and the fresh-open sweep deletes that - so a demo card would have lost its
+# thumbnail the first time anybody opened it. A demo thumbnail is a picture
+# of the PDF and outlives every run of the engine over it.
+DEMO_THUMBS = JOBS_DIR / "_demo_thumbs"
+
+# name -> resolved source path. Re-validated on read, and a full plan-root
+# scan is rate-limited: an unseeded box must not walk the corpus on every
+# paint of the landing page.
+_DEMO_SRC: dict = {}
+_DEMO_SCAN_AT = 0.0
+_DEMO_SCAN_EVERY_S = 30.0
+_DEMO_PAGES: dict = {}
+
+
+def _demo_source(name: str):
+    """The PDF behind a manifest entry, or None when this box does not have it.
+
+    Two places it can legitimately be:
+      * already registered as a job - which is how a HOSTED box has it, since
+        the only way in there is /api/upload writing
+        JOBS_DIR/upload_<hash>_<name>.pdf;
+      * loose under PLAN_ROOTS - which is how this laptop has it, straight out
+        of the TakeoffPro AI corpus.
+    Registered rows are checked first, so a seeded box never walks its plan
+    roots at all.
+
+    Never raises and never invents: a name it cannot place returns None, and
+    the card then says so in words rather than erroring or vanishing.
+    """
+    global _DEMO_SCAN_AT
+    if name not in DEMO_PLANS:
+        return None
+    hit = _DEMO_SRC.get(name)
+    if hit:
+        p = Path(hit)
+        if p.exists():
+            return p
+        _DEMO_SRC.pop(name, None)       # the file went away; do not serve it
+    with JOBS_LOCK:
+        rows = sorted((jid, j.get("path", "")) for jid, j in JOBS.items()
+                      if j.get("owner") is None)
+    for _jid, raw in rows:
+        p = Path(raw)
+        try:
+            if _display_name(p) == name and p.exists():
+                _DEMO_SRC[name] = str(p)
+                return p
+        except OSError:
+            continue
+    now = time.time()
+    if now - _DEMO_SCAN_AT < _DEMO_SCAN_EVERY_S:
+        return None                     # scanned recently and it was not there
+    _DEMO_SCAN_AT = now
+    want = set(DEMO_PLANS) - set(_DEMO_SRC)
+    for root in PLAN_ROOTS:
+        if not want:
+            break
+        if not root.is_dir():
+            continue
+        try:
+            for p in sorted(root.rglob("*.pdf")):
+                n = _display_name(p)
+                if n in want:
+                    _DEMO_SRC[n] = str(p)
+                    want.discard(n)
+                    if not want:
+                        break
+        except OSError:
+            continue
+    hit = _DEMO_SRC.get(name)
+    return Path(hit) if hit else None
+
+
+def _demo_pages(src: Path):
+    """Page count for a card, or None. Cheap - pymupdf.open plus page_count,
+    no classification and no drawing read - and memoised on (path, mtime,
+    size) so a page of cards costs one open per plan per edit of the file."""
+    try:
+        st = src.stat()
+    except OSError:
+        return None
+    key = (str(src), round(st.st_mtime, 2), st.st_size)
+    if key in _DEMO_PAGES:
+        return _DEMO_PAGES[key]
+    try:
+        doc = pymupdf.open(src)
+        n = int(doc.page_count)
+        doc.close()
+    except Exception:
+        return None                     # a card without a page count, not a 500
+    _DEMO_PAGES[key] = n
+    return n
+
+
+def _sweep_job_dir(job_id: str):
+    """Unlink every file in a job's directory and forget its page statuses.
+
+    The shared body of POST /reset and of a demo's fresh open: both mean the
+    same thing by "cold", and two copies of it would drift apart. The guard
+    re-derives the directory from JOBS_DIR and refuses anything that is not a
+    direct child of it, so a crafted job id cannot walk out of the jobs tree.
+    Returns (removed, failed) - a file another process holds open is reported,
+    never silently counted as swept.
+    """
+    d = (JOBS_DIR / job_id).resolve()
+    if d.parent != JOBS_DIR.resolve() or not d.is_dir():
+        return (0, 0)
+    removed = failed = 0
+    for f in sorted(d.iterdir()):
+        if not f.is_file():
+            continue
+        try:
+            f.unlink()
+            removed += 1
+        except OSError:
+            failed += 1                 # held open elsewhere; report the rest
+    # The in-memory status map is what makes the UI think a page is done.
+    # Leaving it behind would show "detected" over an empty directory.
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is not None:
+            j["status"] = {}
+    return (removed, failed)
+
+
+def _demo_job(name: str, src: Path) -> str:
+    """The ONE job a demo plan is ever opened as.
+
+    BOUNDED BY CONSTRUCTION. A demo open never registers a second job for a
+    plan that already has one, so three opens of the same demo leave the
+    registry exactly as they found it. That is the whole point: unbounded
+    fresh jobs are how this box reached 15 rows for Oncor and 14 for Belle
+    Farms Structural. _register's reuse key is (path, mtime, owner), the
+    corpus PDF's mtime moves whenever OneDrive touches it, and every open
+    after a sync therefore registered a NEW job and orphaned the last one's
+    cache. Keying the demo's job on the manifest NAME instead of on mtime is
+    what closes that hole.
+
+    Deterministic: the lowest job id among the shared rows for this name wins,
+    preferring one whose recorded mtime still matches the file, so the same
+    plan resolves to the same job on every open and across restarts.
+    """
+    try:
+        mtime = round(src.stat().st_mtime, 2)
+    except OSError:
+        mtime = None
+    with JOBS_LOCK:
+        cands = sorted(jid for jid, j in JOBS.items()
+                       if j.get("owner") is None
+                       and _display_name(Path(j.get("path", ""))) == name)
+        fresh = [jid for jid in cands
+                 if JOBS[jid].get("path") == str(src)
+                 and JOBS[jid].get("mtime") == mtime
+                 and JOBS[jid].get("sizes")]
+        jid = fresh[0] if fresh else (cands[0] if cands else None)
+    if jid is None:
+        # nothing registered for it yet: the ordinary path, owner-less so the
+        # row stays SHARED and keeps satisfying _demo_meta's sharedness gate
+        return _register(src, owner=None)["job_id"]
+    if not fresh:
+        # The row exists but points at bytes that have moved. Re-derive what
+        # _register would have derived and write it back into the SAME row,
+        # rather than letting _register mint a new one.
+        n, sizes = 0, []
+        try:
+            doc = pymupdf.open(src)
+            n = doc.page_count
+            for p in range(n):
+                r = doc[p].rect
+                sizes.append([round(r.width, 2), round(r.height, 2)])
+            doc.close()
+        except Exception:
+            return _register(src, owner=None)["job_id"]
+        with JOBS_LOCK:
+            j = JOBS.get(jid)
+            if j is None:
+                return _register(src, owner=None)["job_id"]
+            j["path"] = str(src)
+            j["mtime"] = mtime
+            j["pages"] = n
+            j["sizes"] = sizes
+            j["kinds"] = None
+            j["kinds_progress"] = 0
+            j["status"] = {}
+            _save_registry()
+        _classify_async(jid, str(src), n)
+    return jid
+
+
+@app.get("/api/demo-plans")
+def demo_plans():
+    """The demo tab, straight off demo-plans.json.
+
+    Exactly the manifest's plans, one entry each, ALWAYS - this box's job rows
+    do not add an entry and do not remove one. `available` is the honest
+    degradation: a hosted box that has not been seeded still gets every card,
+    each saying in words that its drawing is not here, instead of an empty tab
+    or a 500.
+
+    Nothing here is a filesystem path. The only handle is the manifest name,
+    which is already public in the shipped file.
+    """
+    plans = []
+    present = 0
+    for name, meta in DEMO_PLANS.items():
+        src = _demo_source(name)
+        if src is not None:
+            present += 1
+        plans.append({
+            "name": name,
+            "shows": meta.get("shows") or "",
+            # the sheet a visitor lands on (engine page index, 0-based)
+            "page": int(meta.get("page") or 0),
+            "available": src is not None,
+            # cheaply known, or null - a card prints what it has
+            "pages": _demo_pages(src) if src is not None else None,
+        })
+    return {
+        "version": 1,
+        "plans": plans,
+        "expected": len(DEMO_PLANS),
+        "present": present,
+        "missing": sorted(p["name"] for p in plans if not p["available"]),
+    }
+
+
+@app.get("/api/demo/{name}/thumb")
+def demo_thumb(name: str):
+    """A page RASTER for a demo card - never a detection.
+
+    Rendering the sheet ahead of time is honest: it is a picture of the PDF,
+    the same thing any reader would draw, and it says nothing at all about
+    what the engine found. The dishonest one is a cached DETECTION, which is
+    exactly what a demo open throws away.
+    """
+    if name not in DEMO_PLANS:
+        raise HTTPException(404, "not a demo plan")
+    src = _demo_source(name)
+    if src is None:
+        raise HTTPException(404, "that demo plan is not on this server")
+    page = int(DEMO_PLANS[name].get("page") or 0)
+    try:
+        st = src.stat()
+    except OSError:
+        raise HTTPException(404, "that demo plan is not on this server")
+    tag = "%s_%d_%d_p%d" % (
+        hashlib.sha1(name.encode("utf-8")).hexdigest()[:12],
+        int(st.st_mtime), st.st_size, page)
+    DEMO_THUMBS.mkdir(parents=True, exist_ok=True)
+    cache = DEMO_THUMBS / (tag + ".png")
+    if not cache.exists():
+        try:
+            doc = pymupdf.open(src)
+            p = page if 0 <= page < doc.page_count else 0
+            pix = doc[p].get_pixmap(dpi=28)
+            tmp = cache.with_name("%s.%s.tmp"
+                                  % (cache.name, uuid.uuid4().hex[:8]))
+            # tobytes, not pix.save: save() infers the format from the
+            # extension and the temp name ends ".tmp"
+            tmp.write_bytes(pix.tobytes("png"))
+            doc.close()
+            os.replace(tmp, cache)      # atomic: no half-PNG for the next GET
+        except Exception:
+            raise HTTPException(500, "could not render that page")
+    return Response(cache.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.post("/api/demo/{name}/open")
+def demo_open(name: str):
+    """Open a demo plan FRESH. The visitor presses Detect and watches it work.
+
+    THE RULE, and it is the whole reason this route exists rather than the
+    card reusing /api/job/{id}/open: a demo arrives UNDETECTED, every time,
+    for every visitor. A demo that opens instantly because somebody detected
+    it months ago is a staged demo, and this product's own demo-integrity rule
+    says a visitor watches the engine run.
+
+    So the open sweeps everything DERIVED from the PDF first - detections,
+    page renders, earthwork maps, callouts, the triage sidecar, and any
+    approved export or report a previous demo run left behind. What survives
+    is the PDF (never inside the job directory) and the registry row.
+
+    WHAT HAPPENS TO THE JOB. Nothing is created and nothing accumulates: see
+    _demo_job - one job per demo plan, reused forever, so three opens of a
+    demo leave the registry exactly the size they found it. That job is
+    owner-less, so /api/projects flags it demo:true and it therefore appears
+    on NEITHER tab: not on "Your projects" (it is not the operator's upload)
+    and not on "Demo plans" (that tab is the manifest now). It exists only as
+    the handle the workbench holds the open document by.
+
+    Concurrency is the honest caveat: two visitors opening the same demo at
+    once share that job, so the second one's sweep resets the first one's run.
+    Acceptable for a demo box with one visitor in front of it; named here so
+    nobody discovers it in front of a client.
+    """
+    meta = DEMO_PLANS.get(name)
+    if meta is None:
+        raise HTTPException(404, "not a demo plan")
+    src = _demo_source(name)
+    if src is None:
+        raise HTTPException(
+            410, "\"%s\" is one of our demo plans, but its PDF is not on this "
+                 "server. A box gets the demo library by running seed-demo.sh "
+                 "against it." % name)
+    job_id = _demo_job(name, src)
+    removed, failed = _sweep_job_dir(job_id)
+    with JOBS_LOCK:
+        j = JOBS.get(job_id)
+        if j is None:
+            raise HTTPException(500, "the demo job went away mid-open")
+        pages = int(j.get("pages") or 0)
+        kinds = j.get("kinds")
+        sizes = j.get("sizes")
+    page = int(meta.get("page") or 0)
+    # training ledger (observation only): everything after this point for this
+    # job is a FRESH detection, and a trainer reading the ledger later must be
+    # able to see where that boundary was.
+    ledger.record("demo_opened", job_id, None, None,
+                  {"name": name, "removed": removed, "failed": failed},
+                  None, pdf_path=str(src))
+    return {"job_id": job_id, "pages": pages, "kinds": kinds, "sizes": sizes,
+            "name": name,
+            # the sheet the card described, clamped to the set as it is now
+            "demo_page": page if 0 <= page < pages else 0,
+            # what the sweep actually did. A reset that half-failed and then
+            # replayed a cached sheet during a demo is why this is reported
+            # rather than assumed.
+            "fresh": {"removed": removed, "failed": failed},
+            "demo": True}
+
+
 def _register(path: Path, classify: bool = True, owner=None) -> dict:
     """classify=False skips per-page vector/raster classification, which
     reads every drawing on every page. Rasterisation callers do not need it,
@@ -1156,31 +1546,7 @@ def _register(path: Path, classify: bool = True, owner=None) -> dict:
     doc.close()
     kinds = None if classify else ["unknown"] * n_pages
     if classify:
-        def _classify_later(job_id=job_id, src=str(path), n=n_pages):
-            try:
-                d2 = pymupdf.open(src)
-                got = []
-                for i in range(n):
-                    got.append(classify_page(d2[i]).kind)
-                    with JOBS_LOCK:
-                        j2 = JOBS.get(job_id)
-                        if j2 is None:
-                            d2.close()
-                            return          # job went away; stop working
-                        j2["kinds_progress"] = len(got)
-                d2.close()
-            except Exception:
-                # A classification failure must not cost the operator the job:
-                # every page falls back to "unknown", which the UI renders as
-                # no kind label at all rather than as an error.
-                got = ["unknown"] * n
-            with JOBS_LOCK:
-                j2 = JOBS.get(job_id)
-                if j2 is not None:
-                    j2["kinds"] = got
-                    j2["kinds_progress"] = n
-                    _save_registry()
-        threading.Thread(target=_classify_later, daemon=True).start()
+        _classify_async(job_id, str(path), n_pages)
     with JOBS_LOCK:
         JOBS[job_id]["kinds"] = kinds
         JOBS[job_id]["kinds_progress"] = 0 if kinds is None else len(kinds)
@@ -1716,21 +2082,11 @@ def reset_job(job_id: str, preview: bool = False):
         out["preview"] = True
         return out
 
-    removed = 0
-    for f in files:
-        try:
-            f.unlink()
-            removed += 1
-        except OSError:
-            pass  # a file the operator has open elsewhere; report the rest
-
-    # The in-memory status map is what makes the UI think a page is done.
-    # Leaving it behind would show "detected" over a directory with nothing
-    # in it - the screen disagreeing with the record, again.
-    with JOBS_LOCK:
-        j = JOBS.get(job_id)
-        if j is not None:
-            j["status"] = {}
+    # Same sweep a demo's fresh open performs - one definition of "cold", not
+    # two that can drift apart. It unlinks the files and clears the in-memory
+    # status map (leaving that behind would show "detected" over a directory
+    # with nothing in it - the screen disagreeing with the record, again).
+    removed, _failed = _sweep_job_dir(job_id)
 
     out["removed"] = removed
     # training ledger (observation only): later events for this job refer

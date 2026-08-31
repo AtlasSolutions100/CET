@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=63">
+<link rel="stylesheet" href="style.css?v=64">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -144,18 +144,27 @@
       <button id="pvBack" class="mini" hidden>Back to the sheet</button>
       <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
     </div>
-    <!-- THE TWO TABS. One grid, two populations, and the difference is in
-         the DATA, not in the markup: /api/projects marks a row demo:true
-         when it is SHARED (owner is None - the visibility rule this app has
-         always had) and its name is in demo-plans.json. "Your projects" is
-         every other row this account may see.
+    <!-- THE TWO TABS. One grid, two populations, and they come from two
+         DIFFERENT routes because they are two different things.
+           Demo plans   = /api/demo-plans, which answers from demo-plans.json
+                          alone. Exactly the plans we ship, one card each,
+                          whether this box holds zero jobs for them or sixty-
+                          three. Opening one is always FRESH - the card posts
+                          to /api/demo/{name}/open, which sweeps the previous
+                          run so the visitor presses Detect and watches it.
+           Your projects = /api/projects rows the server did NOT flag
+                          demo:true (a row is demo when it is SHARED - owner
+                          None, the visibility rule this app has always had -
+                          and its name is in the manifest). A client's own
+                          upload of a demo filename is theirs and stays here.
          Search, sort and the #pvReach honesty line all act WITHIN the active
-         tab; pvTabRows() is the only thing that knows which. The counts on
-         the tabs are live and are the same numbers the reach line quotes. -->
+         tab. The counts on the tabs are live and are the same numbers the
+         reach line quotes; on the demo tab that line also carries the rule
+         that demo plans open undetected. -->
     <div class="pv-tabs" role="tablist" aria-label="Which projects to show">
       <button id="pvTabDemo" class="pv-tab" role="tab" aria-selected="false"
               aria-controls="pvGrid"
-              title="Plans of ours you can open right now to see what the engine does. Nothing here is a client's drawing.">Demo plans<span id="pvTabDemoN" class="pv-tabn"></span></button>
+              title="Plans of ours you can open right now to see what the engine does. Every one opens undetected, so you watch it run. Nothing here is a client's drawing.">Demo plans<span id="pvTabDemoN" class="pv-tabn"></span></button>
       <button id="pvTabMine" class="pv-tab" role="tab" aria-selected="true"
               aria-controls="pvGrid"
               title="Everything you have uploaded or opened on this server.">Your projects<span id="pvTabMineN" class="pv-tabn"></span></button>
@@ -1025,6 +1034,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=139"></script>
+<script src="app.js?v=140"></script>
 </body>
 </html>

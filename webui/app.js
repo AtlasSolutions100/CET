@@ -483,6 +483,18 @@ function applyOpened(j, landOn) {
   setTimeout(loadRecent, 300);
   state.job = j.job_id; state.result = null;
   state.triage = null;      // the old document's tiers must not paint this one
+  // ...and neither may the old document's Auto-detected card. Both of its
+  // blocks are renderings of a DETECTION, and this is the one path every open
+  // goes through. Found live on the SECOND open of a demo plan: #confBanner
+  // had been emptied, but #ckPanel still held the first run's 19 check rows
+  // and #autoHead was still on screen over nothing - the empty header
+  // syncAutoCard() exists to prevent. #ckPanel's own children are static
+  // markup renderCheckQueue writes into, so the rows are cleared, not the
+  // panel.
+  if ($("confBanner")) { $("confBanner").hidden = true; $("confBanner").innerHTML = ""; }
+  if ($("ckPanel")) $("ckPanel").hidden = true;
+  if ($("ckRows")) $("ckRows").innerHTML = "";
+  syncAutoCard();
   // The server no longer blocks the open on classifying every page (it read
   // every drawing on every page: 16s for a 20-page set, 38s for a 15-page
   // one, with nothing on screen saying the app had not hung). The page list
@@ -5254,14 +5266,19 @@ function renderMemBtn() {
 // Which saved keys belong to the document currently open. Everything
 // doc-scoped is built from docKey(), except the two scale keys, which predate
 // it and key on the document name directly.
-function memDocPrefixes() {
-  const n = state.docName || "unknown";
+function memPrefixesFor(name) {
+  const n = name || "unknown";
   return ["doc::" + n + "::", "scale::" + n + "::", "scaletyped::" + n + "::"];
 }
-function memDocKeys() {
-  const pre = memDocPrefixes();
+function memDocPrefixes() { return memPrefixesFor(state.docName); }
+// The saved keys belonging to a NAMED document - which is not always the open
+// one. A demo's fresh open has to forget the previous run's labels for the
+// document it is ABOUT to open, before state.docName has moved to it.
+function memKeysFor(name) {
+  const pre = memPrefixesFor(name);
   return [...sessionMem.keys()].filter(k => pre.some(x => k.startsWith(x)));
 }
+function memDocKeys() { return memKeysFor(state.docName); }
 
 // Two different jobs, and conflating them is how you either destroy an
 // evening of pricing or walk into a client demo with last week's labels
@@ -18010,36 +18027,58 @@ function projShowsSharedBadge(rows) {
 }
 
 // ---- THE TWO TABS ----------------------------------------------------------
-// "Demo plans" are OURS: /api/projects sets demo:true on a row that is already
-// shared (owner is None) AND whose name is in demo-plans.json. Everything else
-// this account may see is "Your projects". The split is read off the server's
+// "Demo plans" is THE MANIFEST, not this box's job rows: /api/demo-plans
+// answers from demo-plans.json alone, so the tab shows exactly those plans,
+// one card each, whether this box holds zero jobs for them or sixty-three.
+// "Your projects" is every /api/projects row this account may see that the
+// server did NOT flag demo:true. The split is still read off the server's
 // flag, never re-derived here from the name - a client who uploads a file
 // called C8.0-STORM-LAYOUT-Rev.1.pdf owns it, and it is not a demo.
+//
+// projTabRows is therefore about JOB rows only. Its "demo" branch returns the
+// demo-flagged rows and nothing paints them: they are the handles opened demo
+// documents are held by, on neither tab. The interim collapse-by-name that
+// lived here (keep the liveliest job per plan, so 140 cards became 7) is GONE
+// - it existed only because the tab was built from job rows, and nothing
+// builds it from job rows any more.
 const PROJ_TABS = ["demo", "mine"];
 function projIsDemo(row) { return !!(row && row.demo); }
 function projTabRows(rows, tab) {
   const want = tab === "demo";
-  const hit = (rows || []).filter(r => projIsDemo(r) === want);
-  if (!want) return hit;
-  // ONE CARD PER DEMO PLAN. The manifest names seven plans; this box holds a
-  // job for every time one of them was ever opened - 63 of Belle Farms
-  // Structural, 54 of Oncor - so the tab first rendered 140 cards for seven
-  // drawings and read as a junk drawer rather than a showcase. Collapse by
-  // display name, keeping the liveliest job for each: most pages DETECTED
-  // first (that is the one whose thumbnail and counts have something to
-  // show), then most recent activity. Deliberately NOT applied to "Your
-  // projects": two uploads of one filename are two of the operator's own
-  // documents and collapsing them would hide their work.
-  const best = new Map();
-  for (const r of hit) {
-    const k = r.name;
-    const cur = best.get(k);
-    if (!cur
-        || (r.detected || 0) > (cur.detected || 0)
-        || ((r.detected || 0) === (cur.detected || 0) && (r.when || 0) > (cur.when || 0)))
-      best.set(k, r);
-  }
-  return [...best.values()];
+  return (rows || []).filter(r => projIsDemo(r) === want);
+}
+
+// ---- THE DEMO CARDS --------------------------------------------------------
+// One card per manifest plan. `pages` may be null (the server prints it when
+// it is cheaply known), and `available` false is a plan whose PDF is not on
+// this box - which the card says in words rather than erroring or vanishing.
+//
+// THE RULE, said on every card and once under the controls: a demo opens
+// UNDETECTED. Opening one sweeps whatever the last run left behind, so the
+// visitor presses Detect and watches the engine work. A demo that opened
+// instantly because somebody detected it months ago would be a staged demo.
+const PROJ_DEMO_RULE =
+  "Demo plans open fresh, every time: opening one clears the previous run, "
+  + "so you press Detect and watch the engine work on it. Nothing here is "
+  + "pre-detected.";
+function projDemoAvailable(plan) { return !!(plan && plan.available); }
+// the card's second line. No "detected" count, ever - the honest answer is
+// always none, and printing "0 detected" would read as a failure rather than
+// as the point.
+function projDemoMeta(plan) {
+  if (!projDemoAvailable(plan)) return "not on this server";
+  const n = plan && plan.pages;
+  const p = Number.isInteger(n) && n > 0
+    ? n + " page" + (n === 1 ? "" : "s") + " · " : "";
+  return p + "opens undetected";
+}
+// ...and what an unavailable card says under its name. Honest degradation:
+// the plan is still listed, because it IS one of ours - this box just does
+// not have the drawing.
+function projDemoWhy(plan) {
+  return "This box does not have the PDF for this plan, so it cannot be "
+    + "opened here. A server gets the demo library by running seed-demo.sh "
+    + "against it.";
 }
 // What this tab's rows are CALLED, for the reach line. Two tabs over one
 // grid means the same sentence has to describe two populations, and calling
@@ -18053,10 +18092,17 @@ function projTabNoun(tab) {
 // of their own must not meet an empty page when there are demos to open; a
 // user with work in progress must not have to click past a demo tab to reach
 // it. So: your own projects win when you have any, demos otherwise.
-function projDefaultTab(rows) {
+//
+// demoCount now comes from the MANIFEST (/api/demo-plans), because the demo
+// tab is no longer built from job rows. Omitting it falls back to counting
+// demo-flagged rows, which is what every caller did before the manifest
+// existed and is what the pure tests still exercise.
+function projDefaultTab(rows, demoCount) {
   const mine = projTabRows(rows, "mine").length;
   if (mine) return "mine";
-  return projTabRows(rows, "demo").length ? "demo" : "mine";
+  const demos = Number.isInteger(demoCount)
+    ? demoCount : projTabRows(rows, "demo").length;
+  return demos ? "demo" : "mine";
 }
 // The tab's own label count. Demo rows are never capped by the server, so
 // the demo count is exact; "Your projects" can be showing the newest 200 of
@@ -18212,11 +18258,29 @@ function showProjects(on) {
 
 async function loadProjects() {
   let d = null;
+  // Two independent lists, fetched together: the job rows behind "Your
+  // projects", and the DEMO MANIFEST behind "Demo plans". They are separate
+  // routes because they are separate things - one is what this box happens to
+  // hold, the other is what we ship - and a box with no demo files still gets
+  // every demo card.
+  const demoP = fetch("/api/demo-plans")
+    .then(r => r.ok ? r.json() : null).catch(() => null);
   try {
     const r = await fetch("/api/projects");
     if (r.ok) d = await r.json();
   } catch (e) { /* reported below */ }
+  const dm = await demoP;
   if (!pvIsOpen()) return;           // the operator moved on mid-fetch
+  // A demo list that failed to load leaves the tab EMPTY rather than
+  // pretending the manifest is short: projEmptyDemo(0,...) says "no demo set
+  // configured", which is the truthful reading of "the server did not answer
+  // about its demo set".
+  pvDemoPlans = dm && Array.isArray(dm.plans) ? dm.plans : [];
+  pvDemoInfo = {
+    expected: dm && typeof dm.expected === "number" ? dm.expected : 0,
+    present: dm && typeof dm.present === "number" ? dm.present : 0,
+    missing: dm && Array.isArray(dm.missing) ? dm.missing : [],
+  };
   if (!d || !Array.isArray(d.projects)) {
     $("pvGrid").innerHTML = "";
     $("pvCount").textContent = "";
@@ -18233,6 +18297,10 @@ async function loadProjects() {
 // larger than pvRows.length whenever the 200 cap bit.
 let pvRows = [];
 let pvTotal = 0;
+// THE DEMO TAB'S OWN POPULATION, from /api/demo-plans - the manifest, not
+// this box's job rows. One entry per plan we ship, always, each carrying
+// whether this box actually has the drawing.
+let pvDemoPlans = [];
 // The server's account of the demo SET (not of the rows): how many
 // demo-plans.json names, how many are actually here, which are not. This is
 // what lets the Demo tab say "this server was never seeded" instead of
@@ -18245,17 +18313,16 @@ let pvTab = null;
 function renderProjects(d) {
   pvRows = d.projects || [];
   pvTotal = typeof d.total === "number" ? d.total : pvRows.length;
-  const di = d.demo || {};
-  pvDemoInfo = {
-    expected: typeof di.expected === "number" ? di.expected : 0,
-    present: typeof di.present === "number" ? di.present : 0,
-    missing: Array.isArray(di.missing) ? di.missing : [],
-  };
+  // pvDemoInfo is filled by loadProjects() from /api/demo-plans, which is the
+  // manifest. /api/projects still reports its own view of the demo set's
+  // health and it is deliberately NOT read here: that block counts JOB ROWS
+  // present on this box, and the tab is now the manifest.
   // These rows carry the same name/pages/detected/deletable the recents route
   // returns, so folding them in keeps the header's Remove button correct for
   // a document that is older than the newest 60 /api/recent sends.
   for (const r of pvRows) if (!RECENT_META[r.job_id]) RECENT_META[r.job_id] = r;
-  if (!pvTab || !PROJ_TABS.includes(pvTab)) pvTab = projDefaultTab(pvRows);
+  if (!pvTab || !PROJ_TABS.includes(pvTab))
+    pvTab = projDefaultTab(pvRows, pvDemoPlans.length);
   pvPaint();
 }
 
@@ -18265,16 +18332,22 @@ function pvPaint() {
   const grid = $("pvGrid"), empty = $("pvEmpty");
   const q = $("pvSearch") ? $("pvSearch").value : "";
   const mode = $("pvSort") ? $("pvSort").value : "when";
-  if (!pvTab) pvTab = projDefaultTab(pvRows);
+  if (!pvTab) pvTab = projDefaultTab(pvRows, pvDemoPlans.length);
 
-  // Per-tab populations. The server never caps demo rows, so every demo it
-  // holds is in pvRows; the cap can only ever bite "Your projects", and the
-  // totals below are split the same way so the honesty line stays true per
-  // tab rather than quoting the whole-server numbers at both of them.
-  const demoRows = projTabRows(pvRows, "demo");
+  // Per-tab populations, and they come from two DIFFERENT sources now.
+  //   demo  = the manifest (/api/demo-plans). Complete by construction, so
+  //           loaded === total and the reach line can say "all of them"
+  //           without qualification.
+  //   mine  = /api/projects rows the server did not flag demo:true. Those can
+  //           be the newest 200 of more, which is what the cap disclosure in
+  //           the reach line is for.
+  // Demo-flagged JOB rows are on neither: they are the handles opened demo
+  // documents are held by, and a visitor has no business seeing them.
+  const demoRows = pvDemoPlans;
   const mineRows = projTabRows(pvRows, "mine");
   const demoTotal = demoRows.length;
-  const mineTotal = Math.max(mineRows.length, pvTotal - demoTotal);
+  const mineTotal = Math.max(mineRows.length,
+                             pvTotal - projTabRows(pvRows, "demo").length);
 
   const rows = pvTab === "demo" ? demoRows : mineRows;
   const total = pvTab === "demo" ? demoTotal : mineTotal;
@@ -18288,9 +18361,16 @@ function pvPaint() {
   // both tabs. The per-tab numbers are on the tabs, and #pvReach - the line
   // the search box is judged by - is per tab, in that tab's own noun.
   $("pvCount").textContent = projCountLine(pvRows.length, pvTotal);
-  if ($("pvReach"))
-    $("pvReach").textContent = projReachLine(shown.length, rows.length,
-                                             total, q, projTabNoun(pvTab));
+  if ($("pvReach")) {
+    // The demo tab's line carries THE RULE as well as the reach: this is the
+    // one place a visitor is looking right before they click a demo card, so
+    // it is where "these open fresh, nothing is pre-detected" belongs.
+    const reach = projReachLine(shown.length, rows.length, total, q,
+                                projTabNoun(pvTab));
+    $("pvReach").textContent = pvTab === "demo"
+      ? (reach ? reach + " " + PROJ_DEMO_RULE : PROJ_DEMO_RULE)
+      : reach;
+  }
 
   grid.innerHTML = "";
   if (!rows.length) {
@@ -18318,13 +18398,80 @@ function pvPaint() {
     return;
   }
   empty.hidden = true;
+  if (pvTab === "demo") {
+    for (const p of shown) grid.appendChild(pvDemoCard(p));
+    return;
+  }
   // The "shared demo" badge is redundant on a tab whose heading already says
   // Demo plans, so it stays for the mixed "Your projects" list only - where a
   // row can still be shared without being one of ours (anything registered
   // before logins were switched on).
-  const badge = pvTab !== "demo" && projShowsSharedBadge(pvRows);
+  const badge = projShowsSharedBadge(pvRows);
   const nowS = Date.now() / 1000;
   for (const r of shown) grid.appendChild(pvCard(r, badge, nowS));
+}
+
+// A DEMO CARD. Built from a manifest entry, not from a job row, so it carries
+// no detected count, no approved count and no "last activity" - a demo has no
+// history a visitor should care about, and printing one would be advertising
+// the very cache the open is about to throw away.
+function pvDemoCard(p) {
+  const here = projDemoAvailable(p);
+  const card = document.createElement("div");
+  card.className = "pv-card" + (here ? "" : " pv-away");
+  if (here) {
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.title = "Open " + p.name + " — fresh, undetected";
+  } else {
+    card.setAttribute("aria-disabled", "true");
+    card.title = p.name + " — not on this server";
+  }
+
+  const thumb = document.createElement("div");
+  thumb.className = "pv-thumb";
+  const ph = document.createElement("span");
+  ph.className = "pv-ph";
+  ph.textContent = here ? "page " + ((p.page || 0) + 1) : "not on this server";
+  thumb.appendChild(ph);
+  if (here) {
+    // A page RASTER, and only ever that. It is a picture of the PDF - the
+    // same thing any reader would draw - so rendering it ahead of time says
+    // nothing about what the engine found. A cached DETECTION is the one
+    // that would be dishonest, and that is exactly what the open sweeps.
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = url("/api/demo/" + encodeURIComponent(p.name) + "/thumb");
+    // a render that fails leaves the placeholder rather than a broken icon
+    img.onerror = () => img.remove();
+    img.onload = () => ph.remove();
+    thumb.appendChild(img);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "pv-name";
+  name.textContent = p.name;
+  name.title = p.name;
+  const meta = document.createElement("div");
+  meta.className = "pv-meta";
+  meta.textContent = projDemoMeta(p);
+  card.append(name, meta);
+
+  const shows = document.createElement("div");
+  shows.className = "pv-shows";
+  shows.textContent = here ? (p.shows || "") : projDemoWhy(p);
+  shows.title = shows.textContent;      // the clamp hides line 4+; hover has it
+  card.appendChild(shows);
+
+  if (here) {
+    card.onclick = () => pvOpenDemo(p);
+    card.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pvOpenDemo(p); }
+    };
+  }
+  return card;
 }
 
 // The tab strip: selected state, live counts, ARIA. Counts come from the
@@ -18492,6 +18639,58 @@ async function pvOpenJob(r) {
   } catch (e) {
     setStatus("could not open — the server did not answer", "err");
   }
+}
+
+// OPENING A DEMO IS ALWAYS FRESH.
+//
+// Not the /api/job/{id}/open route the cards above use - that one hands back
+// whatever this box already detected, which for a demo is a takeoff computed
+// weeks ago replayed as though it were live. POST /api/demo/{name}/open
+// sweeps everything derived from the PDF first and hands back an UNDETECTED
+// document, so the visitor presses Detect and watches the engine work.
+//
+// The registry does not grow: the server keeps exactly ONE job per demo plan
+// and reuses it (server.py _demo_job), so a second visitor opening the same
+// demo gets that job swept back to cold rather than a new row. Three opens
+// leave the registry exactly the size they found it.
+async function pvOpenDemo(p) {
+  if (!projDemoAvailable(p)) return;
+  setStatus("opening a fresh copy…", "busy");
+  let j;
+  try {
+    const resp = await fetch("/api/demo/" + encodeURIComponent(p.name) + "/open",
+                             { method: "POST" });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return setStatus(e.detail || `could not open (${resp.status})`, "err");
+    }
+    j = await resp.json();
+  } catch (e) {
+    return setStatus("could not open — the server did not answer", "err");
+  }
+  // The SERVER's cache is now cold; this BROWSER's is not. Labels, prices,
+  // ticks and scale picks are keyed on the document NAME and survive a reload
+  // in localStorage, so without this the second visitor on the same machine
+  // would meet the first one's labels already on screen over a detection that
+  // no longer exists - the screen disagreeing with the record. Same keys the
+  // Saved-work menu's "Reset this document" clears, and for the same reason.
+  // Shared prices and trade assignments are NOT doc-scoped and are left alone.
+  try {
+    for (const k of memKeysFor(j.name)) store.removeItem(k);
+  } catch (e) { /* a browser with no storage has nothing to forget */ }
+  applyOpened(j, Number.isInteger(j.demo_page) ? j.demo_page : 0);
+  // AFTER applyOpened, which writes "<n> pages" over whatever was there. Say
+  // what actually happened rather than assuming it: a sweep that half-failed
+  // and then replayed a cached sheet in front of a client is the whole reason
+  // this route reports its counts. The DURABLE statement is the header chip,
+  // which reads "not detected" until the visitor presses Detect; this line is
+  // the momentary one, and the kinds poll replaces it when it lands.
+  const f = j.fresh || {};
+  if (f.failed)
+    setStatus("opened, but the server could not clear " + f.failed
+      + " cached file(s) — a page may still show an earlier result", "err");
+  else
+    setStatus("fresh copy of " + j.name + " — nothing detected yet; press Detect");
 }
 
 async function pvRemove(r) {
