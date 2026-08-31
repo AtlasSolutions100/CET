@@ -416,3 +416,39 @@ check(appSrc.includes("/api/job/${r.job_id}/open"),
 
 if (failures) { console.error(`\n${failures} FAILURE(S)`); process.exit(1); }
 console.log("\nall projects view checks passed");
+
+// ---- the demo tab shows one card per PLAN, not per job -------------------
+// Found live: this box holds a job for every time a demo was ever opened (63
+// of Belle Farms Structural, 54 of Oncor), so the tab rendered 140 cards for
+// seven drawings. "Your projects" must NOT be collapsed - two uploads of one
+// filename are two of the operator's own documents.
+{
+  const src = require("fs").readFileSync(
+    require("path").join(__dirname, "..", "webui", "app.js"), "utf8");
+  const start = src.indexOf("function projTabRows(");
+  let depth = 0, end = -1;
+  for (let n = src.indexOf("{", start); n < src.length; n++) {
+    if (src[n] === "{") depth++;
+    else if (src[n] === "}") { depth--; if (depth === 0) { end = n + 1; break; } }
+  }
+  const decl = src.slice(start, end);
+  check(start > 0 && end > start && /if \(!want\) return hit;/.test(decl),
+    "projTabRows collapses only the demo tab");
+  const projTabRows = new Function("projIsDemo",
+    decl + "; return projTabRows;")((r) => !!(r && r.demo));
+  const rows = [
+    {name: "A.pdf", demo: true, detected: 0, when: 900},
+    {name: "A.pdf", demo: true, detected: 3, when: 100},
+    {name: "A.pdf", demo: true, detected: 3, when: 500},
+    {name: "B.pdf", demo: true, detected: 1, when: 1},
+    {name: "C.pdf", demo: false, detected: 0, when: 5},
+    {name: "C.pdf", demo: false, detected: 0, when: 6},
+  ];
+  const demo = projTabRows(rows, "demo");
+  check(demo.length === 2, "demo tab collapses 4 jobs to 2 plans (got " + demo.length + ")");
+  const a = demo.find((r) => r.name === "A.pdf");
+  check(!!a && a.detected === 3 && a.when === 500,
+    "the kept job is the most-detected, newest among ties");
+  check(projTabRows(rows, "mine").length === 2,
+    "your projects are NOT collapsed - both uploads stay");
+}

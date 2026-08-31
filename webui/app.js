@@ -18019,7 +18019,27 @@ const PROJ_TABS = ["demo", "mine"];
 function projIsDemo(row) { return !!(row && row.demo); }
 function projTabRows(rows, tab) {
   const want = tab === "demo";
-  return (rows || []).filter(r => projIsDemo(r) === want);
+  const hit = (rows || []).filter(r => projIsDemo(r) === want);
+  if (!want) return hit;
+  // ONE CARD PER DEMO PLAN. The manifest names seven plans; this box holds a
+  // job for every time one of them was ever opened - 63 of Belle Farms
+  // Structural, 54 of Oncor - so the tab first rendered 140 cards for seven
+  // drawings and read as a junk drawer rather than a showcase. Collapse by
+  // display name, keeping the liveliest job for each: most pages DETECTED
+  // first (that is the one whose thumbnail and counts have something to
+  // show), then most recent activity. Deliberately NOT applied to "Your
+  // projects": two uploads of one filename are two of the operator's own
+  // documents and collapsing them would hide their work.
+  const best = new Map();
+  for (const r of hit) {
+    const k = r.name;
+    const cur = best.get(k);
+    if (!cur
+        || (r.detected || 0) > (cur.detected || 0)
+        || ((r.detected || 0) === (cur.detected || 0) && (r.when || 0) > (cur.when || 0)))
+      best.set(k, r);
+  }
+  return [...best.values()];
 }
 // What this tab's rows are CALLED, for the reach line. Two tabs over one
 // grid means the same sentence has to describe two populations, and calling
