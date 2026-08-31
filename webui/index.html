@@ -387,43 +387,99 @@
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>
     </div>
+    <!-- KBD-MAP-BEGIN (tests/test_kbd_overlay.js extracts this block)
+         Every row corresponds to a binding audited in webui/app.js at
+         provenance-and-gate 9737204 (2026-08-30); each group cites its
+         handler lines AT THAT REVISION. Single letters are held off while
+         a field has focus (typing(), app.js:11122) and the review handler
+         additionally ignores them with Ctrl/Cmd/Alt held (app.js:11129).
+         Undo (Ctrl+Z) and marquee (Shift+drag) landed in the same wave;
+         their bindings live in the UNDO-CORE / marquee blocks of app.js. -->
     <div id="kbdHelp" class="kbd-help" hidden>
       <div class="kh-title">Keyboard shortcuts</div>
+      <!-- Navigation: wheel zoom app.js:11242; pan / vertex-drag on
+           mousedown app.js:10324/10335; the layered Esc app.js:11179-11235 -->
+      <div class="kh-group">Navigation</div>
       <div class="kh-grid">
-        <kbd>M</kbd><span>Measure between points</span>
-        <kbd>S</kbd><span>Split selected line at last click</span>
-        <kbd>X</kbd><span>Cut a span out of selected line</span>
-        <kbd>E</kbd><span>Extend selected line</span>
-        <kbd>D</kbd><span>Draw new line in selected family</span>
-        <kbd>R</kbd><span>Reclassify line into another family</span>
-        <kbd>I</kbd><span>Isolate selected line's type (again to clear)</span>
-        <kbd>F</kbd><span>Faithful pattern rendering on/off</span>
-        <kbd>L</kbd><span>On-sheet legend on/off</span>
-        <kbd>&#9003;</kbd><span>Delete picked point, whole line, or every multi-selected line</span>
+        <kbd>Scroll</kbd><span>Zoom at the cursor</span>
+        <kbd>Drag</kbd><span>Pan the sheet (drag a vertex dot to move that point)</span>
+        <kbd>&#8679;+drag</kbd><span>Multi-select: box whole lines (drag again adds; Delete removes all; Esc clears)</span>
+        <kbd>Esc</kbd><span>Layered: exit the armed tool first, then clear the multi-selection, the picked point, the selection, then isolate off</span>
+      </div>
+      <!-- Tools: M app.js:11136 (measureBtn app.js:10929); Enter finishes
+           draw app.js:11174, limit-of-work app.js:11499, structure
+           app.js:11523 (double-click same: 11238/11488/11477); Esc backs up
+           a point app.js:11198/11504/11528, cancels pickers
+           app.js:11192/7708/7627, finishes the work area app.js:11875 -->
+      <div class="kh-group">Tools</div>
+      <div class="kh-grid">
+        <kbd>M</kbd><span>Measure between clicked points (type a known dimension in the readout to calibrate the scale)</span>
+        <kbd>Enter</kbd><span>Finish the outline being drawn &mdash; draw line, limit of work, structure (double-click does the same)</span>
+        <kbd>Esc</kbd><span>While drawing: remove the last point, again to exit. While picking a line or dragging work-area boxes: put the tool away</span>
+      </div>
+      <!-- Editing (a line must be selected): S/X/E/D app.js:11146-11149,
+           R app.js:11170, J app.js:11165, Delete/Backspace app.js:11161
+           (removeSelected app.js:11092 - picked point first, else the line,
+           no-op with nothing selected) -->
+      <div class="kh-group">Editing &mdash; with a line selected</div>
+      <div class="kh-grid">
+        <kbd>S</kbd><span>Split the line where you clicked it</span>
+        <kbd>X</kbd><span>Cut a span out of the line</span>
+        <kbd>E</kbd><span>Extend the line to where you click next</span>
+        <kbd>D</kbd><span>Draw a new line in the same family</span>
+        <kbd>R</kbd><span>Reclassify into another family (click the target family)</span>
+        <kbd>J</kbd><span>Merge with the other half of the same run</span>
+        <kbd>Del / &#9003;</kbd><span>Delete the picked point, the whole line, or every multi-selected line (Ctrl+Z restores)</span>
         <kbd>Ctrl+Z</kbd><span>Undo the last edit (Ctrl+Shift+Z or Ctrl+Y redoes)</span>
-        <kbd>&#8679;+drag</kbd><span>Multi-select: box whole lines (drag again adds; Esc clears)</span>
-        <kbd>Esc</kbd><span>Cancel tool / clear selection</span>
+      </div>
+      <!-- Panels &amp; view: I app.js:11150, F app.js:11137 (faithfulBtn
+           app.js:10922), L app.js:11138, ? app.js:11131 (Esc closes this
+           overlay first, app.js:11180; the ? toolkit button and
+           click-outside-closes are wired at the end of app.js) -->
+      <div class="kh-group">Panels &amp; view</div>
+      <div class="kh-grid">
+        <kbd>I</kbd><span>Isolate the selected line's family (again or Esc to clear)</span>
+        <kbd>F</kbd><span>Faithful rendering on/off &mdash; true dash patterns vs bold uniform strokes</span>
+        <kbd>L</kbd><span>On-sheet legend on/off</span>
         <kbd>?</kbd><span>This help</span>
       </div>
-      <div class="kh-dim">Esc or ? closes</div>
+      <div class="kh-dim">Esc, ?, or a click outside closes</div>
     </div>
-    <div id="hint" class="hint">Open a plan to begin — scroll to zoom, drag to pan</div>
+    <!-- KBD-MAP-END -->
+    <!-- First-open hint. One element, text only; app.js hides the whole
+         thing the moment a sheet renders ($("hint").style.display). -->
+    <div id="hint" class="hint">
+      <div class="hint-lead">Open a plan to begin &mdash; scroll to zoom, drag to pan</div>
+      <div class="hint-how">
+        <div><b>1</b>&ensp;Open &mdash; pick a sample, paste a path, or drop a PDF anywhere on this window</div>
+        <div><b>2</b>&ensp;Detect lines &mdash; every line family on the sheet becomes a measured row on the left</div>
+        <div><b>3</b>&ensp;Check &mdash; the CHECK THESE queue lists what the engine doubts most, worst first</div>
+        <div><b>4</b>&ensp;Approve &amp; export &mdash; sign the sheet off and download the takeoff</div>
+      </div>
+    </div>
+    <!-- Toolkit groups, separated by .tk-sep: measure | edit geometry
+         (split/extend/cut/draw) | family ops (reclass/merge/separate) |
+         delete | work area | view toggles + help. Button DOM order is
+         untouched - only separators were inserted. -->
     <div class="toolkit">
-      <button id="measureBtn" class="tk" title="Measure — click points on the sheet (M; Esc to finish)">&#128207;</button>
+      <button id="measureBtn" class="tk" title="Measure — click points on the sheet to read the distance (M; Esc to finish). Know the true dimension? Type it in the readout to calibrate the sheet scale.">&#128207;</button>
       <span class="tk-sep"></span>
       <button id="splitBtn" class="tk" title="Split the selected line where you clicked it (S)">&#9986;</button>
       <button id="extendBtn" class="tk" title="Extend the selected line — then click where it should reach (E)">&#10230;</button>
       <button id="cutSpanBtn" class="tk" title="Cut a span out of the selected line — click where the cut starts, then where it ends (X)">&#9988;</button>
       <button id="drawBtn" class="tk" title="Draw a new line in the selected line's family — click points, double-click or Enter to finish (D)">&#9998;</button>
+      <span class="tk-sep"></span>
       <button id="reclassBtn" class="tk" title="Move the selected line into another family — click a line of the target family (R)">&#8644;</button>
       <button id="mergeBtn" class="tk" title="Merge the selected line with another — click the other half of the same run (J)">&#128279;</button>
-      <button id="sepBtn" class="tk" title="Separate this one line into its own priced item">&#9707;</button>
-      <button id="removeBtn" class="tk danger" title="Delete the selected point, or the whole line if no point is selected (Backspace)">&#128465;</button>
+      <button id="sepBtn" class="tk" title="Separate — name the selected line and give it its own row in the itemized takeoff, priced apart from its family (no shortcut key)">&#9707;</button>
+      <span class="tk-sep"></span>
+      <button id="removeBtn" class="tk danger" title="Delete the picked point, or the whole selected line if no point is picked (Delete or Backspace). Removed lines leave the count; Reset edits brings them back.">&#128465;</button>
       <span class="tk-sep"></span>
       <button id="wzBtn" class="tk" title="Work area &mdash; drag one or more boxes around the part of the sheet that counts. The takeoff lists (style rows, itemized rows, CSV, approve export) count only length inside your boxes; detection is untouched and Clear restores everything. The earthwork and trench calculators keep their own limit-of-work boundary and are not masked.">&#9635;</button>
       <button id="wzClearBtn" class="tk danger" hidden title="Clear the work area &mdash; every line counts in full again">&#9635;&#10005;</button>
       <span class="tk-sep"></span>
-      <button id="faithfulBtn" class="tk active" title="Draw lines with their true dash pattern and weight (F toggles bold uniform strokes)">&#9781;</button>
+      <button id="faithfulBtn" class="tk active" title="Line rendering (F): ON draws every line with its true dash pattern and printed weight; OFF draws bold uniform strokes that are easier to see. Display only — no count or length changes.">&#9781;</button>
+      <button id="kbdBtn" class="tk" title="Keyboard shortcuts — every key and gesture the app answers to (?)">?</button>
     </div>
     <div class="canvas-status">
       <span id="selInfo" class="tk-info"></span>

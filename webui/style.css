@@ -94,7 +94,12 @@ canvas#view.tool-point { cursor: crosshair; }
 /* Panning wins over both: while the sheet is actually moving under the
    cursor, that is what the pointer should say, tool armed or not. */
 canvas#view.panning { cursor: grabbing; }
-.hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: var(--dim); pointer-events: none; }
+.hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); color: var(--dim); pointer-events: none; text-align: center; }
+/* first-open "how this works": four steps under the lead line */
+.hint-lead { font-size: 15px; }
+.hint-how { margin-top: 16px; display: inline-block; text-align: left;
+  font-size: 12px; line-height: 2; color: var(--dim); }
+.hint-how b { color: var(--text); font-weight: 600; }
 
 .restore-btn { position: absolute; right: 16px; bottom: 16px; }
 /* slim vertical icon rail on the canvas edge (Kreo/Bluebeam convention) */
@@ -437,9 +442,13 @@ canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
 canvas.ml-swatch { width: 40px; height: 9px; }
 /* ---------- keyboard help ---------- */
 .kbd-help { position: absolute; inset: 0; margin: auto; height: fit-content;
-  width: 330px; z-index: 6; background: var(--panel); color: var(--text);
+  width: 400px; z-index: 6; background: var(--panel); color: var(--text);
   border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
-  box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  box-shadow: 0 12px 40px rgba(0,0,0,.35);
+  max-height: min(84vh, 640px); overflow-y: auto; }
+.kh-group { font-family: var(--mono); font-size: 9px; font-weight: 600;
+  color: var(--dim); text-transform: uppercase; letter-spacing: .14em;
+  margin: 12px 0 6px; }
 .kh-title { font-family: var(--mono); font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: .14em; margin-bottom: 10px; }
 .kh-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px;

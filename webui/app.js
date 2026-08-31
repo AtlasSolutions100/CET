@@ -12417,6 +12417,27 @@ addEventListener("keydown", (e) => {
 }, true);
 // =============== end WORK AREA operator controls ==========================
 
+// =============== keyboard-map overlay: the mouse path =====================
+// The overlay itself (#kbdHelp, index.html KBD-MAP block) and its "?" key
+// toggle predate this: the single-key review handler owns the keyboard path
+// (search `e.key === "?"`) and its Esc cascade closes the overlay before
+// anything else. These two listeners add the discoverable mouse path - the
+// "?" button at the foot of the toolkit column, and click-outside-closes.
+// Kept at the END of the file on purpose: the overlay's HTML comments cite
+// app.js line numbers at this revision, and inserting code above the cited
+// handlers would shift every citation.
+$("kbdBtn").onclick = () => {
+  $("kbdHelp").hidden = !$("kbdHelp").hidden;
+};
+document.addEventListener("click", (e) => {
+  const kh = $("kbdHelp");
+  if (kh.hidden) return;
+  // the toggle button just handled this same click (its onclick ran before
+  // this bubble listener); a click inside the panel is reading, not closing
+  if (kh.contains(e.target) || (e.target.closest && e.target.closest("#kbdBtn"))) return;
+  kh.hidden = true;
+});
+
 resize();
 
 // =============== TOOLS MENU: one entry point in the header =================
