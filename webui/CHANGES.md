@@ -105,7 +105,11 @@ console errors.
   the doc is reopened.
 - Thumbnails assume `state.kinds` order == page order (it is — built from
   the same array as the page dropdown).
-- The "annotation" style class sorts before "solid" in the style list;
-  pre-existing behavior (CLASS_ORDER has no entry for it), untouched.
+- ~~The "annotation" style class sorts before "solid" in the style list;
+  pre-existing behavior (CLASS_ORDER has no entry for it), untouched.~~
+  FIXED 2026-09-01 by the line-style grouping (`STYLEGROUP-PURE` in
+  `webui/app.js`): the list is now grouped Solid / Dashed / Annotation, in
+  that order, and CLASS_ORDER is gone. Measured on Barn Civil C3.0: 49
+  annotation rows used to sit above 103 solid ones.
 - `renderPageStrip` recreates thumbs per document open only; per-page
   switches just retag `.current` (no image refetch).

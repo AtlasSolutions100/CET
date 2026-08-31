@@ -528,6 +528,10 @@ canvas#view.panning { cursor: grabbing; }
 /* ---------- readable style list ---------- */
 .style-search { margin: 8px 8px 2px; width: calc(100% - 16px);
   font-size: var(--t-fs-xs); letter-spacing: .03em; }
+/* SUPERSEDED by .sg-head below: nothing in app.js builds a .class-head any
+   more (renderStyles now emits one collapsible group header per pattern
+   KIND, not one text label per engine class). Kept, unreferenced, so a
+   concurrent branch that still emits one is not left unstyled. */
 .class-head { font-size: var(--t-fs-xs); font-weight: 600; color: var(--dim);
   padding: 10px 10px 2px; }
 canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
@@ -587,7 +591,8 @@ canvas.swatch-line { width: 46px; height: 10px; border-radius: 2px; }
   padding: 5px 8px 3px; font-size: var(--t-fs-xs);
   font-weight: 600; color: var(--dim); }
 .ml-rows { padding: 0 8px 6px; }
-.ml-row { display: grid; grid-template-columns: 40px 1fr auto; gap: 7px;
+/* a 4th column for .ml-goto (jump to this line type in the styles list) */
+.ml-row { display: grid; grid-template-columns: 40px 1fr auto auto; gap: 7px;
   align-items: center; padding: 2.5px 0; cursor: pointer; font-size: var(--t-fs-xs); }
 .ml-row:hover .ml-lab { color: var(--accent); }
 .ml-row.iso .ml-lab { color: var(--accent); font-weight: 600; }
@@ -2716,3 +2721,94 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
   font-size: var(--t-fs-xs); line-height: 1.4;
   color: var(--t-text-faint, var(--dim));
   border-left: 2px dashed var(--t-border-strong, var(--line)); }
+
+/* ---------- LINE STYLES, GROUPED BY PATTERN KIND -------------------------
+   The collapsible group header built by sgHeadEl() in webui/app.js.
+
+   It carries TWO controls that must never be mistaken for each other, so
+   they are given different shapes on purpose: the caret on the far left is
+   a bare glyph button (a disclosure, the same triangle the per-family line
+   list already uses), the tick beside it is an ordinary checkbox - visually
+   the SAME control as the checkbox on every style row below it, because it
+   does the same thing to a whole group that the row's box does to one row.
+   The footage chip on the right is the proof that the two differ: closing
+   the group leaves it where it is, unticking takes it to "nothing counted".
+
+   It replaces the old `.class-head`, which was a plain text label with no
+   controls and one header per ENGINE class (five on Barn C3.0, six on Oncor
+   C-04). That rule is still in this file, further up and marked superseded,
+   because nothing in app.js builds one any more. */
+/* WRAPS. Measured at the 400px sidebar on Barn C3.0: unwrapped, the
+   "rows hidden" and "opened by filter" chips ran off the right edge and were
+   cut - and those two chips are the only thing on screen saying WHY the rows
+   under a header are missing, so losing them is exactly the failure this
+   feature is not allowed to have. Wrapped, they drop to a second line and the
+   header grows 22px only on the groups that carry one. */
+.sg-head { display: flex; align-items: center; flex-wrap: wrap;
+  gap: 3px var(--t-sp-2); padding: 9px 8px 5px; cursor: pointer;
+  user-select: none; border-top: 1px solid var(--t-border); margin-top: 4px; }
+.sg-head:first-child { border-top: 0; margin-top: 0; }
+.sg-head:hover .sg-name { color: var(--t-accent); }
+.sg-fold { flex: none; width: 18px; height: 18px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--t-fs-xs); background: transparent;
+  color: var(--t-text-dim); border: 1px solid transparent;
+  border-radius: var(--t-r-1); cursor: pointer; }
+.sg-fold:hover { color: var(--t-accent);
+  border-color: var(--t-border-strong); }
+.sg-tick { flex: none; margin: 0; cursor: pointer;
+  accent-color: var(--t-accent); }
+.sg-name { min-width: 0; font-size: var(--t-fs-sm); font-weight: 700;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--t-text);
+  white-space: nowrap; }
+.sg-n { flex: none; font-family: var(--t-font-data); font-size: var(--t-fs-xs);
+  line-height: 1.5; color: var(--t-text-dim); background: var(--t-surface-2);
+  border: 1px solid var(--t-border); border-radius: var(--t-r-pill);
+  padding: 0 6px; }
+/* the quantity, pushed to the right-hand edge where the row footages sit */
+.sg-ft { margin-left: auto; font-family: var(--t-font-data);
+  font-size: var(--t-fs-xs); color: var(--t-text-dim); white-space: nowrap; }
+.sg-ft.zero { color: var(--t-warn); }
+.sg-hid { flex: none; font-size: var(--t-fs-xs); color: var(--t-text-faint);
+  font-style: italic; white-space: nowrap; }
+.sg-hid.searched { color: var(--t-accent); font-style: normal; }
+.sg-head.all-off .sg-name { color: var(--t-text-faint); }
+.sg-head.part-off .sg-name { color: var(--t-text-dim); }
+
+/* THE ROW THE OPERATOR WAS SENT TO. revealStyleRow() scrolls it into the
+   middle of the list and adds .row-found for 1.8s. A ring plus a short fade
+   rather than a colour that stays: a permanent mark would compete with the
+   isolate (.iso) and the multi-selection, which are STATES, and this is an
+   event. Reduced-motion drops the fade and keeps the ring. */
+.style-row.row-found { box-shadow: inset 0 0 0 2px var(--t-accent);
+  animation: sgRowFound 1.8s ease-out 1; }
+@keyframes sgRowFound {
+  0%, 25% { background: var(--t-select-bg); }
+  100% { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .style-row.row-found { animation: none; background: var(--t-select-bg); }
+}
+
+/* "in list" on the selection bar: click a line on the sheet, land on its
+   row. Sized and coloured like the bar's other secondary controls. */
+.sel-goto { flex: none; padding: 2px 8px; white-space: nowrap;
+  font-size: var(--t-fs-xs); line-height: 1.6;
+  border: 1px solid var(--t-border-strong); border-radius: var(--t-r-1);
+  background: var(--t-surface-2); color: var(--t-text-dim); cursor: pointer; }
+.sel-goto:hover { background: var(--t-accent); color: var(--t-accent-ink);
+  border-color: var(--t-accent); }
+.sel-goto:focus-visible { outline: 2px solid var(--t-focus);
+  outline-offset: 1px; }
+
+/* the same jump from the on-canvas mini legend. Quiet until the row is
+   hovered - the legend is over the drawing and must not add furniture. */
+.ml-goto { flex: none; width: 16px; height: 16px; padding: 0; line-height: 1;
+  font-size: var(--t-fs-xs); background: transparent; cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--t-r-1);
+  color: transparent; }
+.ml-row:hover .ml-goto { color: var(--t-text-dim);
+  border-color: var(--t-border); }
+.ml-goto:hover { color: var(--t-accent); border-color: var(--t-accent); }
+.ml-goto:focus-visible { color: var(--t-text-dim);
+  outline: 2px solid var(--t-focus); outline-offset: 1px; }

@@ -1343,7 +1343,18 @@ function renderMiniLegend() {
     const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
     ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
       + (ftPerIn ? " ft" : " pt");
-    row.append(cnv, lab, ft);
+    // the second surface a line is identified on, so it gets the same jump
+    // to the styles list. Its own button, with stopPropagation, because the
+    // row's plain click already means "isolate" and that meaning is kept.
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "ml-goto";
+    go.textContent = "≡";
+    go.setAttribute("aria-label", "Find this line type in the styles list");
+    go.title = "Jump to this line type's row in the Line styles list — "
+      + "opens its group if you closed it. Changes nothing.";
+    go.onclick = (e) => { e.stopPropagation(); revealStyleRow(st.style_id, "legend"); };
+    row.append(cnv, lab, ft, go);
     row.onclick = () => {
       state.isolate = state.isolate === st.style_id ? null : st.style_id;
       renderMiniLegend(); draw();
@@ -4072,6 +4083,499 @@ function splitItems() {
   return out;
 }
 
+// ---------- LINE STYLES, GROUPED BY PATTERN KIND -------------------------
+// The owner, 2026-09-01: "the ability to close by line style in the line
+// styles tab, so inside line styles close and turn off all annotation, or
+// solid, or dashed etc.. this way instead of scrolling past 1,000 lines i can
+// just close annotation and scroll through solids because I know what im
+// looking for is solid or whatever".
+//
+// THE SIZE OF THE PROBLEM, measured off the two sheets this was built
+// against (counts are style ROWS, from each row's own `class` field):
+//   Barn Civil C3.0 (engine page 2)  280 rows / 1,840 chains
+//       solid 103 - dash1 81 - annotation 49 - dash2 41 - dash3 6
+//   Oncor C-04     (engine page 4)    65 rows /   589 chains
+//       dash1 20 - annotation 14 - dash2 14 - solid 13 - dash-text 3 - dash3 1
+//
+// THREE GROUPS, NOT SIX. He said "annotation, or solid, or dashed" - three
+// buckets - while the engine measures dash1 / dash2 / dash3 / dash-text as
+// genuinely different cadences. Six headers on a 280-row list is more
+// scrolling, not less, and it makes him translate "dashed" into four engine
+// words before he can put anything away. So the HEADERS are his three
+// (Solid / Dashed / Annotation) and the engine's evidence survives ON EVERY
+// ROW, where it already lived: the class badge still reads `dash2`, the mono
+// chip still reads `d18.0 g9.0`, the swatch still draws the real cadence.
+// The Dashed header also prints its own breakdown ("81 dash1, 41 dash2,
+// 6 dash3") in its count tooltip, so the four-way split is one hover away
+// and is never lost.
+// A fourth group, Other, exists only to catch a class none of the three
+// claims - it renders only when the sheet actually has one, so a future
+// engine class can never fall out of the list unseen.
+//
+// This also fixes a documented oddity (webui/CHANGES.md "Known limits"):
+// `annotation` was absent from the old CLASS_ORDER, so `indexOf` returned -1
+// and the sheet's 49 annotation rows sorted ABOVE its 103 solid ones. The
+// group order below is deliberate and is the operator's reading order:
+// Solid, Dashed, Annotation, Other.
+//
+// CLOSING AND TURNING OFF ARE DIFFERENT ACTIONS AND STAY DIFFERENT.
+// He used both phrases in one sentence, and they are not the same thing:
+//   * CLOSE (the caret) hides the group's rows from the scroll. It is a
+//     display convenience. It changes NO quantity: not the takeoff total,
+//     not the canvas, not the export. The header keeps printing the group's
+//     counted footage while it is closed, so the number is on screen saying
+//     it did not move.
+//   * TURN OFF (the checkbox) unticks the whole family. That removes its
+//     footage from the takeoff and its lines from the canvas - the header's
+//     footage chip drops to "nothing counted", which is exactly the
+//     difference made visible.
+// A collapse may never exclude anything, and nothing on the fold path calls
+// setInclude. The header's checkbox is three-state: ticked, unticked, or
+// indeterminate when the group is part on and part off.
+//
+// STYLEGROUP-PURE-BEGIN
+// Pure (no DOM, no state.*, no store.*) so tests/test_line_style_groups.js
+// can eval the block, like LINE-FAMILY / TRENCH-MATH / UNDO-CORE.
+
+// The operator's three buckets, in his reading order, plus the catch-all.
+// `classes` lists the engine class names each bucket claims - the style
+// row's own `class` field, not a taxonomy invented here.
+const SG_DEFS = [
+  { key: "solid", name: "Solid", classes: ["solid"] },
+  { key: "dashed", name: "Dashed",
+    classes: ["dash1", "dash2", "dash3", "dash-text"] },
+  { key: "annotation", name: "Annotation", classes: ["annotation"] },
+  // never claimed by name: whatever the other three did not take
+  { key: "other", name: "Other", classes: [] },
+];
+
+// Which bucket a style row belongs to. Unknown / missing class -> "other",
+// so a class this file has never heard of still gets a header and a count
+// rather than vanishing.
+function sgKeyOf(cls) {
+  const c = String(cls == null ? "" : cls);
+  for (const g of SG_DEFS) if (g.classes.indexOf(c) >= 0) return g.key;
+  return "other";
+}
+
+// Per browser, in the same "core-" localStorage namespace the page strip,
+// the mini legend, the sidebar fold and the theme already use. Keyed on the
+// GROUP, not on the page or the document, which is what makes a closed
+// Annotation group survive a page switch: the operator who put annotation
+// away on C3.0 wants it away on C4.0 too, and the three keys exist on every
+// sheet, so nothing can dangle.
+function sgFoldKey(key) { return "core-sgfold-" + key; }
+
+// The render plan for the whole list: which groups exist on this sheet,
+// which rows fall in each, whether each renders open or closed, and what the
+// header has to say. renderStyles() only builds DOM from what comes back.
+//
+//   q        the search box, already trimmed and upper-cased ("" for none)
+//   matches  (style, q) -> bool   the text filter
+//   sees     (style) -> bool      the declared-trade filter (no-q only, the
+//                                 same rule the flat list used)
+//   isOn     (style) -> bool      the include tick
+//   closed   Set of group keys the operator has collapsed
+//   lenOf    (style) -> number    footage accessor for the header's subtotal
+//
+// A SEARCH ALWAYS WINS OVER A COLLAPSE. A query that could not reach a row
+// inside a closed group would be a search that lies - the same failure the
+// A-WALL fix was raised for - so a group with hits renders OPEN for as long
+// as the query stands, flagged `forcedOpen` so the header can say why, and
+// the operator's stored collapse is left untouched and comes back the moment
+// the box is cleared. A group with no hits is omitted entirely, exactly as
+// the flat list omitted rows with no hits.
+//
+// `rows` is what the group ACTS ON (the header tick, the footage subtotal);
+// `collapsed` only decides whether those rows are painted. The two are
+// deliberately separate - that separation IS the feature.
+function sgPlan(styles, opts) {
+  const o = opts || {};
+  const q = o.q || "";
+  const matches = o.matches || (() => true);
+  const sees = o.sees || (() => true);
+  const isOn = o.isOn || (() => false);
+  const closed = o.closed || new Set();
+  const lenOf = o.lenOf || (s => s.length_pt || 0);
+  const acc = new Map(SG_DEFS.map(g => [g.key, {
+    key: g.key, name: g.name, rows: [], nAll: 0, classes: new Map(),
+  }]));
+  for (const s of styles || []) {
+    const g = acc.get(sgKeyOf(s.class));
+    g.nAll += 1;
+    g.classes.set(s.class, (g.classes.get(s.class) || 0) + 1);
+    if (q) { if (!matches(s, q)) continue; }
+    else if (!sees(s)) continue;
+    g.rows.push(s);
+  }
+  const groups = [];
+  let nShown = 0, nHit = 0, nAll = 0;
+  for (const def of SG_DEFS) {
+    const g = acc.get(def.key);
+    nAll += g.nAll;
+    if (!g.rows.length) continue;         // nothing to head on this sheet
+    // longest first inside a group: an estimator scanning for the thing he
+    // is looking for wants the rows carrying the footage at the top. Style
+    // id ascending as the tiebreak, so repaints are deterministic.
+    g.rows.sort((a, b) => (lenOf(b) - lenOf(a)) || (a.style_id - b.style_id));
+    const forcedOpen = !!q && closed.has(g.key);
+    g.collapsed = closed.has(g.key) && !forcedOpen;
+    g.forcedOpen = forcedOpen;
+    g.nHit = g.rows.length;
+    g.filtered = g.nHit < g.nAll;
+    g.tick = sgTickState(g.rows, isOn);
+    g.lenOn = g.rows.reduce((t, s) => t + (isOn(s) ? lenOf(s) : 0), 0);
+    // "81 dash1, 41 dash2, 6 dash3" - the engine's own split, kept at group
+    // level so folding four headers into one loses no evidence.
+    g.breakdown = [...g.classes.entries()]
+      .filter(e => e[1] > 0)
+      .sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1))
+      .map(e => e[1] + " " + e[0]);
+    nHit += g.nHit;
+    if (!g.collapsed) nShown += g.nHit;
+    groups.push(g);
+  }
+  return { groups, nShown, nHit, nAll };
+}
+
+// Three-state, because two states would lie about a part-ticked group.
+// Counted over the rows the group ACTS ON, which is also what the header
+// prints, so the box and the number beside it can never disagree.
+function sgTickState(rows, isOn) {
+  const n = (rows || []).length;
+  let on = 0;
+  for (const s of rows || []) if (isOn(s)) on += 1;
+  return { n, on, state: !n ? "none" : on === n ? "all" : on ? "some" : "none" };
+}
+
+// THE MIRROR OF revealChain(). revealChain goes list -> sheet; this decides
+// whether sheet -> list can land, and if it cannot, says why in words the
+// operator can act on. It never reports success it cannot deliver: a row the
+// current filter has removed from the list is NOT scrolled to, because
+// scrolling to nothing and calling it a hit is how a navigation aid teaches
+// an operator to stop trusting it.
+//
+//   style   the style row, or null/undefined when it is gone
+//   q       the search box, trimmed and upper-cased
+//   qRaw    the search box as typed, for the message
+//   matches / sees / closed  as in sgPlan
+//
+// Returns { ok, why, msg, group, expand }. `expand` is true when the row's
+// group is collapsed and the caller must open it first.
+function sgReveal(style, opts) {
+  const o = opts || {};
+  if (!style) return { ok: false, why: "gone", group: "", expand: false,
+    msg: "that line type is gone — an edit consumed or deleted it" };
+  const q = o.q || "";
+  const matches = o.matches || (() => true);
+  if (q && !matches(style, q)) return { ok: false, why: "search",
+    group: "", expand: false,
+    msg: "the filter box (“" + (o.qRaw || q) + "”) is hiding that "
+      + "line type's row — clear the box and click again" };
+  if (!q && o.sees && !o.sees(style)) return { ok: false, why: "scope",
+    group: "", expand: false,
+    msg: "that line type is set aside by your declared trade, so the list is "
+      + "not showing its row — turn on “show set aside” in the "
+      + "scope panel and click again" };
+  const key = sgKeyOf(style.class);
+  return { ok: true, why: "", msg: "", group: key,
+           expand: !!(o.closed && o.closed.has(key)) };
+}
+// STYLEGROUP-PURE-END
+
+// ---- the live half: the operator's collapse state, and who may write it ---
+// Display only. Nothing below this line changes a measured quantity except
+// sgTickGroup(), which is the checkbox and says so.
+const sgClosed = new Set();
+(function sgLoadFolds() {
+  for (const g of SG_DEFS) {
+    let v = null;
+    try { v = localStorage.getItem(sgFoldKey(g.key)); } catch (e) {}
+    if (v === "closed") sgClosed.add(g.key);
+  }
+})();
+function sgSetClosed(key, closed) {
+  if (closed) sgClosed.add(key); else sgClosed.delete(key);
+  // private mode: the fold is then per-session, the same degradation the
+  // sidebar fold and the page strip already take
+  try { localStorage.setItem(sgFoldKey(key), closed ? "closed" : "open"); }
+  catch (e) {}
+}
+
+// The style list's text filter, lifted out of renderStyles so the reveal
+// path can ask the SAME question the list asked - one rule, not two that
+// drift.
+//
+// The layer joins the searchable text as the WHOLE string, not the displayed
+// tail: typing `A-WALL` has to find `BR FND - BARN EAST|A-WALL` (substring,
+// so the tail matches anyway) and typing `BARN EAST` has to find it too.
+//
+// The failure this repairs is nastier than "the field was not searchable".
+// 31 of C4.3's 151 styles carry A-WALL in their layer, and the unpatched box
+// returns 30 of them - because `suggested_label` DEFAULTS to the layer tail,
+// so a layer-named row is findable by accident, through its label. The single
+// row it cannot return is the single row whose label the legend overwrote:
+// style 106, 380.9 LF, labelled PROPOSED PVC SURFACE STORM DRAIN PIPE.
+// Searching the sheet's walls quietly omitted the one wall that is not filed
+// as a wall. Both counts measured live off #styleList .style-row
+// (PLATE-3-search-a-wall-30-of-31.png).
+function sgMatchRow(s, q) {
+  const label = state.labels.get(s.style_id) ?? "";
+  return (label + " " + s.signature + " " + s.class + " " + (s.layer || ""))
+    .toUpperCase().includes(q);
+}
+
+// THE PLAN, AS THE LIST CURRENTLY STANDS. One live entry point, so
+// renderStyles, the header tick and the header refresh can never disagree
+// about which rows a group holds - and so nothing keeps a group object across
+// an edit. A stale `rows` array would be the worst kind of bug here: a bulk
+// tick acting on families that are no longer on the sheet.
+//
+// It costs one pass over state.result.styles (280 on the biggest cached
+// sheet, measured at well under a millisecond); the DOM build is the
+// expensive half and this does not do it.
+function sgCurrentPlan() {
+  const q = ($("styleSearch") ? $("styleSearch").value : "").trim().toUpperCase();
+  return sgPlan(state.result ? state.result.styles : [], {
+    q,
+    matches: sgMatchRow,
+    sees: scopeSeesRow,
+    isOn: (st) => !!state.include.get(st.style_id),
+    closed: sgClosed,
+    lenOf: styleLenPt,
+  });
+}
+
+// The group headers WITHOUT rebuilding the list. refreshStyleRows() exists
+// because renderStyles() throws away the operator's scroll position on a
+// 280-row sheet; it rewrites the two pieces of text on a row that an edit can
+// move, and the group header carries exactly the same kind of text - a live
+// footage and a live count. Without this, deleting a line left the header
+// asserting the footage the group had BEFORE the delete, which is the
+// "confident wrong number" this codebase has been burned by.
+function sgSyncHeads() {
+  const heads = document.querySelectorAll("#styleList .sg-head");
+  if (!heads.length || !state.result) return;
+  const by = new Map(sgCurrentPlan().groups.map(g => [g.key, g]));
+  for (const h of heads) {
+    const g = by.get(h.dataset.group);
+    if (!g) continue;
+    const ft = h.querySelector(".sg-ft");
+    if (ft) {
+      ft.textContent = g.tick.on ? fmtQty(g.lenOn) + " counted"
+                                 : "nothing counted";
+      ft.classList.toggle("zero", !g.tick.on);
+    }
+    const n = h.querySelector(".sg-n");
+    if (n) n.textContent = g.filtered ? g.nHit + " of " + g.nAll
+                                      : String(g.nAll);
+    const cb = h.querySelector(".sg-tick");
+    if (cb) {
+      cb.checked = g.tick.state === "all";
+      cb.indeterminate = g.tick.state === "some";
+    }
+    h.classList.toggle("all-off", g.tick.state === "none");
+    h.classList.toggle("part-off", g.tick.state === "some");
+  }
+}
+
+// The whole group's tick, in one write pass and one repaint. A BULK gesture,
+// so - exactly like the card's own `all` / `none` buttons - it writes the
+// page record through setInclude and deliberately does NOT call
+// setIncludeSetWide: speaking for every other sheet in the set is reserved
+// for a hand tick on a single row (see the rule at setIncludeSetWide).
+//
+// Scope put-backs are honoured inline rather than through scopeKeepRow,
+// which repaints the entire sidebar per row - 49 full repaints for one click
+// on Annotation. Same two branches, same order (a row handed BACK to the
+// filter is ticked on first, or the filter never records that IT is the
+// reason it is off - see the 25.0k ft measurement at scopeKeepRow), then one
+// scopeApply() and one repaint at the end.
+function sgTickGroup(key, on) {
+  const g = sgCurrentPlan().groups.find(x => x.key === key);
+  if (!g) return;
+  if (!state.scopeKeep) state.scopeKeep = new Set();
+  let scoped = false;
+  for (const s of g.rows) {
+    const v = ((state.scopeV && state.scopeV.get(s.style_id)) || {}).v;
+    if (v === "out" && on) {
+      state.scopeKeep.add(s.style_id); setInclude(s.style_id, true);
+      scoped = true; continue;
+    }
+    if (v === "kept" && !on) {
+      state.scopeKeep.delete(s.style_id);
+      setIncludeTransient(s.style_id, true);
+      scoped = true; continue;
+    }
+    setInclude(s.style_id, on);
+  }
+  if (scoped) { scopeApply(); renderScopeBar(); }
+  renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
+  // never silent: a bulk quantity change says what it did
+  setStatus(g.tick.n + " " + g.name.toLowerCase() + " line type"
+    + (g.tick.n === 1 ? "" : "s") + (on ? " turned on" : " turned off")
+    + (on ? "" : " — their footage has left the takeoff"));
+}
+
+// The group header. Two controls, side by side, that must never be confused
+// for each other: the caret CLOSES (display), the checkbox TURNS OFF
+// (quantity). They are labelled as those two different things, the footage
+// chip beside them prints what the group is currently contributing, and the
+// header states its own tick state when the group is part on and part off.
+function sgHeadEl(g) {
+  const h = document.createElement("div");
+  h.className = "sg-head" + (g.collapsed ? " closed" : "")
+    + (g.forcedOpen ? " searched" : "")
+    + (g.tick.state === "none" ? " all-off"
+       : g.tick.state === "some" ? " part-off" : "");
+  h.dataset.group = g.key;
+
+  const fold = document.createElement("button");
+  fold.type = "button";
+  fold.className = "sg-fold";
+  fold.textContent = g.collapsed ? "▸" : "▾";
+  fold.setAttribute("aria-expanded", g.collapsed ? "false" : "true");
+  fold.setAttribute("aria-label",
+    (g.collapsed ? "Show" : "Hide") + " the " + g.name + " rows");
+  fold.title = g.forcedOpen
+    ? "Opened by your filter so its matches are reachable. Clear the filter "
+      + "box and it goes back to closed."
+    : (g.collapsed ? "Show" : "Hide") + " these " + g.tick.n + " rows."
+      + LF + LF
+      + "This is the SCROLL, not the takeoff. Closing a group hides its rows "
+      + "from this list and changes nothing else: not the total, not the "
+      + "canvas, not the export. The footage on the right keeps counting "
+      + "while it is closed. To take the footage out, use the tick box.";
+  fold.onclick = (e) => {
+    e.stopPropagation();
+    sgSetClosed(g.key, !g.collapsed);
+    renderStyles();
+  };
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "sg-tick";
+  cb.checked = g.tick.state === "all";
+  cb.indeterminate = g.tick.state === "some";
+  cb.setAttribute("aria-label", "Count the " + g.name + " line types");
+  cb.title = "Turn " + (g.tick.state === "all" ? "OFF" : "ON") + " all "
+    + g.tick.n + " " + g.name.toLowerCase() + " line type"
+    + (g.tick.n === 1 ? "" : "s") + "." + LF + LF
+    + "This is the TAKEOFF, not the scroll. Unticking removes this group's "
+    + "footage from the total and its lines from the sheet. To put the rows "
+    + "away without changing a number, use the arrow on the left."
+    + (g.filtered ? LF + LF + "Your filter is narrowing this group, so it "
+        + "acts on the " + g.nHit + " rows shown, not on all " + g.nAll + "."
+      : "");
+  // by KEY, not by this closure's `g`: between paint and click an edit can
+  // have removed a family, and a bulk tick must never act on a stale list
+  cb.onclick = (e) => { e.stopPropagation(); sgTickGroup(g.key, cb.checked); };
+
+  const nm = document.createElement("span");
+  nm.className = "sg-name";
+  nm.textContent = g.name;
+
+  const n = document.createElement("span");
+  n.className = "sg-n";
+  n.textContent = g.filtered ? g.nHit + " of " + g.nAll : String(g.nAll);
+  n.title = (g.filtered
+      ? g.nHit + " of this group's " + g.nAll + " line types match the filter."
+      : g.nAll + " line type" + (g.nAll === 1 ? "" : "s") + " in this group.")
+    + LF + LF + "What the engine actually measured, row by row: "
+    + g.breakdown.join(", ") + "." + LF
+    + "Every row below still carries its own class badge and its own "
+    + "measured dash and gap lengths.";
+
+  const ft = document.createElement("span");
+  ft.className = "sg-ft" + (g.tick.on ? "" : " zero");
+  ft.textContent = g.tick.on ? fmtQty(g.lenOn) + " counted" : "nothing counted";
+  ft.title = g.tick.on
+    ? g.tick.on + " of this group's " + g.tick.n + " line types are ticked, "
+      + "and this is what they add to the takeoff right now. Closing the "
+      + "group does not change it; unticking the group takes it to zero."
+    : "Every line type in this group is unticked, so it adds nothing to the "
+      + "takeoff and draws nothing on the sheet.";
+
+  h.append(fold, cb, nm, n, ft);
+  if (g.collapsed) {
+    const hid = document.createElement("span");
+    hid.className = "sg-hid";
+    hid.textContent = "rows hidden";
+    hid.title = "Closed for scrolling only. Every quantity in this group is "
+      + "unchanged — the figure on the right is still being counted.";
+    h.appendChild(hid);
+  }
+  if (g.forcedOpen) {
+    const so = document.createElement("span");
+    so.className = "sg-hid searched";
+    so.textContent = "opened by filter";
+    so.title = "You closed this group, and your filter matches rows inside "
+      + "it. It is open so those rows are reachable; clearing the filter box "
+      + "closes it again.";
+    h.appendChild(so);
+  }
+  // the whole header is the fold's hit target - the two controls above stop
+  // propagation, so a click can never mean both things at once
+  h.onclick = () => { sgSetClosed(g.key, !g.collapsed); renderStyles(); };
+  return h;
+}
+
+// CLICK A LINE, THEN GO TO ITS ROW - the mirror of revealChain(), and its
+// deliberate twin rather than a parallel mechanism: same shape, same return
+// contract (false when it could not land), same "say what went wrong instead
+// of pretending" rule.
+//
+//   sid   the style_id to reach
+//   from  a word for the status line, so the operator knows which surface
+//         sent him here
+//
+// It opens the Line styles card if it is folded, opens the row's group if it
+// is closed, scrolls the row into the middle of the list and flashes it for
+// 1.8s. It re-renders ONLY when it actually changed something - a 280-row
+// rebuild to scroll to a row already on screen would throw away the list's
+// scroll position for nothing.
+function revealStyleRow(sid, from) {
+  if (!state.result) return false;
+  const s = state.result.styles.find(x => x.style_id === sid);
+  const box = $("styleList");
+  const raw = $("styleSearch") ? $("styleSearch").value.trim() : "";
+  const v = sgReveal(s, { q: raw.toUpperCase(), qRaw: raw,
+    matches: sgMatchRow, sees: scopeSeesRow, closed: sgClosed });
+  if (!v.ok) { setStatus(v.msg, "err"); return false; }
+  let rebuilt = false;
+  const head = $("stylesHead");
+  if (head && head.classList.contains("closed")) {
+    const h2 = head.querySelector("h2");
+    if (h2 && h2.onclick) { h2.onclick(); rebuilt = true; }
+  }
+  if (v.expand) { sgSetClosed(v.group, false); renderStyles(); rebuilt = true; }
+  let row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  if (!row && !rebuilt) {
+    renderStyles();
+    row = box.querySelector('.style-row[data-sid="' + sid + '"]');
+  }
+  if (!row) {
+    setStatus("that line type has no row in the list right now", "err");
+    return false;
+  }
+  row.scrollIntoView({ block: "center", behavior: "smooth" });
+  for (const r of box.querySelectorAll(".style-row.row-found"))
+    r.classList.remove("row-found");
+  row.classList.add("row-found");
+  clearTimeout(revealStyleRow._t);
+  revealStyleRow._t = setTimeout(() => row.classList.remove("row-found"), 1800);
+  // the SAME "nothing named this" test the row and the mini legend use, so
+  // the status line can never announce the engine's own measurement
+  // (`dash2 d9.0 d54.0 g9.0`) as if it were a trade name
+  const nm = styleIsUnnamed(s)
+    ? "an unnamed " + s.class + " family (" + s.signature + ")"
+    : ((state.labels.get(sid) || s.suggested_label || "").trim()
+       || "an unnamed " + s.class + " family");
+  setStatus((from ? from + ": " : "") + "in the line styles list — " + nm
+    + (v.expand ? " (opened its group)" : ""));
+  return true;
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -4108,47 +4612,31 @@ function renderStyles() {
       + "override.";
     box.appendChild(note);
   }
-  const CLASS_ORDER = ["solid", "dash1", "dash2", "dash3", "dash-text"];
-  const CLASS_NAME = { solid: "Solid lines", dash1: "Dashed",
-    dash2: "Dash-dot", dash3: "Compound (dash-dot-dot)",
-    "dash-text": "Lettered runs (W / SD / FO)" };
-  const styles = [...state.result.styles].sort((a, b) =>
-    CLASS_ORDER.indexOf(a.class) - CLASS_ORDER.indexOf(b.class)
-    || b.length_pt - a.length_pt);
-  let lastClass = null;
   const splits = splitItems();
-  for (const s of styles) {
-    const label = state.labels.get(s.style_id) ?? "";
-    // The layer joins the searchable text as the WHOLE string, not the
-    // displayed tail: typing `A-WALL` has to find `BR FND - BARN EAST|A-WALL`
-    // (substring, so the tail matches anyway) and typing `BARN EAST` has to
-    // find it too.
-    //
-    // The failure this repairs is nastier than "the field was not searchable".
-    // 31 of C4.3's 151 styles carry A-WALL in their layer, and the unpatched
-    // box returns 30 of them - because `suggested_label` DEFAULTS to the layer
-    // tail, so a layer-named row is findable by accident, through its label.
-    // The single row it cannot return is the single row whose label the legend
-    // overwrote: style 106, 380.9 LF, labelled PROPOSED PVC SURFACE STORM
-    // DRAIN PIPE. Searching the sheet's walls quietly omitted the one wall
-    // that is not filed as a wall. Both counts measured live off
-    // #styleList .style-row (PLATE-3-search-a-wall-30-of-31.png).
-    if (q && !((label + " " + s.signature + " " + s.class
-                + " " + (s.layer || "")).toUpperCase().includes(q)))
-      continue;
-    // The declared-trade filter, applied AFTER the text filter and only when
-    // the text box is empty. A search that cannot return a row the operator
-    // knows is on the sheet is a search that lies, so typing anything at all
-    // is itself the "show me everything" gesture - the row comes back with
-    // its set-aside badge on, never silently missing.
-    if (!q && !scopeSeesRow(s)) continue;
-    if (s.class !== lastClass) {
-      lastClass = s.class;
-      const h = document.createElement("div");
-      h.className = "class-head";
-      h.textContent = CLASS_NAME[s.class] || s.class;
-      box.appendChild(h);
-    }
+  // GROUPED BY PATTERN KIND. sgPlan() (the STYLEGROUP-PURE block above) owns
+  // the groups, their order, the two filters - the text filter is now
+  // sgMatchRow(), the same rule the reveal path asks, lifted out so the two
+  // cannot drift - and which groups render closed. This loop only builds DOM.
+  //
+  // The plan is flattened into one sequence so the row-building body below is
+  // character-for-character the body it always was: a header is simply an
+  // entry that carries no style. No re-indent, no chance of behaviour drift
+  // in 300 lines of row construction.
+  const plan = sgCurrentPlan();
+  const seq = [];
+  for (const g of plan.groups) {
+    seq.push({ head: g });
+    // A CLOSED GROUP BUILDS NO ROWS AT ALL - that is the whole point on a
+    // 280-row sheet. The cost of a group the operator has put away is one
+    // header node, not 49 rows each carrying a canvas swatch and a dozen
+    // listeners. It is also why #stylesCount honestly reads "231 of 280"
+    // while Annotation is closed: the card count is taken from the rows that
+    // exist, and fewer rows exist.
+    if (!g.collapsed) for (const st of g.rows) seq.push({ style: st });
+  }
+  for (const entry of seq) {
+    const s = entry.style;
+    if (!s) { box.appendChild(sgHeadEl(entry.head)); continue; }
     const row = document.createElement("div");
     const sv = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
     row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off")
@@ -14774,6 +15262,24 @@ function updateSelBar(ch) {
     + "Reclassify tool, and Ctrl+Z undoes it. “+ New family…” makes a family "
     + "of your own, named by you, and puts this line in it.";
   info.appendChild(fam);
+  // GO TO THIS LINE'S ROW. The owner: "can we have a way where if we click a
+  // line there is a way to quickly go to that line in the line style tab as
+  // well". This is the mirror of the per-family line list's click, which
+  // already goes list -> sheet through revealChain(); revealStyleRow() is the
+  // same gesture in the other direction and reports the same way when it
+  // cannot land (see its comment).
+  const goBtn = document.createElement("button");
+  goBtn.type = "button";
+  goBtn.className = "sel-goto";
+  goBtn.textContent = "in list";
+  goBtn.title = "Jump to this line's row in the Line styles list — opens "
+    + "its group if you closed it, scrolls to the row and flashes it. It "
+    + "changes nothing: no tick, no quantity, no colour.";
+  goBtn.onclick = (e) => {
+    e.stopPropagation();
+    revealStyleRow(ch.style_id, "line #" + ch.chain_id);
+  };
+  info.appendChild(goBtn);
   // PER-LINE COLOUR, on the bar beside the family switch: the two controls
   // are the same question at two scopes ("which family is this?" / "what
   // colour is this one?"). The button IS the swatch - it wears the colour the
@@ -14855,6 +15361,8 @@ function refreshStyleRows() {
     }
     if (famOpen.has(s.style_id)) famRenderList(s);
   }
+  // the group headers carry a live footage and a live count too
+  sgSyncHeads();
 }
 
 function removeSelected() {
