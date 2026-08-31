@@ -406,6 +406,9 @@ async function openPath(path) {
 // the two entry points cannot drift - the upload path used to be unreachable
 // from the UI at all, which on a hosted server meant there was no way in.
 function applyOpened(j) {
+  // the landing page yields to a document, whichever way it arrived: card
+  // click, recents pick, sample, path, upload, or a drop on the window
+  showProjects(false);
   // the remove button belongs to whatever is on screen now
   setTimeout(syncRemoveBtn, 0);
   state.gen++;
@@ -11892,3 +11895,364 @@ addEventListener("keydown", (e) => {
 // =============== end WORK AREA operator controls ==========================
 
 resize();
+
+// =============== TOOLS MENU: one entry point in the header =================
+// The nine tool buttons (Analyze, Earthwork, Trench, Count, Whole job,
+// Across sheets, Callouts, Structure, Legend sheet) MOVED into #toolsMenu in
+// index.html with their ids, titles, and hidden attributes untouched, so
+// every handler attached above and every `$("ewBtn").hidden = ...` write in
+// loadResult() keeps working; this section only opens and closes the box
+// around them. DETECT LINES stays in the strip - it is the workflow, not a
+// tool.
+
+// TOOLS-MENU-BEGIN -----------------------------------------------------------
+// Pure block: no DOM, no state.*, so tests/test_tools_menu.js can run it
+// under node (same technique as TRENCH-MATH).
+//
+// [buttonId, panelId]. The panel's hidden state is the SOURCE OF TRUTH for
+// the "open right now" dot; null = the tool has no panel (the legend prompt).
+const TOOLS_MENU_ITEMS = [
+  ["aiBtn", "aiBanner"],
+  ["ewBtn", "ewPanel"],
+  ["trBtn", "trPanel"],
+  ["symBtn", "symPanel"],
+  ["rollBtn", "rollPanel"],
+  ["xsBtn", "xsPanel"],
+  ["coBtn", "coPanel"],
+  ["stBtn", "stPanel"],
+  ["legendBtn", null],
+];
+// rows: [{id, hidden, panelHidden|null}] ->
+//   {visible: [id...], dots: {id: bool}, note: bool}
+// A hidden button is an absent row (loadResult's bookkeeping IS the menu's);
+// a dot only for a panel that is actually open; the note explains the short
+// menu before any page has a detection.
+function toolsMenuModel(rows) {
+  const visible = [], dots = {};
+  for (const r of rows) {
+    if (!r.hidden) visible.push(r.id);
+    dots[r.id] = r.panelHidden === false;
+  }
+  return { visible, dots, note: visible.length < rows.length };
+}
+// wrap-around focus target for ArrowDown(+1)/ArrowUp(-1); -1 when empty.
+// i = -1 (focus outside the items) enters at the end the arrow points from.
+function toolsMenuNextIdx(n, i, delta) {
+  if (!n) return -1;
+  if (i < 0) return delta > 0 ? 0 : n - 1;
+  return ((i + delta) % n + n) % n;
+}
+// TOOLS-MENU-END -------------------------------------------------------------
+
+function toolsMenuSync() {
+  const model = toolsMenuModel(TOOLS_MENU_ITEMS.map(([id, panel]) => ({
+    id,
+    hidden: $(id).hidden,
+    panelHidden: panel ? $(panel).hidden : null,
+  })));
+  for (const [id] of TOOLS_MENU_ITEMS)
+    $(id).classList.toggle("t-on", !!model.dots[id]);
+  $("toolsNote").hidden = !model.note;
+  return model;
+}
+function toolsMenuOpen() {
+  toolsMenuSync();               // dots read the panels at open, every open
+  const m = $("toolsMenu");
+  m.hidden = false;
+  m.classList.remove("flip");
+  $("toolsBtn").setAttribute("aria-expanded", "true");
+  // narrow windows: flip to right-anchored when the menu would run off
+  const r = m.getBoundingClientRect();
+  if (r.right > innerWidth - 8) m.classList.add("flip");
+}
+function toolsMenuClose(focusBack) {
+  const m = $("toolsMenu");
+  if (m.hidden) return;
+  m.hidden = true;
+  $("toolsBtn").setAttribute("aria-expanded", "false");
+  if (focusBack) $("toolsBtn").focus();
+}
+$("toolsBtn").onclick = () => {
+  if ($("toolsMenu").hidden) toolsMenuOpen(); else toolsMenuClose();
+};
+// A click on any tool row closes the menu and the tool's own handler runs
+// untouched (bubble order: the button's onclick first, then this).
+$("toolsMenu").addEventListener("click", (e) => {
+  if (e.target.closest("button")) toolsMenuClose();
+});
+// click anywhere outside the wrap closes it
+addEventListener("click", (e) => {
+  if ($("toolsMenu").hidden) return;
+  if (!$("toolsWrap").contains(e.target)) toolsMenuClose();
+});
+// Esc closes the menu and must never fall through to the canvas Esc
+// (cancel tool / clear selection) - capture + stopImmediatePropagation,
+// the same pattern the st-draw and ew-bound-draw handlers use.
+addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("toolsMenu").hidden) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  toolsMenuClose(true);
+}, true);
+// arrows walk the visible rows, wrapping; ArrowDown on the closed button opens
+$("toolsWrap").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  if ($("toolsMenu").hidden) toolsMenuOpen();
+  const btns = TOOLS_MENU_ITEMS.map(([id]) => $(id)).filter(b => !b.hidden);
+  if (!btns.length) return;
+  const i = btns.indexOf(document.activeElement);
+  btns[toolsMenuNextIdx(btns.length, i, e.key === "ArrowDown" ? 1 : -1)].focus();
+});
+// =============== end TOOLS MENU ============================================
+
+// =============== MY PROJECTS: the landing page =============================
+// A card per plan set on this box, in place of the workbench, whenever no
+// document is open - and reachable any time from the "Projects" link on the
+// brand block. A pure VIEW toggle: one class on <main> hides the workbench
+// columns via CSS, so nothing here touches state.job, any panel's hidden
+// attribute, or a single counted quantity, and the workbench keeps its full
+// state (zoom, selection, edits) while out of sight. Opening a card goes
+// through the SAME server route and applyOpened() path the recents <select>
+// uses; the card's remove control reuses the DELETE /api/job flow behind
+// #docRemoveBtn, with the same confirm wording.
+
+// PROJECTS-PURE-BEGIN --------------------------------------------------------
+// Pure presentation helpers: no DOM, no state.*, no fetch, so
+// tests/test_projects_view.js can run them under node.
+function projMetaLine(pages, detected, approved) {
+  const p = pages + " page" + (pages === 1 ? "" : "s");
+  const d = pages && detected >= pages ? "all detected"
+    : detected ? detected + " detected" : "not detected";
+  const a = approved ? " · " + approved + " approved" : "";
+  return p + " · " + d + a;
+}
+// both arguments in unix SECONDS (the server sends st_mtime)
+function projAgo(nowS, whenS) {
+  const s = Math.max(0, nowS - whenS);
+  if (s < 90) return "just now";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400 * 2) return Math.round(s / 3600) + " h ago";
+  if (s < 86400 * 60) return Math.round(s / 86400) + " d ago";
+  const dt = new Date(whenS * 1000);
+  const p2 = (n) => String(n).padStart(2, "0");
+  return dt.getFullYear() + "-" + p2(dt.getMonth() + 1) + "-" + p2(dt.getDate());
+}
+// label shared demo plans only when the list also holds the user's own -
+// same rule as the recents <select> (one heading over one list is noise)
+function projShowsSharedBadge(rows) {
+  return rows.some(r => r.mine) && rows.some(r => r.shared);
+}
+// the header line under the H1: silent below the cap, explicit above it
+function projCountLine(shown, total) {
+  if (!shown) return "";
+  return total > shown ? "showing " + shown + " of " + total : String(shown);
+}
+// PROJECTS-PURE-END ----------------------------------------------------------
+
+function pvIsOpen() { return !$("projectsView").hidden; }
+
+function showProjects(on) {
+  on = !!on;
+  if (on === pvIsOpen()) {
+    if (on) loadProjects();          // already there: refresh the cards
+    return;
+  }
+  toolsMenuClose();                  // a floating menu belongs to no view
+  $("projectsView").hidden = !on;
+  document.querySelector("main").classList.toggle("pv-open", on);
+  $("pvBack").hidden = !(on && state.job);
+  if (on) {
+    loadProjects();
+  } else {
+    // the canvas buffer went 0x0 while its column was display:none; resync
+    // it, and refit ONLY if the fit was never computed (image finished
+    // loading while hidden) - the operator's zoom and pan must survive the
+    // round trip untouched
+    syncBuffer();
+    if (state.img && !(state.view.k > 0)) { fitView(); draw(); }
+  }
+  try {
+    history.replaceState(null, "",
+      on ? "#projects" : location.pathname + location.search);
+  } catch (err) { /* the hash is a convenience, never a requirement */ }
+}
+
+async function loadProjects() {
+  let d = null;
+  try {
+    const r = await fetch("/api/projects");
+    if (r.ok) d = await r.json();
+  } catch (e) { /* reported below */ }
+  if (!pvIsOpen()) return;           // the operator moved on mid-fetch
+  if (!d || !Array.isArray(d.projects)) {
+    $("pvGrid").innerHTML = "";
+    $("pvCount").textContent = "";
+    const empty = $("pvEmpty");
+    empty.hidden = false;
+    empty.textContent = "Could not load the plan list — reload to retry.";
+    return;
+  }
+  renderProjects(d);
+}
+
+function renderProjects(d) {
+  const grid = $("pvGrid"), empty = $("pvEmpty");
+  const rows = d.projects;
+  $("pvCount").textContent = projCountLine(rows.length, d.total);
+  grid.innerHTML = "";
+  if (!rows.length) {
+    empty.hidden = false;
+    empty.textContent =
+      "No plans yet — drop a PDF anywhere or use Upload.";
+    return;
+  }
+  empty.hidden = true;
+  const badge = projShowsSharedBadge(rows);
+  const nowS = Date.now() / 1000;
+  for (const r of rows) grid.appendChild(pvCard(r, badge, nowS));
+}
+
+function pvCard(r, sharedBadge, nowS) {
+  const card = document.createElement("div");
+  card.className = "pv-card" + (r.job_id === state.job ? " pv-current" : "");
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.title = "Open " + r.name;
+
+  const thumb = document.createElement("div");
+  thumb.className = "pv-thumb";
+  if (r.has_thumb) {
+    // the page strip's own 28-dpi cache - the server serves the PNG it
+    // already has, so a page of cards costs no fresh renders
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = url(`/api/job/${r.job_id}/page/0/image?dpi=28`);
+    thumb.appendChild(img);
+  } else {
+    // never rendered on this box: requesting the image would rasterize a
+    // page just to draw a card, so a quiet placeholder instead
+    const ph = document.createElement("span");
+    ph.className = "pv-ph";
+    ph.textContent = "not opened yet";
+    thumb.appendChild(ph);
+  }
+  card.appendChild(thumb);
+
+  const name = document.createElement("div");
+  name.className = "pv-name";
+  name.textContent = r.name;
+  name.title = r.name;
+  const meta = document.createElement("div");
+  meta.className = "pv-meta";
+  meta.textContent = projMetaLine(r.pages, r.detected, r.approved || 0);
+  const when = document.createElement("div");
+  when.className = "pv-when";
+  when.textContent = "last activity " + projAgo(nowS, r.when);
+  card.append(name, meta, when);
+
+  if (sharedBadge && r.shared) {
+    const b = document.createElement("span");
+    b.className = "pv-badge";
+    b.textContent = "shared demo";
+    card.appendChild(b);
+  }
+  if (r.deletable) {
+    const x = document.createElement("button");
+    x.className = "pv-x";
+    x.textContent = "×";
+    x.title = "Remove “" + r.name + "” from this server — "
+      + "the uploaded PDF and everything detected from it";
+    x.onclick = (e) => { e.stopPropagation(); pvRemove(r); };
+    card.appendChild(x);
+  }
+  card.onclick = () => pvOpenJob(r);
+  card.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pvOpenJob(r); }
+  };
+  return card;
+}
+
+async function pvOpenJob(r) {
+  if (r.job_id === state.job) {
+    // already the open document: a plain view switch, so in-progress review
+    // work (splits, exclusions, zoom) survives instead of being reloaded away
+    showProjects(false);
+    return;
+  }
+  setStatus("opening…", "busy");
+  try {
+    // the same route and the same applyOpened() the recents <select> uses
+    const resp = await fetch(`/api/job/${r.job_id}/open`);
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return setStatus(e.detail || `could not open (${resp.status})`, "err");
+    }
+    applyOpened(await resp.json());   // applyOpened leaves the projects view
+  } catch (e) {
+    setStatus("could not open — the server did not answer", "err");
+  }
+}
+
+async function pvRemove(r) {
+  // the same server flow and the same words as the header's "Remove from
+  // server" button - one deletion vocabulary, not two
+  if (!confirm("Remove \"" + r.name + "\" from this server?\n\n"
+    + "This permanently deletes the uploaded PDF and everything detected from "
+    + "it — " + r.detected + " of " + r.pages + " page(s) already "
+    + "detected, plus any approved exports and report for it.\n\n"
+    + "This cannot be undone.")) return;
+  setStatus("removing…", "busy");
+  try {
+    const resp = await fetch("/api/job/" + r.job_id, { method: "DELETE" });
+    if (!resp.ok) {
+      const e = await resp.json().catch(() => ({}));
+      return setStatus(e.detail || ("could not remove it (" + resp.status + ")"), "err");
+    }
+    const j = await resp.json();
+    if (r.job_id === state.job) {
+      // the document on the hidden workbench no longer exists; a clean
+      // reload is the only honest state (same choice as #docRemoveBtn)
+      location.reload();
+      return;
+    }
+    setStatus("removed " + j.name);
+    loadProjects();
+    loadRecent();                    // the recents <select> lists it too
+  } catch (e) {
+    setStatus("could not remove it — the server did not answer", "err");
+  }
+}
+
+$("projectsLink").onclick = (e) => {
+  e.preventDefault();
+  if (pvIsOpen()) {
+    if (state.job) showProjects(false);   // second click toggles back
+    return;
+  }
+  showProjects(true);
+};
+$("pvBack").onclick = () => showProjects(false);
+
+// While the projects view is up the workbench is INVISIBLE, so none of its
+// single-key shortcuts may reach it - Delete on a forgotten selection would
+// remove a line nobody can see. Capture + stopImmediatePropagation, the same
+// pattern as the tool handlers; browser defaults are left alone. Esc is
+// repurposed: with a sheet open it returns to the sheet.
+const PV_SWALLOW_KEYS = new Set(["m", "f", "l", "s", "x", "e", "d", "i",
+                                 "j", "r", "?", "Delete", "Backspace"]);
+addEventListener("keydown", (e) => {
+  if (!pvIsOpen() || typing()) return;
+  if (e.key === "Escape") {
+    e.stopImmediatePropagation();
+    if (state.job) { e.preventDefault(); showProjects(false); }
+    return;
+  }
+  if (PV_SWALLOW_KEYS.has(e.key) || PV_SWALLOW_KEYS.has(e.key.toLowerCase()))
+    e.stopImmediatePropagation();
+}, true);
+
+// ---------- boot: land on Projects when nothing is open --------------------
+if (!state.job) showProjects(true);
+// =============== end MY PROJECTS ===========================================

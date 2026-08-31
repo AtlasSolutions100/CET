@@ -1134,3 +1134,83 @@ button.ghost:hover { color: var(--text); background: var(--hover); }
 .ew-map-legend .eml-bar { width: 92px; height: 9px; border-radius: 4px;
   background: linear-gradient(90deg, rgba(43,98,209,.95), rgba(43,98,209,0) 48%,
     rgba(232,150,34,0) 52%, rgba(232,150,34,.95)); border: 1px solid var(--line, #333); }
+
+/* ---------- TOOLS dropdown: the header's tool buttons, one entry point ----
+   The nine tool buttons MOVED into #toolsMenu unchanged (ids, handlers,
+   hidden bookkeeping), so [hidden]{display:none!important} above already
+   turns an unavailable tool into an absent menu row. The dot marks a tool
+   whose panel is open right now (panels' hidden state is the truth;
+   toolsMenuSync() in app.js re-reads it every time the menu opens). */
+.tools-wrap { position: relative; }
+#toolsBtn[aria-expanded="true"] { background: var(--hover); border-color: var(--accent); }
+.tools-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120;
+  min-width: 200px; max-width: min(320px, calc(100vw - 16px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 5px; box-shadow: 0 14px 40px rgba(0,0,0,.45);
+  display: flex; flex-direction: column; gap: 2px; }
+/* flipped right when a left-anchored menu would run off a narrow window */
+.tools-menu.flip { left: auto; right: 0; }
+.tools-menu button { display: block; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  padding: 7px 10px; }
+.tools-menu button:hover, .tools-menu button:focus-visible {
+  background: var(--hover); border-color: var(--line); }
+/* every row reserves the dot's slot so labels align; only .t-on paints it */
+.tools-menu button::before { content: ""; display: inline-block; width: 6px;
+  height: 6px; border-radius: 50%; background: transparent; margin-right: 8px;
+  vertical-align: 1px; }
+.tools-menu button.t-on::before { background: var(--accent); }
+.tools-note { color: var(--dim); font-size: 11px; line-height: 1.4;
+  padding: 4px 10px 6px; max-width: 230px; }
+:root[data-theme="light"] .tools-menu { box-shadow: 0 14px 40px rgba(0,0,0,.18); }
+
+/* ---------- MY PROJECTS: the landing page --------------------------------
+   main.pv-open hides the workbench columns wholesale; nothing else about
+   them changes, so the sheet on the canvas survives a round trip through
+   the projects view untouched. */
+main.pv-open #pageStrip, main.pv-open #sidebar, main.pv-open #stage {
+  display: none !important; }
+.projects-view { flex: 1; overflow-y: auto; padding: 26px 32px 40px;
+  background: var(--stage); }
+.pv-head { display: flex; align-items: baseline; gap: 12px;
+  max-width: 1100px; margin: 0 auto 14px; }
+.pv-head h1 { font-family: var(--mono); font-size: 15px;
+  text-transform: uppercase; letter-spacing: .12em; color: var(--text); }
+.pv-count { color: var(--dim); font-size: 11px; }
+.pv-head .mini { margin-left: auto; }
+.pv-grid { display: grid; gap: 14px; max-width: 1100px; margin: 0 auto;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+.pv-card { position: relative; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  padding: 0 0 10px; cursor: pointer; }
+.pv-card:hover, .pv-card:focus-visible { border-color: var(--accent); }
+.pv-card.pv-current { border-color: var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent); }
+.pv-thumb { width: 100%; height: 120px; background: var(--chip);
+  display: flex; align-items: center; justify-content: center;
+  border-bottom: 1px solid var(--line); }
+.pv-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.pv-ph { font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--dim); }
+.pv-name { font-weight: 600; font-size: 12.5px; padding: 9px 12px 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pv-meta { color: var(--dim); font-size: 11px; padding: 0 12px; }
+.pv-when { color: var(--dim); font-family: var(--mono); font-size: 10px;
+  padding: 3px 12px 0; }
+.pv-badge { position: absolute; top: 8px; left: 8px; font-size: 9px;
+  font-family: var(--mono); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 1px 6px; }
+/* remove-from-server, card form. Same server flow and same confirm wording
+   as #docRemoveBtn; shown only where /api/projects said deletable. */
+.pv-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px;
+  padding: 0; line-height: 1; border-radius: 50%; font-size: 13px;
+  color: var(--dim); background: var(--panel); border: 1px solid var(--line); }
+.pv-x:hover { background: #b3362c; border-color: #b3362c; color: #fff; }
+.pv-empty { max-width: 1100px; margin: 0 auto; padding: 60px 20px;
+  text-align: center; color: var(--dim); font-size: 13px; }
+/* the Projects link rides the brand block, third line, quiet but present */
+.projects-link { display: block; font-size: 9px; font-family: var(--mono);
+  letter-spacing: .18em; text-transform: uppercase; color: var(--accent);
+  text-decoration: none; margin-top: 2px; }
+.projects-link:hover { text-decoration: underline; }

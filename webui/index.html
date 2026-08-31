@@ -9,7 +9,7 @@
 <body>
 <div id="betaBanner" class="beta-banner">BETA - CORE Takeoff is still being refined. Automated detection can be wrong, so check every quantity against the drawings.</div>
 <header>
-  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span></div>
+  <div class="brand">C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a></div>
   <select id="sampleSel"><option value="">Open sample plan…</option></select>
   <input id="pathInput" placeholder="…or paste a PDF path" spellcheck="false">
   <button id="openBtn">Open</button>
@@ -20,6 +20,26 @@
   <button id="docRemoveBtn" class="danger" hidden>Remove from server</button>
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
+  <!-- TOOLS. One entry point for the nine calculators/readers that used to
+       sit here as ten equal-weight buttons. The buttons themselves MOVED in
+       unchanged - same ids, same handlers, same hidden bookkeeping by
+       loadResult() - so a hidden button is simply an absent menu row.
+       DETECT LINES stays outside: it is the workflow, not a tool. -->
+  <div class="tools-wrap" id="toolsWrap">
+    <button id="toolsBtn" aria-haspopup="true" aria-expanded="false" title="Calculators and document readers. Everything in here opens a panel you drive; nothing runs on its own.">Tools &#9662;</button>
+    <div id="toolsMenu" class="tools-menu" hidden>
+      <button id="aiBtn" hidden>Analyze</button>
+      <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
+      <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
+      <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
+      <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
+      <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes">Across sheets</button>
+      <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
+      <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
+      <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
+      <div class="tools-note" id="toolsNote">Sheet tools appear once a page has detected lines.</div>
+    </div>
+  </div>
   <div id="status" class="status"></div>
   <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
   <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
@@ -27,15 +47,6 @@
   <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
   <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
   <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
-  <button id="aiBtn" hidden>Analyze</button>
-  <button id="ewBtn" hidden title="Cut &amp; fill volumes from labeled contours">Earthwork</button>
-  <button id="trBtn" hidden title="Trench excavation + bedding volumes for a pipe run">Trench</button>
-  <button id="symBtn" hidden title="Count repeated symbols (windows, fixtures, grid bubbles)">Count</button>
-  <button id="rollBtn" hidden title="Every mark code across the whole document, per sheet and in total">Whole job</button>
-  <button id="xsBtn" hidden title="Labels that appear on more than one APPROVED sheet, with the footage each sheet contributes">Across sheets</button>
-  <button id="coBtn" hidden title="The sheet's own callouts: every leader paired with its text and the line it points at">Callouts</button>
-  <button id="stBtn" hidden title="Building footprint: mass excavation, perimeter layback dig + backfill, slab prep">Structure</button>
-  <button id="legendBtn" title="Read a dedicated LEGEND sheet and use its trade names as label suggestions">Legend sheet</button>
   <button id="memBtn" class="mem-btn" hidden></button>
   <button id="themeBtn" title="Switch between dark and paper theme">&#9680;</button>
   <input id="legendPath" type="hidden">
@@ -55,6 +66,21 @@
   <div class="up-pct" id="upPct">0%</div>
 </div>
 <main>
+  <!-- MY PROJECTS: the landing page. Shown in place of the workbench when no
+       document is open, and reachable any time from the "Projects" link on
+       the brand. A pure view toggle - the class main.pv-open hides the three
+       workbench columns via CSS, so no subsystem's own `hidden` writes are
+       fought over and the workbench keeps its full state while out of sight.
+       Built by loadProjects()/renderProjects() in app.js from /api/projects. -->
+  <div id="projectsView" class="projects-view" hidden>
+    <div class="pv-head">
+      <h1>Plans on this server</h1>
+      <span id="pvCount" class="pv-count"></span>
+      <button id="pvBack" class="mini" hidden>Back to the sheet</button>
+    </div>
+    <div id="pvGrid" class="pv-grid"></div>
+    <div id="pvEmpty" class="pv-empty" hidden></div>
+  </div>
   <nav id="pageStrip" class="page-strip" hidden>
     <div class="strip-head">
       <button id="stripToggle" class="mini strip-toggle" title="Collapse the page strip">&#10094;</button>

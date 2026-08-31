@@ -682,6 +682,75 @@ def reopen_job(job_id: str):
             "sizes": sizes, "name": _display_name(src)}
 
 
+@app.get("/api/projects")
+def list_projects(request: Request):
+    """The landing page's card grid: every plan set this account may see,
+    enriched with what a card needs at a glance.
+
+    Same visibility rule as /api/recent (yours plus the shared set; staff and
+    single-password mode see everything) and the same handle - the job id,
+    never a filesystem path, so it is safe on a hosted box.
+
+    Per job: `detected` counts p<N>_result.json in the job dir exactly as
+    /api/recent does; `approved` counts p<N>_elements.json, which only an
+    approve writes, so counting them IS the approved-page count with no new
+    bookkeeping; `when` is the job DIRECTORY's mtime (last engine activity:
+    a detect, a render, an approve), falling back to the PDF's own mtime for
+    a job that was registered but never opened; `has_thumb` says whether the
+    page-0 strip thumbnail (p0_28.png, the page-strip's own 28-dpi cache) is
+    already on disk - the UI only puts an <img> on cards that have one, so
+    listing 60 jobs never triggers 60 fresh page renders.
+
+    The reply says its own coverage ({total, projects}): if the list is ever
+    longer than the cap, the landing page can say "showing N of M" instead of
+    silently reading as "my plans are gone".
+    """
+    me = _who(request)
+    staff = _is_staff(request)
+    out = []
+    with JOBS_LOCK:
+        items = list(JOBS.items())
+    for jid, j in items:
+        owner = j.get("owner")
+        if not staff and owner is not None and owner != me:
+            continue
+        src = Path(j.get("path", ""))
+        try:
+            if not src.exists():
+                continue        # the file moved; a dead card helps nobody
+            when = src.stat().st_mtime
+        except OSError:
+            continue
+        d = JOBS_DIR / jid
+        detected = 0
+        approved = 0
+        has_thumb = False
+        try:
+            if d.is_dir():
+                when = max(when, d.stat().st_mtime)
+                detected = len(list(d.glob("p*_result.json")))
+                approved = len(list(d.glob("p*_elements.json")))
+                has_thumb = (d / "p0_28.png").exists()
+        except OSError:
+            pass
+        out.append({
+            "job_id": jid,
+            "name": _display_name(src),
+            "pages": int(j.get("pages") or 0),
+            "detected": detected,
+            "approved": approved,
+            "when": when,
+            "has_thumb": has_thumb,
+            "uploaded": bool(_UPLOAD_PREFIX.match(src.name)),
+            "owner": owner,
+            "mine": owner is not None and owner == me,
+            "shared": owner is None,
+            "deletable": staff or (owner == me),
+        })
+    out.sort(key=lambda r: -r["when"])
+    return {"total": len(out), "projects": out[:200]}
+
+
 # FEEDBACK. Replaces a phone call. Stored as JSONL beside the job store so it
 # survives a redeploy the way the detection cache does, with no new service and
 # no new credential; staff pull it as CSV and triage in a spreadsheet.
