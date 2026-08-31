@@ -2269,3 +2269,59 @@ main.sv-open ~ .status-bar .sb-facts { display: none; }
 .scope-head .mini.x:hover { color: var(--text); border-color: var(--line);
   background: var(--hover); }
 #scopeToggle.active { border-color: var(--t-accent); color: var(--t-accent); }
+/* ---------- SUB-ITEMS: operator-declared components ----------------------
+   A measured line item carries components (rebar under concrete, forms under
+   an edge). They nest under their parent in the SAME .item-row grid, so the
+   number columns still line up and a column of quantities can be read down.
+   Everything here is drawn from the shipped tokens; the only thing that
+   separates a component from a measurement visually is an indent, a rule down
+   the left, and the word "declared" - and the word is what a screenshot, a
+   theme swap and a colour-blind reader all still have. */
+.item-row.sub-row { padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--t-border-strong); }
+.item-row.sub-row .lab { border-bottom: none; }
+.sub-lab { display: flex; align-items: center; gap: var(--t-sp-1);
+  min-width: 0; }
+.sub-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; }
+/* the provenance chip - the same word the CSV and the export carry */
+.sub-tag { flex: 0 0 auto; padding: 0 6px; border-radius: var(--t-r-pill);
+  background: var(--t-warn-bg); color: var(--t-warn);
+  border: 1px solid var(--t-warn); font-size: var(--t-fs-xs);
+  line-height: 1.5; letter-spacing: .02em; }
+.sub-del { flex: 0 0 auto; margin-left: auto; line-height: 1; }
+.item-row input.sub-qty { border-style: dashed; }
+.item-row input.sub-qty.sub-factor { border-style: solid;
+  border-color: var(--t-warn); }
+
+/* the sentences under a component: its basis, its recompute, the roll-up */
+.dup-note.sub-note, .dup-note.sub-basis, .dup-note.sub-recalc {
+  margin-left: 14px; }
+.dup-note.sub-basis b, .dup-note.sub-recalc b { color: var(--t-text); }
+.dup-note.sub-recalc { border-color: var(--t-warn);
+  background: var(--t-warn-bg); }
+.dup-note.sub-recalc b { color: var(--t-warn); }
+.dup-note.sub-dup { border-color: var(--t-info);
+  background: var(--t-info-bg); }
+.dup-note.sub-note { margin-left: 0; }
+.dup-note.sub-dormant, .dup-note.sub-undo { margin-left: 0; }
+
+/* "+ add sub-item" - quiet until it is wanted */
+.sub-add-line { padding: 0 0 6px 12px; }
+.sub-add-line .sub-add { color: var(--t-text-faint); }
+.sub-add-line .sub-add:hover { color: var(--t-accent);
+  border-color: var(--t-accent); }
+.sub-add-line.open { padding-bottom: var(--t-sp-2); }
+.sub-edit { display: grid;
+  grid-template-columns: 1fr 1fr; gap: var(--t-sp-1);
+  padding: var(--t-sp-2); border-radius: var(--t-r-2);
+  border: 1px solid var(--t-accent); background: var(--t-surface-2); }
+.sub-edit .sub-e-name { grid-column: 1 / -1; }
+.sub-edit input, .sub-edit select { width: 100%; padding: 2px 4px;
+  font-size: var(--t-fs-xs); }
+.sub-edit .sub-e-add { background: var(--t-accent-deep);
+  border-color: var(--t-accent); color: var(--t-accent-ink); font-weight: 600; }
+
+/* the bid view's read-only mirror of the same components */
+.bid-member.bid-sub { padding-left: var(--t-sp-4); opacity: .92; }
+.bid-member.bid-sub .bm-label { color: var(--t-text-dim); }

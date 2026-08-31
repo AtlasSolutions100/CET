@@ -6440,6 +6440,351 @@ function sheetOverCapture() {
   return len > 0 ? { len, gap, pick } : null;
 }
 
+// ================= SUB-ITEMS - operator-declared components ===============
+// An estimator does not bid a measured line; they bid a measured line plus
+// what it carries. A concrete flatwork item carries rebar, mesh, forms,
+// finishing and control joints - each with its own unit, quantity and price -
+// and the item's cost is its own plus its components'. This is that.
+//
+// THREE THINGS THIS BLOCK EXISTS TO GUARANTEE, in the order they can hurt:
+//
+//  1. COUNTED EXACTLY ONCE. A component reaches the takeoff total through its
+//     parent's rolled-up cost and through no other path. Two takeoff rows can
+//     normalise to the same parent key (two labels differing only in case), so
+//     subRollupItems names ONE owner by an explicit ranking and hands every
+//     other claimant `dupOf` to print, rather than attaching the same
+//     components to both and doubling the money in silence.
+//  2. NEVER MISTAKEN FOR A MEASUREMENT. A component is typed, not detected.
+//     It carries the app's existing provenance word - "reviewer", the same
+//     token server.py writes as `qty_set_by` (_BY_REVIEWER) - into the panel,
+//     the bid view, the CSV and the approve payload. No second vocabulary.
+//  3. A FACTOR THAT MOVES SAYS SO. A per-parent-unit component recomputes the
+//     moment the measured parent quantity changes. subRecomputed compares the
+//     parent quantity the row last followed with the one in force now and
+//     hands back both, so the change is disclosed at the moment it happens
+//     instead of a number quietly becoming a different number.
+//
+// tests/test_subitems.js evals ONLY the block between the SUBITEM-PURE
+// markers - keep it pure (no DOM, no state.*, no store.*), the same technique
+// as UNDO-CORE / WZ-MATH / TRENCH-MATH / BIDVIEW-RULES.
+// SUBITEM-PURE-BEGIN
+
+const SUB_MAX = 40;        // components per parent - a bid line, not a BOM
+const SUB_NAME_MAX = 60;
+const SUB_UNIT_MAX = 8;    // server.py approve caps a unit at 8 too
+// The provenance word. Deliberately the string server.py already writes as
+// _BY_REVIEWER / qty_set_by, so the panel, the CSV, the export and the report
+// all say the same thing about who produced the number.
+const SUB_SET_BY = "reviewer";
+
+// The parent key for a takeoff row: trim + uppercase, the SAME normalisation
+// tradeKey() and bidKey() use. A component therefore follows its label from
+// sheet to sheet exactly as that label's price, trade and bid bucket already
+// do - which is the whole reason a sub-item is filed per document-item and
+// not per page-geometry.
+function subParentKey(label) {
+  return String(label == null ? "" : label).trim().toUpperCase();
+}
+
+function subNum(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// One stored record, cleaned. Anything unusable comes back null rather than
+// letting a NaN reach a dollar figure: a blank-rendering undefined still adds
+// NaN to a total, and a total that reads NaN is the GOOD case - the bad case
+// is a component silently worth zero inside a bid.
+function subClean(rec) {
+  if (!rec || typeof rec !== "object") return null;
+  const name = String(rec.name == null ? "" : rec.name).trim().slice(0, SUB_NAME_MAX);
+  if (!name) return null;
+  const unit = (String(rec.unit == null ? "" : rec.unit).trim() || "EA")
+    .slice(0, SUB_UNIT_MAX);
+  const mode = rec.mode === "factor" ? "factor" : "fixed";
+  const qty = subNum(rec.qty), factor = subNum(rec.factor), price = subNum(rec.price);
+  if (mode === "factor" ? !(factor > 0) : !(qty > 0)) return null;
+  return {
+    id: String(rec.id == null ? "" : rec.id),
+    name, unit, mode,
+    qty: mode === "fixed" ? qty : null,
+    factor: mode === "factor" ? factor : null,
+    price: price !== null && price > 0 ? price : null,
+    // the parent quantity this row last followed; null on a fixed row and on
+    // a factor row that has not yet been rendered against a measurement
+    base: mode === "factor" ? subNum(rec.base) : null,
+  };
+}
+
+function subCleanList(list) {
+  const out = [];
+  for (const r of Array.isArray(list) ? list : []) {
+    const c = subClean(r);
+    if (c) out.push(c);
+    if (out.length >= SUB_MAX) break;
+  }
+  return out;
+}
+
+// The component's quantity. FIXED is what the operator typed. FACTOR is a
+// rate against the parent's own quantity in the parent's own unit ("1.15 lb
+// of rebar per SF of slab", "1 LF of form per LF of edge"), so it moves the
+// moment the measurement does.
+function subQtyOf(rec, parentQty) {
+  if (!rec) return null;
+  if (rec.mode !== "factor") return rec.qty;
+  if (!Number.isFinite(parentQty)) return null;
+  return rec.factor * parentQty;
+}
+
+// One decimal, because that is already this app's canonical precision in four
+// independent places: takeoffCsv's toFixed(1), q1() in dupNote, qtyBoxValue(),
+// and server.py's round(x, 1). What the panel prints, what the CSV carries and
+// what the row is priced on are ONE number - there is no more precise figure
+// hiding behind the display.
+function subRound(v) {
+  return Number.isFinite(v) ? Math.round(v * 10) / 10 : null;
+}
+
+function subExtOf(rec, parentQty) {
+  const q = subRound(subQtyOf(rec, parentQty));
+  if (!Number.isFinite(q) || !rec || !rec.price) return null;
+  return q * rec.price;
+}
+
+// Did this factor row's parent quantity move since the row last followed it?
+// A non-null answer means the component's quantity RECOMPUTED, and the caller
+// MUST say so on screen - never change a quantity in silence.
+function subRecomputed(rec, parentQty) {
+  if (!rec || rec.mode !== "factor") return null;
+  if (!Number.isFinite(parentQty) || !Number.isFinite(rec.base)) return null;
+  if (subRound(rec.base) === subRound(parentQty)) return null;
+  return { from: rec.base, to: parentQty,
+           wasQty: subRound(rec.factor * rec.base),
+           nowQty: subRound(rec.factor * parentQty) };
+}
+
+// THE ROLL-UP. The one place the counted-exactly-once invariant lives.
+//
+//   items    [{key, qty, ext}] - every takeoff row, FLAT, in display order.
+//            `ext` is the row's OWN extended cost (its quantity x its own
+//            price), exactly what computeTakeoffRows already computed.
+//   subsFor  (key) -> the cleaned records filed under that parent key.
+//
+// Returns one row per item, in the same order, plus three totals with the
+// invariant total === ownTotal + subTotal === the sum of every row's rowExt.
+//
+// OWNERSHIP. Two labels can normalise to one key. Attaching the components to
+// both rows would double the money with no symptom - the shape CLAUDE.md
+// section 5 exists to stop - so exactly one row owns them, chosen by an
+// EXPLICIT ranking (largest quantity first, ties broken by first appearance:
+// deterministic, and the dominant row is the one an estimator is looking at),
+// and every other claimant gets `dupOf` naming the owner, so the panel can say
+// where its components went instead of showing none and explaining nothing.
+function subRollupItems(items, subsFor) {
+  const list = Array.isArray(items) ? items : [];
+  const owner = new Map();
+  list.forEach((it, i) => {
+    const k = subParentKey(it.key);
+    const q = Number.isFinite(it.qty) ? it.qty : -Infinity;
+    const cur = owner.get(k);
+    if (!cur || q > cur.q) owner.set(k, { i, q });
+  });
+  const rows = [];
+  let ownTotal = 0, subTotal = 0;
+  list.forEach((it, i) => {
+    const k = subParentKey(it.key);
+    const own = Number.isFinite(it.ext) ? it.ext : 0;
+    const owns = owner.get(k).i === i;
+    const mine = owns ? (subsFor(k) || []) : [];
+    const subs = [];
+    let sx = 0;
+    for (const rec of mine) {
+      const ext = subExtOf(rec, it.qty);
+      if (Number.isFinite(ext)) sx += ext;
+      subs.push({ rec, qty: subRound(subQtyOf(rec, it.qty)),
+                  ext: Number.isFinite(ext) ? ext : null,
+                  recomputed: subRecomputed(rec, it.qty) });
+    }
+    ownTotal += own; subTotal += sx;
+    rows.push({ key: k, ownExt: own, subs, subExt: sx, rowExt: own + sx,
+                dupOf: owns ? null : list[owner.get(k).i].key });
+  });
+  return { rows, ownTotal, subTotal, total: ownTotal + subTotal };
+}
+
+// Deleting a parent takes its components with it. `all` is keyed by the
+// NORMALISED parent key. Returns the surviving map and the keys dropped, so
+// the caller can say how many typed rows it just destroyed - a cascade that
+// reports nothing is a cascade that ate work.
+function subCascade(all, keys) {
+  const drop = new Set((keys || []).map(subParentKey));
+  const kept = {}, dropped = [];
+  for (const k of Object.keys(all || {})) {
+    if (drop.has(k)) { dropped.push(k); continue; }
+    kept[k] = all[k];
+  }
+  return { kept, dropped: dropped.sort() };
+}
+
+// Stored keys with no row in the takeoff currently on screen. They are NOT
+// deleted - a label lives on other sheets of the same document, and a page
+// flick must not eat an evening of typing - but they are counted and named,
+// because a component that is stored and not counted must never be invisible.
+function subDormantKeys(all, liveKeys) {
+  const live = new Set((liveKeys || []).map(subParentKey));
+  return Object.keys(all || {})
+    .filter((k) => !live.has(k) && (all[k] || []).length)
+    .sort();
+}
+
+// The label a component travels under in the approve payload. server.py's
+// item builder copies a FIXED set of fields out of each extra_item, so a
+// structured parent link does not survive it; the link therefore goes in the
+// NAME, which does survive, capped at the server's own 80-character label
+// limit (approve: raw_label[:80]). The PARENT is what gets trimmed, never the
+// component name - the component is the row's own identity.
+function subExportLabel(parentLabel, name, cap) {
+  const lim = cap > 0 ? cap : 80;
+  const n = String(name == null ? "" : name).trim();
+  const p = String(parentLabel == null ? "" : parentLabel).trim();
+  const open = " (sub-item of ", close = ")";
+  const room = lim - n.length - open.length - close.length;
+  if (room < 4) return n.slice(0, lim);
+  return n + open + (p.length <= room ? p : p.slice(0, room - 1) + "…") + close;
+}
+
+// One CSV line for a component, in the column order takeoffCsv() writes.
+// Kept here, beside the roll-up, so the export SHAPE is pinned by the same
+// test as the arithmetic: a component that loses its provenance column on the
+// way to a spreadsheet is a typed number wearing a measured number's clothes.
+function subCsvCells(parentLabel, trade, s, unitCol) {
+  const q = Number.isFinite(s.qty) ? s.qty : null;
+  return [
+    "  ↳ " + s.rec.name,                            // label, visibly nested
+    trade || "",                                         // the PARENT's trade
+    q === null ? "" : q.toFixed(1) + " " + s.rec.unit,   // count/EA column
+    "",                          // feet column: never - this was not measured
+    s.rec.price === null ? "" : s.rec.price,             // $/ft column
+    Number.isFinite(s.ext) ? s.ext.toFixed(2) : "",      // ext $
+    "", "",                                              // union / drawn twice
+    SUB_SET_BY,                                          // qty set by
+    parentLabel,                                         // sub-item of
+  ];
+}
+// SUBITEM-PURE-END
+
+// ---- where a sub-item lives -------------------------------------------
+// PERSISTENCE, and why it is `store` and not the calcstate sidecar.
+//
+// Two records already exist for a takeoff row, and they are scoped
+// differently on purpose. priceKey()/tradeKey() are label-keyed and page-free
+// (a rate is a rate on every sheet); the calcstate sidecar is
+// /page/{page}/calcstate and holds the INPUTS behind a calculator - surfaces,
+// elevations, outlines - things that only mean something against THIS page's
+// geometry.
+//
+// A sub-item is the first kind, not the second. "This concrete carries #4
+// rebar at 1.15 lb/SF" is a statement about the ITEM, and it must be the same
+// statement on sheet 3 and sheet 7 of the same document; filing it per page
+// would give the same concrete a different rebar spec on every sheet, which
+// is the lost-prune bug in reverse. So: `store`, doc-scoped, label-keyed,
+// page-free - the exact scoping bidKey() uses, and it therefore also inherits
+// the Saved-work button's count, its tooltip and its "forget" paths for free.
+//
+// It is NOT priceKey's scoping (bare, global across documents): a component
+// list is far more document-specific than a unit rate, and one job's rebar
+// schedule appearing on the next job's concrete would be worse than retyping.
+function subKey(label) { return docKey() + "::sub::" + subParentKey(label); }
+const SUB_PREFIX_TAIL = "::sub::";
+
+function subLoad(label) {
+  try { return subCleanList(JSON.parse(store.getItem(subKey(label)) || "[]")); }
+  catch (e) { return []; }          // corrupt entry: no components, not a throw
+}
+
+function subSave(label, recs) {
+  const k = subKey(label);
+  if (recs && recs.length) store.setItem(k, JSON.stringify(recs));
+  else store.removeItem(k);
+}
+
+// Every component list stored for the OPEN DOCUMENT, keyed by parent key.
+// Read straight off sessionMem, which is the store's own mirror, so this sees
+// exactly what getItem would return key by key.
+function subAllForDoc() {
+  const pre = docKey() + SUB_PREFIX_TAIL;
+  const out = {};
+  for (const k of sessionMem.keys()) {
+    if (!k.startsWith(pre)) continue;
+    try {
+      const v = subCleanList(JSON.parse(sessionMem.get(k) || "[]"));
+      if (v.length) out[k.slice(pre.length)] = v;
+    } catch (e) { /* corrupt entry: not listed, not thrown */ }
+  }
+  return out;
+}
+
+// Recomputes still owed to the operator's eye: record id -> the move.
+// Session-only, and deliberately NOT stored - it is a notification, not a
+// decision, and a reload has already shown the new number as the number.
+const subMoved = new Map();
+
+// ids only have to be unique inside one parent's list
+let _subSeq = 0;
+function subNewId() { return "s" + (Date.now().toString(36)) + (_subSeq++).toString(36); }
+
+// A factor row followed a new parent quantity. Write the new baseline and say
+// so - ONE status line per repaint however many rows moved, because the
+// operator needs to know a number changed, not to read a list.
+//
+// Called from renderItemized only. computeTakeoffRows stays read-only: it is
+// also the CSV's and the approve payload's source, and a compute function
+// that writes storage would fire on an export.
+function subCommitRecompute(groups) {
+  const moved = [], seed = [];
+  for (const g of groups)
+    for (const it of g.items)
+      for (const s of (it.subs || [])) {
+        if (s.recomputed) moved.push({ label: it.label, s });
+        // A factor row with NO baseline yet - restored from an older record,
+        // or written by a path that did not know the parent quantity. Seed it
+        // from the measurement in force now, silently: nothing has moved, and
+        // announcing a change that did not happen is as bad as hiding one.
+        // Without this the row can never report a recompute at all, because
+        // subRecomputed has nothing to compare against.
+        else if (s.rec.mode === "factor" && !Number.isFinite(s.rec.base)
+                 && Number.isFinite(it.qty))
+          seed.push({ label: it.label, s, to: it.qty });
+      }
+  if (!moved.length && !seed.length) return;
+  const byLabel = new Map();
+  for (const m of moved.concat(seed)) {
+    if (!byLabel.has(m.label)) byLabel.set(m.label, subLoad(m.label));
+    for (const rec of byLabel.get(m.label))
+      if (rec.id === m.s.rec.id)
+        rec.base = m.recomputed ? m.recomputed.to
+          : (m.s.recomputed ? m.s.recomputed.to : m.to);
+  }
+  for (const [label, recs] of byLabel) subSave(label, recs);
+  if (!moved.length) return;      // seeding is not a change; say nothing
+  // The note has to OUTLIVE the repaint that discovered it. Committing the
+  // new baseline means the very next call to computeTakeoffRows compares
+  // 6,000 with 6,000 and reports no move - so a price keystroke two rows
+  // away would wipe the only visible record that a quantity changed, and the
+  // status line is gone by then too. Held here, per record, until the
+  // operator edits that row or dismisses the note.
+  for (const m of moved)
+    subMoved.set(m.s.rec.id,
+      Object.assign({ unit: m.s.rec.unit, name: m.s.rec.name }, m.s.recomputed));
+  const f = moved[0];
+  setStatus(moved.length + " sub-item quantit" + (moved.length === 1 ? "y" : "ies")
+    + " followed a changed parent quantity — e.g. “" + f.s.rec.name
+    + "” on " + f.label + ": " + f.s.recomputed.wasQty + " → "
+    + f.s.recomputed.nowQty + " " + f.s.rec.unit + " (parent "
+    + q1(f.s.recomputed.from) + " → " + q1(f.s.recomputed.to) + ")");
+}
+
 function computeTakeoffRows() {
   if (!state.result) return null;
   const sc = state.result.scale;
@@ -6513,12 +6858,15 @@ function computeTakeoffRows() {
   }
   let grand = 0;
   const groups = [];
+  // PASS 1: overrides, price, own extended cost. Unchanged, except that the
+  // group subtotal is no longer accumulated here - it cannot be, because a
+  // row's cost is not final until its components are rolled into it, and the
+  // roll-up has to see EVERY row on the sheet at once to decide which row
+  // owns a parent key two labels both normalise to.
   for (const tr of TRADES) {
     const group = byTrade.get(tr);
     if (!group) continue;
     group.sort((a, b) => b.qty - a.qty);
-    let sub = 0, subQty = 0, subEa = 0;
-    const subByUnit = new Map();
     for (const it of group) {
       const ov = parseFloat(store.getItem(
         ovKey(it.label, it.unit)) || "");
@@ -6531,15 +6879,51 @@ function computeTakeoffRows() {
       it.price = price;
       it.trade = tr;
       it.ext = it.priced && price ? it.qty * price : null;
-      if (it.ext) sub += it.ext;
+    }
+    groups.push({ trade: tr, items: group });
+  }
+  // PASS 2: SUB-ITEMS. One roll-up over the flat list of every row, in
+  // display order, so the ownership ranking is decided once and a component
+  // can reach the total through exactly one row. `it.ext` stays the row's OWN
+  // money (nothing downstream that reads ext moves); `it.rowExt` is own +
+  // components, and that is what the subtotals and the grand total add.
+  const flat = [];
+  for (const g of groups) for (const it of g.items) flat.push(it);
+  const roll = subRollupItems(
+    flat.map((it) => ({ key: it.label, qty: it.qty, ext: it.ext })),
+    (k) => subLoad(k));
+  flat.forEach((it, i) => {
+    const r = roll.rows[i];
+    it.subs = r.subs; it.subExt = r.subExt; it.rowExt = r.rowExt;
+    it.subDupOf = r.dupOf;
+  });
+  // PASS 3: subtotals. Identical arithmetic to what stood here before for
+  // every sheet with no sub-items (rowExt === ext || 0, and `if (it.ext) sub
+  // += it.ext` and `sub += it.rowExt` agree on a null/0 ext), so a takeoff
+  // that has never used the feature reports the same numbers it always did.
+  for (const g of groups) {
+    let sub = 0, subQty = 0, subEa = 0;
+    const subByUnit = new Map();
+    for (const it of g.items) {
+      sub += it.rowExt;
+      // Component quantities are NOT added to the unit chips on the trade
+      // heading. They already cannot merge with the parent's unit, and the
+      // heading has no room to say which of two chips is measured and which
+      // is typed - so the heading keeps counting only what the sheet
+      // measured, and the components show up in its money, which is the one
+      // figure they legitimately belong in.
       subByUnit.set(it.unit, (subByUnit.get(it.unit) || 0) + it.qty);
       if (it.unit === "EA") subEa += it.qty;
       else if (it.unit === "ft" || it.unit === "pt") subQty += it.qty;
     }
+    g.sub = sub; g.subQty = subQty; g.subEa = subEa; g.subByUnit = subByUnit;
     grand += sub;
-    groups.push({ trade: tr, items: group, sub, subQty, subEa, subByUnit });
   }
-  return { groups, grand, ftPerIn, sheet };
+  return { groups, grand, ftPerIn, sheet,
+           // what of `grand` is operator-declared components, for the
+           // disclosure on the tally bar
+           subExt: roll.subTotal, subN: roll.rows.reduce(
+             (n, r) => n + r.subs.length, 0) };
 }
 
 // The disclosure line under an itemized row whose chains overlap each other.
@@ -7025,7 +7409,14 @@ function renderBidView(groups, ftPerIn) {
       rows.push({ label: it.label, layer: layers.join(" | "),
                   unit: it.unit === "pt" || it.unit === "ft" ? u : it.unit,
                   qty: it.qty, cnt: it.cnt, sids: it.sids || [],
-                  isCalc: !!it.isCalc, ov: !!it.ov });
+                  isCalc: !!it.isCalc, ov: !!it.ov,
+                  // Components ride WITH their parent row into whichever bid
+                  // line the rule table (or the operator) files it under.
+                  // They are deliberately not run through bidBucketFor: a
+                  // component belongs to the bid line its parent is on, and
+                  // letting "#4 rebar" match a keyword of its own would file
+                  // a concrete component under Structures.
+                  subs: it.subs || [], subExt: it.subExt || 0 });
     }
   const buckets = bidGroupRows(rows, (label) => {
     const v = store.getItem(bidKey(label));
@@ -7057,12 +7448,20 @@ function renderBidView(groups, ftPerIn) {
     nm.className = "bid-b-name"; nm.textContent = B.bucket;
     const sub = document.createElement("span");
     sub.className = "bid-b-sub";
+    // Declared components are counted SEPARATELY in the heading, never
+    // folded into the measured chips: the quantity chips on a bid line are
+    // what the sheet measured, and a typed component must never arrive
+    // inside one of them.
+    let bDecl = 0;
+    for (const m of B.members) bDecl += (m.subs || []).length;
+    const declTxt = bDecl
+      ? " · " + bDecl + " declared sub-item" + (bDecl === 1 ? "" : "s") : "";
     sub.textContent = un
       ? B.n + " row" + (B.n === 1 ? "" : "s") + " / "
         + (chipText(B.byUnit) || "0 " + u)
-        + " not yet assigned — open the style list"
+        + " not yet assigned — open the style list" + declTxt
       : (chipText(B.byUnit) || "0") + " · " + B.n
-        + " row" + (B.n === 1 ? "" : "s");
+        + " row" + (B.n === 1 ? "" : "s") + declTxt;
     sum.append(nm, sub);
     sum.title = un
       ? "No name rule matched these rows and no bucket was picked by hand. "
@@ -7150,6 +7549,26 @@ function renderBidView(groups, ftPerIn) {
         row.onmouseleave = () => hotFamOff();
       }
       d.appendChild(row);
+      // The components, nested under their parent and tagged. Read-only
+      // here: the itemized takeoff owns the editing, this view owns the
+      // grouping, and two editors for one record is how they drift.
+      for (const s of (m.subs || [])) {
+        const sr = document.createElement("div");
+        sr.className = "bid-member bid-sub nogeom";
+        const sl = document.createElement("span");
+        sl.className = "bm-label";
+        sl.textContent = "↳ " + s.rec.name;
+        sl.title = s.rec.name + "\n\nA sub-item of " + m.label
+          + " — operator-declared (qty set by: " + SUB_SET_BY + "), not "
+          + "measured by the engine. Edit it in the itemized takeoff.";
+        const st = subTagEl();
+        const sq = document.createElement("span");
+        sq.className = "bm-qty";
+        sq.textContent = abbr(s.qty || 0) + " " + s.rec.unit
+          + (Number.isFinite(s.ext) ? " · $" + s.ext.toFixed(0) : "");
+        sr.append(sl, st, sq);
+        d.appendChild(sr);
+      }
     }
     box.appendChild(d);
   }
@@ -7159,6 +7578,406 @@ function renderBidView(groups, ftPerIn) {
     none.textContent = "nothing measured yet";
     box.appendChild(none);
   }
+}
+
+// ---- sub-items in the panel -------------------------------------------
+// The editor is OPEN-STATE, not DOM state: renderItemized() rebuilds the
+// whole panel with innerHTML = "" from about thirty call sites, so an editor
+// held only as a node would vanish under a price keystroke elsewhere. The
+// open parent and the half-typed draft live here and are re-rendered.
+let subEditFor = null;        // parent label whose "+ add sub-item" is open
+let subDraft = null;          // {name, mode, qty, factor, unit, price}
+// One-deep, session-only undo of a removal, per parent. A component is typed
+// work; deleting it with nothing but a status line to show for it is how an
+// evening disappears. The put-it-back button renders at the site of the edit,
+// where the operator is already looking.
+const subUndo = new Map();
+
+function subFmtQ(v) {
+  return Number.isFinite(v)
+    ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—";
+}
+
+// The chip that says a number was typed, not detected. Same word the export
+// and the CSV use, so a reviewer sees one vocabulary in three places.
+function subTagEl() {
+  const t = document.createElement("span");
+  t.className = "sub-tag";
+  t.textContent = "declared";
+  t.title = "Operator-declared: this quantity was typed, not measured by the "
+    + "engine. It travels tagged “qty set by: " + SUB_SET_BY + "” in the "
+    + "CSV, the bid view and the approve export - the same word server.py "
+    + "already writes for a quantity a reviewer set.";
+  return t;
+}
+
+// The roll-up sentence under a parent that carries components: its own money,
+// the components' money, and the sum - which is the figure in its ext cell.
+function subRollNote(it) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note";
+  const own = Number.isFinite(it.ext) ? it.ext : 0;
+  const t = document.createElement("span");
+  t.innerHTML = "rolls up: own <b>$" + own.toFixed(0) + "</b> + "
+    + it.subs.length + " component" + (it.subs.length === 1 ? "" : "s")
+    + " <b>$" + it.subExt.toFixed(0) + "</b> = <b>$"
+    + it.rowExt.toFixed(0) + "</b>";
+  t.title = "The ext $ cell on this row is the roll-up. The takeoff TOTAL "
+    + "adds this row once, so each component is counted exactly once - it is "
+    + "not also added as a row of its own.";
+  n.appendChild(t);
+  return n;
+}
+
+// Two takeoff rows normalised to one parent key. The components are on the
+// other row; say which, rather than showing none.
+function subDupNote(it) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note sub-dup";
+  const t = document.createElement("span");
+  t.textContent = "sub-items for this name are shown on “" + it.subDupOf
+    + "” (the larger row) and are counted there, once.";
+  t.title = "Two rows on this sheet have names that differ only in case or "
+    + "spacing, so they share one component list. Counting it on both would "
+    + "double the money with no symptom, so exactly one row carries it.";
+  n.appendChild(t);
+  return n;
+}
+
+// One component, as a nested row in the same grid as its parent.
+function subRowEl(it, s, u) {
+  const rec = s.rec;
+  const row = document.createElement("div");
+  row.className = "item-row sub-row";
+  const lab = document.createElement("div");
+  lab.className = "lab sub-lab";
+  const nm = document.createElement("span");
+  nm.className = "sub-name";
+  nm.textContent = "↳ " + rec.name;
+  lab.append(nm, subTagEl());
+  const del = document.createElement("button");
+  del.className = "mini sub-del";
+  del.textContent = "×";
+  del.title = "Remove this component. One click puts it back.";
+  del.onclick = () => {
+    const recs = subLoad(it.label).filter((r) => r.id !== rec.id);
+    subMoved.delete(rec.id);     // the row is gone; its notice goes with it
+    subUndo.set(subParentKey(it.label), rec);
+    subSave(it.label, recs);
+    setStatus("removed sub-item “" + rec.name + "” from " + it.label
+      + (Number.isFinite(s.ext) ? " — $" + s.ext.toFixed(0)
+         + " off this row" : "") + " — “put it back” is on the row.");
+    renderItemized(); renderChips();
+  };
+  lab.appendChild(del);
+  const cnt = document.createElement("div");
+  cnt.textContent = rec.unit;
+  cnt.title = "The component's own unit. It is never added to the parent's "
+    + "unit - a pound of rebar is not a foot of edge.";
+  // FIXED -> the box holds the quantity. FACTOR -> the box holds the RATE and
+  // the quantity is derived; the basis line under the row prints the
+  // multiplication in full so the derived figure is never a bare number.
+  const q = document.createElement("input");
+  q.type = "number"; q.step = "0.01";
+  q.className = "qty-in sub-qty" + (rec.mode === "factor" ? " sub-factor" : "");
+  q.name = "subq-" + it.label + "|" + rec.id;
+  q.value = rec.mode === "factor" ? String(rec.factor) : String(rec.qty);
+  q.title = rec.mode === "factor"
+    ? "RATE: " + rec.unit + " of this component per " + it.unit
+      + " of the parent. The quantity follows the measurement."
+    : "FIXED quantity in " + rec.unit + ". It does not follow the parent.";
+  q.addEventListener("wheel",
+    (ev) => { if (document.activeElement === q) ev.preventDefault(); },
+    { passive: false });
+  q.onchange = () => {
+    const v = parseFloat(q.value);
+    if (!Number.isFinite(v) || v <= 0) { renderItemized(); return; }
+    const recs = subLoad(it.label);
+    for (const r of recs) if (r.id === rec.id) {
+      if (r.mode === "factor") { r.factor = v; r.base = it.qty; }
+      else r.qty = v;
+    }
+    subSave(it.label, recs);
+    subMoved.delete(rec.id);   // editing the row IS seeing it
+    setStatus((rec.mode === "factor" ? "rate" : "quantity") + " for “"
+      + rec.name + "” on " + it.label + " set to " + v
+      + (rec.mode === "factor" ? " " + rec.unit + " per " + it.unit
+                               : " " + rec.unit));
+    renderItemized(); renderChips();
+  };
+  const pin = document.createElement("input");
+  pin.type = "number"; pin.step = "0.01"; pin.placeholder = "set";
+  pin.className = "sub-price";
+  pin.name = "subp-" + it.label + "|" + rec.id;
+  if (rec.price) pin.value = rec.price;
+  pin.title = "Unit price for this component, in $/" + rec.unit + ".";
+  pin.addEventListener("wheel",
+    (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
+    { passive: false });
+  pin.onchange = () => {
+    const v = parseFloat(pin.value);
+    const recs = subLoad(it.label);
+    for (const r of recs) if (r.id === rec.id) r.price = v > 0 ? v : null;
+    subSave(it.label, recs);
+    renderItemized(); renderChips();
+  };
+  const ex = document.createElement("div");
+  ex.textContent = Number.isFinite(s.ext) ? s.ext.toFixed(0) : "—";
+  row.append(lab, cnt, q, pin, ex);
+  return row;
+}
+
+// How this component's quantity was arrived at, written out. A derived number
+// with no visible basis is exactly the thing this project does not ship.
+function subBasisEl(it, s, u) {
+  const rec = s.rec;
+  const n = document.createElement("div");
+  n.className = "dup-note sub-basis";
+  const t = document.createElement("span");
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  if (rec.mode === "factor")
+    t.innerHTML = "<b>" + rec.factor + "</b> " + rec.unit + " per " + pu
+      + " × <b>" + subFmtQ(it.qty) + "</b> " + pu + " measured = <b>"
+      + subFmtQ(s.qty) + "</b> " + rec.unit + " — follows the parent";
+  else
+    t.innerHTML = "<b>" + subFmtQ(s.qty) + "</b> " + rec.unit
+      + " — fixed; does not follow the parent";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = rec.mode === "factor" ? "make fixed" : "per parent unit";
+  b.title = rec.mode === "factor"
+    ? "Freeze the current quantity so it stops following the measurement."
+    : "Turn this quantity into a rate against the parent's measured quantity, "
+      + "so it recomputes when the measurement changes.";
+  b.onclick = () => {
+    const recs = subLoad(it.label);
+    let msg = "";
+    for (const r of recs) if (r.id === rec.id) {
+      if (r.mode === "factor") {
+        r.mode = "fixed"; r.qty = s.qty; r.factor = null; r.base = null;
+        msg = "“" + rec.name + "” is now FIXED at " + subFmtQ(s.qty)
+          + " " + rec.unit + " and no longer follows " + it.label + ".";
+      } else if (Number.isFinite(it.qty) && it.qty > 0) {
+        r.mode = "factor"; r.factor = Math.round(r.qty / it.qty * 10000) / 10000;
+        r.base = it.qty; r.qty = null;
+        msg = "“" + rec.name + "” now follows " + it.label + " at "
+          + r.factor + " " + rec.unit + " per " + pu
+          + " — same quantity today, and it will move when the "
+          + "measurement does.";
+      }
+    }
+    if (!msg) return setStatus("this row has no measured quantity to follow, "
+      + "so a per-parent rate cannot be formed", "err");
+    subSave(it.label, recs);
+    setStatus(msg);
+    renderItemized(); renderChips();
+  };
+  n.appendChild(b);
+  return n;
+}
+
+// It moved. Say so where it moved, not only in the status line - a status
+// line is gone by the time the estimator reads the row, and the baseline is
+// committed the instant the move is detected, so the NEXT repaint would
+// otherwise find nothing to report. `r` therefore comes from the live compare
+// when there is one and from subMoved (the standing notice) when there is not.
+function subRecalcEl(it, s, u, r) {
+  const n = document.createElement("div");
+  n.className = "dup-note sub-recalc";
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  const t = document.createElement("span");
+  t.innerHTML = "<b>recomputed</b> — the parent moved " + q1(r.from)
+    + " → " + q1(r.to) + " " + pu + ", so this went <b>" + subFmtQ(r.wasQty)
+    + "</b> → <b>" + subFmtQ(r.nowQty) + "</b> " + s.rec.unit;
+  t.title = "A per-parent-unit component recomputes whenever the measured "
+    + "parent quantity changes. Nothing was typed; the rate was applied to "
+    + "the new measurement. This notice stays until you dismiss it, so a "
+    + "repaint cannot carry it off before you have seen it.";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "seen";
+  b.title = "Clear this notice. The quantity is unchanged either way.";
+  b.onclick = () => { subMoved.delete(s.rec.id); renderItemized(); };
+  n.appendChild(b);
+  return n;
+}
+
+// "put it back" for the last component removed from this parent.
+function subUndoEl(it) {
+  const rec = subUndo.get(subParentKey(it.label));
+  if (!rec) return null;
+  const n = document.createElement("div");
+  n.className = "dup-note sub-note sub-undo";
+  const t = document.createElement("span");
+  t.textContent = "removed “" + rec.name + "” from this row";
+  n.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "put it back";
+  b.onclick = () => {
+    const recs = subLoad(it.label);
+    if (recs.length < SUB_MAX) recs.push(rec);
+    subUndo.delete(subParentKey(it.label));
+    subSave(it.label, recs);
+    setStatus("restored sub-item “" + rec.name + "” on " + it.label);
+    renderItemized(); renderChips();
+  };
+  n.appendChild(b);
+  return n;
+}
+
+// The "+ add sub-item" control, and the inline editor it opens.
+function subAddEl(it, u) {
+  const wrap = document.createElement("div");
+  wrap.className = "sub-add-line";
+  if (subEditFor !== it.label) {
+    const b = document.createElement("button");
+    b.className = "mini sub-add";
+    b.textContent = "+ add sub-item";
+    b.title = "Add a component this line item carries - rebar, mesh, forms, "
+      + "finishing. It nests under this row, rolls into its cost, and is "
+      + "tagged as declared everywhere it travels.";
+    b.onclick = () => {
+      subEditFor = it.label;
+      subDraft = { name: "", mode: "factor", qty: "", factor: "",
+                   unit: "EA", price: "" };
+      renderItemized();
+      const f = $("itemized").querySelector(".sub-edit input");
+      if (f) f.focus();
+    };
+    wrap.appendChild(b);
+    return wrap;
+  }
+  const d = subDraft || (subDraft = { name: "", mode: "factor", qty: "",
+                                      factor: "", unit: "EA", price: "" });
+  wrap.classList.add("open");
+  const ed = document.createElement("div");
+  ed.className = "sub-edit";
+  const pu = it.unit === "ft" || it.unit === "pt" ? u : it.unit;
+  const mk = (key, ph, title, cls, type) => {
+    const i = document.createElement("input");
+    i.type = type || "text"; i.placeholder = ph; i.title = title;
+    i.className = cls || ""; i.name = "subnew-" + key + "-" + it.label;
+    i.value = d[key];
+    if (type === "number") i.step = "0.01";
+    i.oninput = () => { d[key] = i.value; };
+    return i;
+  };
+  const name = mk("name", "component (e.g. #4 rebar)",
+                  "What this line item carries.", "sub-e-name");
+  const mode = document.createElement("select");
+  mode.className = "sub-e-mode"; mode.name = "subnew-mode-" + it.label;
+  for (const [v, txt] of [["factor", "per " + pu + " of parent"],
+                          ["fixed", "fixed quantity"]]) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = txt; o.selected = d.mode === v;
+    mode.appendChild(o);
+  }
+  mode.title = "“per " + pu + " of parent” is a RATE: the quantity is "
+    + "the rate times the measured parent quantity and moves with it. "
+    + "“fixed” is a number you type and nothing changes it.";
+  mode.onchange = () => { d.mode = mode.value; renderItemized(); };
+  const num = mk(d.mode === "factor" ? "factor" : "qty",
+                 d.mode === "factor" ? "rate" : "qty",
+                 d.mode === "factor"
+                   ? "How many of the component per " + pu + " of parent."
+                   : "The component quantity.",
+                 "sub-e-num", "number");
+  const unit = mk("unit", "unit", "The component's own unit (LB, SF, EA, LF).",
+                  "sub-e-unit");
+  const price = mk("price", "$/unit", "Unit price for the component.",
+                   "sub-e-price", "number");
+  const add = document.createElement("button");
+  add.className = "mini sub-e-add"; add.textContent = "add";
+  add.onclick = () => {
+    const rec = subClean({ id: subNewId(), name: d.name, unit: d.unit,
+                           mode: d.mode, qty: d.qty, factor: d.factor,
+                           price: d.price, base: it.qty });
+    if (!rec) return setStatus("a sub-item needs a name and a "
+      + (d.mode === "factor" ? "rate" : "quantity") + " greater than zero", "err");
+    const recs = subLoad(it.label);
+    if (recs.length >= SUB_MAX)
+      return setStatus("this row already carries " + SUB_MAX
+        + " sub-items, which is the cap", "err");
+    recs.push(rec);
+    subSave(it.label, recs);
+    subEditFor = null; subDraft = null;
+    const q = subRound(subQtyOf(rec, it.qty));
+    const ex = subExtOf(rec, it.qty);
+    setStatus("sub-item “" + rec.name + "” added under " + it.label
+      + ": " + subFmtQ(q) + " " + rec.unit
+      + (Number.isFinite(ex) ? " · $" + ex.toFixed(0) : " · no price set")
+      + " — declared, not measured; it rolls into this row's cost.");
+    renderItemized(); renderChips();
+  };
+  const cancel = document.createElement("button");
+  cancel.className = "mini"; cancel.textContent = "cancel";
+  cancel.onclick = () => { subEditFor = null; subDraft = null; renderItemized(); };
+  ed.append(name, mode, num, unit, price, add, cancel);
+  wrap.appendChild(ed);
+  return wrap;
+}
+
+// Components stored against labels that produce no row on THIS sheet. Not
+// deleted - the label lives on other sheets of the document - but never
+// silent: they are counted, named, and there is one button that really does
+// destroy them (the delete-parent cascade), with a confirm on it.
+function subDormantEl(groups) {
+  const all = subAllForDoc();
+  const live = [];
+  for (const g of groups) for (const it of g.items) live.push(it.label);
+  const dormant = subDormantKeys(all, live);
+  if (!dormant.length) return null;
+  let n = 0;
+  for (const k of dormant) n += all[k].length;
+  const d = document.createElement("div");
+  d.className = "dup-note sub-note sub-dormant";
+  const t = document.createElement("span");
+  t.innerHTML = "<b>" + n + "</b> sub-item" + (n === 1 ? "" : "s") + " belong to "
+    + dormant.length + " label" + (dormant.length === 1 ? "" : "s")
+    + " with no row on this sheet — <b>not counted here</b>";
+  t.title = "These components are stored against " + dormant.join(", ")
+    + ". Those labels are not in this sheet's takeoff (deleted linework, an "
+    + "un-ticked style, a renamed row, or another sheet of this document), so "
+    + "nothing of theirs is in any figure on this page. They are kept because "
+    + "a label lives across sheets; discard removes them for good.";
+  d.appendChild(t);
+  const b = document.createElement("button");
+  b.className = "mini dup-take";
+  b.textContent = "discard " + n;
+  b.title = "Delete these component lists permanently. This is the "
+    + "delete-parent cascade: no component is ever left attached to a label "
+    + "that no longer exists.";
+  b.onclick = () => {
+    if (!confirm("Delete " + n + " sub-item(s) belonging to " + dormant.length
+      + " label(s) that have no row on this sheet?\n\n" + dormant.join("\n")
+      + "\n\nThis cannot be undone.")) return;
+    const res = subCascade(all, dormant);
+    for (const k of res.dropped) store.removeItem(docKey() + SUB_PREFIX_TAIL + k);
+    setStatus("discarded " + n + " sub-item(s) from " + res.dropped.length
+      + " label(s) with no row on this sheet");
+    renderItemized(); renderChips();
+  };
+  d.appendChild(b);
+  return d;
+}
+
+// Everything a parent row paints below itself. One call site in
+// renderItemized, so the order can never drift between rows.
+function subPaint(box, it, u) {
+  if (it.subDupOf) { box.appendChild(subDupNote(it)); return; }
+  for (const s of it.subs) {
+    box.appendChild(subRowEl(it, s, u));
+    box.appendChild(subBasisEl(it, s, u));
+    const rc = s.recomputed || subMoved.get(s.rec.id);
+    if (rc) box.appendChild(subRecalcEl(it, s, u, rc));
+  }
+  if (it.subs.length) box.appendChild(subRollNote(it));
+  const un = subUndoEl(it);
+  if (un) box.appendChild(un);
+  box.appendChild(subAddEl(it, u));
 }
 
 function renderItemized() {
@@ -7175,7 +7994,16 @@ function renderItemized() {
     renderBidView(null);
     return;
   }
-  const { groups, grand, ftPerIn, sheet } = computeTakeoffRows();
+  const { groups, grand, ftPerIn, sheet, subExt, subN }
+    = computeTakeoffRows();
+  // A factor component whose parent quantity moved has ALREADY been
+  // recomputed by computeTakeoffRows (it is a pure function of the
+  // parent's current quantity). This writes the new baseline and says on
+  // the status line that it happened - the disclosure rule: never let a
+  // quantity become a different quantity in silence. Done here and not in
+  // computeTakeoffRows because that function is also the CSV's and the
+  // approve payload's source, and an export must not write storage.
+  subCommitRecompute(groups);
   const u = ftPerIn ? "ft" : "pt";
   const head = document.createElement("div");
   head.className = "item-row head";
@@ -7299,7 +8127,10 @@ function renderItemized() {
         // the TOTAL and the tally bar rebuild on blur - one blur behind, which
         // is the deliberate trade for not deleting the control being typed in.
         const pv = parseFloat(pin.value);
-        e.textContent = (it.priced && pv > 0) ? (it.qty * pv).toFixed(0) : "—";
+        // the cell shows own + components, so the live repaint must too
+        const _own = (it.priced && pv > 0) ? it.qty * pv : 0;
+        const _roll = _own + (it.subExt || 0);
+        e.textContent = _roll ? _roll.toFixed(0) : "—";
       };
       pin.onchange = () => {
         store.setItem(priceKey(it.label), pin.value);
@@ -7309,7 +8140,10 @@ function renderItemized() {
         (ev) => { if (document.activeElement === pin) ev.preventDefault(); },
         { passive: false });
       const e = document.createElement("div");
-      e.textContent = it.ext ? it.ext.toFixed(0) : "—";
+      // The ROLL-UP: this row's own money plus its components'. With no
+      // components rowExt === (ext || 0), so a takeoff that has never used
+      // the feature prints exactly the character it always printed.
+      e.textContent = it.rowExt ? it.rowExt.toFixed(0) : "—";
       row.append(lab, cnt, q, pin, e);
       box.appendChild(row);
       // Both numbers, side by side, only where they differ. The row's own
@@ -7320,7 +8154,16 @@ function renderItemized() {
       // a screenshot review, a theme swap, or a colour-blind reader.
       if (it.ov) box.appendChild(ovNote(it, u));
       if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
+      // SUB-ITEMS: the components this line item carries, nested under it,
+      // each tagged declared, each rolled into the ext cell above.
+      subPaint(box, it, u);
     }
+  }
+  // Components stored against labels with no row here - counted, named, and
+  // never in a figure on this page.
+  {
+    const _dm = subDormantEl(groups);
+    if (_dm) box.appendChild(_dm);
   }
   // always-visible tally: sum of INCLUDED footage + priced total.
   // With a work area drawn, inkPt is what COUNTS and wzOutPt is what the
@@ -7404,7 +8247,14 @@ function renderItemized() {
         if (!oc || oc.gap / oc.len <= 0.005) return "";
         return ` · ${(100 * oc.gap / oc.len).toFixed(1)}% welded`;
       })()
-    + (grand ? ` · $${grand.toFixed(0)}` : "");
+    + (grand ? ` · $${grand.toFixed(0)}` : "")
+    // The money now includes components the operator typed. A dollar figure
+    // that silently mixes measured work with declared work is the same defect
+    // class as an undisclosed mask, so it says how much and how many.
+    + (subExt > 0.5
+        ? ` · incl $${subExt.toFixed(0)} in ${subN} declared sub-item`
+          + (subN === 1 ? "" : "s")
+        : "");
   // Two spans, one sentence. Reading them end to end still gives exactly the
   // string this bar has always printed: [pre ]lead + " " + rest.
   tb.textContent = "";
@@ -7435,12 +8285,21 @@ function renderItemized() {
       + `fraction. The earthwork and trench calculators keep their own `
       + `boundary (the limit of work) and are NOT masked by the work area.\n\n`
     : "";
+  const subPrefix = subN
+    ? `${subN} SUB-ITEM(S) are declared on this sheet - components an `
+      + `operator typed under a measured row (rebar under concrete, forms `
+      + `under an edge). They are NOT measured by the engine, they carry no `
+      + `footage of their own, and they are counted exactly once: through `
+      + `their parent row's rolled-up cost, worth $${subExt.toFixed(0)} of `
+      + `the total. Every quantity figure on this bar is measured length `
+      + `only and contains none of them.\n\n`
+    : "";
   const ovPrefix = ovRowN
     ? `${ovRowN} row(s) on this sheet carry a quantity YOU typed, so "billed" `
       + `is your figure and "measured" is the detector's. The dollar total `
       + `follows the billed figure.\n\n`
     : "";
-  tb.title = wzPrefix + ovPrefix + (sheet.excessPt > 0.05
+  tb.title = wzPrefix + subPrefix + ovPrefix + (sheet.excessPt > 0.05
     ? `Sum adds every included chain's length. Union counts each polyline ` +
       `segment once: ${sheet.sharedLegs} segment(s) across ` +
       `${sheet.nChains} included chains are carried by two or more chains, ` +
@@ -7686,19 +8545,25 @@ $("fbExportBtn").onclick = () => { location.href = "/api/feedback.csv"; };
 function takeoffCsv() {
   const data = computeTakeoffRows();
   if (!data) return null;
-  const { groups, grand, ftPerIn, sheet } = data;
+  const { groups, grand, ftPerIn, sheet, subN } = data;
   const csc = (v) => {
     v = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
   const uq = (pt) => ftPerIn ? pt / 72 * ftPerIn : pt;
-  // Two columns appended, never substituted: the existing quantity column is
+  // Columns appended, never substituted: every existing column is
   // byte-for-byte what it was. "union" counts each polyline segment once;
   // "drawn twice" is what the sum counts more than once (sum - union).
+  // The last two are the PROVENANCE pair, added with sub-items: "qty set by"
+  // carries the same word server.py writes as qty_set_by (engine / reviewer),
+  // and "sub-item of" names the parent a component hangs from. A component
+  // that reached a spreadsheet without them would be a typed number wearing a
+  // measured number's clothes.
   const rows = [["label", "trade", "count/EA",
                  ftPerIn ? "feet" : "pt", "$/ft", "ext $",
                  ftPerIn ? "union feet" : "union pt",
-                 ftPerIn ? "drawn twice feet" : "drawn twice pt"]];
+                 ftPerIn ? "drawn twice feet" : "drawn twice pt",
+                 "qty set by", "sub-item of"]];
   for (const g of groups) {
     for (const it of g.items) {
       const isLf = !isNaN(parseFloat(it.cnt));   // plain line-count rows
@@ -7709,16 +8574,33 @@ function takeoffCsv() {
         isLf ? it.qty.toFixed(1)
              : (it.ft !== undefined && it.ft !== null ? it.ft.toFixed(1) : ""),
         it.price !== null && it.price !== undefined ? it.price : "",
+        // The row's OWN cost, as it always was. Its components are their own
+        // lines below it, so the ext column still sums to TOTAL exactly once
+        // - the panel's rolled-up cell is a display of these two added, not a
+        // third figure.
         it.ext ? it.ext.toFixed(2) : "",
         it.unionQty !== undefined ? it.unionQty.toFixed(1) : "",
         it.dupQty !== undefined ? it.dupQty.toFixed(1) : "",
+        it.ov ? SUB_SET_BY : "engine",
+        "",
       ]);
+      for (const s of (it.subs || []))
+        rows.push(subCsvCells(it.label, g.trade, s, ftPerIn ? "ft" : "pt"));
     }
   }
-  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2), "", ""]);
+  if (subN)
+    rows.push([`SUB-ITEMS: ${subN} row(s) above marked \u21b3 are components `
+               + `an operator DECLARED under the row they follow - not `
+               + `measured by the engine, no footage of their own. Each `
+               + `parent line above shows its OWN cost and each component `
+               + `its own, so the ext $ column adds every component exactly `
+               + `once into TOTAL.`, "", "", "", "", "", "", "",
+               SUB_SET_BY, ""]);
+  if (grand) rows.push(["TOTAL", "", "", "", "", grand.toFixed(2), "", "", "", ""]);
   rows.push(["SHEET TOTAL (every included line)", "", "",
              uq(sheet.sumPt).toFixed(1), "", "",
-             uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1)]);
+             uq(sheet.unionPt).toFixed(1), uq(sheet.excessPt).toFixed(1),
+             "engine", ""]);
   // Disclosure travels WITH the numbers: a CSV opened next week must say
   // that a mask was on and what it removed, or the clipped figures above
   // read as the whole sheet. Two rows, same unit column as everything else.
@@ -7732,9 +8614,9 @@ function takeoffCsv() {
     }
     rows.push([`WORK AREA counted (${state.workZones.length} box(es) drawn; `
                + `quantities above count only length inside them)`,
-               "", "", uq(cIn).toFixed(1), "", "", "", ""]);
+               "", "", uq(cIn).toFixed(1), "", "", "", "", "engine", ""]);
     rows.push(["WORK AREA excluded (outside the boxes; not in any figure above)",
-               "", "", uq(cOut).toFixed(1), "", "", "", ""]);
+               "", "", uq(cOut).toFixed(1), "", "", "", "", "engine", ""]);
   }
   return rows.map(r => r.map(csc).join(",")).join("\r\n") + "\r\n";
 }
@@ -10438,8 +11320,53 @@ function renderAiBanner() {
   banner.appendChild(foot);
 }
 
+// ---- what an approve carries, and what it honestly cannot ---------------
+// THE SERVER STORY, stated plainly because the alternative is a silent drop.
+//
+// server.py's approve builder copies a FIXED set of keys out of each
+// extra_item (label, qty, unit, unit_price) into the export's item list, so a
+// structured `parent_label` / `declared` pair does NOT survive the trip - it
+// would need a server change, and this lands without one. So:
+//
+//   * the MONEY is exactly right. Each component goes as its own extra_item
+//     with its own quantity and price, the parent row goes with its OWN cost
+//     as it always did, and the server's page total therefore adds each
+//     component exactly once - the same total the panel shows.
+//   * the PARENT LINK survives in the NAME (subExportLabel), because the
+//     label does survive, capped to the server's own 80 characters.
+//   * the PROVENANCE survives as the existing extra_item lane: an item with
+//     `unit` + `qty` and no `count`/`length_ft` is how this app has always
+//     said "not measured linework". The structured keys are sent anyway
+//     (`declared`, `parent_label`, `set_by`) so a later server change can
+//     read them without the client moving; today they are dropped, and the
+//     UI says so rather than implying a fidelity that is not there.
+//
+// The CSV is the full-fidelity export: it carries the nesting, the provenance
+// column and the parent column. That difference is disclosed on the approve
+// status line, not buried here.
+function subExportRows() {
+  const d = computeTakeoffRows();
+  const out = [];
+  for (const g of (d ? d.groups : []))
+    for (const it of g.items)
+      for (const s of (it.subs || [])) {
+        if (!Number.isFinite(s.qty) || s.qty <= 0) continue;
+        out.push({
+          label: subExportLabel(it.label, s.rec.name, 80),
+          qty: s.qty, unit: s.rec.unit, unit_price: s.rec.price,
+          // structured, for a server that learns to read it; harmless now
+          declared: true, set_by: SUB_SET_BY, parent_label: it.label,
+          basis: s.rec.mode === "factor"
+            ? { factor: s.rec.factor, per_unit: it.unit } : { fixed: s.qty },
+          trade: g.trade,
+        });
+      }
+  return out;
+}
+
 $("approveBtn").onclick = async () => {
   const labels = {};
+  const subRows = subExportRows();
   for (const [sid, inc] of state.include) if (inc) labels[sid] = state.labels.get(sid) || "unlabeled";
   // The scale the estimator is LOOKING AT. Send it or the server recomputes
   // every length from the engine's own pick, and a sheet where he switched
@@ -10492,10 +11419,16 @@ $("approveBtn").onclick = async () => {
         (ovSrc ? ovSrc.groups : []).flatMap(g => g.items)
           .filter(it => it.isObj)
           .map(it => [it.label, it.ov && Number.isFinite(it.auto) ? it.auto : it.qty])),
-      trades: Object.fromEntries(
-        [...new Set([...Object.values(labels), ...state.chainLabels.values(),
-                     ...state.extraItems.map(i => i.label)])]
-          .filter(Boolean).map(l => [l, tradeFor(l)])),
+      trades: Object.fromEntries([
+        ...[...new Set([...Object.values(labels), ...state.chainLabels.values(),
+                        ...state.extraItems.map(i => i.label)])]
+          .filter(Boolean).map(l => [l, tradeFor(l)]),
+        // A component takes its PARENT's trade, never tradeFor() on its own
+        // name: "#4 rebar" run through the keyword table lands in General
+        // while the concrete it belongs to is Paving & Concrete, and the
+        // report would then group the two apart.
+        ...subRows.map(s => [s.label, s.trade]),
+      ]),
       excluded_chain_ids: [...state.excluded],
       added_chains: state.result.chains
         .filter(c => c.custom && !state.excluded.has(c.chain_id))
@@ -10521,10 +11454,16 @@ $("approveBtn").onclick = async () => {
       // states counted/excluded in the export - a mask the tally respects
       // but the export ignores would be a silent wrong number.
       work_zones: wzActive() ? state.workZones.map(z => z.slice()) : null,
-      extra_items: state.extraItems.map(it => ({
-        ...it,
-        unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
-      })),
+      extra_items: [
+        ...state.extraItems.map(it => ({
+          ...it,
+          unit_price: parseFloat(store.getItem(priceKey(it.label)) || "") || null,
+        })),
+        // Sub-items ride the extra_items lane: they are quantities that are
+        // not measured linework, which is exactly what that lane is for. See
+        // subExportRows() for what survives the server and what does not.
+        ...subRows,
+      ],
       // free-text lines printed on the face of the report, under the scale
       // statement. Earthwork is the only writer today: a CY figure that is
       // an interpolation has to say so where it is READ, not only in the
@@ -10567,6 +11506,15 @@ $("approveBtn").onclick = async () => {
   const nDropped = approveNotesDropped();
   setStatus(`exported ${j.exported} elements` +
     (j.items ? ` · ${j.items.length} items itemized` : "") +
+    // Disclosure, not a boast: the export carries the components' money and
+    // their parent's name, but the server drops the structured parent link,
+    // so say which export is the full-fidelity one instead of letting a
+    // reviewer assume this one is.
+    (subRows.length
+      ? ` · ${subRows.length} declared sub-item(s) exported as their own`
+        + ` priced rows, parent named in the row's title; the CSV is the`
+        + ` export that carries the nesting and the provenance columns`
+      : "") +
     (ovN ? ` · ${ovN} quantity you typed ${ovN === 1 ? "is" : "are"} in the export`
          + ` and marked * on the report` : "") +
     (j.scale && j.scale.setBy === "reviewer"
