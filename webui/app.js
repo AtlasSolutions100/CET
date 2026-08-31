@@ -7413,7 +7413,9 @@ async function ewEnsure() {
       // contours say 7700 - the engine now resolves by band strength, but a
       // disagreement like that must reach the operator's eyes either way.
       datum: j.spot_datum || null,
-      spotOn: { FG: true, ME: true, EG: true, PE: true },  // PE = pad elevation, proposed ground
+      spotOn: { FG: true, ME: true, EG: true, PE: true },  // PE = pad elevation, proposed ground.
+      // WSE deliberately NOT here: water surface, not ground (basin contours sit
+      // BELOW it) - its checkbox appears when the sheet prints one, default off.
       spotSide: "proposed",
       spotDatum: null,
       areaSf: null,

@@ -152,20 +152,31 @@ def test_pe_tag_and_three_digit_full_site():
     printed-in-full (the rule was >= 1000). Corroboration required: at
     least two page anchors within 100 ft, so a lone 466 on a 7,000-ft
     sheet still abstains.
+
+    2026-08-31: PE is LINE-READER-ONLY (word-pair pass measured wrong 9/9
+    times it fired for PE corpus-wide - HDPE material codes, probability-
+    of-exceedance notes; see the _SPOT_TAG comment). The label reaches the
+    reader as the whole PDF line "PE 466.0", which is how every real pad
+    label prints; a bare PE word + neighbouring number must NOT pair.
     """
+    lines = [(50.0, 100.0, 112.0, 108.0, "PE 466.0")]
     words = []
-    words.append((50.0, 100.0, 80.0, 108.0, "PE"))
-    words.append((82.0, 100.0, 112.0, 108.0, "466.0"))
     x = 400.0
     for e in (452, 470, 480):          # the sheet's own full elevations
         words.append((x, 300.0, x + 30.0, 308.0, f"{e}"))
         x += 220.0
-    out = read_spot_grades(words, lines=[])
+    out = read_spot_grades(words, lines=lines)
     assert out and out[0]["tag"] == "PE", out
     assert out[0]["resolved"] and out[0]["z"] == 466.0, out
+    assert out[0].get("res") == "printed", out
     # the same value with NO corroborating anchors must abstain
-    out2 = read_spot_grades(words[:2], lines=[])
+    out2 = read_spot_grades([], lines=lines)
     assert not out2[0]["resolved"] and out2[0]["z"] is None, out2
+    # and the WORD-PAIR path must not read PE at all (the 9/9 evidence):
+    pair = [(50.0, 100.0, 80.0, 108.0, "PE"),
+            (82.0, 100.0, 112.0, 108.0, "466.0")] + words
+    out3 = read_spot_grades(pair, lines=[])
+    assert not any(g["tag"] == "PE" for g in out3), out3
 
 
 def main() -> int:

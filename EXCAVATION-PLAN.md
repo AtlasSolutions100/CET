@@ -1106,3 +1106,26 @@ red/blue); the 8" strip default is opt-out not opt-in; factor boxes
 still not persisted (existing behaviour, now stated in UI); set
 TAKEOFF_LEDGER_DIR to one shared path if :8100 and :8128 should write
 one ledger. Cache busters now app.js v126 / style.css v52.
+
+## 25a. Stice residual - prediction amended by measurement (2026-08-31)
+
+Section 25 predicted "PE pads are the highest-leverage change" for the
+Stice cut/fill residual. The parallel-session verification (worktree
+suspicious-shannon-55137d) measured the half-miss: with 208 PE pads on
+the proposed surface, FILL moves toward the sheet's table (-28.6% ->
+-24.0%) but CUT moves away (-24.4% -> -29.8%) - the pads ride mean
++4.1 ft above the contour-only proposed TIN (167 up / 40 down), raising
+the proposed surface over the lot field. Summed error stays flat. The
+remaining gap is the EXISTING side's missing intermediate contours -
+which is what the terrain audit's clamped-CT (+325k/+320k CY toward
+truth, measured) and interval-infill findings now address.
+
+PE/WSE port landed (peer adjudication): PE is line-reader-only (word-
+pair pass measured wrong 9/9 corpus-wide), WSE line-only + UI opt-in
+(water, not ground), banner counts the reader's own resolution stamps
+(duplicated-threshold defect shape retired). Peer acceptance test:
+stice [100,1000) resolved = p0 210/210 PASS, p2 129/129 PASS, p1 74/86,
+p3 107/113 - the 18 short are RIM/INV lacking corroboration; INV is not
+ground and neither tag is default-on, so default volumes are untouched.
+Corroborated rule kept over the blanket >=100 rule on the 4-digit-site
+safety argument, at this measured, confined cost.

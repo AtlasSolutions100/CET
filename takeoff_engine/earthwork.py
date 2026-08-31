@@ -1751,8 +1751,14 @@ def _is_plan_chain(c) -> bool:
 # prints "EW 100.0  PROPOSED END OF WALL ELEVATION" and the sheet carries
 # 4 printed EW callouts (568.6/569.8/558.8/557.6) that were invisible for
 # want of the tag. Sheet vocabulary, same standard as the rest.
+# PE (pad elevation) and WSE (water surface) are LINE-READER-ONLY tags: the
+# word-pair pass below was measured wrong 9/9 times it fired for them
+# corpus-wide ("...HDPE..." material codes, "2% PE in 50 Yrs" probability
+# notes, rotated lot labels pairing with a neighbour's decimal) while the
+# whole-line readers took all 505 real labels (sweep: worktree
+# suspicious-shannon-55137d, out/verify/2026-08-30/pe-spot-tag/).
 _SPOT_TAG = re.compile(
-    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|PE|EW)\s*:?$",
+    r"^(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)\s*:?$",
     re.I)
 # EXISTING-ground tags. Everything else describes the built surface.
 _SPOT_EXISTING = {"EG", "ME"}
@@ -1769,7 +1775,7 @@ _FULL_ELEV = re.compile(r"^\d{3,4}$")
 # read through the word pass today, and adding PE to the line pass would move
 # every one of those rows' anchor coordinates for no change in value.
 _SPOT_LINE = re.compile(
-    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)"
+    r"^\s*(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW|PE|WSE)"
     r"\s*[:=]?\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s*$", re.I)
 # The same whole-line label with the VALUE PRINTED FIRST: "583.5 ME".
 # Oncor Cloudcrest C-04 prints every plan callout this way (21 of them)
@@ -1778,7 +1784,7 @@ _SPOT_LINE = re.compile(
 # illustration. Both orders are the drafter's choice, not a convention.
 _SPOT_LINE_VT = re.compile(
     r"^\s*(\d{1,4}(?:\.\d{1,2})?)\s*'?\s+"
-    r"(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW)\s*[:=]?\s*$",
+    r"(FG|FIN|FFE|TS|BS|TW|BW|EG|FF|FL|TC|RIM|INV|ME|HP|LP|EW|PE|WSE)\s*[:=]?\s*$",
     re.I)
 # These sheets DECLARE their datum in the spot-elevation legend:
 #   "NOTE: ALL SPOT ELEVATIONS ARE TRUNCATED CIVIL ELEVATIONS
@@ -2146,16 +2152,16 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
     for g in out:
         val = g["value"]
         if val >= 1000.0:
-            g.update(z=val, base=None, resolved=True)
+            g.update(z=val, base=None, resolved=True, res="printed")
         elif val >= 100.0 and _corroborated(val):
-            g.update(z=val, base=None, resolved=True)
+            g.update(z=val, base=None, resolved=True, res="printed")
         elif use_declared and val < 100.0:
-            g.update(z=declared + val, base=declared, resolved=True)
+            g.update(z=declared + val, base=declared, resolved=True, res="note")
         elif band:
             ax, ay, av = min(band, key=lambda a: (a[0] - g["x"]) ** 2
                                                  + (a[1] - g["y"]) ** 2)
             k = round((av - val) / 100.0)
-            g.update(z=val + 100.0 * k, base=av, resolved=True)
+            g.update(z=val + 100.0 * k, base=av, resolved=True, res="inferred")
         else:
             # z is None ONLY here, and each such spot says so itself. This
             # is "genuinely absent": the value printed truncated and no

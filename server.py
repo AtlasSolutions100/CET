@@ -1698,14 +1698,19 @@ def page_confidence(job_id: str, page: int):
     # win (dinfo["chosen"]). The old reconstruction assumed the note always
     # wins - the exact assumption that shipped 171 grades 100 ft low on Barn
     # C3.3 under "from_sheet_note: 171".
-    note_won = dinfo.get("chosen") == "declared"
+    # Count the reader's OWN resolution stamps (g["res"]) instead of
+    # re-deriving with a copied threshold. The old >= 1000.0 copy here
+    # drifted from the reader's corroborated >= 100 rule and called 210
+    # printed pad elevations "a guess" (defect shape: one semantic
+    # threshold duplicated in two files - now impossible to re-arm).
     n_printed = n_note = n_inferred = n_unresolved = 0
     for g in spots:
+        r = g.get("res")
         if not g.get("resolved"):
             n_unresolved += 1
-        elif g["value"] >= 1000.0:
+        elif r == "printed":
             n_printed += 1
-        elif note_won and g["value"] < 100.0:
+        elif r == "note":
             n_note += 1
         else:
             n_inferred += 1
