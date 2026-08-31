@@ -1129,3 +1129,36 @@ p3 107/113 - the 18 short are RIM/INV lacking corroboration; INV is not
 ground and neither tag is default-on, so default volumes are untouched.
 Corroborated rule kept over the blanket >=100 rule on the 4-digit-site
 safety argument, at this measured, confined cost.
+
+## 28. Open risk: a group tick cannot restore a partial selection (2026-09-01)
+
+Found while verifying the new line-style groups on Barn C3.0, by doing it
+rather than by reading it.
+
+The group header's checkbox is three-state and cycles
+indeterminate -> all on -> all off. Solid on that sheet starts PARTIAL:
+37 of 103 families ticked, 87.0k LF counted, and that mix is the app's
+own default. One click ticked all 103 (total 178.0k -> 182.5k); a second
+click - intended as an undo - unticked all 103 (total -> 91.0k). There is
+no third click that returns to 37 of 103, and include ticks are NOT in
+the undo stack (they are decisions, like labels and prices, deliberately
+so). The state also persists, so a reload does not rescue it.
+
+Consequence: an operator who has hand-picked which families count, then
+touches the group header once, has silently lost that work and their
+takeoff total has moved. On this sheet the swing was 87k LF. Nothing on
+screen says a selection was destroyed - the header simply reads a
+different number.
+
+Recovering it took clearing all 313 saved keys for the document
+(memKeysFor + store.removeItem), which is the nuclear option and throws
+away labels and prices with it.
+
+Candidate fixes, cheapest first, none applied:
+  1. The header tick remembers the partial set it replaced, so the next
+     click restores it (indeterminate -> all -> none -> BACK TO PARTIAL).
+  2. Confirm before a group tick that would change more than N families,
+     naming the count, the way bulk delete does.
+  3. Put include ticks in the undo stack - the largest change, and it
+     argues with the deliberate decision-vs-edit split colour follows.
+Recommend 1, with 2 for large groups.
