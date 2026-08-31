@@ -12793,7 +12793,9 @@ addEventListener("keydown", (e) => {
     if (state.job) { e.preventDefault(); showProjects(false); }
     return;
   }
-  if (PV_SWALLOW_KEYS.has(e.key) || PV_SWALLOW_KEYS.has(e.key.toLowerCase()))
+  if (PV_SWALLOW_KEYS.has(e.key) || PV_SWALLOW_KEYS.has(e.key.toLowerCase())
+      // undo/redo must not act on the hidden sheet while Projects is up
+      || ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")))
     e.stopImmediatePropagation();
 }, true);
 
