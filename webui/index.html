@@ -20,19 +20,20 @@
      three rows (147px tall, 234px while a long status string was up, and
      every one of those pixels came out of the sheet).
      It now carries only IDENTITY and DOCUMENT CONTEXT: brand (with its
-     Projects / Pricing links) · document name · sheet picker · Detect ·
+     Projects / Settings links) · document name · sheet picker · Detect ·
      Tools, then the BETA chip and the theme toggle on the right.
      NOTHING WAS DELETED. Every id below moved to the view that is actually
      about it, with its handler, its title and its `hidden` bookkeeping
      untouched:
        sampleSel / pathInput / openBtn / recentSel / uploadBtn / fileInput
                               -> the "Open a plan" strip on #projectsView
-       status / docRemoveBtn / fbBtn / fbExportBtn / whoami / signOutBtn /
-       memBtn / Terms / Privacy
+       status / docRemoveBtn / fbBtn / fbExportBtn / memBtn / Terms / Privacy
                               -> the #statusBar below <main>
+       whoami / signOutBtn    -> the #statusBar, and then (2026-09-01) on to
+                                 the Account section of #settingsView
      A node's position in the DOM is the only thing that changed. -->
 <header>
-  <div class="brand"><span class="brand-mark">C<span class="brand-o">O</span>RE</span><span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#pricing" title="The unit price book, material defaults, and CSV import/export">Pricing</a></div>
+  <div class="brand"><span class="brand-mark">C<span class="brand-o">O</span>RE</span><span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span><a id="projectsLink" class="projects-link" href="#projects" title="Every plan set on this server, as cards">Projects</a><a id="settingsLink" class="projects-link" href="#settings" title="Company name on the report PDF, theme, your standing trade default, the unit price book, and your account">Settings</a></div>
   <div id="docName" class="doc-name"></div>
   <select id="pageSel" hidden></select>
   <button id="detectBtn" hidden>Detect lines</button>
@@ -159,18 +160,103 @@
     <div id="pvGrid" class="pv-grid"></div>
     <div id="pvEmpty" class="pv-empty" hidden></div>
   </div>
-  <!-- PRICING SETTINGS: the second page in the same shell as MY PROJECTS.
+  <!-- SETTINGS: the second page in the same shell as MY PROJECTS.
        Same pure view toggle - main.sv-open hides the three workbench columns
        via CSS and nothing else changes, so the sheet keeps its full state
        while out of sight. The two views are exclusive: opening one closes
        the other. Built by renderSettings() in app.js from the SAME price
        store the itemized panel writes (priceKey/"price:<label>") plus the
-       EW_RESEARCH table in ew_defaults.js. -->
+       EW_RESEARCH table in ew_defaults.js.
+
+       This page started life as the price book alone and the price book is
+       now ONE of its five groups. Nothing about the pricing markup below
+       changed: same section elements, same ids, same handlers. What is new
+       is the four sibling groups (Company, Appearance, Scope, Account) and
+       the .sv-grouptitle headings that name all five.
+
+       WHERE EACH SETTING IS STORED - stated on the page itself, not only
+       here, because "did that save for everyone or just me?" is the whole
+       question an operator has about a settings page:
+         Company    THE SERVER (branding.json, per account). It is the only
+                    one that must reach a file the server generates.
+         Appearance this browser (localStorage core-theme, the SAME key
+                    #themeBtn in the masthead writes - one store, two
+                    controls, never a fork).
+         Scope      this browser (localStorage core-scope-default). It is a
+                    STANDING DEFAULT that seeds a document with no
+                    declaration of its own; the per-document declaration in
+                    the sheet's own scope panel always outranks it.
+         Pricing    this browser (the tk1:: saved-work record), unchanged.
+         Account    the server's session; nothing is stored here at all.
+
+       ACCOUNT: #whoami and #signOutBtn are the SAME NODES that were in the
+       status bar - moved, not rebuilt. loadWhoami() still owns them, still
+       sets their text and their `hidden`, and still wires the sign-out
+       POST. -->
   <div id="settingsView" class="settings-view" hidden>
     <div class="sv-head">
-      <h1>Pricing</h1>
+      <h1>Settings</h1>
       <button id="svBack" class="mini" hidden>Back to the sheet</button>
     </div>
+    <nav class="sv-nav" id="svNav" aria-label="Settings sections">
+      <a href="#company">Company</a>
+      <a href="#appearance">Appearance</a>
+      <a href="#scope">Scope</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#account">Account</a>
+    </nav>
+
+    <h2 class="sv-grouptitle" id="svGroupCompany">Company</h2>
+    <section class="sv-section">
+      <h2>Name on the takeoff PDF</h2>
+      <div class="sv-note" id="svBrandNote">Loading…</div>
+      <div class="sv-form">
+        <label class="sv-fld"><span>Company name</span>
+          <input id="svBrandCompany" type="text" maxlength="80" spellcheck="false"
+                 placeholder="e.g. Ryno Construction LLC"></label>
+        <label class="sv-fld"><span>Contact line <em>(optional)</em></span>
+          <input id="svBrandContact" type="text" maxlength="120" spellcheck="false"
+                 placeholder="e.g. 512-555-0134 · estimating@example.com"></label>
+      </div>
+      <div class="sv-addrow">
+        <button id="svBrandSave" class="mini">Save</button>
+        <span class="sv-note" id="svBrandState"></span>
+      </div>
+      <div class="sv-note sv-note-b">Both lines are printed verbatim, at the
+        top of every itemized-takeoff page and of the summary page of
+        <b>Report PDF</b>. They are not printed over the sheet-overlay pages
+        (those are your client&rsquo;s own drawing) and they never displace
+        the beta notice, which is stamped last, on every page. This is the
+        only thing on the report that is not a measurement, so it carries no
+        caveat &mdash; and it cannot add one: nothing here changes a
+        quantity, a price or a total.</div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupAppearance">Appearance</h2>
+    <section class="sv-section">
+      <h2>Theme</h2>
+      <div class="sv-note">Dark is the working theme; paper matches what a
+        printed sheet looks like. This is the same setting as the
+        &#9680; button in the masthead &mdash; one stored value, two
+        controls, so they can never disagree.</div>
+      <div class="sv-choice" id="svThemeChoice"></div>
+      <div class="sv-note sv-note-b">Stored in this browser only
+        (<code>core-theme</code> in localStorage). It does not follow you to
+        another machine and it is not sent to the server.</div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupScope">Scope</h2>
+    <section class="sv-section">
+      <h2>Your standing trade default</h2>
+      <div class="sv-note">What work do you do? Picking trades here does
+        <b>not</b> filter anything by itself. It is the value a
+        <b>new</b> document starts with, so you stop re-declaring the same
+        trades on every job.</div>
+      <div class="sv-chips" id="svScopeChips"></div>
+      <div class="sv-note sv-note-b" id="svScopeNote"></div>
+    </section>
+
+    <h2 class="sv-grouptitle" id="svGroupPricing">Pricing</h2>
     <section class="sv-section">
       <h2>Unit price book</h2>
       <div class="sv-note" id="svBookNote"></div>
@@ -218,6 +304,20 @@
       <div id="svImportPreview" class="sv-preview" hidden></div>
     </section>
     <div class="sv-foot" id="svFoot"></div>
+
+    <h2 class="sv-grouptitle" id="svGroupAccount">Account</h2>
+    <section class="sv-section">
+      <h2>Signed in</h2>
+      <div class="sv-note" id="svAccountNote">Asking the server who you are…</div>
+      <div class="sv-addrow" id="svAccountRow">
+        <!-- MOVED, not rebuilt: these two nodes were in #statusBar's utility
+             strip. loadWhoami() still writes #whoami's text and unhides both,
+             and still attaches the /api/logout handler to #signOutBtn. -->
+        <span id="whoami" class="whoami" hidden></span>
+        <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
+      </div>
+      <div class="sv-note sv-note-b" id="svAccountFoot"></div>
+    </section>
   </div>
   <nav id="pageStrip" class="page-strip" hidden>
     <div class="strip-head">
@@ -741,7 +841,7 @@
      longer grow the chrome and shrink the sheet.
 
      It sits BELOW <main> rather than inside #stage on purpose: uploads,
-     opens and their failures are reported from the Projects and Pricing
+     opens and their failures are reported from the Projects and Settings
      views too, and #stage is display:none under main.pv-open / main.sv-open.
      The sheet facts hide themselves in those views (they describe a sheet
      nobody is looking at); the transient line never does.
@@ -759,8 +859,12 @@
     <button id="memBtn" class="mem-btn" hidden></button>
     <button id="fbBtn" class="ghost" title="Report a problem or suggest something (the sheet, page and style you are on are attached automatically)">Feedback</button>
     <button id="fbExportBtn" class="ghost" hidden title="Download every report as CSV for Excel">Feedback CSV</button>
-    <span id="whoami" class="whoami" hidden></span>
-    <button id="signOutBtn" class="ghost" hidden title="End this session on this browser">Sign out</button>
+    <!-- #whoami and #signOutBtn MOVED from here to the Account section of
+         #settingsView. Same nodes, same ids, same loadWhoami() owner - the
+         signed-in account and the way to stop being signed in belong on the
+         page that is about the account, and the strip was already the
+         busiest row on screen. The Settings link in the brand block is one
+         click from every view. -->
     <a class="legal-link" href="/terms" target="_blank" rel="noopener">Terms</a>
     <a class="legal-link" href="/privacy" target="_blank" rel="noopener">Privacy</a>
   </div>
@@ -817,6 +921,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=134"></script>
+<script src="app.js?v=135"></script>
 </body>
 </html>

@@ -28,6 +28,12 @@
 // resolve a same-origin path for src/href, immune to a credentialed base
 const url = (p) => location.origin + p;
 const $ = (id) => document.getElementById(id);
+// THE ADDRESS THE OPERATOR ACTUALLY TYPED. Read here, at the top, because
+// the view toggles rewrite it during boot: showProjects(true) fires from
+// "land on Projects when nothing is open" and replaceStates "#projects"
+// over whatever was there, so by the time the Settings block runs there is
+// no "#settings" left to route on. Captured once, used once (svGoto below).
+const BOOT_HASH = location.hash;
 const IMG_DPI = 130; // must match /image endpoint default
 const LF = String.fromCharCode(10);   // newline for title= tooltips
 
@@ -3516,24 +3522,67 @@ function scopeEvidenceForMark(g) {
 // would be wrong (a scope that changes sheet to sheet is a scope nobody can
 // audit, and the whole-job rollup adds sheets together).
 //
-// TAKING A DEFAULT FROM AN ACCOUNT LATER. The owner's plan is to ask at login.
-// When that exists, the login answer becomes the DEFAULT VALUE of this record
-// and nothing else changes: `scopeRec()` would fall back to the account trades
-// when the document has no record of its own, `scopeSetTrades` would keep
-// writing per document, and the bar would say "from your account" instead of
-// "not declared" so an operator can always see which one is talking. The
-// per-document record must stay the winner - the account says what you usually
-// do, the document says what you are doing here.
+// TAKING A DEFAULT FROM SETTINGS. Landed 2026-09-01, and built exactly the
+// way this note said it would be: the Settings page's standing trade default
+// becomes the DEFAULT VALUE of this record and nothing else changes.
+// `scopeRec()` falls back to it when the document has no record of its own,
+// `scopeSetTrades` still writes per document, and the bar SAYS which of the
+// two is talking ("from your Settings default" vs the declaration). The
+// per-document record stays the winner - Settings says what you usually do,
+// the document says what you are doing here.
+//
+// The seeding rule is in scopeSeed() in the SETTINGS-PURE block, and it turns
+// on record PRESENCE rather than on a non-empty trade list: "show everything"
+// writes {trades: []}, and re-seeding that from the default would be the
+// standing preference silently overriding a decision the operator had just
+// made on this sheet.
 function scopeKey() { return docKey() + "::scope"; }
 function scopeRec() {
-  try {
-    const r = JSON.parse(store.getItem(scopeKey()) || "{}");
-    return { trades: Array.isArray(r.trades) ? r.trades.filter(t => SCOPE_TOKENS[t]) : [],
-      showAside: !!r.showAside };
-  } catch (e) { return { trades: [], showAside: false }; }
+  return scopeSeed(store.getItem(scopeKey()), scopeDefaultTrades(), SCOPE_TOKENS);
 }
 function scopeSave(r) {
-  try { store.setItem(scopeKey(), JSON.stringify(r)); } catch (e) {}
+  // Only the two fields this record IS. `from` is scopeSeed's provenance
+  // answer, computed on every read; persisting it would freeze a "default"
+  // stamp onto a record that, by the act of being written, has become the
+  // document's own declaration.
+  try {
+    store.setItem(scopeKey(), JSON.stringify(
+      { trades: r.trades || [], showAside: !!r.showAside }));
+  } catch (e) {}
+}
+
+// THE STANDING DEFAULT (Settings -> Scope). What trade you usually do, as
+// opposed to what you are doing on this sheet. Lives in raw localStorage
+// beside `core-theme` and `core-scope-hidden`, NOT in `store`: it is a
+// preference of this browser, not a takeoff decision, so it must not appear
+// on the saved-work button and must not be swept away by "Forget everything"
+// - which clears the per-document declarations that this value then
+// legitimately re-seeds.
+const SCOPE_DEFAULT_KEY = "core-scope-default";
+function scopeDefaultTrades() {
+  try {
+    const r = JSON.parse(localStorage.getItem(SCOPE_DEFAULT_KEY) || "[]");
+    return Array.isArray(r) ? r.filter(t => SCOPE_TOKENS[t]) : [];
+  } catch (e) { return []; }
+}
+function scopeSetDefaultTrades(list) {
+  const keep = (list || []).filter(t => SCOPE_TOKENS[t]);
+  try { localStorage.setItem(SCOPE_DEFAULT_KEY, JSON.stringify(keep)); }
+  catch (e) { /* private mode: the default simply does not persist */ }
+  // A document that already carries its own record is NOT touched. The only
+  // thing that can move is a document with no declaration, whose seed just
+  // changed - repaint it so the sheet and the setting never disagree.
+  //
+  // GUARDED on state.result, unlike its sibling scopeSetTrades. That one is
+  // only reachable from the scope panel, which exists only when a sheet is
+  // loaded; this one is reachable from the Settings page with nothing open at
+  // all, and the sheet renderers below have no sheet to draw.
+  scopeApply();
+  if (state.result) {
+    renderScopeBar(); renderStyles(); renderChips(); renderItemized();
+    renderMiniLegend(); if (state.sym) renderSym(); draw();
+  }
+  if (!$("settingsView").hidden) renderSvScope();
 }
 
 // Recompute every style's verdict and reconcile the tick boxes.
@@ -3749,6 +3798,27 @@ function renderScopeBar() {
   x.onclick = () => scopeSetHidden(true);
   head.appendChild(x);
   box.appendChild(head);
+
+  // WHICH SCOPE IS TALKING. A declaration seeded from the Settings standing
+  // default looks identical to one the operator typed on this sheet, and an
+  // operator who cannot tell the two apart cannot audit the takeoff. So it
+  // is said, every time, on the bar.
+  //
+  // Its OWN LINE, not a chip in the header. The header is a flex row in a
+  // 330px column already holding the title, "show everything" and the close
+  // control; a fourth item there overlapped the title outright (measured on
+  // Barn C3.0, out/verify/2026-09-01/settings-page).
+  if (declared && rec.from === "default") {
+    const src = document.createElement("div");
+    src.className = "scope-src";
+    src.textContent = "from your Settings default — nothing declared on "
+      + "this sheet yet";
+    src.title = "This sheet has NO declaration of its own, so it started "
+      + "from the standing trade default on the Settings page. Touch any "
+      + "trade below and the choice becomes this document's own - the "
+      + "Settings default never overrides a declaration you have made.";
+    box.appendChild(src);
+  }
 
   const chips = document.createElement("div");
   chips.className = "scope-chips";
@@ -9063,12 +9133,27 @@ loadBetaNotice();
 // Who is signed in, and a way to stop being signed in. A session cookie with
 // no sign-out is the same trap HTTP Basic was: a browser stuck with
 // credentials the user cannot clear.
+// The /api/me payload, held so the Settings page's Account section can say
+// what it is looking at instead of rendering an empty panel. Declared HERE,
+// beside its only writer, rather than down in the settings block: loadWhoami
+// runs during boot and a `let` further down the file would be in its
+// temporal dead zone. null means "never answered", which is a distinct state
+// from "answered, no accounts" and reads differently on the page.
+let svMe = null;
+// Every exit from loadWhoami goes through this, so the Account section can
+// never be left saying "asking the server…" forever.
+function svMeSet(me) {
+  svMe = me;
+  if (typeof renderSvAccount === "function" && !$("settingsView").hidden)
+    renderSvAccount();
+}
 async function loadWhoami() {
   let me = null;
   try {
     const r = await fetch("/api/me");
     if (r.ok) me = await r.json();
-  } catch (e) { return; }
+  } catch (e) { svMeSet(null); return; }
+  svMeSet(me);
   // The CSV button is decided BEFORE the early return. On a box with no
   // accounts (a laptop, or a freshly provisioned server) there is no user to
   // name, but whoever is sitting there is effectively staff and the export
@@ -12306,13 +12391,31 @@ $("legendBtn").onclick = () => {
 };
 
 // ---------- theme ----------
-document.documentElement.dataset.theme =
-  localStorage.getItem("core-theme") || "dark";
-$("themeBtn").onclick = () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+// ONE store, TWO controls. `core-theme` in localStorage is the value; the
+// masthead button and the Appearance radios on the Settings page both go
+// through coreThemeSet(), so neither can hold a stale idea of the theme.
+// themeNormalize/themeToggleNext live in the SETTINGS-PURE block (they are
+// the part a test can run) - this pair is the DOM side.
+const CORE_THEME_KEY = "core-theme";
+function coreTheme() {
+  let v = null;
+  try { v = localStorage.getItem(CORE_THEME_KEY); } catch (e) { /* private mode */ }
+  return themeNormalize(v || document.documentElement.dataset.theme);
+}
+function coreThemeSet(next) {
+  next = themeNormalize(next);
   document.documentElement.dataset.theme = next;
-  localStorage.setItem("core-theme", next);
-};
+  try { localStorage.setItem(CORE_THEME_KEY, next); } catch (e) { /* private mode */ }
+  // the Settings radios must follow the masthead button, and only exist
+  // after the settings block has run
+  if (typeof renderSvTheme === "function" && !$("settingsView").hidden)
+    renderSvTheme();
+}
+try {
+  document.documentElement.dataset.theme =
+    themeNormalize(localStorage.getItem(CORE_THEME_KEY));
+} catch (e) { document.documentElement.dataset.theme = "dark"; }
+$("themeBtn").onclick = () => coreThemeSet(themeToggleNext(coreTheme()));
 
 // ---------- canvas ----------
 const cv = $("view"), ctx = cv.getContext("2d");
@@ -17546,19 +17649,132 @@ addEventListener("keydown", (e) => {
 if (!state.job) showProjects(true);
 // =============== end MY PROJECTS ===========================================
 
-// =============== PRICING SETTINGS: the price book page =====================
+// =============== SETTINGS: one page, five groups ===========================
 // The second page in the projects shell. Same pure view toggle (one class on
 // <main>, CSS hides the three workbench columns), same capture-phase key
 // swallow, Esc returns to the sheet (or to Projects when no job is open).
-// It reads and writes the SAME store the itemized panel uses - priceKey()
-// ("price:<label>") through `store` - so a price typed here shows in the
-// itemized panel on its next render and vice versa. Nothing new is stored:
-// prices live in this browser's saved work (localStorage under tk1::),
-// they do NOT sync to the server, and Export CSV is the backup path.
+//
+// It began as the price book alone; the price book is now the PRICING group
+// and four groups joined it. What each group owns, and - the whole question
+// an operator has about a settings page - WHERE ITS VALUE LIVES:
+//
+//   COMPANY     the server (POST /api/branding -> branding.json, keyed on
+//               the signed-in account). The only server-stored setting here,
+//               because the only thing it changes is a PDF the server
+//               generates. See takeoff_engine/branding.py.
+//   APPEARANCE  localStorage `core-theme` - the SAME key #themeBtn writes.
+//               coreThemeSet() is the single writer; the masthead button and
+//               the radio group both call it and both re-read it, so the two
+//               controls cannot fork.
+//   SCOPE       localStorage `core-scope-default` - a STANDING DEFAULT, not
+//               a filter. See the long note above scopeDefaultTrades().
+//   PRICING     unchanged: priceKey() through `store` (tk1:: localStorage),
+//               the same store the itemized panel writes. Prices do NOT sync
+//               to the server; Export CSV is the backup path.
+//   ACCOUNT     nothing is stored. It reports /api/me and hosts the two
+//               MOVED nodes #whoami / #signOutBtn, still owned by
+//               loadWhoami().
 
 // SETTINGS-PURE-BEGIN --------------------------------------------------------
 // Pure book/CSV logic: no DOM, no state.*, no fetch, so
 // tests/test_settings_view.js can run it under node.
+
+// ---- the standing trade default, and how a document inherits it ------------
+// THE DISTINCTION THIS FUNCTION EXISTS TO PROTECT. There are two scopes and
+// they are not the same thing:
+//
+//   the PER-DOCUMENT declaration  the "Whose scope is this?" panel on the
+//     sheet. "On THIS job I am doing wet utilities." It is evidence-backed,
+//     it narrows this document's style list, and it is what the takeoff was
+//     built under. It is the winner, always.
+//   the STANDING DEFAULT          this Settings group. "I am a wet-utilities
+//     sub." It filters nothing by itself. Its only job is to be the value a
+//     document that has never been declared on STARTS with, so the operator
+//     stops retyping their own trade on every job.
+//
+// The failure mode to avoid is the default reaching back and overriding a
+// declaration already made. That is why the test is on the PRESENCE OF THE
+// RECORD, not on whether its trade list is empty: `scopeSetTrades([])` -
+// "show everything" - writes a record with an empty list, and an empty list
+// that was CHOSEN must not be re-seeded on the next render. A record that
+// exists always wins, blank included.
+//
+// `raw` is the stored JSON string for this document (null when absent).
+function scopeSeed(raw, defaults, valid) {
+  const okTrade = t => !valid || Object.prototype.hasOwnProperty.call(valid, t);
+  const def = (defaults || []).filter(okTrade);
+  if (raw == null || raw === "")
+    return { trades: def.slice(), showAside: false,
+             from: def.length ? "default" : "none" };
+  let r = null;
+  try { r = JSON.parse(raw); } catch (e) { r = null; }
+  if (!r || typeof r !== "object")
+    return { trades: def.slice(), showAside: false,
+             from: def.length ? "default" : "none" };
+  return { trades: (Array.isArray(r.trades) ? r.trades : []).filter(okTrade),
+           showAside: !!r.showAside, from: "document" };
+}
+
+// ---- the theme store, read as a value rather than poked at -----------------
+// Two callers (the masthead button, the Settings radios) and exactly one
+// stored key. Anything that is not "light" is dark, so a corrupt or absent
+// value lands on the shipped default instead of on undefined.
+const CORE_THEMES = ["dark", "light"];
+function themeNormalize(v) { return v === "light" ? "light" : "dark"; }
+function themeToggleNext(v) { return themeNormalize(v) === "light" ? "dark" : "light"; }
+
+// ---- what the Account section is allowed to claim --------------------------
+// Four states, and the two that are NOT "signed in as somebody" are the ones
+// that matter: a laptop dev box has no accounts at all, and an empty Account
+// panel there would read as "signed out" - which is the opposite of the
+// truth, because with no accounts configured there is no gate. Say so.
+//
+// `me` is the /api/me payload, or null when the fetch failed.
+function svAccountState(me) {
+  if (!me)
+    return { kind: "unreachable", controls: false,
+      text: "Could not reach the server to ask who you are. Nothing about "
+        + "this session has changed - reload the page to try again.",
+      foot: "" };
+  if (!me.accounts)
+    return { kind: "noaccounts", controls: false,
+      text: "No accounts are configured on this server, so there is nobody "
+        + "to be signed in as, and nothing to sign out of.",
+      foot: "This box is running in single-password mode: anyone who can "
+        + "reach this address and knows the site password can open every "
+        + "document on it. That is the intended setup for a laptop or a "
+        + "demo box, and the wrong one for a server holding more than one "
+        + "client's plans." };
+  if (!me.user)
+    return { kind: "anon", controls: false,
+      text: "Accounts are configured on this server, but this session is "
+        + "not signed in as one of them.",
+      foot: "Reload the page to be sent to the sign-in screen." };
+  return { kind: "user", controls: true,
+    text: "Signed in as " + me.user + (me.staff ? " (staff)" : "") + ".",
+    foot: me.staff
+      ? "This account is marked STAFF. It can open, export and delete EVERY "
+        + "document on this server, not only its own, and it sees the "
+        + "feedback CSV. That is a deliberate power for our own team; it is "
+        + "not what a client account should have."
+      : "This account sees its own documents plus the shared set. Signing "
+        + "out ends the session in this browser only - it does not sign out "
+        + "any other machine you are signed in on." };
+}
+
+// ---- where a Settings hash lands -------------------------------------------
+// `#pricing` is the hash this page has been writing since it was the price
+// book, so it must keep working: it now names the PRICING GROUP of the same
+// page rather than the whole page. Returns the element id to scroll to, or
+// "" for "open Settings, stay at the top", or null for "not ours".
+function svHashTarget(hash) {
+  const h = String(hash || "").replace(/^#/, "").toLowerCase();
+  if (h === "settings") return "";
+  const g = { company: "svGroupCompany", appearance: "svGroupAppearance",
+              theme: "svGroupAppearance", scope: "svGroupScope",
+              pricing: "svGroupPricing", account: "svGroupAccount" };
+  return Object.prototype.hasOwnProperty.call(g, h) ? g[h] : null;
+}
 
 // Merge the labels that hold a stored price with the labels on the open
 // document's itemized takeoff. Dedupe by exact label (the store's own key
@@ -17703,6 +17919,10 @@ function showSettings(on) {
   document.querySelector("main").classList.toggle("sv-open", on);
   $("svBack").hidden = !(on && state.job);
   if (on) {
+    // A failed branding read is retried on the next OPEN, not on every
+    // render: renderSettings() also runs on every price keystroke, and a
+    // dead endpoint must not become a fetch per character.
+    if (svBrand === null) svBrand = undefined;
     renderSettings();
   } else {
     // same resync discipline as showProjects: the canvas buffer went 0x0
@@ -17715,8 +17935,11 @@ function showSettings(on) {
     if (state.result) renderItemized();
   }
   try {
+    // `#settings` since the page became the whole settings page; `#pricing`
+    // still ARRIVES here (svHashTarget) and now lands on the price book, so
+    // an old bookmark is not broken by the rename.
     history.replaceState(null, "",
-      on ? "#pricing" : location.pathname + location.search);
+      on ? "#settings" : location.pathname + location.search);
   } catch (err) { /* the hash is a convenience, never a requirement */ }
 }
 
@@ -17741,10 +17964,210 @@ function svLiveItems() {
 }
 
 function renderSettings() {
+  renderSvBrand();
+  renderSvTheme();
+  renderSvScope();
   renderSvBook();
   renderSvColors();
   renderSvMaterials();
   renderSvFoot();
+  renderSvAccount();
+}
+
+// ---------- COMPANY ---------------------------------------------------------
+// The only setting on this page that leaves the browser. Held here so the
+// inputs are not clobbered while the operator is typing: renderSettings runs
+// on every open and on every price edit, and re-filling a focused field from
+// the server would eat keystrokes.
+// THREE states, not two: `undefined` is "not asked yet", `null` is "asked
+// and the server did not answer". They read differently on the page, and
+// conflating them would print a failure message during a normal load.
+let svBrand;                 // last payload from /api/branding
+let svBrandDirty = false;    // the operator has typed since the last save
+
+async function loadSvBrand() {
+  try {
+    const r = await fetch("/api/branding");
+    svBrand = r.ok ? await r.json() : null;
+  } catch (e) { svBrand = null; }
+  svBrandDirty = false;
+  if (!$("settingsView").hidden) renderSvBrand();
+}
+
+function renderSvBrand() {
+  const note = $("svBrandNote"), co = $("svBrandCompany"),
+        ct = $("svBrandContact"), st = $("svBrandState");
+  if (!note) return;
+  if (svBrand === undefined) {
+    note.textContent = "Reading the company name from the server…";
+    co.disabled = ct.disabled = $("svBrandSave").disabled = true;
+    loadSvBrand();
+    return;
+  }
+  if (!svBrand) {
+    note.textContent = "Could not read the company name from the server. "
+      + "Nothing has been changed - leave this page and come back to try "
+      + "again. Any report generated meanwhile still carries whatever the "
+      + "server already had; this is a read that failed, not a reset.";
+    co.disabled = ct.disabled = $("svBrandSave").disabled = true;
+    return;
+  }
+  co.disabled = ct.disabled = $("svBrandSave").disabled = false;
+  // Never overwrite what is being typed.
+  if (!svBrandDirty && document.activeElement !== co && document.activeElement !== ct) {
+    co.value = svBrand.company || "";
+    ct.value = svBrand.contact || "";
+  }
+  // Two axes, and they are not the same question. `seat` is where a SAVE
+  // would land; `scope` is where the value being shown came from. They
+  // differ exactly once - a signed-in account that has never saved and is
+  // therefore reading the install default - and that is the case worth
+  // spelling out, because a name you did not type is about to go on your
+  // client's PDF. On a box with no accounts at all the two are the same
+  // thing, and saying "your account has not set one" there would name an
+  // account that does not exist.
+  const acct = svBrand.seat === "account";
+  const seat = acct
+    ? "your account on this server"
+    : "this server (no accounts are configured, so there is one shared brand)";
+  const where = svBrand.scope === "account" ? "set on your account"
+    : svBrand.scope === "install"
+      ? (acct ? "inherited from this server's own default, because your "
+                + "account has not set one"
+              : "set on this server")
+      : "not set";
+  note.innerHTML = "Stored on <b>the server</b>, not in this browser - it is "
+    + `${seat}, so every seat and every PDF agree. Currently <b>${where}</b>. `
+    + "Leave both boxes empty and the report prints exactly as it does today, "
+    + "with no letterhead at all.";
+  st.textContent = svBrandDirty ? "unsaved" : "";
+}
+
+$("svBrandCompany").oninput = $("svBrandContact").oninput = () => {
+  svBrandDirty = true;
+  $("svBrandState").textContent = "unsaved";
+};
+$("svBrandSave").onclick = async () => {
+  const body = { company: $("svBrandCompany").value,
+                 contact: $("svBrandContact").value };
+  $("svBrandSave").disabled = true;
+  $("svBrandState").textContent = "saving…";
+  try {
+    const r = await fetch("/api/branding", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    svBrand = await r.json();
+    svBrandDirty = false;
+    renderSvBrand();
+    setStatus(svBrand.company
+      ? "company saved — new report PDFs are stamped “" + svBrand.company + "”"
+      : "company cleared — new report PDFs carry no letterhead");
+  } catch (e) {
+    $("svBrandState").textContent = "not saved: " + e.message;
+    setStatus("the company name did not save — nothing on the server changed",
+              "err");
+  }
+  $("svBrandSave").disabled = false;
+};
+
+// ---------- APPEARANCE ------------------------------------------------------
+function renderSvTheme() {
+  const box = $("svThemeChoice");
+  if (!box) return;
+  box.innerHTML = "";
+  const cur = coreTheme();
+  const LABEL = { dark: ["Dark", "the working theme"],
+                  light: ["Paper", "closer to a printed sheet"] };
+  for (const t of CORE_THEMES) {
+    const lab = document.createElement("label");
+    lab.className = "sv-ch" + (cur === t ? " on" : "");
+    const rb = document.createElement("input");
+    rb.type = "radio"; rb.name = "svTheme"; rb.value = t;
+    rb.checked = cur === t;
+    // change, not click: this is the control, and it must also answer to a
+    // keyboard arrow inside the radio group
+    rb.onchange = () => { if (rb.checked) coreThemeSet(t); };
+    const txt = document.createElement("span");
+    txt.className = "sv-ch-t";
+    const nm = document.createElement("b");
+    nm.textContent = LABEL[t][0];
+    const ds = document.createElement("span");
+    ds.className = "sv-ch-d";
+    ds.textContent = LABEL[t][1];
+    txt.append(nm, ds);
+    lab.append(rb, txt);
+    box.appendChild(lab);
+  }
+}
+
+// ---------- SCOPE -----------------------------------------------------------
+function renderSvScope() {
+  const box = $("svScopeChips"), note = $("svScopeNote");
+  if (!box) return;
+  box.innerHTML = "";
+  const on = new Set(scopeDefaultTrades());
+  for (const tr of SCOPE_NAMES) {
+    const b = document.createElement("button");
+    b.className = "scope-chip" + (on.has(tr) ? " on" : "");
+    b.textContent = tr;
+    b.name = "sv-scope-" + tr;
+    b.setAttribute("aria-pressed", on.has(tr) ? "true" : "false");
+    b.title = "Tokens tested against the CAD layer: "
+      + ((SCOPE_TOKENS[tr].layer || []).join(", ") || "(none)")
+      + (SCOPE_TOKENS[tr].material.length
+        ? "\nTested against a schedule MATERIAL cell: "
+          + SCOPE_TOKENS[tr].material.join(", ") : "");
+    b.onclick = () => scopeSetDefaultTrades(
+      on.has(tr) ? [...on].filter(x => x !== tr) : [...on, tr]);
+    box.appendChild(b);
+  }
+  const n = on.size;
+  const doc = state.result ? scopeRec() : null;
+  // The distinction, in plain words, every time - not as a tooltip.
+  let s = "<b>This is a starting value, not a filter.</b> ";
+  s += n
+    ? `A document you have never declared a scope on will open counting for `
+      + `the ${n} trade${n === 1 ? "" : "s"} above. `
+    : "Nothing is picked, so a new document opens with nothing declared and "
+      + "nothing filtered - exactly as it does today. ";
+  s += "The declaration on a sheet&rsquo;s own <i>&ldquo;Whose scope is "
+    + "this?&rdquo;</i> panel is a different, stronger statement: it is what "
+    + "you are doing <b>on that job</b>, it is what the takeoff was built "
+    + "under, and it always wins. Once a document has one - including "
+    + "&ldquo;show everything&rdquo; - changing this default does not touch "
+    + "it. Nothing here ever deletes a row or changes a measured length.";
+  if (doc)
+    s += " <br><b>The open document:</b> "
+      + (doc.from === "document"
+        ? "has its own declaration ("
+          + (doc.trades.length ? doc.trades.join(", ") : "show everything")
+          + "), so this default is not affecting it."
+        : doc.trades.length
+          ? "has no declaration of its own and is currently seeded from this "
+            + "default (" + doc.trades.join(", ") + ")."
+          : "has no declaration of its own and nothing is declared here, so "
+            + "nothing is filtered.");
+  s += " Stored in this browser only (<code>core-scope-default</code> in "
+    + "localStorage); it is not sent to the server.";
+  note.innerHTML = s;
+}
+
+// ---------- ACCOUNT ---------------------------------------------------------
+// loadWhoami() owns #whoami and #signOutBtn and is the only thing that
+// touches them. This renders the SENTENCES around them, from the same
+// payload, via the pure svAccountState().
+// `svMe` is declared beside loadWhoami (see the note there) - it must exist
+// before boot calls loadWhoami, which is far above this block.
+function renderSvAccount() {
+  const note = $("svAccountNote");
+  if (!note) return;
+  const st = svAccountState(svMe);
+  note.textContent = st.text;
+  $("svAccountFoot").textContent = st.foot;
+  // The row holds the two moved nodes; with no account there is nothing in
+  // it and an empty bordered strip reads as a control that failed to load.
+  $("svAccountRow").hidden = !st.controls;
 }
 
 // ---- the colour convention book ------------------------------------------
@@ -18267,6 +18690,44 @@ $("settingsLink").onclick = (e) => {
 };
 $("svBack").onclick = () => showSettings(false);
 
+// THE HASHES. This page has written `#pricing` since it was the price book,
+// so that hash is a link somebody may have bookmarked or pasted. It still
+// works and now means the PRICING GROUP of this page - the nearest sensible
+// landing spot, rather than the top of a page whose first group is about
+// something else. `#settings` is the new whole-page hash and is what the
+// brand link points at. svHashTarget() (pure, tested) is the whole mapping.
+//
+// Nothing here reads `#projects`: that hash belongs to the projects view and
+// is not this page's to route.
+function svGoto(hash, opts) {
+  const id = svHashTarget(hash);
+  if (id === null) return false;
+  showSettings(true);
+  if (id) {
+    const el = $(id);
+    // The view is display:none until showSettings flips it, so the scroll
+    // has to wait a frame for the element to have a box to scroll to.
+    if (el) requestAnimationFrame(() =>
+      el.scrollIntoView({ block: "start",
+                          behavior: (opts && opts.smooth) ? "smooth" : "auto" }));
+  }
+  return true;
+}
+for (const a of $("svNav").querySelectorAll("a")) {
+  a.onclick = (e) => {
+    e.preventDefault();
+    const h = a.getAttribute("href");
+    svGoto(h, { smooth: true });
+    try { history.replaceState(null, "", h); } catch (err) { /* convenience */ }
+  };
+}
+addEventListener("hashchange", () => { svGoto(location.hash); });
+// Boot: an address that names this page opens it, AFTER the projects view's
+// own "land on Projects when nothing is open" line has already run - and on
+// BOOT_HASH, not location.hash, because that line has already overwritten
+// location.hash with "#projects" by the time this executes.
+svGoto(BOOT_HASH);
+
 // While the settings view is up the workbench is INVISIBLE, so none of its
 // single-key shortcuts may reach it - the same swallow discipline as the
 // projects view, Ctrl+Z / Ctrl+Y included (undo must not act on the hidden
@@ -18286,7 +18747,7 @@ addEventListener("keydown", (e) => {
       || ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")))
     e.stopImmediatePropagation();
 }, true);
-// =============== end PRICING SETTINGS ======================================
+// =============== end SETTINGS ==============================================
 
 // =============== toolkit rich hover demos (TIPVID) =========================
 // The Photoshop rich-tooltip pattern on the toolkit rail: rest the pointer

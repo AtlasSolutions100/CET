@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from takeoff_engine import branding as _branding
 from takeoff_engine import ledger
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
@@ -532,6 +533,50 @@ def _is_staff(request: Request) -> bool:
     """Our own team: sees every document, may delete any of them. True in
     single-password mode too, where there is nothing to separate."""
     return bool(request.scope.get("tk_staff")) or _who(request) is None
+
+
+# ---------------------------------------------------------------------------
+# BRANDING. The one Settings value that is not a browser preference, because
+# the thing it brands (report_pdf, below) is generated on the server. See
+# takeoff_engine/branding.py for why it is stored per account rather than
+# once per install.
+#
+# Both fields are OPTIONAL with a safe default, so a client that predates
+# this endpoint - or one that only knows about `company` - still works: it
+# posts what it has, the missing field reads as "" and the record is
+# rewritten without it. Nothing here can 404 or 500 a box that has never
+# been branded; the blank record is a legitimate answer.
+class BrandingBody(BaseModel):
+    company: str | None = None
+    contact: str | None = None
+
+
+@app.get("/api/branding")
+def get_branding(request: Request):
+    """The company this seat's reports are stamped with.
+
+    `scope` says where the record came from and `seat` says where a save
+    would go, so the UI can tell the operator which of the two they are
+    looking at instead of showing a name with no provenance.
+    """
+    rec, scope = _branding.resolve(_who(request))
+    return {"company": rec["company"], "contact": rec["contact"],
+            "scope": scope,
+            "seat": "account" if _who(request) else "install",
+            "company_max": _branding.COMPANY_MAX,
+            "contact_max": _branding.CONTACT_MAX}
+
+
+@app.post("/api/branding")
+def post_branding(body: BrandingBody, request: Request):
+    """Set this seat's company. Writing a blank company is a decision, not a
+    reset: it means "stamp nothing", and it outranks the install default."""
+    rec, scope = _branding.save(
+        _who(request), {"company": body.company, "contact": body.contact})
+    return {"company": rec["company"], "contact": rec["contact"],
+            "scope": scope, "seat": scope,
+            "company_max": _branding.COMPANY_MAX,
+            "contact_max": _branding.CONTACT_MAX}
 
 # BETA NOTICE. The whole point of this product is a number an estimator puts
 # in a bid, so the caveat has to travel WITH the number, not sit on a login
@@ -2865,7 +2910,7 @@ def get_elements(job_id: str, page: int):
 
 
 @app.get("/api/job/{job_id}/report.pdf")
-def report_pdf(job_id: str):
+def report_pdf(job_id: str, request: Request):
     """Compile every approved page of this job into a deliverable PDF:
     per page an overlay of the approved lines on the sheet, then an
     itemized table (label / count / footage / pricing)."""
@@ -2887,6 +2932,35 @@ def report_pdf(job_id: str):
     out = pymupdf.open()
     grand: dict = {}
     all_notes: list[str] = []
+
+    # THE LETTERHEAD. Resolved for the account that asked for this file, not
+    # for the job's owner: "prepared by" is a statement about who produced
+    # the document, and staff opening a client's job produced it. Blank on a
+    # box nobody has branded, and a blank one draws nothing at all - the PDF
+    # is then byte-for-byte the one this endpoint made before branding
+    # existed.
+    #
+    # It sits in the TOP MARGIN of the text pages (baselines 36 and 46; the
+    # itemized title's own baseline is 60 and its 16pt cap-height reaches
+    # only to y=48.6), so not one existing line moves. It is deliberately
+    # NOT drawn on the sheet-overlay pages: those are a full-bleed raster of
+    # the client's own drawing and text over them would sit on the linework.
+    _brec, _bscope = _branding.resolve(_who(request))
+    _bco = (_brec.get("company") or "").strip()
+    _bct = (_brec.get("contact") or "").strip()
+
+    def _letterhead(pg) -> None:
+        """Stamp the company on one 612x792 text page. Self-declared and
+        printed verbatim - this is the one thing on the report that is not a
+        measurement, so it carries no caveat and earns none. It never
+        displaces the beta band, which is drawn last, at the bottom, over
+        every page including this one."""
+        if not _bco:
+            return
+        pg.insert_text((50, 36), _bco[:80], fontsize=10)
+        if _bct:
+            pg.insert_text((50, 46), _bct[:120], fontsize=7.5,
+                           color=(0.38, 0.38, 0.38))
     for pno in pages:
         exp = json.loads((jd / f"p{pno}_elements.json").read_text())
         pg = doc[pno]
@@ -2910,6 +2984,7 @@ def report_pdf(job_id: str):
         # itemized table page
         items = exp.get("items", [])
         tp = out.new_page(width=612, height=792)
+        _letterhead(tp)
         y = 60
         # Head the table with the PRINTED sheet number when detection read
         # one off the title block ("Sheet C3.1 (page 4)"): the client names
@@ -2968,6 +3043,7 @@ def report_pdf(job_id: str):
                 or (it.get("unit") and it.get("length_ft") is not None)
             if y > (722 if _sub else 740):
                 tp = out.new_page(width=612, height=792)
+                _letterhead(tp)
                 y = 60
             _ov = it.get("qty_set_by") == _BY_REVIEWER
             tp.insert_text((50, y), (str(it["label"])[:50] + " *") if _ov
@@ -3045,6 +3121,7 @@ def report_pdf(job_id: str):
 
     # grand summary
     tp = out.new_page(width=612, height=792)
+    _letterhead(tp)
     y = 60
     tp.insert_text((50, y), f"{Path(job['path']).name} - Takeoff summary",
                    fontsize=16)
@@ -3089,6 +3166,7 @@ def report_pdf(job_id: str):
             key=lambda kv: (kv[1]["unit"] != "ft", -kv[1]["qty"])):
         if y > (728 if g["ov"] else 740):
             tp = out.new_page(width=612, height=792)
+            _letterhead(tp)
             y = 60
         tp.insert_text((50, y), (label[:50] + " *") if g["ov"] else label[:52],
                        fontsize=9)

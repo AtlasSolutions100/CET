@@ -2438,3 +2438,99 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 #svColorPick { width: 46px; height: 26px; padding: 0;
   background: var(--t-field); border: 1px solid var(--t-border);
   border-radius: var(--t-r-1); cursor: pointer; }
+/* ---------- SETTINGS: the four groups that joined the price book ----------
+   2026-09-01. #settingsView stopped being the Pricing page and became the
+   Settings page. Everything below is ADDITIVE - not one existing .sv-* rule
+   moved, so the price book renders exactly as it did.
+
+   Colours come from var(--t-*) only. */
+
+/* Group titles sit OUTSIDE the .sv-section cards, so they read as headings
+   over a stack of cards rather than as another card. That is also why they
+   cannot reuse `.sv-section h2`: that selector styles a card's own sub-head
+   and these are a rank above it. */
+.sv-grouptitle { max-width: 1040px; margin: var(--t-sp-6, 32px) auto var(--t-sp-2, 8px);
+  font-family: var(--t-font-ui, inherit); font-size: var(--t-fs-md, 16px);
+  font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--t-text-faint, var(--dim));
+  border-bottom: 1px solid var(--t-border, var(--line));
+  padding-bottom: var(--t-sp-2, 8px);
+  scroll-margin-top: var(--t-sp-4, 16px); }
+.sv-grouptitle:first-of-type { margin-top: var(--t-sp-2, 8px); }
+
+/* In-page jump bar. Anchors, so the URL is shareable; the click handler
+   scrolls rather than letting the browser jump, because #pricing has to keep
+   meaning what it always meant. */
+.sv-nav { max-width: 1040px; margin: 0 auto var(--t-sp-3, 12px);
+  display: flex; flex-wrap: wrap; gap: var(--t-sp-2, 8px); }
+.sv-nav a { font-size: var(--t-fs-xs, 12px); text-decoration: none;
+  color: var(--t-text-dim, var(--dim));
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-pill, 999px);
+  padding: 3px var(--t-sp-3, 12px); }
+.sv-nav a:hover { color: var(--t-accent); border-color: var(--t-accent); }
+
+/* a trailing note inside a card: the "where does this live" sentence */
+.sv-note-b { border-top: 1px solid var(--t-border, var(--line));
+  padding-top: var(--t-sp-3, 12px); margin-top: 0;
+  padding-bottom: var(--t-sp-3, 12px); }
+.sv-note-b b { color: var(--t-text, var(--text)); }
+.sv-note code { font-family: var(--t-font-data, var(--mono));
+  font-size: var(--t-fs-xs, 12px); }
+
+/* COMPANY: two labelled fields */
+.sv-form { display: flex; flex-direction: column; gap: var(--t-sp-3, 12px);
+  padding: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-fld { display: flex; flex-direction: column; gap: 3px; max-width: 520px; }
+.sv-fld > span { font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-dim, var(--dim)); }
+.sv-fld > span em { font-style: normal; color: var(--t-text-faint, var(--dim)); }
+.sv-fld input[type=text] { width: 100%; }
+
+/* APPEARANCE: a radio group that looks like a choice, not like a form */
+.sv-choice { display: flex; flex-wrap: wrap; gap: var(--t-sp-3, 12px);
+  padding: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-ch { display: flex; align-items: flex-start; gap: var(--t-sp-2, 8px);
+  border: 1px solid var(--t-border, var(--line));
+  border-radius: var(--t-r-2, 8px);
+  padding: var(--t-sp-2, 8px) var(--t-sp-3, 12px);
+  cursor: pointer; min-width: 200px; }
+.sv-ch:hover { border-color: var(--t-border-strong, var(--line)); }
+/* The selected card is marked with a RAISED surface and an accent edge, not
+   with an accent FILL. Filling it was the first cut and it failed in paper
+   theme: --t-accent-deep is #1f5c3e in both themes, so the label inside went
+   dark-on-dark. The obvious repair - paint the text --t-accent-ink - fails
+   the other way round, because that token is #06210f in dark theme (it is
+   ink for the BRIGHT --t-accent, not for --t-accent-deep). A neutral surface
+   plus an accent edge needs no such pairing and reads in both. */
+.sv-ch.on { border-color: var(--t-accent);
+  background: var(--t-surface-2, var(--chip));
+  box-shadow: inset 3px 0 0 var(--t-accent); }
+.sv-ch.on .sv-ch-t b { color: var(--t-accent); }
+.sv-ch input { margin-top: 2px; accent-color: var(--t-accent); }
+.sv-ch-t { display: flex; flex-direction: column; }
+.sv-ch-t b { font-size: var(--t-fs-sm, 13px); color: var(--t-text, var(--text)); }
+.sv-ch-d { font-size: var(--t-fs-xs, 12px);
+  color: var(--t-text-dim, var(--dim)); }
+
+/* SCOPE: the same .scope-chip pills as the sheet's own panel, on purpose -
+   the two controls set related things and must be recognisably the same
+   kind of control. They get room to breathe here because this page is not
+   330px wide. */
+.sv-chips { display: flex; flex-wrap: wrap; gap: var(--t-sp-2, 8px);
+  padding: 0 var(--t-sp-4, 16px) var(--t-sp-3, 12px); }
+.sv-chips .scope-chip { font-size: var(--t-fs-sm, 13px);
+  padding: 4px var(--t-sp-3, 12px); cursor: pointer; }
+.sv-chips .scope-chip:hover { border-color: var(--t-accent); }
+
+/* ACCOUNT: the two MOVED nodes, out of the status strip's density */
+#svAccountRow .whoami { font-size: var(--t-fs-sm, 13px);
+  color: var(--t-text, var(--text)); letter-spacing: 0; }
+
+/* The scope panel's "this came from Settings, not from this sheet" line.
+   Its own row under the header, not a chip inside it: the header is a flex
+   row in a 330px column and a fourth item overlapped the title. */
+.scope-src { margin-top: 5px; padding: 3px 7px;
+  font-size: var(--t-fs-xs); line-height: 1.4;
+  color: var(--t-text-faint, var(--dim));
+  border-left: 2px dashed var(--t-border-strong, var(--line)); }
