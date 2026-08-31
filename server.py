@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from takeoff_engine import ledger
 from takeoff_engine.chain import build_chains
 from takeoff_engine.classify_page import classify_page
 from takeoff_engine.detect_page import (error_path, read_sheet_number,
@@ -1568,6 +1569,11 @@ def reset_job(job_id: str, preview: bool = False):
             j["status"] = {}
 
     out["removed"] = removed
+    # training ledger (observation only): later events for this job refer
+    # to a FRESH detection - the provenance boundary matters at training time
+    ledger.record("job_reset", job_id, None, None,
+                  {"counts": counts, "removed": removed},
+                  None, pdf_path=(JOBS.get(job_id) or {}).get("path"))
     return out
 
 
@@ -1634,6 +1640,11 @@ def delete_job(job_id: str, request: Request):
             pdf_removed = True
         except OSError:
             pass
+    # training ledger (observation only): the job's events end here, and a
+    # trainer reading the ledger later should know the source went away
+    ledger.record("job_deleted", job_id, None, None,
+                  {"files_removed": removed, "pdf_removed": pdf_removed},
+                  None)
     return {"ok": True, "name": name, "files_removed": removed,
             "pdf_removed": pdf_removed}
 
@@ -1889,11 +1900,29 @@ def _page_scale(job_id: str, page: int, res: dict,
                     json.dumps(pick, indent=1))
             except OSError:
                 pass  # unwritable: this approve still honours the screen
+            # training ledger (observation only, never raises): a human
+            # overruled the engine's reading - the core scale label
+            ledger.record("scale_set", job_id, page,
+                          {"ft_per_paper_inch": eng_ft,
+                           "text": (eng or {}).get("text"),
+                           "source": (eng or {}).get("source")},
+                          dict(pick), None,
+                          pdf_path=(JOBS.get(job_id) or {}).get("path"))
         else:
+            _had_pick = _stored_scale_pick(job_id, page)
             try:
                 _scale_pick_path(job_id, page).unlink(missing_ok=True)
             except OSError:
                 pass
+            if _had_pick:
+                # the reviewer went BACK to the engine's own reading - as
+                # much a label as the overrule was
+                ledger.record("scale_pick_retired", job_id, page,
+                              _had_pick,
+                              {"ft_per_paper_inch": want, "set_by": "auto"},
+                              {"engine_text": (eng or {}).get("text"),
+                               "engine_source": (eng or {}).get("source")},
+                              pdf_path=(JOBS.get(job_id) or {}).get("path"))
     else:
         # Nothing on the wire (an older UI, or a re-approve from a script):
         # an earlier human decision is still the best information this page
@@ -2303,6 +2332,7 @@ def approve(job_id: str, page: int, body: ApproveBody):
             f"workAreaFrac says how much of it counted.")
     out = _job_dir(job_id) / f"p{page}_elements.json"
     out.write_text(json.dumps(export, indent=1))
+    _ledger_approve(job_id, page, body, res, export)
     return JSONResponse({"exported": len(elements), "file": str(out),
                          "items": items, "scale": export.get("scale"),
                          "overrides": export["overrides"],
@@ -2400,6 +2430,166 @@ def get_scale_pick(job_id: str, page: int):
     }
 
 
+# ---------- training-ledger hooks ------------------------------------------
+# Server-side capture of operator decisions (takeoff_engine/ledger.py). Every
+# helper here is OBSERVATION ONLY: fully try/except-wrapped, and nothing in
+# the detection or calculation path ever reads what they write - a ledger
+# failure can cost an event, never a request, and deleting out/ledger changes
+# no number any endpoint returns.
+
+
+def _ledger_pdf(job_id: str):
+    j = JOBS.get(job_id)
+    return j.get("path") if j else None
+
+
+def _ledger_calcstate(job_id: str, page: int, old: dict, new: dict) -> None:
+    """Semantic, row-level events for one calculator-sidecar write: the old
+    and new blobs are diffed key by key (ledger.calcstate_events), and any
+    event that names a chain gets the engine's own cached per-chain features
+    attached - copied from p<N>_result.json, never recomputed."""
+    try:
+        evs = ledger.calcstate_events(old, new)
+        if not evs:
+            return
+        feats: dict = {}
+        if any((e.get("context") or {}).get("chain_id") is not None
+               for e in evs):
+            feats = ledger.chain_feature_map(
+                _job_dir(job_id) / f"p{page}_result.json")
+        pdf = _ledger_pdf(job_id)
+        for e in evs:
+            ctx = dict(e.get("context") or {})
+            cid = ctx.get("chain_id")
+            if cid in feats:
+                ctx["chain"] = feats[cid]
+            ledger.record(e["event"], job_id, page, e.get("before"),
+                          e.get("after"), ctx, pdf_path=pdf)
+    except Exception:
+        pass
+
+
+# chain_excluded events per approve are capped: a mass-erase of a dense
+# sheet is one gesture, not thousands of independent judgments, and the
+# ledger should not balloon on it. The cap is disclosed in the summary
+# event's context (n_excluded carries the true count).
+_LEDGER_MAX_EXCLUDED = 2000
+
+
+def _ledger_approve(job_id: str, page: int, body: "ApproveBody",
+                    res: dict, export: dict) -> None:
+    """Label events for one approve: per-style labels (engine suggestion ->
+    final), per-chain relabels, per-chain erasures (junk labels), and one
+    approve_export summary with the final itemized counts."""
+    try:
+        pdf = _ledger_pdf(job_id)
+        styles = {int(s["style_id"]): s for s in res.get("styles") or []
+                  if isinstance(s, dict) and s.get("style_id") is not None}
+        chains = {c.get("chain_id"): c for c in res.get("chains") or []
+                  if isinstance(c, dict)}
+        for c in body.added_chains:
+            if isinstance(c, dict) and c.get("chain_id") is not None:
+                chains.setdefault(c["chain_id"], c)
+        for sid, label in body.labels.items():
+            st = styles.get(int(sid))
+            ledger.record(
+                "style_label", job_id, page,
+                {"suggested_label": (st or {}).get("suggested_label")},
+                {"label": label},
+                {"style_id": int(sid),
+                 "style": ledger.style_features(st) if st else None},
+                pdf_path=pdf)
+        for cid, label in body.chain_labels.items():
+            ch = chains.get(int(cid))
+            ledger.record(
+                "chain_relabel", job_id, page,
+                {"label": body.labels.get((ch or {}).get("style_id"))},
+                {"label": label},
+                {"chain_id": int(cid),
+                 "chain": ledger.chain_features(ch) if ch else None},
+                pdf_path=pdf)
+        for cid in body.excluded_chain_ids[:_LEDGER_MAX_EXCLUDED]:
+            ch = chains.get(cid)
+            ledger.record(
+                "chain_excluded", job_id, page,
+                {"label": body.labels.get((ch or {}).get("style_id"))},
+                None,
+                {"chain_id": cid,
+                 "chain": ledger.chain_features(ch) if ch else None},
+                pdf_path=pdf)
+        wa = {k: v for k, v in (export.get("work_area") or {}).items()
+              if k != "zones"}
+        ledger.record(
+            "approve_export", job_id, page, None,
+            {"n_elements": len(export.get("elements") or []),
+             "items": export.get("items"),
+             "overrides": export.get("overrides"),
+             "scale": export.get("scale"),
+             "work_area": wa or None},
+            {"n_excluded": len(body.excluded_chain_ids),
+             "n_excluded_ledgered": min(len(body.excluded_chain_ids),
+                                        _LEDGER_MAX_EXCLUDED),
+             "n_added_chains": len(body.added_chains),
+             "n_extra_items": len(body.extra_items),
+             "object_counts": body.object_counts or None,
+             "image_dpi": body.image_dpi},
+            pdf_path=pdf)
+    except Exception:
+        pass
+
+
+def _ledger_earthwork(job_id: str, page: int, body: "EarthworkBody",
+                      result: dict) -> None:
+    """One event per Calculate press: the inputs' shape and the volumes the
+    operator was shown. The row-level decisions behind it (z per chain,
+    surface assignments) are captured by the calcstate hook; this records
+    that the operator ran THIS configuration and saw THESE numbers."""
+    try:
+        after = {k: result.get(k) for k in
+                 ("cut_yd3", "fill_yd3", "net_yd3", "area_sf", "cell_ft",
+                  "existing_offset_ft", "proposed_offset_ft")}
+        ctx = {"n_existing": len(body.existing),
+               "n_proposed": len(body.proposed),
+               "n_existing_points": len(body.existing_points),
+               "n_proposed_points": len(body.proposed_points),
+               "n_existing_layers": len(body.existing_layers),
+               "n_proposed_layers": len(body.proposed_layers),
+               "strip_area_sf": body.strip_area_sf,
+               "cut_reuse_pct": body.cut_reuse_pct,
+               "has_boundary": bool(body.boundary)}
+        ledger.record("earthwork_calc", job_id, page, None, after, ctx,
+                      pdf_path=_ledger_pdf(job_id))
+    except Exception:
+        pass
+
+
+def _ledger_structure(job_id: str, page: int, body: "StructureBody",
+                      rows: list, totals: dict) -> None:
+    try:
+        after = {"totals": totals, "n_structures": len(rows)}
+        ctx = {"structures": [
+            {"name": s.get("name"),
+             "n_points": len(s.get("points") or []),
+             "depth_ft": s.get("depth_ft"),
+             "layback_ft": s.get("layback_ft"),
+             "footing_ft": s.get("footing_ft")}
+            for s in body.structures if isinstance(s, dict)][:50]}
+        ledger.record("structure_calc", job_id, page, None, after, ctx,
+                      pdf_path=_ledger_pdf(job_id))
+    except Exception:
+        pass
+
+
+@app.get("/api/ledger/stats")
+def ledger_stats():
+    """Training-ledger statistics: totals, per-event-type and per-job
+    counts, month files, time range, bytes on disk. This endpoint reads
+    the ledger files directly - it sits OUTSIDE the detection/calculation
+    pipeline, so the write-only invariant in takeoff_engine/ledger.py
+    holds: no pipeline code path reads the ledger."""
+    return JSONResponse(ledger.stats())
+
+
 # ---------- calculator-input sidecar --------------------------------------
 # The review UI's calculator panels (earthwork contours, trench, structure)
 # hold operator DECISIONS - surface assignments, corrected elevations, layer
@@ -2460,11 +2650,22 @@ def _calcstate_put(job_id: str, page: int, raw: bytes) -> dict:
         raise HTTPException(404, "unknown job")
     data = _calcstate_check(raw)
     f = _calcstate_path(job_id, page)
+    # the record being replaced, read BEFORE the replace: the training
+    # ledger diffs old vs new to emit row-level events (observation only -
+    # an unreadable old blob just means the diff starts from {})
+    old: dict = {}
+    if f.exists():
+        try:
+            _o = json.loads(f.read_text())
+            old = _o if isinstance(_o, dict) else {}
+        except (OSError, ValueError):
+            old = {}
     # unique tmp name: two debounced saves landing together must not
     # interleave in one tmp file and publish a torn record
     tmp = f.with_name(f"{f.name}.{uuid.uuid4().hex[:8]}.tmp")
     tmp.write_text(json.dumps(data, indent=1))
     os.replace(tmp, f)
+    _ledger_calcstate(job_id, page, old, data)
     return {"ok": True, "bytes": len(raw)}
 
 
@@ -3530,7 +3731,9 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
 def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     """Cut & fill volumes between two labeled contour surfaces, after
     lowering each by its layer stack (see EarthworkBody)."""
-    return JSONResponse(_earthwork_run(job_id, page, body))
+    result = _earthwork_run(job_id, page, body)
+    _ledger_earthwork(job_id, page, body, result)
+    return JSONResponse(result)
 
 
 @app.post("/api/job/{job_id}/page/{page}/earthwork/map")
@@ -4149,6 +4352,7 @@ def structure_calc(job_id: str, page: int, body: StructureBody):
                  ("Structure Backfill", "backfill_cy", "CY"),
                  ("Slab Prep", "slab_sf", "SF"))
              if totals[key] > 0]
+    _ledger_structure(job_id, page, body, rows, totals)
     return JSONResponse({"structures": rows, "totals": totals,
                          "extra_items": items,
                          "ft_per_pt": round(ft_per_pt, 5)})

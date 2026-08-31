@@ -36,6 +36,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # imported: server.py resolves and creates JOBS_DIR at import time.
 _TMP = tempfile.mkdtemp(prefix="calcstate_test_")
 os.environ["TAKEOFF_JOBS_DIR"] = _TMP
+# ... and so must the training ledger: _calcstate_put emits observation
+# events (takeoff_engine/ledger.py), and without this they would land in
+# the real out/ledger every time this suite runs.
+os.environ["TAKEOFF_LEDGER_DIR"] = tempfile.mkdtemp(prefix="calcstate_test_lg_")
 
 from fastapi import HTTPException  # noqa: E402
 
