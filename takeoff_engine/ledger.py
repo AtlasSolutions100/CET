@@ -44,8 +44,35 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 
 def ledger_dir() -> Path:
+    """Where the training ledger lives. It belongs beside the JOB STORE, not
+    beside the code, and that distinction cost real data twice.
+
+    It used to be _ROOT/out/ledger unconditionally - tied to the checkout.
+    Two consequences, both measured on 2026-09-01:
+
+    * IN THE CONTAINER _ROOT is /app, which is in the IMAGE and not on the
+      mounted volume, so every deploy threw the hosted box's ledger away.
+      The one artifact whose entire value is accumulating over time was the
+      one artifact a release discarded.
+    * ON THIS LAPTOP every agent that ran a server from this checkout wrote
+      into the real ledger even though it was pointed at a throwaway job
+      store. 114 of 503 events (23%) turned out to be synthetic - 79
+      demo_opened, but also 12 approve_export and 6 style_label, which are
+      the operator-decision signal the ledger exists to collect. A training
+      set quietly seeded with a robot's own clicks.
+
+    Following TAKEOFF_JOBS_DIR fixes both: a throwaway store gets a throwaway
+    ledger, and a mounted volume keeps its history across releases.
+    TAKEOFF_LEDGER_DIR still overrides everything, for tests that want their
+    own and for a box that keeps the two apart deliberately.
+    """
     d = os.environ.get("TAKEOFF_LEDGER_DIR")
-    return Path(d).expanduser() if d else (_ROOT / "out" / "ledger")
+    if d:
+        return Path(d).expanduser()
+    jobs = os.environ.get("TAKEOFF_JOBS_DIR")
+    if jobs:
+        return Path(jobs).expanduser() / "ledger"
+    return _ROOT / "out" / "ledger"
 
 
 _LOCK = threading.Lock()
