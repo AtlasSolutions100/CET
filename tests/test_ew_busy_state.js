@@ -31,6 +31,17 @@
 //      pixel-identical to the busy state. Source scan, because the failure
 //      is structural (a later reader "simplifying" the wrapper away).
 //
+//   3b. SINGLE FLIGHT ACROSS BOTH FEATURES, added 2026-08-31. The token in
+//      (2) only covered the earthwork panel's own callers. ensureElev - the
+//      selection pill's elevation chip - called fetch() itself and bypassed
+//      it, so clicking a contour and then pressing EARTHWORK fired the same
+//      94-204 s endpoint TWICE for one page: two GETs, one click apart, in
+//      the server log. suggestOnce() is now the shared token, keyed on
+//      gen|job|page, and it is a single-flight guard and NOT a result
+//      cache - re-running Detect replaces every chain object without
+//      bumping state.gen, so a kept payload would hand the new detection
+//      the old detection's chain ids. Counted, not grepped.
+//
 //   4. THE SIX SITES THAT LIED now route through the helper, and the pure
 //      RENDER functions deliberately do not - they run on every repaint and
 //      would spray the status bar.
@@ -82,6 +93,10 @@ function fnSrc(name) {
   }
   throw new Error("unbalanced braces reading " + name);
 }
+
+// referenced from more than one stage below, so module scope, not stage3's
+const fetchSrc = fnSrc("ewFetchSuggest");
+const onceSrc = fnSrc("suggestOnce");
 
 // ---------------------------------------------------------------------------
 console.log("1. ewNotReady: four states, four sentences");
@@ -208,17 +223,82 @@ function stage3() {
 // -------------------------------------------------------------------------
 console.log("3. the fetch is wrapped, and failure is a state");
 // -------------------------------------------------------------------------
-const fetchSrc = fnSrc("ewFetchSuggest");
-check(/try \{[\s\S]*fetch\(/.test(fetchSrc),
-  "ewFetchSuggest wraps its fetch in try - a dropped request used to reject uncaught");
+check(/try \{[\s\S]*suggestOnce\(\)/.test(fetchSrc),
+  "ewFetchSuggest wraps its request in try - a dropped one used to reject uncaught");
 check(/catch\s*\([\s\S]*state\.ewFailed = true/.test(fetchSrc),
   "a dropped or non-ok request records ewFailed instead of hanging on the hint");
-check(/if \(!r\.ok\) throw/.test(fetchSrc),
+check(/if \(!r\.ok\) throw/.test(onceSrc),
   "an HTTP error takes the same path as a dropped connection");
 check(/ewFailed: false/.test(SRC) || /state\.ewFailed = false/.test(SRC),
   "a retry clears the previous failure");
 check(/state\.ewLoading === p\) state\.ewLoading = null/.test(fnSrc("ewEnsure")),
   "the in-flight flag is cleared in a finally, and only by the flight that set it");
+
+// -------------------------------------------------------------------------
+console.log("3b. ONE suggest in flight per page, across BOTH features");
+// -------------------------------------------------------------------------
+// state.ewLoading only ever covered the earthwork panel's own callers.
+// ensureElev - the selection pill's elevation chip - called fetch() itself
+// and bypassed it, so clicking a contour and then pressing EARTHWORK fired
+// the SAME 94-204 s endpoint twice: two GETs for the same page, one click
+// apart, in the server log. suggestOnce is the shared token.
+{
+  let fetches = 0;
+  let release;
+  const gate = new Promise(res => { release = res; });
+  const st = { gen: 4, job: "J", page: 3, suggestReq: null };
+  const body = { suggestions: [{ chain_id: 1, z: 10, how: "radius", dist: 1 }] };
+  const scope = {
+    state: st,
+    fetch: async () => { fetches++; await gate;
+                         return { ok: true, json: async () => body }; },
+  };
+  const names = Object.keys(scope);
+  const suggestOnce = new Function(...names, onceSrc + "\nreturn suggestOnce;")
+    (...names.map(n => scope[n]));
+
+  const a = suggestOnce();          // the elevation chip
+  const b = suggestOnce();          // EARTHWORK, one click later
+  const c = suggestOnce();          // gzRestoreCompute, unprompted
+  eq(fetches, 1, "three callers on one page issue exactly ONE GET");
+  check(a === b && b === c, "...they are handed the same promise");
+  check(!!st.suggestReq, "the token is parked on state while it is in flight");
+
+  // a request started on page 3 must never be handed to a caller on page 2
+  st.page = 2;
+  const d = suggestOnce();
+  eq(fetches, 2, "a caller on ANOTHER page gets its own request");
+  check(d !== a, "...not the one belonging to the page it switched away from");
+  st.page = 3;
+
+  release();
+  Promise.all([a, d]).then(() => {
+    check(st.suggestReq === null,
+      "the token is dropped once the request settles - it is a single-flight "
+      + "guard, NOT a result cache: re-running Detect replaces every chain "
+      + "object without bumping state.gen, and a kept payload would hand the "
+      + "new detection the old detection's chain ids");
+    return null;
+  }).then(() => {
+    // a REJECTED request must not be parked either
+    let n = 0;
+    const st2 = { gen: 1, job: "J", page: 0, suggestReq: null };
+    const bad = new Function("state", "fetch", onceSrc + "\nreturn suggestOnce;")
+      (st2, async () => { n++; return { ok: false, status: 500 }; });
+    return bad().then(() => { fails++; console.error("  FAIL: a 500 should reject"); },
+      () => {
+        check(st2.suggestReq === null, "a FAILED request is not parked either");
+        return bad().catch(() => {});
+      }).then(() => eq(n, 2, "...so the operator can ask again"));
+  }).then(stage4, e => {
+    // the SECOND handler, not .catch: a throw inside stage4 must not make
+    // this run stage4 a second time
+    fails++; console.error("  FAIL: single-flight suite threw " + e); stage4();
+  });
+}
+}
+
+function stage4() {
 
 // -------------------------------------------------------------------------
 console.log("4. every site that lied now routes through the guard");

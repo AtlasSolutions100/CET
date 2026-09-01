@@ -125,7 +125,7 @@ function renderBar(opts) {
     result: { styles: [{ style_id: 7, suggested_label: "dash1 d18.0 g51.7" }] },
     chainLabels: new Map(), labels: new Map(),
     selPt: null, selected: null,
-    elevMap: opts.elevMap,
+    elev: opts.elev,
   };
   const ch = { chain_id: 192, style_id: 7, class: "dash1",
                points: new Array(62).fill([0, 0]) };
@@ -152,15 +152,20 @@ function renderBar(opts) {
     (...names.map(n => scope[n]))(ch);
   return els.selInfo;
 }
-// the shape ensureElev actually stores: never a bare number
-const ELEV = (z, how, src, dist) =>
-  new Map([[192, { z, how, src: src || "", dist: dist === undefined ? null : dist }]]);
+// The shape ensureElev actually stores. Two rules in one helper: the state
+// is a status + a map, never a sentinel, and the map's value is an object,
+// never a bare number.
+const ELEV = (z, how, src, dist) => ({
+  status: "ready",
+  byChain: new Map([[192, { z, how, src: src || "",
+                            dist: dist === undefined ? null : dist }]]),
+});
 
 // ---------------------------------------------------------------------------
 console.log("1. the elevation is a chip, not the tail of the shrinkable string");
 // ---------------------------------------------------------------------------
 {
-  const info = renderBar({ elevMap: ELEV(545, "gap-ocr") });
+  const info = renderBar({ elev: ELEV(545, "gap-ocr") });
   const txt = byClass(info, "sel-txt")[0];
   const chip = byClass(info, "sel-el")[0];
 
@@ -182,26 +187,38 @@ console.log("1. the elevation is a chip, not the tail of the shrinkable string")
 // ---------------------------------------------------------------------------
 console.log("2. no elevation, no chip (not an empty box)");
 // ---------------------------------------------------------------------------
-for (const [name, map] of [
+// The four states of state.elev, each of which must render NO chip when it
+// has no elevation for this line - and none of which may be confused for
+// another (F2: loading, answered-and-empty and failed are three things).
+for (const [name, ev] of [
   ["a line the sheet never labelled",
-   new Map([[999, { z: 12, how: "radius" }]])],
-  ["an empty elevation map", new Map()],
-  ["the map still loading (null)", null],
-  ["the map never requested (undefined)", undefined],
+   { status: "ready",
+     byChain: new Map([[999, { z: 12, how: "radius" }]]) }],
+  ["answered, and the sheet labels no contours at all",
+   { status: "ready", byChain: new Map() }],
+  ["still loading", { status: "loading", byChain: null }],
+  ["never asked", { status: "idle", byChain: null }],
+  ["the read FAILED", { status: "failed", byChain: null }],
 ]) {
-  const info = renderBar({ elevMap: map });
+  const info = renderBar({ elev: ev });
   eq(byClass(info, "sel-el").length, 0, name + ": no chip is appended");
+}
+{
+  // ...and the pill must not throw itself apart on any of them
+  const rest = renderBar({ elev: { status: "failed", byChain: null } });
+  check(byClass(rest, "sel-txt").length === 1,
+    "a failed read still renders the rest of the pill");
 }
 {
   // z present but null - the server does emit null z on spot grades, and a
   // "EL null" chip would be worse than none
-  const info = renderBar({ elevMap: ELEV(null, "radius") });
+  const info = renderBar({ elev: ELEV(null, "radius") });
   eq(byClass(info, "sel-el").length, 0, "a null elevation renders no chip");
 }
 {
   // 0 is a real elevation. It is falsy; the guard must be a null/undefined
   // test, not truthiness (CLAUDE.md §5: "0.0 is not None").
-  const info = renderBar({ elevMap: ELEV(0, "radius") });
+  const info = renderBar({ elev: ELEV(0, "radius") });
   const chip = byClass(info, "sel-el")[0];
   check(!!chip, "elevation 0 still renders - falsy is not missing");
   eq(chip && chip.textContent, "EL 0", "...and reads EL 0");
@@ -235,7 +252,7 @@ check(/\.fam-sel \{[^}]*max-width:\s*180px/.test(CSS),
 console.log("4. the whole sentence is recoverable on hover");
 // ---------------------------------------------------------------------------
 {
-  const info = renderBar({ elevMap: ELEV(545, "gap-ocr") });
+  const info = renderBar({ elev: ELEV(545, "gap-ocr") });
   const txt = byClass(info, "sel-txt")[0];
   eq(txt.title, txt.textContent,
     "whatever DOES clip (a long family label, the point count) is on the title");
@@ -252,7 +269,7 @@ for (const how of PRINTED) {
   const p = elevProvenance(how);
   eq(p.kind, "printed", how + " is a label the sheet actually prints");
   eq(p.tag, "", how + ": nothing is added to the number - it IS the sheet's");
-  const chip = byClass(renderBar({ elevMap: ELEV(545, how) }), "sel-el")[0];
+  const chip = byClass(renderBar({ elev: ELEV(545, how) }), "sel-el")[0];
   eq(chip && chip.textContent, "EL 545", how + ": the chip reads the number");
   check(!/inferred|unknown/.test(chip.className),
     how + ": and carries no inferred/unknown class");
@@ -260,7 +277,7 @@ for (const how of PRINTED) {
 for (const how of NOT_PRINTED) {
   const p = elevProvenance(how);
   eq(p.kind, "inferred", how + " is NOT printed anywhere on the sheet");
-  const chip = byClass(renderBar({ elevMap: ELEV(580, how) }), "sel-el")[0];
+  const chip = byClass(renderBar({ elev: ELEV(580, how) }), "sel-el")[0];
   check(chip && /inferred/.test(chip.textContent),
     how + ": the word is in the CHIP TEXT, where the number is - not only "
     + "in a tooltip nobody opens");
@@ -284,7 +301,7 @@ for (const how of NOT_PRINTED) {
   // the server's own sentence names the two labelled contours; it rides
   // through so the check can be made without opening the earthwork panel
   const chip = byClass(renderBar({
-    elevMap: ELEV(580, "interval-infill",
+    elev: ELEV(580, "interval-infill",
       "counted between labelled 579 (line 140) and 583 (line 282)"),
   }), "sel-el")[0];
   check(/line 140/.test(chip.title) && /line 282/.test(chip.title),
@@ -297,13 +314,13 @@ for (const how of NOT_PRINTED) {
   // matched to a contour by proximity alone. So a radius hit carries its
   // distance and says the ownership is the reader's assumption.
   // GLOSSARY: BW = bottom of wall; a spot height, not a contour label.
-  const chip = byClass(renderBar({ elevMap: ELEV(551.2, "radius", "", 2.7) }),
+  const chip = byClass(renderBar({ elev: ELEV(551.2, "radius", "", 2.7) }),
                        "sel-el")[0];
   check(/2\.7 pt/.test(chip.title),
     "a radius match reports how far away the printed number actually was");
   check(/takes it to be|assum/i.test(chip.title),
     "...and calls the ownership an assumption, not a reading");
-  const far = byClass(renderBar({ elevMap: ELEV(551.2, "radius", "", null) }),
+  const far = byClass(renderBar({ elev: ELEV(551.2, "radius", "", null) }),
                       "sel-el")[0];
   check(!/pt from this line/.test(far.title),
     "with no distance recorded it invents none");
@@ -314,9 +331,10 @@ for (const how of NOT_PRINTED) {
   for (const [name, map] of [
     ["an unrecognised how", ELEV(545, "some-new-reader")],
     ["no how at all", ELEV(545, undefined)],
-    ["a bare number, the pre-fix shape", new Map([[192, 545]])],
+    ["a bare number, the pre-fix shape",
+     { status: "ready", byChain: new Map([[192, 545]]) }],
   ]) {
-    const chip = byClass(renderBar({ elevMap: map }), "sel-el")[0];
+    const chip = byClass(renderBar({ elev: map }), "sel-el")[0];
     check(!!chip, name + ": the number is still shown");
     eq(chip.textContent, "EL 545 · source unknown",
       name + ": ...and the chip says it does not know where it came from");
@@ -338,50 +356,107 @@ for (const how of NOT_PRINTED) {
 }
 
 // ---------------------------------------------------------------------------
-console.log("6. ensureElev refuses to write into another page");
+console.log("6. ensureElev: page guard, three real states, and a retry");
 // ---------------------------------------------------------------------------
-function runEnsure(mid) {
-  const state = { elevMap: undefined, gen: 1, job: "J", page: 3, selected: null };
-  const body = { suggestions: [
-    { chain_id: 192, z: 545, how: "gap-ocr" },
-    { chain_id: 95, z: 580, how: "interval-infill", inferred: true,
-      src: "counted between labelled 579 and 583" },
-  ] };
+// state.elev used to be `elevMap`, one value doing three jobs: undefined =
+// never asked, null = in flight, Map = answered. Its catch wrote
+// `new Map()`, so a dropped connection was byte-identical to "this sheet
+// labels no contours" - and because the entry guard was
+// `if (state.elevMap !== undefined) return`, that verdict was PERMANENT.
+// 182.4 s of silence on a cold Oncor C-04 with no way to ask again.
+const BODY = { suggestions: [
+  { chain_id: 192, z: 545, how: "gap-ocr" },
+  { chain_id: 95, z: 580, how: "interval-infill", inferred: true,
+    src: "counted between labelled 579 and 583" },
+] };
+function ensureScope(opts) {
+  const o = opts || {};
+  const state = { elev: { status: "idle", byChain: null },
+                  gen: 1, job: "J", page: 3, selected: null };
+  const said = [];
+  let calls = 0;
   const scope = {
     state,
-    fetch: async () => { if (mid) mid(state); return { ok: true, json: async () => body }; },
+    suggestOnce: async () => {
+      calls++;
+      if (o.mid) o.mid(state);
+      if (o.fail && calls <= (o.failTimes === undefined ? 1e9 : o.failTimes))
+        throw new Error("network");
+      return BODY;
+    },
+    setStatus: (t, cls) => said.push({ t, cls }),
+    ELEV_FAIL: "could not read this sheet's elevations — retry",
     updateSelBar: () => {},
     chainById: () => null,
   };
   const names = Object.keys(scope);
   const fn = new Function(...names, fnSrc("ensureElev") + "\nreturn ensureElev;")
     (...names.map(n => scope[n]));
-  return fn().then(() => state);
+  return { state, said, fn, calls: () => calls };
+}
+function runEnsure(mid) {
+  const s = ensureScope({ mid });
+  return s.fn().then(() => s.state);
 }
 runEnsure(null).then(st => {
-  const got = st.elevMap instanceof Map ? st.elevMap.get(192) : null;
-  check(got && got.z === 545, "the happy path still builds the map");
+  eq(st.elev.status, "ready", "the happy path lands in `ready`");
+  const got = st.elev.byChain.get(192);
+  check(got && got.z === 545, "...with the map built");
   check(got && got.how === "gap-ocr",
     "and it keeps `how` alongside the number - an elevation with no "
     + "provenance is what let the chip claim every one of them was printed");
-  const inf = st.elevMap.get(95);
+  const inf = st.elev.byChain.get(95);
   check(inf && inf.how === "interval-infill" && /579/.test(inf.src),
     "...and the server's src sentence for an infilled row");
   return runEnsure(s => { s.page = 2; });
 }).then(st => {
-  check(!(st.elevMap instanceof Map),
+  check(!(st.elev.byChain instanceof Map),
     "a PAGE switch mid-fetch: page 3's elevations are NOT written onto page 2 "
     + "(chain ids collide across pages, so this silently mislabels a line)");
   return runEnsure(s => { s.gen++; });
 }).then(st => {
-  check(!(st.elevMap instanceof Map), "a generation bump mid-fetch is dropped too");
+  check(!(st.elev.byChain instanceof Map), "a generation bump mid-fetch is dropped too");
   return runEnsure(s => { s.job = "K"; });
-}).then(st => {
-  check(!(st.elevMap instanceof Map), "and a JOB switch mid-fetch");
+}).then(async st => {
+  check(!(st.elev.byChain instanceof Map), "and a JOB switch mid-fetch");
   // the same three-part guard loadResult and poll already carry
   check(/gen !== state\.gen \|\| job !== state\.job \|\| page !== state\.page/
-        .test(fnSrc("ensureElev")),
+        .test(fnSrc("ensureElev").replace(/\s+/g, " ")),
     "the guard tests all three of gen, job and page, like loadResult and poll");
+
+  // (a) FAILURE IS ITS OWN STATE, and it is not an empty answer
+  {
+    const s = ensureScope({ fail: true, failTimes: 1 });
+    await s.fn();
+    eq(s.state.elev.status, "failed", "a dropped request lands in `failed`");
+    check(s.state.elev.byChain === null,
+      "...and NOT in an empty Map - THE REPORTED BUG: an empty map is the "
+      + "answer 'this sheet labels no contours', which is a different fact");
+    check(s.said.length === 1 && s.said[0].cls === "err",
+      "the operator is told, once, as an error");
+    // (b) AND IT IS RETRYABLE - the next ask really re-asks
+    await s.fn();
+    eq(s.state.elev.status, "ready", "asking again after a failure succeeds");
+    eq(s.calls(), 2, "...because it actually issued a second request");
+    check(s.state.elev.byChain.get(192).z === 545, "and the map is there");
+  }
+  // (c) an answered EMPTY sheet is `ready`, and is never re-asked
+  {
+    const s = ensureScope({});
+    s.state.elev = { status: "ready", byChain: new Map() };
+    await s.fn();
+    eq(s.calls(), 0,
+      "a sheet that answered with no contours is not asked over and over");
+  }
+  // (d) LOADING is not IDLE: a second caller while one is in flight adds no
+  //     request of its own
+  {
+    const s = ensureScope({});
+    const a = s.fn();
+    const b = s.fn();
+    await Promise.all([a, b]);
+    eq(s.calls(), 1, "two overlapping asks issue ONE request");
+  }
   if (fails) { console.error("\n" + fails + " check(s) failed"); process.exit(1); }
   console.log("\nall selection-elevation checks passed");
 }).catch(e => {

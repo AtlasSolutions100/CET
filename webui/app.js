@@ -113,6 +113,25 @@ const state = window.state = {
   // connection, 500). Distinct from "never tried" so the retry sentence can
   // say so instead of leaving the operator on a hint that never changes.
   ewFailed: false,
+  // THE ONE IN-FLIGHT /earthwork/suggest, {key, promise}. Two independent
+  // features read that endpoint - the earthwork panel and the selection
+  // pill's elevation chip - and they were issuing separate requests for the
+  // same page (proven in the server log: two GETs, one click apart). See
+  // suggestOnce(); cleared on settle and on every page change.
+  suggestReq: null,
+  // CONTOUR ELEVATIONS FOR THE SELECTION CHIP, as a state machine rather
+  // than a sentinel. It used to be `elevMap`: undefined = never asked,
+  // null = in flight, Map = answered - and the catch wrote `new Map()`, so
+  // a dropped connection was indistinguishable from "this sheet labels no
+  // contours" AND was permanent, with no way for the operator to ask again
+  // (measured 182.4 s of silence on a cold Oncor C-04). Same shape as
+  // CLAUDE.md §5's "0.0 is not None": one value doing two jobs.
+  //   idle    nothing asked yet
+  //   loading a request is in flight for this page
+  //   ready   answered. byChain may be EMPTY - that is a real answer,
+  //           meaning the sheet labels no contours, not a failure
+  //   failed  the request failed. Retried on the next selection.
+  elev: { status: "idle", byChain: null },
   conf: null,               // /confidence payload for the current page:
                             // NOT-TO-SCALE + spot-elevation provenance, the
                             // two trust facts the detect result cannot carry
@@ -624,7 +643,7 @@ async function selectPage(p) {
   // grading zones belong to ONE sheet, drafts included; this page's own
   // saved zones come back via gzApplySaved in calcStateLoad
   gzPageReset();
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); elevReset(); state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   $("aiBanner").hidden = true;
   state.conf = null; state.confKey = null; state.confErr = false;
   // check-offs are per page and per detection; loadResult reseeds them, but
@@ -926,7 +945,7 @@ async function loadResult(gen = state.gen) {
   state.extendAnchor = null; state.drawPend = null; drawFamClose();
   undoClear(undoStack);
   state.tool = null; state.measurePts = []; state.vScale = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); elevReset(); state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   // ewLoading rides with ew: a suggest still in flight belongs to the page
   // that started it, and its own gen check makes it a no-op when it lands.
   state.ew = null; state.ewLoading = null; state.ewFailed = false;
@@ -10324,6 +10343,47 @@ $("ewBtn").onclick = async () => {
   renderCheckQueue();
 };
 
+// ONE /earthwork/suggest IN FLIGHT PER PAGE, WHOEVER ASKS.
+//
+// ewEnsure's single-flight token (state.ewLoading) only covered the
+// earthwork panel's own callers. ensureElev - the selection pill's
+// elevation chip - went straight to fetch() and bypassed it, so clicking a
+// contour and then pressing EARTHWORK fired the SAME endpoint twice: two
+// GETs for the same page, one click apart, proven in the server log. Cold
+// that endpoint is 94 s (Belle Farms Upper Parcel ROAD GRADING 1 of 2 p0)
+// to 204 s (Oncor Cloudcrest engine page index 3 = printed C-04), ~99% of
+// it one pytesseract loop in takeoff_engine.earthwork.gap_label_elevations.
+//
+// The token is keyed on gen|job|page, so a request started before a page
+// switch can never be handed to a caller on the new sheet (chain ids
+// collide numerically across pages - CLAUDE.md §5).
+//
+// NOT A RESULT CACHE. The entry is dropped as soon as the request settles,
+// success included. Re-running Detect replaces every chain object WITHOUT
+// bumping state.gen, so a kept payload would hand the new detection the old
+// detection's chain ids - a confident wrong number, which is the exact trap
+// this file exists to avoid. The second read is cheap anyway: the server
+// caches the OCR per page (p<N>_elevgaps2.json), measured 1.75 s warm
+// against 204 s cold on C-04.
+function suggestOnce() {
+  const gen = state.gen, job = state.job, page = state.page;
+  const key = gen + "|" + job + "|" + page;
+  const cur = state.suggestReq;
+  if (cur && cur.key === key) return cur.promise;
+  const promise = (async () => {
+    const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  })();
+  const done = () => {
+    if (state.suggestReq && state.suggestReq.promise === promise)
+      state.suggestReq = null;
+  };
+  promise.then(done, done);
+  state.suggestReq = { key, promise };
+  return promise;
+}
+
 // Build state.ew from /earthwork/suggest. Extracted from the EARTHWORK
 // button so the grading-zone restore path can load the same rows without
 // the panel being open - a restored zone recomputes through the endpoint
@@ -10346,15 +10406,15 @@ async function ewEnsure() {
   finally { if (state.ewLoading === p) state.ewLoading = null; }
 }
 async function ewFetchSuggest(gen) {
-  let r, j;
+  let j;
   // No try/catch here before: a dropped connection rejected out of the
   // handler uncaught, so the panel sat on "reading elevation labels…"
   // forever - pixel-identical to the busy state, with a silent status bar.
   // gzCompute's "server unreachable" branch already does this; copy it.
+  // The request itself lives in suggestOnce so the elevation chip and this
+  // panel share one flight instead of racing two.
   try {
-    r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    j = await r.json();
+    j = await suggestOnce();
   } catch (err) {
     if (gen === state.gen) state.ewFailed = true;
     return false;
@@ -15507,34 +15567,61 @@ function elevProvenanceDetail(ev) {
   return ev.src ? " " + ev.src : "";
 }
 
-// contour elevations, read once per page off the sheet's own labels
-// (the earthwork reader already pairs them); selecting a topo line then
-// shows its elevation without opening any panel. The map's VALUE is an
-// object, never a bare number: the number alone cannot say where it came
-// from, and shipping it alone is what let the chip claim all of them were
-// printed.
+// The sentence the operator gets when the elevation read fails. It names
+// BOTH ways back in, because both now work: selecting a line again re-asks
+// (ensureElev retries out of the `failed` state), and so does EARTHWORK.
+const ELEV_FAIL = "could not read this sheet's elevations — click the line "
+  + "again, or press EARTHWORK, to retry";
+
+// Page reset for the elevation state machine. One writer, so "what does a
+// fresh page look like" cannot drift between selectPage and loadResult.
+function elevReset() {
+  state.elev = { status: "idle", byChain: null };
+  state.suggestReq = null;   // a cached flight belongs to the old page
+}
+
+// CONTOUR ELEVATIONS FOR THE SELECTION CHIP.
+//
+// Read once per page off the sheet's own labels (the earthwork reader
+// already pairs them), so selecting a topo line shows its elevation without
+// opening any panel. The map's VALUE is an object, never a bare number: the
+// number alone cannot say where it came from, and shipping it alone is what
+// let the chip claim every one of them was printed.
+//
+// FOUR STATES, NOT A SENTINEL (see state.elev). The old version used `null`
+// for "in flight" and wrote `new Map()` in its catch, so a dropped
+// connection looked exactly like "this sheet labels no contours" - and,
+// because the guard was `if (state.elevMap !== undefined) return`, it was
+// PERMANENT: the elevation never came back for that page and the operator
+// had no way to ask again. Loading, empty-but-answered and failed are now
+// three different things, and failed is retryable.
 async function ensureElev() {
-  if (state.elevMap !== undefined) return;
-  state.elevMap = null;  // in flight
+  const st = state.elev;
+  if (st.status === "loading" || st.status === "ready") return;
+  state.elev = { status: "loading", byChain: null };
   // The guard loadResult and poll already carry, which this never had.
   // Chain ids are per page and collide NUMERICALLY across pages, so a
   // suggest that lands after a page switch does not throw - it quietly
   // labels a line on the new sheet with an elevation read off the old one.
-  // Reproduced live: switch page mid-fetch and state.elevMap ends up holding
+  // Reproduced live: switch page mid-fetch and the map ends up holding
   // page 3's 150 rows while state.page is 2. That is this codebase's worst
   // shape, a confident wrong number (CLAUDE.md §5).
   const gen = state.gen, job = state.job, page = state.page;
-  let m;
+  const stale = () => gen !== state.gen || job !== state.job
+                   || page !== state.page;
+  let j;
   try {
-    const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
-    m = r.ok
-      ? new Map((await r.json()).suggestions.map(
-          s => [s.chain_id, { z: s.z, how: s.how, src: s.src || "",
-                              dist: s.dist }]))
-      : new Map();
-  } catch { m = new Map(); }
-  if (gen !== state.gen || job !== state.job || page !== state.page) return;
-  state.elevMap = m;
+    j = await suggestOnce();
+  } catch (err) {
+    if (stale()) return;          // elevReset() already owns this page
+    state.elev = { status: "failed", byChain: null };
+    setStatus(ELEV_FAIL, "err");
+    return;
+  }
+  if (stale()) return;
+  state.elev = { status: "ready", byChain: new Map(j.suggestions.map(
+    s => [s.chain_id, { z: s.z, how: s.how, src: s.src || "",
+                        dist: s.dist }])) };
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
 function updateSelBar(ch) {
@@ -15552,12 +15639,17 @@ function updateSelBar(ch) {
   const pt = state.selPt !== null
     ? ` · point ${state.selPt + 1}/${ch.points.length} selected`
     : ` · ${ch.points.length} points`;
-  if (state.elevMap === undefined) ensureElev();
-  // {z, how, src} - see ELEV_PROV. A bare number would be an elevation with
-  // no provenance, which is the whole defect this shape exists to prevent;
-  // if one ever arrives it falls through to "source unknown" below rather
-  // than being shown as if the sheet printed it.
-  const ev = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
+  // Ask once per page - and ask AGAIN after a failure. A dropped connection
+  // must not retire this page's elevations for good; selecting a line is the
+  // operator's retry, and suggestOnce keeps it to one request in flight.
+  if (state.elev.status === "idle" || state.elev.status === "failed")
+    ensureElev();
+  // {z, how, src, dist} - see ELEV_PROV. A bare number would be an elevation
+  // with no provenance, which is the whole defect that shape exists to
+  // prevent; if one ever arrives it falls through to "source unknown" below
+  // rather than being shown as if the sheet printed it.
+  const ev = state.elev.byChain instanceof Map
+    ? state.elev.byChain.get(ch.chain_id) : undefined;
   const z = (ev && typeof ev === "object") ? ev.z : ev;
   const prov = elevProvenance(ev && typeof ev === "object" ? ev.how : undefined);
   // the length here is the line's GEOMETRY; when a work area is drawn and
