@@ -640,6 +640,11 @@ async function selectPage(p) {
   // page's own saved boxes come back via wzApplySaved in calcStateLoad.
   state.workZones = []; state.wzDrag = null; state.wzRev++;
   state.ewBoundDraft = []; state.ewBoundHover = null;
+  // THE EARTHWORK PANEL BELONGS TO ONE SHEET TOO, and this is the only
+  // chokepoint that always runs: loadResult clears it, but loadResult only
+  // runs when the new page HAS a loadable result, so switching to an
+  // UNDETECTED page left the panel open on the previous sheet's rows.
+  ewPageReset();
   // grading zones belong to ONE sheet, drafts included; this page's own
   // saved zones come back via gzApplySaved in calcStateLoad
   gzPageReset();
@@ -948,7 +953,9 @@ async function loadResult(gen = state.gen) {
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); elevReset(); state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
   // ewLoading rides with ew: a suggest still in flight belongs to the page
   // that started it, and its own gen check makes it a no-op when it lands.
-  state.ew = null; state.ewLoading = null; state.ewFailed = false;
+  // ONE definition of "the earthwork panel is not this sheet's" - selectPage
+  // calls the same function, see ewPageReset.
+  ewPageReset();
   state.hotChain = null; state.extraItems = [];
   // hover highlight and per-family expansion are page state like the rest:
   // a style_id means nothing outside the result it came from
@@ -970,14 +977,7 @@ async function loadResult(gen = state.gen) {
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
   state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
-  $("ewPanel").hidden = true; $("ewBtn").hidden = false;
-  $("ewMap").checked = false;
-  $("ewResult").textContent = "";  // stale numbers must not survive a doc/page switch
-  // ...and neither must the basis line or the consent button that belonged
-  // to them: state.ew is null above, so "Remove from takeoff" on the new
-  // sheet would be a button with nothing behind it
-  $("ewBasis").innerHTML = ""; $("ewBasis").classList.add("off");
-  $("ewTake").classList.add("off"); $("ewAdd").classList.remove("on");
+  // (the earthwork panel and its numbers were cleared by ewPageReset above)
   $("trPanel").hidden = true; $("trBtn").hidden = false;
   // trench: same three rules as earthwork just above. Stale numbers must
   // not survive a doc/page switch, the consent button must not offer to
@@ -10258,15 +10258,62 @@ function syncCardCounts() {
 const EW_SUGGEST_WAIT = "the first read of a page takes a minute or more";
 const EW_SUGGEST_BUSY = "reading this sheet's elevation labels — " + EW_SUGGEST_WAIT;
 const EW_SUGGEST_FAIL = "could not read this sheet's elevations — press EARTHWORK to try again";
+// The fifth state: rows are loaded, but they were read off a DIFFERENT sheet
+// (see ewIsThisPage). Never "not ready yet" - ready, and about the wrong
+// drawing, which is worse.
+const EW_SUGGEST_STALE = "these earthwork rows were read off another sheet";
+
+// THE FIFTH STATE. state.ew can be non-null and still be the WRONG SHEET's:
+// it is stamped with the job and page it was read from, and this is the one
+// place that question is answered, so the guard and ewEnsure cannot drift.
+function ewIsThisPage() {
+  return !!state.ew && state.ew.page === state.page
+                    && state.ew.job === state.job;
+}
+
+// EARTHWORK BELONGS TO ONE SHEET, AND SO DOES ITS PANEL.
+// loadResult cleared all of this - but loadResult only runs when the new
+// page HAS a loadable result. Switch to an UNDETECTED page and nothing
+// cleared anything: the panel stayed open, still listing the previous
+// sheet's 150 contour rows, over a canvas showing a different drawing. The
+// server refused the resulting Calculate, so the operator learned it was
+// wrong only after a round trip - and stale numbers on the wrong sheet are
+// the worst of the five states, not the least. Page switch is the reliable
+// chokepoint (the same rule the work area and the grading zones already
+// follow); the guard below is the second line, not the first.
+function ewPageReset() {
+  state.ew = null; state.ewLoading = null; state.ewFailed = false;
+  state.suggestReq = null;
+  $("ewPanel").hidden = true; $("ewBtn").hidden = false;
+  $("ewMap").checked = false;
+  // the ROWS as well as the flag: hiding the panel leaves the previous
+  // sheet's 150 <div class="ew-row"> in the DOM, and anything that unhides
+  // the panel before renderEw runs would show them again
+  $("ewRows").innerHTML = "";
+  ewBusyPut("");
+  $("ewResult").textContent = "";   // stale numbers must not survive a switch
+  // ...and neither must the basis line or the consent button that belonged
+  // to them: state.ew is null above, so "Remove from takeoff" on the new
+  // sheet would be a button with nothing behind it
+  $("ewBasis").innerHTML = ""; $("ewBasis").classList.add("off");
+  $("ewTake").classList.add("off"); $("ewAdd").classList.remove("on");
+}
 
 // THE THIRD-STATE GUARD. Replaces `if (!state.ew) return setStatus("run
 // Detect first")` at every site the operator can reach by clicking. state.ew
 // null means one of FOUR things and the old guard reported only the first:
 // no detect, panel never opened, fetch in flight (94-204 s), fetch failed.
+// A FIFTH: state.ew loaded, but read off another sheet.
 // Returns true when the caller should give up, having said why.
 // Pure render functions deliberately do NOT call this - they run on every
 // repaint and have nothing to tell anyone.
 function ewNotReady(what) {
+  if (state.ew && !ewIsThisPage()) {
+    setStatus(EW_SUGGEST_STALE + " — " + what + " would come from page "
+      + (state.ew.page + 1) + "'s contours, not this sheet's. Press "
+      + "EARTHWORK to read the sheet you are looking at.", "err");
+    return true;
+  }
   if (state.ew) return false;
   if (state.ewLoading)
     setStatus(EW_SUGGEST_BUSY + " — " + what + " will be ready in a moment", "busy");
@@ -10397,7 +10444,10 @@ function suggestOnce() {
 // winner's freshly rendered 40 rows. Returning the one in-flight promise
 // makes every caller a winner and deletes that whole class of lie.
 async function ewEnsure() {
-  if (state.ew) return true;
+  // ...and it has to be THIS sheet's rows. state.ew survives a switch to a
+  // page with no detection, and "already loaded" for another drawing is not
+  // loaded (ewIsThisPage).
+  if (ewIsThisPage()) return true;
   if (state.ewLoading) return state.ewLoading;
   state.ewFailed = false;
   const p = ewFetchSuggest(state.gen);
@@ -10424,6 +10474,9 @@ async function ewFetchSuggest(gen) {
     const ws = j.suggestions.map(s => s.width || 0).sort((a, b) => a - b);
     const wmed = ws.length ? ws[Math.floor(ws.length / 2)] : 0;
     state.ew = {
+      // WHICH SHEET THESE ROWS ARE. Without this stamp there is no way to
+      // tell "loaded" from "loaded, for another drawing" - see ewIsThisPage.
+      job: state.job, page: state.page,
       rows: j.suggestions.map(s => ({
         chain_id: s.chain_id, z: s.z, width: s.width || 0, dist: s.dist,
         // default split by stroke weight - existing plots lighter than

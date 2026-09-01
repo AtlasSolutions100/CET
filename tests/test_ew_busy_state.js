@@ -11,12 +11,22 @@
 //
 // WHAT IS PINNED HERE, AND WHY EACH ONE
 //
-//   1. ewNotReady, BEHAVIOURALLY. Four distinct states, four distinct
-//      sentences: loading / failed / no-detect / not-opened. This is the
-//      whole fix in one function, so it is evaluated for real (its own
-//      source, its own constants) rather than grepped. A regression that
-//      collapses two of the four branches back into one message is exactly
-//      the bug, and only a behavioural test sees it.
+//   1. ewNotReady, BEHAVIOURALLY. FIVE distinct states, five distinct
+//      sentences: loading / failed / no-detect / not-opened / loaded-but-
+//      another-sheet's. This is the whole fix in one function, so it is
+//      evaluated for real (its own source, its own constants) rather than
+//      grepped. A regression that collapses two of the branches back into
+//      one message is exactly the bug, and only a behavioural test sees it.
+//
+//      THE FIFTH was added 2026-08-31 and is the worst of them, not the
+//      least: state.ew survives a page switch, because loadResult clears it
+//      and loadResult only runs when the new page HAS a loadable result. So
+//      switching to an undetected page left the panel showing the previous
+//      sheet's 150 contour rows over a different drawing, and only the
+//      SERVER refused the resulting Calculate - the operator learned it
+//      after a round trip. state.ew is now stamped with its job and page
+//      (ewIsThisPage), ewEnsure asks the same question the guard does, and
+//      ewPageReset clears the panel at BOTH chokepoints.
 //
 //   2. SINGLE FLIGHT, BEHAVIOURALLY. Two callers reach ewEnsure - the
 //      EARTHWORK button and gzRestoreCompute, which runs unprompted on any
@@ -99,26 +109,34 @@ const fetchSrc = fnSrc("ewFetchSuggest");
 const onceSrc = fnSrc("suggestOnce");
 
 // ---------------------------------------------------------------------------
-console.log("1. ewNotReady: four states, four sentences");
+console.log("1. ewNotReady: five states, five sentences");
 // ---------------------------------------------------------------------------
 const constBlock = (SRC.match(
-  /const EW_SUGGEST_WAIT = [\s\S]*?\nconst EW_SUGGEST_FAIL = [^\n]*;/) || [])[0];
-check(!!constBlock, "the wait/busy/fail sentences are declared as named constants");
+  /const EW_SUGGEST_WAIT = [\s\S]*?\nconst EW_SUGGEST_STALE = [^\n]*;/) || [])[0];
+check(!!constBlock,
+  "the wait/busy/fail/stale sentences are declared as named constants");
 
-const mk = new Function("state", "setStatus",
+const mk = new Function("state", "setStatus", "ewIsThisPage",
   constBlock + "\n" + fnSrc("ewNotReady")
-  + "\nreturn { ewNotReady, BUSY: EW_SUGGEST_BUSY, FAIL: EW_SUGGEST_FAIL, WAIT: EW_SUGGEST_WAIT };");
+  + "\nreturn { ewNotReady, BUSY: EW_SUGGEST_BUSY, FAIL: EW_SUGGEST_FAIL,"
+  + " WAIT: EW_SUGGEST_WAIT, STALE: EW_SUGGEST_STALE };");
+
+// the real predicate, lifted: the guard and ewEnsure must ask the same one
+const mkIsThisPage = new Function("state",
+  fnSrc("ewIsThisPage") + "\nreturn ewIsThisPage;");
 
 function run(st) {
   const said = [];
-  const api = mk(st, (t, cls) => said.push({ t: t, cls: cls }));
+  const api = mk(st, (t, cls) => said.push({ t: t, cls: cls }),
+                 mkIsThisPage(st));
   const blocked = api.ewNotReady("the contour list");
   return { blocked: blocked, said: said, api: api };
 }
 
 // (a) data present -> the guard lets the click through and says nothing
 {
-  const r = run({ ew: { rows: [] }, ewLoading: null, ewFailed: false, result: {} });
+  const r = run({ ew: { rows: [], job: "J", page: 3 }, job: "J", page: 3,
+         ewLoading: null, ewFailed: false, result: {} });
   eq(r.blocked, false, "data loaded: the guard does not block");
   eq(r.said.length, 0, "data loaded: the guard stays silent");
 }
@@ -159,16 +177,59 @@ function run(st) {
   check(!/run Detect first/i.test(r.said[0].t),
     "never opened: detect HAS run, so it must not say otherwise");
 }
-// the four sentences must actually differ from each other
+// (f) THE FIFTH STATE: loaded, and about ANOTHER SHEET.
+// state.ew survived a page switch, because loadResult clears it and
+// loadResult only runs when the new page HAS a loadable result. Switch to
+// an undetected page and the panel kept showing the previous sheet's 150
+// contour rows over a different drawing. Only the SERVER refused the
+// resulting Calculate, so the operator found out after a round trip. Ready
+// numbers about the wrong sheet are the worst of the five, not the least.
+{
+  const r = run({ ew: { rows: new Array(150), job: "J", page: 3 },
+                  job: "J", page: 4,
+                  ewLoading: null, ewFailed: false, result: {} });
+  eq(r.blocked, true, "another sheet's rows: the guard BLOCKS");
+  eq(r.said[0].cls, "err", "...as an error");
+  check(/another sheet/i.test(r.said[0].t),
+    "...and says the rows belong to another sheet");
+  check(/page 4/.test(r.said[0].t),
+    "...naming the sheet they came from, 1-based like the page picker "
+    + "(engine index 3 = page 4)");
+  check(!/never opened|run Detect first/i.test(r.said[0].t),
+    "it must NOT be reported as 'not opened' or 'no detect' - the data is "
+    + "loaded, it is just about the wrong drawing");
+  // a different DOCUMENT is the same fault
+  const j = run({ ew: { rows: [1], job: "J", page: 3 }, job: "K", page: 3,
+                  ewLoading: null, ewFailed: false, result: {} });
+  eq(j.blocked, true, "rows from another JOB block too");
+}
+// the five sentences must actually differ from each other
 {
   const states = [
     { ew: null, ewLoading: Promise.resolve(1), ewFailed: false, result: {} },
     { ew: null, ewLoading: null, ewFailed: true, result: {} },
     { ew: null, ewLoading: null, ewFailed: false, result: null },
     { ew: null, ewLoading: null, ewFailed: false, result: {} },
+    { ew: { rows: [1], job: "J", page: 3 }, job: "J", page: 4,
+      ewLoading: null, ewFailed: false, result: {} },
   ];
   const texts = states.map(s => run(s).said[0].t);
-  eq(new Set(texts).size, 4, "all four states produce four DIFFERENT sentences");
+  eq(new Set(texts).size, 5, "all five states produce five DIFFERENT sentences");
+}
+// ewEnsure asks the SAME question the guard does, or the panel would sit on
+// another sheet's rows believing itself loaded
+{
+  let calls = 0;
+  const st = { ew: { rows: [1], job: "J", page: 3 }, job: "J", page: 4,
+               ewLoading: null, ewFailed: false, gen: 1 };
+  const fetchStub = async () => { calls++; st.ew = { rows: [2], job: st.job,
+                                                     page: st.page };
+                                  return true; };
+  const fn = new Function("state", "ewFetchSuggest", "ewIsThisPage",
+    fnSrc("ewEnsure") + "\nreturn ewEnsure;")(st, fetchStub, mkIsThisPage(st));
+  fn();   // the stub runs synchronously up to its own return
+  eq(calls, 1, "ewEnsure re-reads when state.ew belongs to another page");
+  eq(st.ew.page, 4, "...and the rows it keeps are this sheet's");
 }
 // the promised duration is honest about the measured range (94 s / 204 s)
 {
@@ -196,10 +257,17 @@ console.log("2. ewEnsure: single flight");
   let calls = 0;
   let release;
   const gate = new Promise(res => { release = res; });
-  const st = { ew: null, ewLoading: null, ewFailed: false, gen: 1 };
-  const ewFetchSuggest = async () => { calls++; await gate; st.ew = { rows: [] }; return true; };
-  const ewEnsure = new Function("state", "ewFetchSuggest",
-    ensureSrc + "\nreturn ewEnsure;")(st, ewFetchSuggest);
+  const st = { ew: null, ewLoading: null, ewFailed: false, gen: 1,
+               job: "J", page: 3 };
+  // the rows carry the sheet they were read from - "already loaded" for
+  // ANOTHER drawing is not loaded (ewIsThisPage, the fifth state)
+  const ewFetchSuggest = async () => {
+    calls++; await gate;
+    st.ew = { rows: [], job: st.job, page: st.page };
+    return true;
+  };
+  const ewEnsure = new Function("state", "ewFetchSuggest", "ewIsThisPage",
+    ensureSrc + "\nreturn ewEnsure;")(st, ewFetchSuggest, mkIsThisPage(st));
 
   const a = ewEnsure();          // the EARTHWORK button
   const b = ewEnsure();          // the frustration double-press
@@ -337,8 +405,17 @@ check(/const p = ewFetchSuggest\(state\.gen\)/.test(fnSrc("ewEnsure")),
   "the flight carries the generation it was started on");
 check(/gen !== state\.gen\) return;/.test(fnSrc("gzRestoreCompute")),
   "gzRestoreCompute still drops out on a page switch");
-check(/state\.ew = null; state\.ewLoading = null; state\.ewFailed = false;/.test(SRC),
-  "loadResult clears all three earthwork flags together");
+check(/state\.ew = null; state\.ewLoading = null; state\.ewFailed = false;/
+      .test(fnSrc("ewPageReset")),
+  "ewPageReset clears all three earthwork flags together");
+// ...and BOTH page-change chokepoints call it. loadResult alone is not
+// enough: it only runs when the new page HAS a loadable result, so a switch
+// to an UNDETECTED page left the panel open on the previous sheet's rows.
+for (const fn of ["loadResult", "selectPage"])
+  check(/\bewPageReset\(\);/.test(fnSrc(fn)),
+    fn + " clears the earthwork panel at its page-change chokepoint");
+check(/state\.suggestReq = null;/.test(fnSrc("ewPageReset")),
+  "...and drops any suggest in flight for the page being left");
 
 // -------------------------------------------------------------------------
 console.log("6. the busy line is where the operator is looking");
