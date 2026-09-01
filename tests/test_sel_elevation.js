@@ -182,7 +182,10 @@ const ELEV = (z, how, src, dist, tag) => ({
 console.log("1. the elevation is a chip, not the tail of the shrinkable string");
 // ---------------------------------------------------------------------------
 {
-  const info = renderBar({ elev: ELEV(545, "gap-ocr") });
+  // `inline` on purpose: this suite is about WHICH CHILD CLIPS, so its
+  // fixture is the one provenance that adds nothing to the number. gap-ocr
+  // carries "· read from a picture" since 2026-09-01 (suite 5c).
+  const info = renderBar({ elev: ELEV(545, "inline") });
   const txt = byClass(info, "sel-txt")[0];
   const chip = byClass(info, "sel-el")[0];
 
@@ -293,11 +296,72 @@ const NOT_PRINTED = ["inherited", "interval-infill"];
 for (const how of PRINTED) {
   const p = elevProvenance(how);
   eq(p.kind, "printed", how + " is a label the sheet actually prints");
-  eq(p.tag, "", how + ": nothing is added to the number - it IS the sheet's");
   const chip = byClass(renderBar({ elev: ELEV(545, how) }), "sel-el")[0];
-  eq(chip && chip.textContent, "EL 545", how + ": the chip reads the number");
   check(!/inferred|unknown/.test(chip.className),
     how + ": and carries no inferred/unknown class");
+  check(chip.textContent.indexOf("EL 545") === 0,
+    how + ": the chip leads with the number");
+}
+{
+  // ONLY A TEXT-LAYER READ GETS A BARE NUMBER.
+  const chip = byClass(renderBar({ elev: ELEV(545, "inline") }), "sel-el")[0];
+  eq(chip.textContent, "EL 545",
+    "inline: nothing is added - the number IS the sheet's own text");
+  eq(chip.className, "sel-el", "inline: and the chip is unadorned");
+}
+// ---------------------------------------------------------------------------
+console.log("5c. an OCR'd elevation does not look like a printed one");
+// ---------------------------------------------------------------------------
+// `inline` and `gap-ocr` make the SAME provenance claim - the sheet prints
+// this number in this contour's own break - and it is TRUE for both. What
+// differs is that gap-ocr's digits were machine-read off a raster, because
+// the drafter exploded the label to vectors and there is no text to read.
+//
+// MEASURED live on Oncor C-04 (job e183a0d44d89, fresh detect 2026-09-01):
+// gap-ocr is 69 of 150 rows - 46%, the LARGEST bucket - and the one class
+// where the digits can be wrong. Confirmed wrong on that sheet: chain 417,
+// label_xy (2100.7, 1484.2), returned 551.0, where the source PDF at 600 dpi
+// prints a collapsed stack reading 582 / 582 / 581 / 579 / 580 and no 551.
+//
+// Until 2026-09-01 both rendered a bare "EL 545" with a solid border and the
+// whole caveat lived in a tooltip. The caveat now travels ON the number.
+{
+  const ocr = byClass(renderBar({ elev: ELEV(545, "gap-ocr") }), "sel-el")[0];
+  const inl = byClass(renderBar({ elev: ELEV(545, "inline") }), "sel-el")[0];
+  check(ocr.textContent !== inl.textContent,
+    "THE FIXED DEFECT: an OCR'd elevation no longer renders byte-identical "
+    + "to one read from the text layer");
+  eq(ocr.textContent, "EL 545 · read from a picture",
+    "the caveat is in the CHIP TEXT, in the same grammar as "
+    + "'· inferred' and '· source unknown'");
+  check(/\bocr\b/.test(ocr.className),
+    "...and a class, so the styling has something to hang on");
+  // IT MUST NOT OVERCLAIM IN THE OTHER DIRECTION. The provenance is true:
+  // the label really is printed in this line's break. Calling it inferred
+  // would be a fresh lie, and the whole point is that the risk is
+  // TRANSCRIPTION, not source.
+  check(!/inferred/.test(ocr.textContent) && !/inferred/.test(ocr.className),
+    "it is NOT marked inferred - the sheet does print this label");
+  eq(elevProvenance("gap-ocr").kind, "printed",
+    "...and it still counts as printed wherever the split is taken by kind");
+  check(!/picture/.test(inl.textContent),
+    "a text-layer read carries no such caveat, so the two are told apart");
+  // the border vocabulary is unchanged: solid = this line's own label.
+  // gap-ocr keeps it, because that claim is the one that is true.
+  const cssOcr = (CSS.match(/\n\.sel-el\.ocr \{[^}]*\}/) || [""])[0];
+  check(!!cssOcr, "the OCR chip has a rule of its own");
+  check(!/border-style/.test(cssOcr),
+    "...which does NOT change the border style: solid still means 'read in "
+    + "this line's own break', and for an OCR'd label that is still true");
+  check(/border-color/.test(cssOcr) && /background/.test(cssOcr),
+    "...it tints instead, so the difference is visible without lying about "
+    + "the source");
+  // and the tooltip says which half is uncertain
+  const t = ocr.title;
+  check(/DOES print|does print/.test(t),
+    "the tooltip affirms the source rather than casting doubt on it");
+  check(/read by machine|machine|OCR|picture/i.test(t) && /wrong|misread/i.test(t),
+    "...and names the transcription as the thing that can fail");
 }
 for (const how of NOT_PRINTED) {
   const p = elevProvenance(how);

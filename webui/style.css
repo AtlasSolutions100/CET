@@ -1473,6 +1473,18 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
    plus the sheet's own tag when there is one - in the chip text. */
 .sel-el.nearby { border-style: dotted; border-color: var(--t-warn, var(--line));
   background: var(--t-warn-bg, var(--chip)); }
+/* A NUMBER MACHINE-READ OFF A PICTURE (`gap-ocr`). The border in this
+   vocabulary says WHERE the number came from, and for this case that is not
+   in doubt: the sheet prints the label in this contour's own break, so the
+   edge stays SOLID exactly like an `inline` read. What is in doubt is the
+   TRANSCRIPTION - the drafter exploded the label to vectors, so the digits
+   came out of an OCR pass, and on C-04 that is 69 of 150 rows (46%, the
+   largest bucket) with a confirmed misread among them (chain 417: the patch
+   prints 582/582/581/579/580, the reader returned 551). So: same edge, a
+   warn tint, and - the tell that survives greyscale - "· read from a
+   picture" in the chip TEXT, beside the number itself. */
+.sel-el.ocr { border-color: var(--t-warn, var(--line));
+  background: var(--t-warn-bg, var(--chip)); }
 /* ...and the abstain state: the reader did not say where the number came
    from, so the chip does not claim either way. */
 .sel-el.unknown { border-style: dashed; color: var(--dim); }

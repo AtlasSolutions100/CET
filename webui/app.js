@@ -15880,11 +15880,40 @@ const ELEV_PROV = {
   inline: { kind: "printed", cls: "", tag: "",
     why: "Read off the label this sheet prints in the break in this contour "
        + "— real text in the PDF, not a reading of ours." },
-  "gap-ocr": { kind: "printed", cls: "", tag: "",
-    why: "Read off the label this sheet prints in the break in this contour. "
-       + "That label is drawn as line work rather than text, so it was read "
-       + "from a picture of the sheet and CAN be misread — check it against "
-       + "the drawing." },
+  // A READING OF A PICTURE IS NOT A READING OF TEXT, AND THE CHIP HAS TO
+  // SHOW WHICH.
+  //
+  // `inline` and `gap-ocr` make the SAME provenance claim and it is true for
+  // both: the sheet prints this number in this contour's own break. So
+  // gap-ocr keeps kind "printed" and keeps the SOLID border - the border in
+  // this vocabulary says where the number came from (solid = this line's own
+  // label, dotted = a number printed nearby, dashed = nothing printed it),
+  // and marking gap-ocr "inferred" would be a new lie in the other
+  // direction. What differs is not the SOURCE, it is the TRANSCRIPTION: the
+  // drafter exploded that label to vectors, so there is no text to read and
+  // the digits come out of an OCR pass over a raster.
+  //
+  // MEASURED live, Oncor Cloudcrest engine page index 3 = printed sheet C-04
+  // (job e183a0d44d89, fresh detect, 2026-09-01): gap-ocr is 69 of the 150
+  // rows - 46%, the largest bucket - and it is the ONE class where the digits
+  // themselves can be wrong. Confirmed wrong on that very sheet: chain 417,
+  // label_xy (2100.7, 1484.2), dist 0.5, returned z = 551.0. The 140x110 pt
+  // patch at that point, rendered from the source PDF at 600 dpi, prints a
+  // collapsed stack of contour labels reading 582 / 582 / 581 / 579 / 580 and
+  // no 551 anywhere (out/verify/2026-09-01/honesty-defect-zero/).
+  //
+  // Until now that caveat lived only in the tooltip and the chip read a bare
+  // "EL 545", byte-identical to an `inline` read. The number is what gets
+  // read and acted on, so the caveat now rides ON the number in the same
+  // grammar the chip already uses for "· inferred" and "· source unknown".
+  "gap-ocr": { kind: "printed", cls: "ocr", tag: "read from a picture",
+    why: "The sheet DOES print this number in the break in this contour — "
+       + "that part is not in doubt. But the drafter drew that label as line "
+       + "work rather than text, so there is no text to read: the digits were "
+       + "read by machine off a picture of the sheet and CAN come back wrong. "
+       + "It is the reading that is uncertain here, not where it came from. "
+       + "Check the digits against the drawing before anything is priced on "
+       + "them." },
   inherited: { kind: "inferred", cls: "inferred", tag: "inferred",
     why: "NOT printed on this line. Nothing is labelled on it; the engine "
        + "joined it end to end to another piece of what it takes to be the "
