@@ -153,8 +153,18 @@ check(/read by machine off a picture of the caption/.test(rsFlat),
   "it says the reading was made by machine off a picture of the caption");
 check(/digits can be misread/.test(rsFlat),
   "it says the digits can be misread");
-check(/nothing else on this sheet .{0,90}backs/.test(rsFlat),
-  "it says nothing else on the sheet backs the reading up");
+// 2026-09-01: this used to pin "nothing else on this sheet ... backs it
+// up" - a claim about the DRAWING that was false on Hurricane C.3.5, which
+// prints the bar the engine failed to read. The honest sentence is about the
+// ENGINE. Matched on prose only, so a comment quoting the old words cannot
+// satisfy it (tests/test_scale_wording_honest.js has the full contract).
+const rsProse = flat(rs.split("\n").filter(l => !/^\s*\/\//.test(l)).join("\n"));
+check(/Nothing on this sheet has been checked against/.test(rsProse),
+  "it says nothing has been CHECKED against the reading - the engine's "
+  + "result, not a claim about what the sheet prints");
+check(!/nothing else on this sheet/.test(rsProse)
+   && !/drawn as shapes/.test(rsProse),
+  "and no longer asserts what the sheet lacks, or why");
 check(/may also have MISSED other scales|may have missed others printed here/
   .test(rsFlat),
   "and it says the reader may have MISSED other scales printed on the "
@@ -225,7 +235,7 @@ check(!/\.sh-suggest[^{]*\{[^}]*var\(--accent\)/.test(css),
   "and never in the accent colour reserved for a corroborated reading");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=146/.test(html), "app.js cache buster bumped to 146");
+check(/app\.js\?v=147/.test(html), "app.js cache buster bumped to 147");
 check(/style\.css\?v=69/.test(html), "style.css cache buster bumped to 69");
 
 console.log();

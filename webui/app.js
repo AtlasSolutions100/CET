@@ -2190,6 +2190,25 @@ function sugWhere(c) {
     : `the ${v}-${h} of the sheet`;
 }
 
+// What the engine RECORDS about the drawn scale bar on an abstained page,
+// as one sentence. The abstained payload carries `bar_ft_per_paper_inch`
+// exactly as a read scale does; the reader that fills it
+// (scale_detect.graphic_scale_bar) returns a reading or nothing, and records
+// nothing about bar geometry it found but could not label. So the honest
+// negative is "did not find one it could read" - never "there is no bar",
+// which this UI cannot know and was measured saying falsely (Hurricane
+// C.3.5 prints one). The positive arm is reachable only if the engine ever
+// carries a bar reading alongside an abstention; it exists so the sentence
+// is read off the data rather than assumed.
+function scaleBarSentence() {
+  const sg = state.result && state.result.scale_suggestions;
+  const bar = sg && +sg.bar_ft_per_paper_inch;
+  return bar > 0
+    ? `The engine measured a drawn scale bar at ${bar.toFixed(2)} ft per `
+      + `inch but did not match it against these readings.`
+    : `The engine did not find a scale bar on this sheet that it could read.`;
+}
+
 // The scale object an accepted suggestion produces. It stamps
 // `picked_by_reviewer` (which is what travels on the approve payload and
 // makes the server record a reviewer decision) and `from_suggestion` (which
@@ -2283,12 +2302,26 @@ function renderScaleSuggest(host) {
   }).join("; ");
   // The register: plain words, no jargon, and the reason it is not trusted
   // stated rather than implied by a colour.
-  why.innerHTML = `${list}. ${uniq.length === 1 ? "It was" : "They were"} read `
-    + `by machine off a picture of the caption, because this sheet's text is `
-    + `drawn as shapes rather than written as text. The digits can be `
-    + `misread, and nothing else on this sheet — no drawn scale bar, no `
-    + `printed square-foot figure — backs `
-    + `${uniq.length === 1 ? "it" : "them"} up. `
+  //
+  // Every sentence here says what the ENGINE knows, never what the DRAWING
+  // has. Measured 2026-09-01 on Hurricane C.3.5 (page index 6): this block
+  // told the operator the sheet had NO drawn bar backing the reading, on a
+  // sheet that PRINTS a 0/40'/80' bar directly above the caption; the
+  // engine had failed to read it, not found it absent - and that bar is
+  // the one printed thing separating 1"=40' from the key map's 1"=300' the
+  // block was offering, 7.5x apart. It also gave a cause ("this sheet's
+  // text is drawn as shapes") that nothing tests: the page carries 643 text
+  // characters in five embedded fonts. So: the bar sentence reads what the
+  // payload records (bar_ft_per_paper_inch, null on every abstained page
+  // today because the abstention only runs after the bar reader returned
+  // nothing), the checked-against sentence is the button tooltip's voice,
+  // and there is no "because" clause at all.
+  const one = uniq.length === 1;
+  why.innerHTML = `${list}. ${one ? "It was" : "They were"} read `
+    + `by machine off a picture of the caption, and the digits can be `
+    + `misread. ${scaleBarSentence()} Nothing on this sheet has been `
+    + `checked against ${one ? "it" : "them"} — no scale bar, no printed `
+    + `square-foot figure. `
     + (uniq.length === 1
       ? `The same reading may also have MISSED other scales printed on this `
         + `sheet, so being the only one offered does not make it the only one `
@@ -2589,8 +2622,9 @@ function confLines() {
       + sug.map(c => `<span class="conf-num">${confScale(c.ft_per_paper_inch)}`
           + `</span> (${confQuote(c.text)})`).join(", ")
       + `. ${sug.length === 1 ? "It was" : "They were"} read by machine off a `
-      + `picture of the caption, because this sheet's text is drawn as shapes `
-      + `rather than written as text, and the digits can be misread. `
+      + `picture of the caption, and the digits can be misread. `
+      + `${scaleBarSentence()} Nothing on this sheet has been checked `
+      + `against ${sug.length === 1 ? "it" : "them"}. `
       + (sug.length === 1
         ? `The same reading may have missed other scales printed here, so its `
           + `being the only one is no evidence it is the only one printed.`
@@ -2618,10 +2652,11 @@ function confLines() {
   } else if (sc.from_suggestion) {
     // AMBER, and before every branch that can print green - same structural
     // guarantee as the typed branch below. This number was read by the least
-    // trustworthy reader this app has, off a sheet whose text is not text,
-    // and NOTHING has corroborated it; a second source agreeing was never
-    // even measured, because the engine refused to promote it in the first
-    // place.
+    // trustworthy reader this app has, and NOTHING has been checked against
+    // it; a second source agreeing was never even measured, because the
+    // engine refused to promote it in the first place. The sentence says
+    // that - what the engine did - not what the sheet does or does not
+    // print, which it has no way to know.
     const others = sug.filter(
       c => Math.abs(+c.ft_per_paper_inch - +sc.ft_per_paper_inch) >= 1e-6);
     say("warn", `<b>You picked <span class="conf-num">`
@@ -2629,9 +2664,9 @@ function confLines() {
       + `engine would not stand behind</b> (it read ${confQuote(sc.text)} off `
       + `a picture of the caption`
       + (sugWhere(sc) ? ` near ${sugWhere(sc)}` : ``)
-      + `). <b>Nothing on this sheet corroborates it</b> — the digits could `
-      + `have been misread, and no drawn scale bar or printed area figure has `
-      + `been matched against this number. `
+      + `). <b>Nothing on this sheet has been checked against it</b> — the `
+      + `digits could have been misread, and no drawn scale bar or printed `
+      + `area figure has been matched against this number. `
       + (others.length
         ? `The engine offered `
           + others.map(c => `<span class="conf-num">`
@@ -17837,20 +17872,29 @@ function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.clas
 // matters - WHERE THE SCALE CAME FROM survived only until the next transient
 // message overwrote it. It is its own element now and it stays put.
 //
-// sheetFactsText() is loadResult()'s old string, character for character:
-// same counts, same " · scale ", same source in parentheses, same
-// ", matches the drawn bar" / ", but the drawn bar says N ft/in" /
-// " · no scale found". Nothing is summarised away and nothing new is
-// asserted. The red "err" state for a contradiction moves with it, and now
-// persists instead of flashing once.
+// sheetFactsText() is loadResult()'s old string: same counts, same
+// " · scale ", same source in parentheses, same ", matches the drawn bar" /
+// ", but the drawn bar says N ft/in". The red "err" state for a
+// contradiction moves with it, and now persists instead of flashing once.
+//
+// One arm is new. With no scale in force and unpromoted readings on offer
+// (state.result.scale_suggestions) the line used to read " · no scale
+// found" while the sheet panel three lines above it offered those very
+// readings - the two halves of one screen disagreeing about the same fact.
+// It now says what the header chip says: no scale is SET, and how many
+// readings are waiting unchecked. " · no scale found" is kept for the page
+// that has neither.
 function sheetFactsText() {
   if (!state.result) return "";
   const sc = state.result.scale;
+  const nsug = sc ? 0 : scaleSuggestions().length;
   return `${state.result.chains.length} lines in ${state.result.styles.length} styles`
     + (sc ? ` · scale ${sc.text} (${sc.source}`
         + (sc.agrees === true ? ", matches the drawn bar"
           : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
           : "") + ")"
+      : nsug ? ` · no scale set — ${nsug} unchecked reading`
+          + `${nsug === 1 ? "" : "s"} offered, none chosen`
       : " · no scale found");
 }
 function renderSheetFacts() {
