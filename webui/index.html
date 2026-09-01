@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=66">
+<link rel="stylesheet" href="style.css?v=67">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -433,6 +433,15 @@
     <div id="ewPanel" class="ew-panel" hidden>
       <div class="side-head" id="ewHead"><h2>Earthwork — assign contours</h2>
         <button id="ewClose" class="mini">close</button></div>
+      <!-- The busy line for the /earthwork/suggest fetch. It lives HERE,
+           directly under the panel head, because the panel's own "reading
+           elevation labels…" hint renders into #ewRows at the BOTTOM of a
+           long panel - measured 53 px below the bottom of #sideScroll on the
+           frame the panel opens, i.e. off screen, and the panel's own
+           scrollIntoView pins the head to the top so it stays off screen.
+           The status bar carries the same sentence; this is the in-panel
+           half. -->
+      <div class="ew-busy" id="ewBusy" hidden></div>
       <div class="ew-hint" id="ewHint">Each row is a contour with the elevation read off the sheet.
         Set which surface it belongs to; fix any elevation the sheet reader got wrong.
         Volumes only compute where both surfaces overlap.</div>
@@ -937,6 +946,14 @@
            selection set is empty. -->
       <span id="multiBar" class="tk-info multi-bar" hidden></span>
       <span id="measureInfo" hidden></span>
+      <!-- GHOST READOUT. When the hovered family's tick is OFF the canvas
+           paints it in neutral slate with no measured line, which says
+           "shown, not counted" structurally; this says it in words, for the
+           owner who is not an estimator and should not have to learn a
+           rendering convention to be sure. It deliberately does NOT use the
+           shared status bar: that bar is carrying the earthwork read's busy
+           line, and a hover must not wipe it. -->
+      <span id="ghostInfo" class="tk-info ghost-info" hidden></span>
     </div>
     <button id="restoreBtn" class="restore-btn" hidden>Reset edits</button>
   </section>
@@ -1040,6 +1057,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=143"></script>
+<script src="app.js?v=144"></script>
 </body>
 </html>

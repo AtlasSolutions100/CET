@@ -98,6 +98,21 @@ const state = window.state = {
                             // {pts, head, tail} - nothing is committed yet
   legendNames: [],          // trade names read off a dedicated legend sheet
   ew: null,                 // earthwork panel state {rows, result}
+  // THE THIRD STATE. `ew` alone is two-valued and was doing a three-valued
+  // job: null meant BOTH "never opened / no detect" and "the suggest fetch
+  // is in flight", and the first read of a page costs 94 s (Belle Farms p0)
+  // to 204 s (Oncor C-04) - measured cold, 99% of it one OCR loop. Every
+  // !state.ew guard therefore told the operator he had not opened a panel
+  // he was staring at. This holds the in-flight promise: truthy == busy,
+  // and it is also the single-flight token, so a second press (or the
+  // grading-zone restore path) joins the running fetch instead of racing a
+  // second one whose loser overwrote the winner's rows with "run Detect
+  // first". Cleared in a finally, and nulled with `ew` on every page change.
+  ewLoading: null,
+  // the suggest was tried for this page and did not come back (dropped
+  // connection, 500). Distinct from "never tried" so the retry sentence can
+  // say so instead of leaving the operator on a hint that never changes.
+  ewFailed: false,
   conf: null,               // /confidence payload for the current page:
                             // NOT-TO-SCALE + spot-elevation provenance, the
                             // two trust facts the detect result cannot carry
@@ -912,7 +927,10 @@ async function loadResult(gen = state.gen) {
   undoClear(undoStack);
   state.tool = null; state.measurePts = []; state.vScale = null;
   state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); state.elevMap = undefined; state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
-  state.ew = null; state.hotChain = null; state.extraItems = [];
+  // ewLoading rides with ew: a suggest still in flight belongs to the page
+  // that started it, and its own gen check makes it a no-op when it lands.
+  state.ew = null; state.ewLoading = null; state.ewFailed = false;
+  state.hotChain = null; state.extraItems = [];
   // hover highlight and per-family expansion are page state like the rest:
   // a style_id means nothing outside the result it came from
   state.hotStyle = null; famOpen.clear();
@@ -5150,8 +5168,8 @@ function famRenderList(s) {
     li.append(id, len, meta);
     li.title = "Hover: light this line on the sheet. Click: select it and "
       + "centre the view on it. Neither changes anything.";
-    li.onmouseenter = () => { state.hotChain = r.chain_id; draw(); };
-    li.onmouseleave = () => { state.hotChain = null; draw(); };
+    li.onmouseenter = () => hotChainSet(r.chain_id);
+    li.onmouseleave = () => hotChainSet(null);
     li.onclick = (e) => {
       e.stopPropagation();
       if (!revealChain(r.chain_id))
@@ -10208,10 +10226,56 @@ function syncCardCounts() {
 })();
 
 // ---------- earthwork calculator ----------
+
+// THE ONE PLACE THE UI PROMISES A DURATION.
+// MEASURED cold on this machine, 2026-08-31, against an empty job store:
+// 94.1 s on Belle Farms Upper Parcel ROAD GRADING 1 of 2 p0 (printed sheet
+// "1 OF 2") and 204.1 s on Oncor Cloudcrest engine page index 3 = printed
+// C-04. Warm (the p{page}_elevgaps2.json sidecar already on disk) is ~2 s.
+// 99% of the cold time is one pytesseract loop inside
+// takeoff_engine.earthwork.gap_label_elevations, sized by its OCR budget.
+// If that budget moves, or the read is warmed at Detect time, RE-MEASURE
+// and change this string - nothing else in the UI quotes a wait.
+const EW_SUGGEST_WAIT = "the first read of a page takes a minute or more";
+const EW_SUGGEST_BUSY = "reading this sheet's elevation labels — " + EW_SUGGEST_WAIT;
+const EW_SUGGEST_FAIL = "could not read this sheet's elevations — press EARTHWORK to try again";
+
+// THE THIRD-STATE GUARD. Replaces `if (!state.ew) return setStatus("run
+// Detect first")` at every site the operator can reach by clicking. state.ew
+// null means one of FOUR things and the old guard reported only the first:
+// no detect, panel never opened, fetch in flight (94-204 s), fetch failed.
+// Returns true when the caller should give up, having said why.
+// Pure render functions deliberately do NOT call this - they run on every
+// repaint and have nothing to tell anyone.
+function ewNotReady(what) {
+  if (state.ew) return false;
+  if (state.ewLoading)
+    setStatus(EW_SUGGEST_BUSY + " — " + what + " will be ready in a moment", "busy");
+  else if (state.ewFailed) setStatus(EW_SUGGEST_FAIL, "err");
+  else if (!state.result) setStatus("run Detect first", "err");
+  else setStatus("open the EARTHWORK panel first (press EARTHWORK)", "err");
+  return true;
+}
+
+// the in-panel half of the same sentence, in #ewBusy under the panel head
+function ewBusyPut(txt, cls) {
+  const el = $("ewBusy");
+  if (!el) return;
+  el.hidden = !txt;
+  el.textContent = txt || "";
+  el.className = "ew-busy" + (cls ? " " + cls : "");
+}
+
 $("ewClose").onclick = () => { $("ewPanel").hidden = true; state.hotChain = null; ewDisarmPick(); draw(); };
 $("ewBtn").onclick = async () => {
   const panel = $("ewPanel");
-  if (!panel.hidden) { panel.hidden = true; ewDisarmPick(); return; }
+  // Open panel: the press means CLOSE - unless the last read failed, in
+  // which case the panel is showing a retry sentence and the press means
+  // what the sentence says. (Without this, "press EARTHWORK to try again"
+  // would take two presses: one to close, one to reopen.)
+  if (!panel.hidden && !(state.ewFailed && !state.ew && !state.ewLoading)) {
+    panel.hidden = true; ewDisarmPick(); return;
+  }
   panel.hidden = false;
   panel.scrollIntoView({ block: "start", behavior: "smooth" });
   // a page switch nulls state.tool without touching this button's class
@@ -10219,8 +10283,30 @@ $("ewBtn").onclick = async () => {
   $("ewBoundPick").classList.remove("active");
   renderEwBound();
   if (!state.ew) {
+    // Put the busy line WHERE THE EYE IS. Every other long operation in this
+    // file writes one to the status bar - "detecting…" , "opening…",
+    // "uploading…", "Reading the sheet with AI…" - and EARTHWORK was the
+    // only one that did not, while its own in-panel hint rendered 53 px
+    // below the bottom of #sideScroll (measured, Belle Farms p0, T+2 s).
+    // Both halves now, and both cleared when the data lands: the stale red
+    // line used to still be on the bar 102 s later with the panel loaded.
+    const gen = state.gen;
     $("ewRows").innerHTML = '<div class="ew-hint">reading elevation labels…</div>';
-    if (!await ewEnsure()) { $("ewRows").textContent = "run Detect first"; return; }
+    ewBusyPut(EW_SUGGEST_BUSY + "…");
+    setStatus(EW_SUGGEST_BUSY, "busy");
+    const ok = await ewEnsure();
+    // a page switch during the wait: selectPage owns the bar now, and this
+    // fetch belongs to a sheet nobody is looking at
+    if (gen !== state.gen) return;
+    if (!ok) {
+      const msg = state.ewFailed ? EW_SUGGEST_FAIL : "run Detect first";
+      $("ewRows").textContent = msg;
+      ewBusyPut(msg, "err");
+      setStatus(msg, "err");
+      return;
+    }
+    ewBusyPut("");
+    setStatus("");
   }
   renderEw();
   renderEwLayers();
@@ -10243,13 +10329,37 @@ $("ewBtn").onclick = async () => {
 // the panel being open - a restored zone recomputes through the endpoint
 // and the endpoint takes the suggest-derived existing surface as input.
 // Returns false when the suggest fetch fails or the page changed under it.
+// SINGLE FLIGHT. Two callers reach this - the EARTHWORK button and
+// gzRestoreCompute(), which runs unprompted on any page with saved zones -
+// and the fetch is 94-204 s cold, so they overlapped routinely. Both used to
+// issue their own suggest; the LOSER then hit `state.ew` already set,
+// returned false, and its caller printed "run Detect first" over the
+// winner's freshly rendered 40 rows. Returning the one in-flight promise
+// makes every caller a winner and deletes that whole class of lie.
 async function ewEnsure() {
   if (state.ew) return true;
-  const gen = state.gen;
-  const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
-  if (!r.ok || gen !== state.gen) return false;
+  if (state.ewLoading) return state.ewLoading;
+  state.ewFailed = false;
+  const p = ewFetchSuggest(state.gen);
+  state.ewLoading = p;
+  try { return await p; }
+  finally { if (state.ewLoading === p) state.ewLoading = null; }
+}
+async function ewFetchSuggest(gen) {
+  let r, j;
+  // No try/catch here before: a dropped connection rejected out of the
+  // handler uncaught, so the panel sat on "reading elevation labels…"
+  // forever - pixel-identical to the busy state, with a silent status bar.
+  // gzCompute's "server unreachable" branch already does this; copy it.
+  try {
+    r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    j = await r.json();
+  } catch (err) {
+    if (gen === state.gen) state.ewFailed = true;
+    return false;
+  }
   {
-    const j = await r.json();
     if (gen !== state.gen || state.ew) return false;
     const ws = j.suggestions.map(s => s.width || 0).sort((a, b) => a - b);
     const wmed = ws.length ? ws[Math.floor(ws.length / 2)] : 0;
@@ -10629,7 +10739,7 @@ function ewAppendRow(cid) {
   calcStateDirty();
 }
 $("ewAddRow").onclick = () => {
-  if (!state.ew) return setStatus("run Detect first", "err");
+  if (ewNotReady("the contour list")) return;
   if (state.tool === "ew-pick") { ewDisarmPick("add contour cancelled"); return; }
   // a line already selected on the canvas is what the user means - take it
   if (state.selected !== null && chainById(state.selected) !== null) {
@@ -10767,7 +10877,7 @@ function ewDispRow(lay, i) {
 }
 
 $("ewStrip").onclick = () => {
-  if (!state.ew) return;
+  if (ewNotReady("the layer stack")) return;
   // Topsoil comes off first on every job. Default thickness is the LOCAL
   // prior: Beaumont Estimate #853's own arithmetic is 8.29 in (5,730 CY
   // strip x 27 / 224,058 SF clear-and-grub), inside the national 4-8 in
@@ -10782,14 +10892,14 @@ $("ewStrip").onclick = () => {
   renderEwLayers();
 };
 $("ewAddEx").onclick = () => {
-  if (!state.ew) return;
+  if (ewNotReady("the layer stack")) return;
   state.ew.layers.existing.push({ name: "", thickness_in: 4, ...EW_DISP_DEFAULT });
   renderEwLayers();
   const rows = $("ewExLayers").querySelectorAll("input[type=text]");
   if (rows.length) rows[rows.length - 1].focus();
 };
 $("ewAddPr").onclick = () => {
-  if (!state.ew) return;
+  if (ewNotReady("the layer stack")) return;
   state.ew.layers.proposed.push({ name: "", thickness_in: 8 });
   renderEwLayers();
   const rows = $("ewPrLayers").querySelectorAll("input[type=text]");
@@ -11103,14 +11213,14 @@ function renderEw() {
       calcStateDirty();
     };
     div.append(z, meta, seg, x);
-    div.onmouseenter = () => { state.hotChain = row.chain_id; draw(); };
-    div.onmouseleave = () => { state.hotChain = null; draw(); };
+    div.onmouseenter = () => hotChainSet(row.chain_id);
+    div.onmouseleave = () => hotChainSet(null);
     box.appendChild(div);
   }
 }
 
 $("ewCalc").onclick = async () => {
-  if (!state.ew) return;
+  if (ewNotReady("the volume calculation")) return;
   const body = ewBody();
   $("ewResult").textContent = "calculating…";
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork`, {
@@ -11246,7 +11356,8 @@ function ewApplyItems(j) {
 }
 
 $("ewAdd").onclick = () => {
-  if (!state.ew || !state.ew.result) return;
+  if (ewNotReady("the earthwork rows")) return;
+  if (!state.ew.result) return setStatus("press Calculate first — there is no volume to add yet", "err");
   state.ew.added = !state.ew.added;
   if (state.ew.added) ewApplyItems(state.ew.result);
   else ewClearItems();
@@ -11492,7 +11603,8 @@ async function ewFetchMap() {
   draw();
 }
 $("ewMap").onchange = async () => {
-  if (!state.ew) { $("ewMap").checked = false; return; }
+  // silently un-ticking the box during the 94-204 s read read as a frozen UI
+  if (ewNotReady("the cut/fill map")) { $("ewMap").checked = false; return; }
   if ($("ewMap").checked) await ewFetchMap();
   else { state.ew.map = null; $("ewMapLegend").hidden = true; draw(); }
 };
@@ -13208,6 +13320,12 @@ const CV_WZ_MASK      = "rgba(255,255,255,0.62)";  // outside the work area
 const CV_WZ_EDGE      = "rgba(14,138,95,0.85)";    // a committed work-area box
 const CV_FAM_UNKNOWN  = "#8f959e";           // a family the engine gave no colour
 const CV_FAM_NEARWHITE = "#a7adb6";          // ...or gave one that is invisible
+// A HOVERED FAMILY WHOSE TICK IS OFF. Deliberately NOT the family's own
+// colour: "shown so you can find it" and "counted in the takeoff" must not
+// look alike, and grey-ghost is one thing to learn that then holds on every
+// sheet. Paired with .ghost-info in webui/style.css, which wears the same
+// slate - change the two together.
+const CV_GHOST        = "#6b7683";
 
 function draw() {
   // buffer may lag the element across browser zoom - resync before painting
@@ -13224,6 +13342,10 @@ function draw() {
   // (before the no-image early return, which is also when it must clear).
   // renderZoomFact() no-ops unless the rounded percentage actually moved.
   renderZoomFact();
+  // the hovered family's tick can flip while the row is still hovered, so
+  // the "NOT counted" pill is re-derived here rather than only on hover.
+  // It no-ops unless the set of ghosted families actually moved.
+  ghostBarSync();
   if (!state.img) return;
   const { x, y, k } = state.view;
   ctx.save();
@@ -13303,11 +13425,26 @@ function draw() {
     const f = IMG_DPI / 72; // pt -> image px
     for (const ch of state.result.chains) {
       const sid = ch.style_id;
+      // deleted lines stay absolutely gone - hover does not resurrect them
       if (state.excluded.has(ch.chain_id)) continue;
-      if (state.isolate !== null && sid !== state.isolate) continue;
-      if (state.isolate === null && !state.include.get(sid)) continue;
+      // HOVER IS COMPUTED BEFORE THE VISIBILITY GUARD, NOT AFTER IT.
+      // `hot` used to be worked out on the line AFTER the include test, so
+      // every chain of an unticked family was already `continue`d past
+      // before the highlight pass could look at it: hovering that family's
+      // row lit nothing at all, and `state.include` was doing two jobs at
+      // once ("counted in the takeoff" AND "painted on the canvas").
+      // This is the shape the AREA pass ~60 lines up already uses
+      // (`const on = ...; const hot = ...; if (!on && !hot) continue;`), so
+      // hovering an unticked AREA already worked and hovering an unticked
+      // LINE FAMILY did not. Isolate precedence is unchanged: isolate still
+      // wins over the tick in BOTH directions. What is new is that hover
+      // now overrides both - which is the point.
       const hot = (state.hotStyle !== null && state.hotStyle.has(sid))
         || state.hotChain === ch.chain_id;
+      const shown = famShown(sid);
+      if (!shown && !hot) continue;
+      // GHOST = the operator is pointing at it, and it is NOT in the takeoff.
+      const ghost = !shown;
       const sel = state.selected === ch.chain_id;
       // marquee members light up in the same magenta family as the single
       // selection, a step thinner so the picked line still reads apart
@@ -13341,9 +13478,34 @@ function draw() {
       // pattern is still drawn on top, at its true weight.
       if (hot && !sel && !msel) {
         ctx.save();
-        ctx.setLineDash([]);
-        ctx.globalAlpha = 0.30;
-        ctx.lineCap = "round"; ctx.lineJoin = "round";
+        if (ghost) {
+          // A GHOST WEARS NEITHER THE FAMILY'S COLOUR NOR ITS PATTERN.
+          // Neutral slate, because a family that is not in the takeoff
+          // should not be wearing the colour of the ones that are - and
+          // because "the family's own colour at lower alpha" is a no-op on
+          // exactly the families that need this most: CV_FAM_NEARWHITE /
+          // CV_FAM_UNKNOWN exist for families the engine measured no usable
+          // colour on, and their ON-state halo is already a very pale grey.
+          // The coarse uniform dash reads as provisional. CLAUDE.md §5 warns
+          // that dash rendering carries meaning in this app - this dash is
+          // on the HALO only, and a ghost draws no measured line at all
+          // (the `continue` below), so there is no stroke here whose cadence
+          // anyone could mistake for a detected pattern.
+          ctx.strokeStyle = CV_GHOST;
+          ctx.setLineDash([18 / k, 12 / k]);
+          ctx.globalAlpha = 0.45;
+          // BUTT caps, not round. A round cap extends half the ribbon's
+          // width past each dash end, and the ribbon is ~6x the line's
+          // plotted weight - so round caps filled every 12 px gap and the
+          // ghost rendered as a solid band. Caught on the 400% capture of
+          // C4.0 style 13, not in a unit test.
+          ctx.lineCap = "butt";
+        } else {
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.30;
+          ctx.lineCap = "round";
+        }
+        ctx.lineJoin = "round";
         ctx.lineWidth = Math.max(wPt * 6, 10 / k);
         ctx.beginPath();
         ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
@@ -13352,6 +13514,15 @@ function draw() {
         ctx.stroke();
         ctx.restore();
       }
+      // NOT COUNTED, SO NOT DRAWN AS A MEASURED LINE. The whole value of the
+      // tick is that OFF means "not in the bid", and this tool is one where
+      // a confident wrong number reaches a bid (CLAUDE.md §5). So the tell
+      // between hovered-on and hovered-off is STRUCTURAL, not chromatic: a
+      // ticked family gets the ribbon PLUS a crisp stroke at its true weight
+      // and true dash phase; a ghost gets the soft band and nothing crisp
+      // inside it. That difference survives a bad monitor, a greyscale
+      // screenshot and colour blindness. A colour difference does not.
+      if (ghost) continue;
       // seg_counts partitions points into the SOURCE ink marks: draw each
       // mark as its own solid subpath so every dash lands exactly where
       // the sheet printed it. A repeating template can only approximate -
@@ -13426,8 +13597,13 @@ function draw() {
     const pools = new Map();
     for (const s2 of state.result.styles) {
       if (state.measureMode.get(s2.style_id) !== "object") continue;
-      if (state.isolate !== null && s2.style_id !== state.isolate) continue;
-      if (state.isolate === null && !state.include.get(s2.style_id)) continue;
+      // DELIBERATELY NOT ghosted, unlike the chain loop above. These boxes
+      // are the COUNT - one box per counted object - so drawing them for a
+      // family whose tick is off would say the opposite of what the ghost
+      // says. Hovering an unticked object-mode family therefore shows its
+      // ghost linework and no boxes: you can see where it is, and nothing
+      // on screen claims a count for it.
+      if (!famShown(s2.style_id)) continue;
       const lab = (state.labels.get(s2.style_id) || "#" + s2.style_id);
       // the pool's box is drawn in the family's RESOLVED colour, so an
       // object-mode family recoloured red boxes in red like it draws in red
@@ -15257,14 +15433,24 @@ function distToSeg(px, py, a, b) {
 // shows its elevation without opening any panel
 async function ensureElev() {
   if (state.elevMap !== undefined) return;
-  state.elevMap = undefined;
   state.elevMap = null;  // in flight
+  // The guard loadResult and poll already carry, which this never had.
+  // Chain ids are per page and collide NUMERICALLY across pages, so a
+  // suggest that lands after a page switch does not throw - it quietly
+  // labels a line on the new sheet with an elevation read off the old one.
+  // Reproduced live: switch page mid-fetch and state.elevMap ends up holding
+  // page 3's 150 rows while state.page is 2. That is this codebase's worst
+  // shape, a confident wrong number (CLAUDE.md §5).
+  const gen = state.gen, job = state.job, page = state.page;
+  let m;
   try {
-    const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/suggest`);
-    state.elevMap = r.ok
+    const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
+    m = r.ok
       ? new Map((await r.json()).suggestions.map(s => [s.chain_id, s.z]))
       : new Map();
-  } catch { state.elevMap = new Map(); }
+  } catch { m = new Map(); }
+  if (gen !== state.gen || job !== state.job || page !== state.page) return;
+  state.elevMap = m;
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
 function updateSelBar(ch) {
@@ -15284,7 +15470,6 @@ function updateSelBar(ch) {
     : ` · ${ch.points.length} points`;
   if (state.elevMap === undefined) ensureElev();
   const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
-  const el = z !== undefined ? ` · EL ${z}` : "";
   // the length here is the line's GEOMETRY; when a work area is drawn and
   // this line crosses its edge, say what part of it actually counts
   const wf = wzChainFrac(ch);
@@ -15296,8 +15481,34 @@ function updateSelBar(ch) {
   info.textContent = "";
   const txt = document.createElement("span");
   txt.className = "sel-txt";
-  txt.textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}${el}`;
+  txt.textContent = `${ch.class} · ${label} · ${fmtQty(chainLenPt(ch))}${wz}${pt}`;
+  // .sel-txt is the pill's ONLY shrinkable child, so whatever is at the end
+  // of this string is the first thing the ellipsis eats. Hovering gets it
+  // back; the elevation is not left to that (see the chip below).
+  txt.title = txt.textContent;
   info.appendChild(txt);
+  // THE ELEVATION IS A CHIP, NOT THE TAIL OF THE SENTENCE.
+  // It used to be the last token inside .sel-txt, which is the one child of
+  // this pill that can shrink (overflow:hidden; text-overflow:ellipsis).
+  // Three flex:none controls landed on the same pill on 2026-08-30/31 - the
+  // family select, "in list" and the colour swatch, 248.9 px between them -
+  // and .canvas-status caps at a fraction of the canvas column, so on a
+  // 1097 px window .sel-txt was squeezed to 95 px for a 299 px string and
+  // " · EL 545" was the first thing behind the ellipsis. Measured on Oncor
+  // Cloudcrest engine page index 3 = printed C-04, contour chain 192, whose
+  // sheet prints 545 in the break of that dashed contour: clipped at 1097,
+  // 1280 and 1370 px, visible only from ~1400 px up. A flex:none child
+  // cannot be ellipsized, so the number is now width-proof.
+  // Nothing renders when the line has no elevation (a non-contour, or a
+  // contour the sheet never labelled) - no empty box.
+  if (z !== undefined && z !== null) {
+    const elc = document.createElement("span");
+    elc.className = "sel-el";
+    elc.textContent = `EL ${z}`;
+    elc.title = "Elevation this contour carries, read off the sheet's own "
+      + "printed labels — the same reading the earthwork panel uses.";
+    info.appendChild(elc);
+  }
   // family switcher, right on the bar: the SAME mutation the Reclassify
   // tool ends in (reclassCore), without the pick-click trip across the
   // canvas. Listed by footage so the family you want is near the top.
@@ -15838,12 +16049,70 @@ function hotFam(sids) {
   const cur = state.hotStyle;
   if (cur && cur.size === next.size && [...next].every(v => cur.has(v))) return;
   state.hotStyle = next;
+  ghostBarSync();
   draw();
 }
 function hotFamOff() {
   if (state.hotStyle === null) return;
   state.hotStyle = null;
+  ghostBarSync();
   draw();
+}
+
+// The per-CHAIN twin of hotFam's dedupe. The four row-hover surfaces
+// (per-family line list, calculator rows, callout rows, earthwork rows) each
+// assigned state.hotChain and called draw() unconditionally. That was cheap
+// while an unticked family painted nothing; now that a hovered chain always
+// paints, a cursor dragged down a 50-row list would repaint per row for no
+// change. Same guard hotFam has had, same reason.
+function hotChainSet(cid) {
+  if (state.hotChain === cid) return;
+  state.hotChain = cid;
+  draw();
+}
+
+// Is this family painted as itself right now? The one place that question is
+// answered, so the canvas (draw()'s `shown`) and the readout below cannot
+// drift apart. Isolate wins over the tick, in both directions.
+function famShown(sid) {
+  return state.isolate !== null ? sid === state.isolate
+                                : !!state.include.get(sid);
+}
+
+// THE WORDS HALF OF THE GHOST HOVER. Hovering an unticked family now paints
+// it - in neutral slate, ribbon only, no measured line - and this says in
+// plain English what that rendering means, so the owner does not have to
+// learn a convention to be sure the number did not just change. It writes
+// its own pill on the canvas, NOT the shared status bar: that bar can be
+// carrying the earthwork read's busy line, and a hover must not wipe it.
+// Called from the two hover writers AND from draw(), because the tick can
+// flip while the row is still hovered. It repaints nothing when nothing
+// moved (the same reason hotFam dedupes): draw() runs on every pan frame.
+let ghostBarKey = "";
+function ghostBarSync() {
+  const el = $("ghostInfo");
+  if (!el) return;
+  const off = (state.hotStyle && state.result)
+    ? [...state.hotStyle].filter(sid => !famShown(sid)).sort((a, b) => a - b) : [];
+  let name = "";
+  if (off.length === 1) {
+    const st = state.result.styles.find(s => s.style_id === off[0]);
+    name = state.labels.get(off[0]) || (st && st.suggested_label) || ("style " + off[0]);
+  } else if (off.length > 1) {
+    name = off.length + " families";
+  }
+  const key = off.join(",") + "|" + name;
+  if (key === ghostBarKey) return;
+  ghostBarKey = key;
+  if (!off.length) { el.hidden = true; el.textContent = ""; return; }
+  el.textContent = "";
+  const nm = document.createElement("b");
+  nm.textContent = name;
+  el.appendChild(nm);
+  el.appendChild(document.createTextNode(
+    " — shown so you can find " + (off.length === 1 ? "it" : "them")
+    + " on the sheet. NOT counted in the takeoff."));
+  el.hidden = false;
 }
 
 // Create a family the operator named. ONE captureUndo entry covers the new
@@ -17892,12 +18161,25 @@ function gzApplySaved() {
 async function gzRestoreCompute() {
   if (!state.gzones.length) return;
   const gen = state.gen;
-  if (!await ewEnsure()) {
-    if (gen !== state.gen) return;
-    for (const z of state.gzones) z.err = "run Detect first";
+  // This runs UNPROMPTED from calcStateLoad on any page with saved zones,
+  // and it is the same 94-204 s suggest - previously with the panel closed
+  // and zero indication anywhere. Say so, and only while we are the ones
+  // waiting (state.ew already set = the panel loaded it, nothing to say).
+  const speak = !state.ew;
+  if (speak) setStatus(EW_SUGGEST_BUSY + " — your saved grading zones will recompute when it lands", "busy");
+  const ok = await ewEnsure();
+  if (gen !== state.gen) return;      // selectPage owns the bar now
+  if (!ok) {
+    // NOT "run Detect first" - detect has run; this is a failed or missing
+    // elevation read, and the operator can retry it from the panel.
+    const why = state.ewFailed ? "could not read this sheet's elevations"
+                               : "open the EARTHWORK panel to read this sheet's elevations";
+    for (const z of state.gzones) z.err = why;
+    if (speak) setStatus(why + " — grading zones did not recompute", "err");
     renderGz();
     return;
   }
+  if (speak) setStatus("");
   if (gen !== state.gen) return;
   for (const z of state.gzones) {
     if (gen !== state.gen) return;
@@ -18055,7 +18337,7 @@ function gzDesignSummary(z) {
 // ---- the two arming buttons ------------------------------------------------
 $("gzDraw").onclick = () => {
   if (!state.result) return setStatus("run Detect first", "err");
-  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (ewNotReady("grading zones")) return;
   if (state.tool === "gz-draw") { gzDrawCancel("grading zone: drawing cancelled"); return; }
   state.tool = "gz-draw";
   state.gzDraft = [];
@@ -18066,7 +18348,7 @@ $("gzDraw").onclick = () => {
 };
 $("gzBox").onclick = () => {
   if (!state.result) return setStatus("run Detect first", "err");
-  if (!state.ew) return setStatus("open the EARTHWORK panel data first (press EARTHWORK)", "err");
+  if (ewNotReady("grading zones")) return;
   if (state.tool === "gz-box") {
     state.tool = null; state.gzDrag = null;
     $("gzBox").classList.remove("active");
@@ -18187,7 +18469,7 @@ addEventListener("keydown", (e) => {
 
 // ---- THE ZONE MODAL --------------------------------------------------------
 function gzModalOpen(zone, polygon) {
-  if (!state.ew) return setStatus("open the EARTHWORK panel first", "err");
+  if (ewNotReady("this zone")) return;
   gzModalZone = zone || null;
   gzModalPoly = zone ? zone.polygon : polygon;
   if (!gzModalPoly || gzModalPoly.length < 3) return;

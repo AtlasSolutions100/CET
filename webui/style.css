@@ -243,9 +243,19 @@ canvas#view.panning { cursor: grabbing; }
 #tkMulti:not([hidden]) { border-left: 2px solid #ff00cc; padding-left: 3px;
   margin-left: -5px; }
 /* selection / measure readout: floating pill along the canvas bottom */
+/* max-width was 70%: with the family select, "in list" and the colour swatch
+   all landed on the selection pill, 70% of the canvas column left 95 px for
+   the one shrinkable child on a 1097 px window and the readout ellipsized
+   away its own tail. 92% buys the room back. flex-wrap is for the Ctrl+click
+   case, where #selInfo and .multi-bar share the row and .sel-txt measured
+   clientWidth 0 at 1280 px - they stack now instead of starving each other.
+   The pill is a floating overlay on the sheet, so this does cover more
+   linework along the bottom edge; it is still bottom-anchored and still
+   centred, and the alternative was a readout that hid its own number. */
 .canvas-status { position: absolute; left: 50%; bottom: 14px; z-index: 5;
   transform: translateX(-50%); display: flex; gap: 8px; align-items: center;
-  pointer-events: none; max-width: 70%; }
+  flex-wrap: wrap; justify-content: center;
+  pointer-events: none; max-width: 92%; }
 .tk-info { color: var(--text); font-size: var(--t-fs-xs); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
@@ -316,6 +326,13 @@ canvas#view.panning { cursor: grabbing; }
    screen, so it tracks the window instead of a constant. */
 .ew-rows { max-height: 32vh; }
 .ew-hint { color: var(--dim); font-size: var(--t-fs-xs); padding: 6px 12px 2px; }
+/* the in-flight line for /earthwork/suggest - sits under the panel HEAD,
+   above the fold, because the old hint rendered into #ewRows at the bottom
+   of the panel where the operator could not see it */
+.ew-busy { font-size: var(--t-fs-xs); padding: 6px 12px; margin: 4px 8px 0;
+           border-radius: 6px; background: var(--hover);
+           border-left: 3px solid var(--accent); }
+.ew-busy.err { border-left-color: var(--t-stop); color: var(--t-stop); }
 .ew-rows { overflow-y: auto; padding: 4px 8px; }
 .ew-row { display: grid; grid-template-columns: 60px 1fr auto; gap: 6px; align-items: center; padding: 3px 4px; border-radius: 6px; }
 /* contour rows carry a 4th column (the x remove button); .co-row reuses
@@ -1434,10 +1451,20 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 #selInfo { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 #selInfo:empty { display: none; }   /* the id rule above outranks .tk-info:empty */
 .sel-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The contour elevation, as its own flex:none chip. It is the one value on
+   this pill that must survive any window width, so it is deliberately NOT
+   part of .sel-txt - a flex:none child cannot be ellipsized. */
+.sel-el { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums;
+  font-size: var(--t-fs-xs); padding: 2px 7px; border-radius: 999px;
+  background: var(--chip); border: 1px solid var(--line); color: var(--text); }
 .fam-sel { flex: none; max-width: 180px; font-size: var(--t-fs-xs); padding: 2px 6px;
   border-radius: 6px; background: var(--chip); color: var(--text);
   border: 1px solid var(--line); cursor: pointer; }
 .fam-sel:hover { border-color: var(--accent); }
+/* narrower on the selection pill ONLY - that pill is width-starved and the
+   family select was taking 180 of the 370 px of content box. The multi-bar's
+   own "Move all to family…" select keeps the full 180. */
+#selInfo .fam-sel { max-width: 130px; }
 /* #ff00cc is the canvas chain-selection magenta. It is NOT a UI colour and
    has no token on purpose: this border exists to match CV_SELECT in
    webui/app.js exactly, so the two must be changed together or not at all. */
@@ -2560,6 +2587,14 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
   box-shadow: inset 0 -2px 0 0 var(--t-accent), 0 0 0 2px var(--t-accent); }
 /* the colour chips already carry an operator colour; ring the ones that do */
 .color-chip.recoloured { border-color: var(--t-accent); }
+
+/* "shown so you can find it, NOT counted" - the words half of the ghost
+   hover. #6b7683 is CV_GHOST in webui/app.js, the colour the ghost ribbon is
+   painted in; the pill and the linework must stay the same slate, so change
+   the two together. */
+.ghost-info { pointer-events: none; border-color: #6b7683; color: var(--dim);
+  background: color-mix(in srgb, var(--panel) 92%, transparent); }
+.ghost-info b { color: var(--text); font-weight: 600; }
 
 /* the selection bar's per-line swatch, beside the family switch */
 .sel-color { flex: none; width: 22px; height: 22px; padding: 0;
