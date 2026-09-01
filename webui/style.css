@@ -2841,6 +2841,42 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .sg-head.all-off .sg-name { color: var(--t-text-faint); }
 .sg-head.part-off .sg-name { color: var(--t-text-dim); }
 
+/* ---------- DEFECT 0: the "Suggested disables" group ----------------------
+   Every row under this header is a DISAGREEMENT: the drafter's CAD layer
+   name says annotation, the engine's measurement of the geometry says line
+   work. Medium confidence, so the rows arrive unticked and VISIBLE rather
+   than being dropped silently - 63 of 116 cached sheets have at least one,
+   and 347,440 pt of line work rides on the call.
+
+   Styled as a suggestion, not as an error: a left accent rule and the warn
+   tint the app already uses for "look at this", never the red it uses for
+   "this is broken". Nothing here is broken; the engine is unsure. */
+.sg-head.sg-suggest { background: var(--t-warn-bg, transparent);
+  border-left: 3px solid var(--t-warn); padding-left: 7px;
+  border-radius: var(--t-r-1) var(--t-r-1) 0 0; }
+.sg-head.sg-suggest .sg-name { color: var(--t-warn); }
+/* THE STAKES, on their own line under the title. flex-basis:100% because
+   .sg-head is a wrapping flex row and this must never share a line with the
+   footage chip - it is the sentence the operator reads before deciding. */
+.sg-sub { flex-basis: 100%; min-width: 0; display: flex; flex-wrap: wrap;
+  align-items: baseline; gap: 2px var(--t-sp-2); padding: 2px 0 1px 21px; }
+.sg-sub-txt { font-family: var(--t-font-data); font-size: var(--t-fs-xs);
+  color: var(--t-text); font-weight: 600; }
+.sg-sub-why { min-width: 0; font-size: var(--t-fs-xs); color: var(--t-text-dim);
+  font-style: italic; }
+
+/* ...and the per-ROW reason, in the same slot the CAD layer and the scope
+   verdict already use (grid-column 3 / -1), because that is where this list
+   puts "a fact about this row that does not fit on the meta line". */
+.style-sug { grid-column: 3 / -1; min-width: 0; display: flex; gap: 5px;
+  align-items: baseline; padding-top: 1px; }
+.style-sug .sl-tag { color: var(--t-warn); opacity: 1; }
+.sug-why { min-width: 0; font-size: var(--t-fs-xs); line-height: 1.2;
+  color: var(--t-text-dim); }
+/* inset shadow, not a border: .style-row is a grid and a real 3px border
+   would move every column in it by 3px on exactly these rows. */
+.style-row-sug { box-shadow: inset 3px 0 0 var(--t-warn); }
+
 /* THE ROW THE OPERATOR WAS SENT TO. revealStyleRow() scrolls it into the
    middle of the list and adds .row-found for 1.8s. A ring plus a short fade
    rather than a colour that stays: a permanent mark would compete with the

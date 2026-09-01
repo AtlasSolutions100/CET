@@ -1045,8 +1045,17 @@ async function loadResult(gen = state.gen) {
     // annotation (text/label/leader strokes) starts OFF like texture:
     // it is real ink but not takeoff linework, and ON-by-default is how
     // leader lines ended up welded into wall tallies
+    // DEFECT 0. sgSuggested(s) is the third off-by-default reason and the
+    // only one the operator is shown a REASON for, because it is the only
+    // one where two signals disagree: the drafter's layer name says
+    // annotation and the measured geometry says line work. It is unticked
+    // here and then rendered in its own "Suggested disables" group, with the
+    // footage it is holding out of the takeoff printed on the header and the
+    // disagreement spelled out on every row. 63 of 116 cached sheets (54%)
+    // have at least one - flipping that much quietly would make an engine
+    // judgement invisible, which is the same sin as silently counting it.
     state.include.set(s.style_id,
-      (white || s.texture || s.class === "annotation") ? false
+      (white || s.texture || s.class === "annotation" || sgSuggested(s)) ? false
         : (s.class !== "solid" ? true : s.length_pt > 500));
     state.labels.set(s.style_id, s.suggested_label);
     state.seedLabels.set(s.style_id, s.suggested_label || "");
@@ -4227,17 +4236,113 @@ const SG_DEFS = [
   { key: "dashed", name: "Dashed",
     classes: ["dash1", "dash2", "dash3", "dash-text"] },
   { key: "annotation", name: "Annotation", classes: ["annotation"] },
-  // never claimed by name: whatever the other three did not take
+  // DEFECT 0's group. Never claimed by CLASS - it is claimed by the
+  // DISAGREEMENT between the drafter's layer name and the measured geometry.
+  // See sgAnnoName / sgSuggested below.
+  { key: "suggested", name: "Suggested disables", classes: [] },
+  // never claimed by name: whatever the others did not take
   { key: "other", name: "Other", classes: [] },
 ];
 
-// Which bucket a style row belongs to. Unknown / missing class -> "other",
-// so a class this file has never heard of still gets a header and a count
-// rather than vanishing.
+// Which bucket a style row's CLASS belongs to. Unknown / missing class ->
+// "other", so a class this file has never heard of still gets a header and a
+// count rather than vanishing. (Group membership is sgGroupOf, which consults
+// this and then the layer name; sgKeyOf stays class-only because that is the
+// question the class badge answers.)
 function sgKeyOf(cls) {
   const c = String(cls == null ? "" : cls);
   for (const g of SG_DEFS) if (g.classes.indexOf(c) >= 0) return g.key;
   return "other";
+}
+
+// ---------------------------------------------------------------------------
+// DEFECT 0: ANNOTATION AND TITLE-BLOCK LINE WORK PRICED AS PIPE.
+//
+// A style row defaults ON unless it is white, textured, or classed
+// `annotation`. Leaders, note boxes, dimension lines and title-block rules
+// are STRAIGHT STROKES, so the classifier correctly calls them solid/dash1
+// and they default on. Nothing else looks at the layer the drafter put them
+// on, and tradeFor() then files `P6-TEXT-STORM-C8.0` under Wet Utilities on
+// the strength of the word STORM, never reading the TEXT in the same string.
+//
+// MEASURED 2026-09-01 over the 116 cached detections in the real job store
+// (read-only): 63 of 116 sheets (54%) carry at least one such family;
+// 1,582 runs and 347,440 pt currently count that should not.
+// (The design note out/verify/2026-09-01/annotation-pricing/MEASURED.md
+// quotes 2,126 runs / 394,566 pt. Re-measured here with the default-on rule
+// applied exactly as loadResult applies it, the figures are 1,582 / 347,440;
+// counting every name-matched non-annotation family regardless of whether it
+// currently counts gives 2,201 / 399,716. The sheet count, 63, reproduces
+// exactly. Reported as measured rather than as quoted.)
+//
+// THE MATCHER IS TOKEN-BASED, AND THAT IS THE WHOLE POINT.
+// A substring test for DIM matches `SE-P-SEDIMENT LOG` - se-DIM-ent - which
+// is real erosion-control line work, and silently stopping it counting is
+// PRECISELY the defect being fixed, reintroduced by the fix. A plain token
+// test in turn misses `0046599.02TTLBLK|G-TBLK-LOGO` and `TBLK_SHEET`, which
+// genuinely are title blocks with the drawing number fused onto the token.
+// So: split on [-_|.\s/], then a token matches if it EQUALS a marker or ENDS
+// WITH one of the unambiguous multi-letter markers. Fixtures for both
+// directions, taken from the real corpus, are in
+// tests/test_annotation_suggest.js.
+const SG_ANNO_EXACT = (
+  "TEXT TEXTS TXT ANNO ANNOT ANNOTATION ANNOTATIONS LEADER LEADERS "
+  + "LABEL LABELS CALLOUT CALLOUTS NOTE NOTES DIM DIMS DIMEN DIMENSION "
+  + "DIMENSIONS TTLB TTLBLK TBLK TITLEBLOCK TITLE KEYNOTE KEYNOTES").split(" ");
+// multi-letter and unambiguous, so a fused drawing number cannot hide them.
+// DIM is NOT here on purpose: "SEDIMENT" ends in no marker, but a suffix rule
+// on a three-letter token is how a substring test creeps back in.
+const SG_ANNO_SUFFIX = "TTLBLK TBLK TITLEBLOCK KEYNOTE KEYNOTES".split(" ");
+function sgAnnoName(name) {
+  const parts = String(name == null ? "" : name).split(/[-_|.\s/]+/);
+  for (const t of parts) {
+    if (!t) continue;
+    const T = t.toUpperCase();
+    if (SG_ANNO_EXACT.indexOf(T) >= 0) return true;
+    for (const s of SG_ANNO_SUFFIX) if (T.endsWith(s)) return true;
+  }
+  return false;
+}
+
+// WHICH token in the layer name did it. The row's explanation quotes it
+// verbatim - "the drafter's layer name says TEXT" - because naming the
+// evidence is what lets an operator disagree with it. Falls back to the
+// whole name if, somehow, nothing matched.
+function sgAnnoMarker(name) {
+  const hits = [];
+  for (const t of String(name == null ? "" : name).split(/[-_|.\s/]+/)) {
+    if (!t) continue;
+    const T = t.toUpperCase();
+    let ok = SG_ANNO_EXACT.indexOf(T) >= 0;
+    if (!ok) for (const s of SG_ANNO_SUFFIX) if (T.endsWith(s)) { ok = true; break; }
+    if (ok && hits.indexOf(T) < 0) hits.push(T);
+  }
+  return hits.length ? hits.join(" / ") : String(name == null ? "" : name);
+}
+
+// THE TIER THAT EARNS ITS OWN GROUP: two signals that DISAGREE.
+//
+//   class == "annotation" AND the name says annotation -> high confidence,
+//       default off, UNCHANGED - that is today's behaviour and it stays in
+//       the Annotation group.
+//   the NAME says annotation, the measured GEOMETRY says line work
+//       -> medium. Its own group: unticked, but visible and explained.
+//   neither -> counted, as now.
+//
+// The name is the CAD layer the drafter wrote, never the operator's label:
+// a renamed family must not walk in and out of this group, and 23% of chains
+// corpus-wide carry no layer at all, in which case there is no disagreement
+// to report and the row stays where it was.
+function sgSuggested(s) {
+  if (!s) return false;
+  if (sgKeyOf(s.class) === "annotation") return false;
+  return sgAnnoName(s.layer);
+}
+// Which group a row RENDERS in. sgKeyOf answers "what class is this";
+// this answers "which header does it sit under", and they differ for
+// exactly the disagreement above.
+function sgGroupOf(s) {
+  return sgSuggested(s) ? "suggested" : sgKeyOf(s && s.class);
 }
 
 // Per browser, in the same "core-" localStorage namespace the page strip,
@@ -4283,7 +4388,7 @@ function sgPlan(styles, opts) {
     key: g.key, name: g.name, rows: [], nAll: 0, classes: new Map(),
   }]));
   for (const s of styles || []) {
-    const g = acc.get(sgKeyOf(s.class));
+    const g = acc.get(sgGroupOf(s));
     g.nAll += 1;
     g.classes.set(s.class, (g.classes.get(s.class) || 0) + 1);
     if (q) { if (!matches(s, q)) continue; }
@@ -4307,6 +4412,14 @@ function sgPlan(styles, opts) {
     g.filtered = g.nHit < g.nAll;
     g.tick = sgTickState(g.rows, isOn);
     g.lenOn = g.rows.reduce((t, s) => t + (isOn(s) ? lenOf(s) : 0), 0);
+    // THE STAKES, for a group whose whole job is to be declined or accepted.
+    // `lenOff` is what is NOT being counted right now - the figure the
+    // operator needs before deciding, and the one a silent default-off would
+    // have hidden. Computed for every group, because "what would this add
+    // back" is a fair question of any of them.
+    g.lenAll = g.rows.reduce((t, s) => t + lenOf(s), 0);
+    g.lenOff = g.lenAll - g.lenOn;
+    g.suggested = def.key === "suggested";
     // "81 dash1, 41 dash2, 6 dash3" - the engine's own split, kept at group
     // level so folding four headers into one loses no evidence.
     g.breakdown = [...g.classes.entries()]
@@ -4359,7 +4472,10 @@ function sgReveal(style, opts) {
     msg: "that line type is set aside by your declared trade, so the list is "
       + "not showing its row — turn on “show set aside” in the "
       + "scope panel and click again" };
-  const key = sgKeyOf(style.class);
+  // sgGroupOf, not sgKeyOf: a suggested-disables row lives under its own
+  // header, and sending the operator to the Solid group would scroll to
+  // nothing - the failure this function exists to refuse.
+  const key = sgGroupOf(style);
   return { ok: true, why: "", msg: "", group: key,
            expand: !!(o.closed && o.closed.has(key)) };
 }
@@ -4547,10 +4663,40 @@ function sgTickGroup(key, on) {
 // (quantity). They are labelled as those two different things, the footage
 // chip beside them prints what the group is currently contributing, and the
 // header states its own tick state when the group is part on and part off.
+// WHAT ACCEPTING THE SUGGESTION COSTS, IN MONEY, WHERE A RATE EXISTS.
+//
+// Rates are keyed by LABEL (priceKey), not by style, and the itemized
+// takeoff multiplies a label's rate by its quantity in feet. So this sums
+// rate x feet over the group's UNTICKED rows - the ones whose footage is
+// currently out of the takeoff - and reports how many of them a rate was
+// actually found for, because "$0" and "no rates set" are different facts
+// and only one of them means the suggestion is free.
+//
+// Rows the operator has switched to EA are counted separately rather than
+// guessed at: an object count is not a length and multiplying a per-foot
+// rate by feet for a row priced per each would be a fabricated number.
+function sgSuggestMoney(g) {
+  const sc = state.result && state.result.scale;
+  const ftPerIn = sc ? sc.ft_per_paper_inch : null;
+  let money = 0, priced = 0, ea = 0;
+  for (const s of g.rows) {
+    if (state.include.get(s.style_id)) continue;   // already counted
+    if (state.measureMode.get(s.style_id) === "object") { ea++; continue; }
+    const label = (state.labels.get(s.style_id) || s.suggested_label || "").trim();
+    if (!label || !ftPerIn) continue;
+    const rate = parseFloat(store.getItem(priceKey(label)) || "");
+    if (!isFinite(rate) || rate <= 0) continue;
+    money += rate * (styleLenPt(s) / 72 * ftPerIn);
+    priced++;
+  }
+  return { money, priced, ea };
+}
+
 function sgHeadEl(g) {
   const h = document.createElement("div");
   h.className = "sg-head" + (g.collapsed ? " closed" : "")
     + (g.forcedOpen ? " searched" : "")
+    + (g.suggested ? " sg-suggest" : "")
     + (g.tick.state === "none" ? " all-off"
        : g.tick.state === "some" ? " part-off" : "");
   h.dataset.group = g.key;
@@ -4622,6 +4768,63 @@ function sgHeadEl(g) {
       + "takeoff and draws nothing on the sheet.";
 
   h.append(fold, cb, nm, n, ft);
+
+  // DEFECT 0: THE HEADER CARRIES THE STAKES.
+  //
+  // Every row under this header is a case where two signals DISAGREE - the
+  // drafter's layer name says annotation, the engine's measurement says line
+  // work - so the rows arrive UNTICKED. Unticked is a decision about money,
+  // and "nothing counted" above is true but useless: it does not say what
+  // is being held out. This line does, in the three units the operator
+  // thinks in - families, footage, and dollars where a rate exists - so the
+  // cost of accepting the suggestion is legible BEFORE it is accepted.
+  if (g.suggested) {
+    const sub = document.createElement("div");
+    sub.className = "sg-sub";
+    const money = sgSuggestMoney(g);
+    const bits = [g.tick.n + (g.tick.n === 1 ? " family" : " families")];
+    if (g.lenOff > 0) bits.push(fmtQty(g.lenOff) + " held out");
+    if (g.tick.on) bits.push(fmtQty(g.lenOn) + " you put back");
+    if (money.priced) bits.push("$" + Math.round(money.money).toLocaleString()
+      + " at your rates");
+    const line = document.createElement("span");
+    line.className = "sg-sub-txt";
+    line.textContent = bits.join(" · ");
+    sub.appendChild(line);
+    const say = document.createElement("span");
+    say.className = "sg-sub-why";
+    say.textContent = "layer names say annotation, geometry says line work";
+    sub.appendChild(say);
+    sub.title = "THE ENGINE IS NOT SURE ABOUT THESE, AND THAT IS WHY THEY "
+      + "ARE HERE." + LF + LF
+      + "For each of these " + g.tick.n + " line types the drafter's CAD "
+      + "layer name says it is annotation — text, a leader, a dimension, a "
+      + "title block — while the engine's own measurement of the geometry "
+      + "says it is line work. Both readings are real; they disagree." + LF + LF
+      + "So they start UNTICKED and they are shown here rather than dropped "
+      + "quietly. " + (g.lenOff > 0 ? fmtQty(g.lenOff) : "Nothing")
+      + " is being held out of your takeoff by that suggestion"
+      + (money.priced
+          ? ", worth $" + Math.round(money.money).toLocaleString()
+            + " at the rates you have set on " + money.priced
+            + (money.priced === 1 ? " of them" : " of them")
+          : "")
+      + "." + LF
+      + (money.ea
+          ? money.ea + (money.ea === 1 ? " row is" : " rows are")
+            + " priced per each, so no dollar figure is given for "
+            + (money.ea === 1 ? "it" : "them") + "." + LF : "")
+      + LF
+      + "Tick the box to count them all — and hover this header to see "
+      + "exactly which line work on the sheet is at stake.";
+    h.appendChild(sub);
+    // HOVER PAINTS WHAT STOPS COUNTING. The same hotFam() every style row,
+    // legend chip and bid row already uses; an unticked family ghosts in
+    // neutral slate with #ghostInfo saying in words that it is not counted,
+    // so the operator can SEE the suggestion before taking it.
+    h.onmouseenter = () => hotFam(g.rows.map(s => s.style_id));
+    h.onmouseleave = () => hotFamOff();
+  }
   if (g.collapsed) {
     const hid = document.createElement("span");
     hid.className = "sg-hid";
@@ -5120,6 +5323,41 @@ function renderStyles() {
       row.appendChild(el);
     }
     if (scopeEl) row.appendChild(scopeEl);
+    // DEFECT 0, ON THE ROW: why this family is in Suggested disables, in the
+    // app's own disclosure voice, and what ticking it would add back. Its own
+    // sub-line, the same shape as the layer and scope lines above (they are
+    // the established place for "here is a fact about this row that does not
+    // fit on the meta line"), because a suggestion nobody can read the reason
+    // for is just a silent default-off with extra steps.
+    if (sgSuggested(s)) {
+      row.classList.add("style-row-sug");
+      const el = document.createElement("div");
+      el.className = "style-sug";
+      const tag = document.createElement("span");
+      tag.className = "sl-tag"; tag.textContent = "suggested off";
+      const why = document.createElement("span");
+      why.className = "sug-why";
+      const lay = (s.layer || "").trim();
+      const cls = s.class === "solid" ? "solid line work"
+        : "dashed line work (" + s.class + ")";
+      const qty = fmtQty(styleLenPt(s));
+      why.textContent = "the drafter's layer name says "
+        + sgAnnoMarker(lay) + "; the engine measured this as " + cls
+        + " — " + qty + (state.include.get(s.style_id)
+          ? " counted right now" : " if you tick it");
+      el.append(tag, why);
+      el.title = "Two signals disagree about this family." + LF + LF
+        + "The CAD layer the drafter filed it under is “" + lay + "”, which "
+        + "names it as annotation — text, a leader, a dimension or a title "
+        + "block. But the engine measured its geometry as " + cls + ", "
+        + "because a leader and a note box are straight strokes like any "
+        + "other." + LF + LF
+        + "So it is UNTICKED and it is shown, rather than being dropped "
+        + "quietly: " + qty + " either leaves your takeoff or stays in it, "
+        + "and which of those is right is your call. Tick the box to count "
+        + "it — the choice is saved for this page like any other tick.";
+      row.appendChild(el);
+    }
     row.onmouseenter = () => hotFam([s.style_id]);
     row.onmouseleave = () => hotFamOff();
     // Isolating from the style list had NO on-screen indicator of any kind.
@@ -7463,6 +7701,24 @@ function tradeFor(label) {
   if (saved && TRADES.includes(saved)) return saved;
   const L = label.toUpperCase();
   const has = (...ws) => ws.some(w => L.includes(w));
+  // ANNOTATION IS TESTED FIRST AND RETURNS EARLY. Defect 0's second half.
+  //
+  // This function is a first-match-wins ladder over substrings, and every
+  // arm below it is a TRADE. `P6-TEXT-STORM-C8.0` hit "STORM" and was filed
+  // as Wet Utilities - priced as pipe - while the word TEXT sat in the same
+  // string, unread. That is CLAUDE.md §5's "first-writer-wins discards the
+  // right answer" shape exactly: an either/or with no explicit ranking.
+  //
+  // Belt and braces with the Suggested-disables group, not a duplicate of
+  // it: the group decides whether the footage COUNTS, this decides what it
+  // is called if an operator deliberately ticks it back on. A layer the
+  // drafter named TEXT still must not appear under Wet Utilities.
+  //
+  // Token-based, through the same matcher (sgAnnoName) rather than a second
+  // list that can drift - and token-based is load-bearing here too: a
+  // substring test for DIM would file SE-P-SEDIMENT LOG, real erosion-control
+  // line work, as General.
+  if (sgAnnoName(label)) return "General";
   if (has("CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO", "SLOPE",
           "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL", "TOPSOIL")) return "Earthwork & Grading";
   if (has("WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
