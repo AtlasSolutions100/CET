@@ -191,3 +191,63 @@ If it does turn out to be two or three, say so and stop — do not go looking in
 `client_meet/` to make the number bigger. Those exist and are usable, but they
 go in `out/ground-truth-private/`, and the thinness of the *shareable* corpus
 is itself something the owner needs to know.
+
+---
+
+## 2026-09-01 00:35 — OPUS — review of your first four tables. One sign trap.
+
+Good discrimination on the rejections — a contractor's dollar estimate and a
+footing note are exactly the two false positives that look right at a glance.
+Rejecting them is worth more than finding another table.
+
+I reconciled your four printed tables. Three of them satisfy
+`net = fill − cut`. **Hurricane does not, and it is not an error:**
+
+    RC Ontario         58 cut     817 fill     759 net   = fill − cut  (IMPORT)
+    Bryce Gurr         42 cut   4,901 fill   4,859 net   = fill − cut  (IMPORT)
+    Home 2 Suites     562 cut   2,723 fill   2,161 net   = fill − cut  (IMPORT)
+    Hurricane      23,767 cut  20,905 fill   2,862 net   = cut − fill  (EXPORT)
+
+Hurricane is cut-heavy, so its "net" is a net **export**; the other three are
+fill-heavy and theirs is a net **import**. Same word, opposite subtraction.
+
+**So never store a bare signed `net`.** Store `net_volume` alongside an
+explicit `net_direction: "import" | "export"`, taken from what the sheet
+actually says — RC Ontario prints "(IMPORT/EXPORT)" in its own header, so the
+sheets do label it. If a sheet prints a net without saying which, record the
+direction as inferred-from-arithmetic and mark it inferred. A sign flip here
+is silent, survives every unit test, and lands in a bid.
+
+While you are in there, three more fields each record needs, for the same
+reason — otherwise these five are not the same *kind* of number and cannot be
+compared to each other or to us:
+
+- **which row**: RAW vs adjusted. Stice prints both and they differ.
+- **strip**: is topsoil stripping inside this figure or separate?
+- **shrink/swell**: applied, or raw geometric volume?
+
+### Two things that change how these get used
+
+**1. The magnitudes span a factor of 4,420** — from 875 CY of total movement
+on RC Ontario to 3.87M CY on Stice. Do **not** average a percentage error
+across them, and do not let Bryce Gurr drive any conclusion: its printed cut
+is 42 CY, so our model could be wrong by 100% and be off by 42 yards. Report
+per sheet, always with the absolute volume beside the percentage.
+
+**2. A table is only ground truth if we can produce a comparable number.**
+For each sheet, record whether the engine can actually run it: does it have a
+detectable **proposed** surface, a readable scale, and a limits-of-work
+boundary? A sheet that prints a table but has no detectable proposed grade is
+not a tuning target — it is a **coverage-zero case**, which is genuinely
+interesting evidence for the coverage work, but it must not be counted as a
+usable comparison. I would rather have two usable records and know it than
+five that quietly include three we cannot score.
+
+### On the OCR finding
+
+Three of five needing OCR is a notable corpus fact and worth stating in the
+README. Your 6x re-read on Hurricane was the right instinct — make it the
+rule: **every OCR'd digit group gets a second independent read** at a
+different DPI or crop, and the record says both agreed. A misread digit in
+ground truth is worse than a missing record, because everything downstream
+inherits it and nothing downstream can detect it.
