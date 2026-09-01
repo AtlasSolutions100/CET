@@ -4574,6 +4574,15 @@ function sgSyncHeads() {
     }
     h.classList.toggle("all-off", g.tick.state === "none");
     h.classList.toggle("part-off", g.tick.state === "some");
+    // ...AND THE STAKES LINE, which is a live footage like the two above.
+    // This function exists because renderStyles() throws away the scroll
+    // position on a 280-row sheet, so an edit refreshes the header in place -
+    // and a "3.0k LF held out" left asserting the figure the group had BEFORE
+    // a line was deleted is exactly the confident wrong number the rest of
+    // this file is built to refuse. Rebuilt from the same sgHeadEl(), so the
+    // two cannot word it differently.
+    const sub = h.querySelector(".sg-sub");
+    if (sub && g.suggested) sgSuggestStakesInto(sub, g);
   }
 }
 
@@ -4692,6 +4701,48 @@ function sgSuggestMoney(g) {
   return { money, priced, ea };
 }
 
+// THE STAKES, WRITTEN IN ONE PLACE.
+//
+// Two callers: sgHeadEl builds the header, and sgSyncHeads refreshes it in
+// place after an edit (renderStyles() throws away the scroll position on a
+// 280-row sheet, which is why that path exists at all). A second copy of this
+// wording in the refresh path would be a header that says one thing when it
+// is painted and another when it is updated - and, worse, one that keeps
+// asserting the footage the group held BEFORE a line was deleted. So both go
+// through here, and both write the same two spans.
+function sgSuggestStakesInto(sub, g) {
+  const money = sgSuggestMoney(g);
+  const bits = [g.tick.n + (g.tick.n === 1 ? " family" : " families")];
+  if (g.lenOff > 0) bits.push(fmtQty(g.lenOff) + " held out");
+  if (g.tick.on) bits.push(fmtQty(g.lenOn) + " you put back");
+  if (money.priced) bits.push("$" + Math.round(money.money).toLocaleString()
+    + " at your rates");
+  sub.querySelector(".sg-sub-txt").textContent = bits.join(" · ");
+  sub.querySelector(".sg-sub-why").textContent =
+    "layer names say annotation, geometry says line work";
+  sub.title = "THE ENGINE IS NOT SURE ABOUT THESE, AND THAT IS WHY THEY "
+    + "ARE HERE." + LF + LF
+    + "For each of these " + g.tick.n + " line types the drafter's CAD "
+    + "layer name says it is annotation — text, a leader, a dimension, a "
+    + "title block — while the engine's own measurement of the geometry "
+    + "says it is line work. Both readings are real; they disagree." + LF + LF
+    + "So they start UNTICKED and they are shown here rather than dropped "
+    + "quietly. " + (g.lenOff > 0 ? fmtQty(g.lenOff) : "Nothing")
+    + " is being held out of your takeoff by that suggestion"
+    + (money.priced
+        ? ", worth $" + Math.round(money.money).toLocaleString()
+          + " at the rates you have set on " + money.priced + " of them"
+        : "")
+    + "." + LF
+    + (money.ea
+        ? money.ea + (money.ea === 1 ? " row is" : " rows are")
+          + " priced per each, so no dollar figure is given for "
+          + (money.ea === 1 ? "it" : "them") + "." + LF : "")
+    + LF
+    + "Tick the box to count them all — and hover this header to see "
+    + "exactly which line work on the sheet is at stake.";
+}
+
 function sgHeadEl(g) {
   const h = document.createElement("div");
   h.className = "sg-head" + (g.collapsed ? " closed" : "")
@@ -4781,42 +4832,13 @@ function sgHeadEl(g) {
   if (g.suggested) {
     const sub = document.createElement("div");
     sub.className = "sg-sub";
-    const money = sgSuggestMoney(g);
-    const bits = [g.tick.n + (g.tick.n === 1 ? " family" : " families")];
-    if (g.lenOff > 0) bits.push(fmtQty(g.lenOff) + " held out");
-    if (g.tick.on) bits.push(fmtQty(g.lenOn) + " you put back");
-    if (money.priced) bits.push("$" + Math.round(money.money).toLocaleString()
-      + " at your rates");
     const line = document.createElement("span");
     line.className = "sg-sub-txt";
-    line.textContent = bits.join(" · ");
     sub.appendChild(line);
     const say = document.createElement("span");
     say.className = "sg-sub-why";
-    say.textContent = "layer names say annotation, geometry says line work";
     sub.appendChild(say);
-    sub.title = "THE ENGINE IS NOT SURE ABOUT THESE, AND THAT IS WHY THEY "
-      + "ARE HERE." + LF + LF
-      + "For each of these " + g.tick.n + " line types the drafter's CAD "
-      + "layer name says it is annotation — text, a leader, a dimension, a "
-      + "title block — while the engine's own measurement of the geometry "
-      + "says it is line work. Both readings are real; they disagree." + LF + LF
-      + "So they start UNTICKED and they are shown here rather than dropped "
-      + "quietly. " + (g.lenOff > 0 ? fmtQty(g.lenOff) : "Nothing")
-      + " is being held out of your takeoff by that suggestion"
-      + (money.priced
-          ? ", worth $" + Math.round(money.money).toLocaleString()
-            + " at the rates you have set on " + money.priced
-            + (money.priced === 1 ? " of them" : " of them")
-          : "")
-      + "." + LF
-      + (money.ea
-          ? money.ea + (money.ea === 1 ? " row is" : " rows are")
-            + " priced per each, so no dollar figure is given for "
-            + (money.ea === 1 ? "it" : "them") + "." + LF : "")
-      + LF
-      + "Tick the box to count them all — and hover this header to see "
-      + "exactly which line work on the sheet is at stake.";
+    sgSuggestStakesInto(sub, g);
     h.appendChild(sub);
     // HOVER PAINTS WHAT STOPS COUNTING. The same hotFam() every style row,
     // legend chip and bid row already uses; an unticked family ghosts in

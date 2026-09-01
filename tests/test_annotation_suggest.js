@@ -411,6 +411,16 @@ function elem(tag) {
     appendChild(c) { this.children.push(c); return c; },
     setAttribute() {},
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    querySelector(sel) {
+      const want = sel.replace(".", "");
+      const hit = (n) => {
+        if ((n.className || "").split(" ").indexOf(want) >= 0) return n;
+        for (const c of n.children || []) { const r = hit(c); if (r) return r; }
+        return null;
+      };
+      for (const c of this.children) { const r = hit(c); if (r) return r; }
+      return null;
+    },
     get _text() {
       return this.textContent
         + this.children.map((c) => (c._text === undefined ? "" : c._text)).join(" ");
@@ -450,8 +460,9 @@ function head(opts) {
   };
   const names = Object.keys(scope);
   const el = new Function(...names,
-    PURE + "\n" + fnSrc("sgSuggestMoney") + "\n" + fnSrc("sgHeadEl")
-    + "\nreturn sgHeadEl;")(...names.map((n) => scope[n]))(g);
+    PURE + "\n" + fnSrc("sgSuggestMoney") + "\n" + fnSrc("sgSuggestStakesInto")
+    + "\n" + fnSrc("sgHeadEl") + "\nreturn sgHeadEl;")
+    (...names.map((n) => scope[n]))(g);
   return { el, g, hot };
 }
 {
@@ -522,6 +533,83 @@ function head(opts) {
   const plan = F.sgPlan(rows, { isOn: () => true });
   const g = plan.groups.find((x) => x.key === "solid");
   eq(g.suggested, false, "the Solid group does not flag itself as suggested");
+}
+{
+  // THE STAKES LINE MUST NOT GO STALE ON AN IN-PLACE REFRESH.
+  // renderStyles() rebuilds every row and throws away the scroll position on
+  // a 280-row sheet, so an edit refreshes the headers through sgSyncHeads()
+  // instead. That function rewrote the footage chip and the count and left
+  // the stakes line asserting the figure the group had BEFORE the edit - a
+  // confident wrong number on the one line the operator is meant to decide
+  // by. Asserted by RUNNING it: build the header at three families, delete
+  // one, sync, read the line back.
+  let plan = null;
+  let head = null;
+  const el2 = (tag) => ({
+    tagName: tag, className: "", textContent: "", title: "", type: "",
+    hidden: false, checked: false, indeterminate: false, dataset: {},
+    children: [], style: {}, innerHTML: "",
+    append(...cs) { cs.forEach((c) => this.children.push(c)); },
+    appendChild(c) { this.children.push(c); return c; },
+    setAttribute() {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    querySelector(sel) {
+      const want = sel.replace(".", "");
+      const hit = (n) => {
+        if ((n.className || "").split(" ").indexOf(want) >= 0) return n;
+        for (const c of n.children || []) { const r = hit(c); if (r) return r; }
+        return null;
+      };
+      for (const c of this.children) { const r = hit(c); if (r) return r; }
+      return null;
+    },
+    get _text() {
+      return this.textContent + this.children.map(
+        (c) => (c._text === undefined ? "" : c._text)).join(" ");
+    },
+  });
+  const rows3 = [
+    st({ style_id: 4, class: "dash1", layer: "P6-TEXT-STORM-C8.0", length_pt: 7408 }),
+    st({ style_id: 5, class: "dash2", layer: "P6-TEXT-STORM-C8.0", length_pt: 2267 }),
+    st({ style_id: 6, class: "solid", layer: "G-TTLB", length_pt: 1033 }),
+  ];
+  const scope = {
+    document: { createElement: el2, querySelectorAll: () => (head ? [head] : []) },
+    state: { result: { styles: rows3, scale: { ft_per_paper_inch: 20 } },
+             include: new Map(), measureMode: new Map(), labels: new Map() },
+    store: { getItem: () => null },
+    priceKey: (l) => "price:" + l,
+    styleLenPt: (s) => s.length_pt,
+    fmtQty: (pt) => Math.round(pt / 72 * 20) + " LF",
+    LF: "\n",
+    hotFam: () => {}, hotFamOff: () => {},
+    sgSetClosed: () => {}, renderStyles: () => {}, sgTickGroup: () => {},
+    sgCurrentPlan: () => plan,
+  };
+  const names2 = Object.keys(scope);
+  const mk = new Function(...names2,
+    PURE + "\n" + fnSrc("sgSuggestMoney") + "\n" + fnSrc("sgSuggestStakesInto")
+    + "\n" + fnSrc("sgHeadEl") + "\n" + fnSrc("sgSyncHeads")
+    + "\nreturn { sgHeadEl, sgSyncHeads };")
+    (...names2.map((n) => scope[n]));
+
+  plan = F.sgPlan(rows3, { isOn: () => false });
+  head = mk.sgHeadEl(plan.groups.find((x) => x.key === "suggested"));
+  head.dataset.group = "suggested";
+  check(/2974 LF held out/.test(head._text),
+    "the header starts at 2,974 LF across three families");
+
+  // an edit removes the biggest family; the plan now has two
+  const rows2 = rows3.slice(1);
+  scope.state.result.styles = rows2;
+  plan = F.sgPlan(rows2, { isOn: () => false });
+  mk.sgSyncHeads();
+  check(/917 LF held out/.test(head._text),
+    "...and the in-place refresh moves it to 917 LF — THE FIXED DEFECT: it "
+    + "used to keep asserting 2,974 after the line work was gone  (got "
+    + JSON.stringify((head._text.match(/[\d,]+ LF held out/) || ["none"])[0])
+    + ")");
+  check(/2 families/.test(head._text), "...and the family count with it");
 }
 
 // ===========================================================================
