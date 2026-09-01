@@ -156,18 +156,49 @@ function run(st) {
 }
 // (c) the read failed - a fourth state the old code could not express at all
 {
-  const r = run({ ew: null, ewLoading: null, ewFailed: true, result: {} });
+  const r = run({ ew: null, ewLoading: null,
+                  ewFailed: { status: 500, detail: "" }, result: {} });
   eq(r.blocked, true, "failed: the guard blocks");
   eq(r.said[0].cls, "err", "failed: it is an error");
   check(/retry|again/i.test(r.said[0].t), "failed: it offers a retry");
-  check(!/run Detect first/i.test(r.said[0].t), "failed: it does not blame Detect");
+  check(!/run Detect/i.test(r.said[0].t), "failed: it does not blame Detect");
+}
+// (c2) A FAILURE THAT CAN NEVER SUCCEED ON A RETRY. /earthwork/suggest
+// answers 404 {"detail":"run detect first"} on an undetected page. The old
+// state.ewFailed was a bare boolean, so this printed the retry sentence and
+// the "run Detect first" arm was DEAD on exactly the case it names -
+// reproduced live on job e183a0d44d89 page 6, where all three surfaces told
+// the operator to press EARTHWORK again.
+{
+  const r = run({ ew: null, ewLoading: null,
+                  ewFailed: { status: 404, detail: "run detect first" },
+                  result: null });
+  eq(r.blocked, true, "404: the guard blocks");
+  eq(r.said[0].cls, "err", "404: it is an error");
+  check(/Detect/.test(r.said[0].t),
+    "404: it names Detect - THE FIXED DEFECT: this is the unretryable case");
+  check(!/try again|retry/i.test(r.said[0].t),
+    "404: and it does NOT offer a retry that can never work");
 }
 // (d) no detection at all - the ONLY case the old sentence described
 {
-  const r = run({ ew: null, ewLoading: null, ewFailed: false, result: null });
+  const r = run({ ew: null, ewLoading: null, ewFailed: null, result: null });
   eq(r.blocked, true, "no detect: the guard blocks");
-  eq(r.said[0].t, "run Detect first", "no detect: THIS is where that sentence belongs");
+  check(/Detect/.test(r.said[0].t),
+    "no detect: THIS is where that sentence belongs");
+  check(!/try again|retry/i.test(r.said[0].t),
+    "no detect: pressing EARTHWORK again cannot help, so it is not offered");
   eq(r.said[0].cls, "err", "no detect: it is an error");
+}
+// (d2) ...and it is checked BEFORE the failure arm. One press of EARTHWORK
+// on an undetected page used to set ewFailed, and from then on (d) could
+// never be reached on the one page it describes.
+{
+  const r = run({ ew: null, ewLoading: null,
+                  ewFailed: { status: 404, detail: "run detect first" },
+                  result: null });
+  check(/Detect/.test(r.said[0].t),
+    "an undetected page that has already failed once still says Detect");
 }
 // (e) detected, panel never opened
 {
@@ -293,11 +324,12 @@ console.log("3. the fetch is wrapped, and failure is a state");
 // -------------------------------------------------------------------------
 check(/try \{[\s\S]*suggestOnce\(\)/.test(fetchSrc),
   "ewFetchSuggest wraps its request in try - a dropped one used to reject uncaught");
-check(/catch\s*\([\s\S]*state\.ewFailed = true/.test(fetchSrc),
+check(/catch\s*\([\s\S]*state\.ewFailed = \{/.test(fetchSrc),
   "a dropped or non-ok request records ewFailed instead of hanging on the hint");
-check(/if \(!r\.ok\) throw/.test(onceSrc),
-  "an HTTP error takes the same path as a dropped connection");
-check(/ewFailed: false/.test(SRC) || /state\.ewFailed = false/.test(SRC),
+check(/err\.status = r\.status/.test(onceSrc) && /!r\.ok/.test(onceSrc),
+  "an HTTP error takes the same path as a dropped connection, and CARRIES "
+  + "its status - a discarded status is what made 404 look retryable");
+check(/state\.ewFailed = null/.test(SRC),
   "a retry clears the previous failure");
 check(/state\.ewLoading === p\) state\.ewLoading = null/.test(fnSrc("ewEnsure")),
   "the in-flight flag is cleared in a finally, and only by the flight that set it");
@@ -387,6 +419,27 @@ for (const [name, re] of speaks) check(re.test(SRC), name + " speaks through ewN
 
 check(!/setStatus\("open the EARTHWORK panel data first/.test(SRC),
   "the old 'open the EARTHWORK panel data first' string is gone from every site");
+
+// THE ONE ENTRY POINT THAT DID NOT GUARD, AND WHAT IT COST.
+// ewBtn is the only earthwork control that cannot route through ewNotReady
+// (it is what the guard tells the others to press). So on an undetected
+// page it fetched anyway, collected the server's 404 "run detect first",
+// discarded the body and then told the operator - on the status bar, in
+// #ewRows and in #ewBusy at once - to press EARTHWORK again. Reproduced
+// live on job e183a0d44d89 page 6. It now refuses before the request.
+{
+  const h = SRC.slice(SRC.indexOf('$("ewBtn").onclick'),
+                      SRC.indexOf('// ONE /earthwork/suggest IN FLIGHT'));
+  const guard = h.indexOf("if (!state.result) {");
+  const fetchAt = h.indexOf("await ewEnsure()");
+  check(guard >= 0 && fetchAt >= 0 && guard < fetchAt,
+    "the EARTHWORK button refuses an undetected page BEFORE it fetches");
+  check(/EW_NEED_DETECT/.test(h.slice(guard, fetchAt)),
+    "...and names Detect rather than offering a retry");
+  check(/const msg = ewFailMsg\(\)/.test(h),
+    "...and its failure sentence comes from the one function that knows "
+    + "which failures are retryable");
+}
 check(!/for \(const z of state\.gzones\) z\.err = "run Detect first"/.test(SRC),
   "a restored grading zone no longer blames Detect for an elevation read");
 
@@ -405,9 +458,29 @@ check(/const p = ewFetchSuggest\(state\.gen\)/.test(fnSrc("ewEnsure")),
   "the flight carries the generation it was started on");
 check(/gen !== state\.gen\) return;/.test(fnSrc("gzRestoreCompute")),
   "gzRestoreCompute still drops out on a page switch");
-check(/state\.ew = null; state\.ewLoading = null; state\.ewFailed = false;/
+check(/state\.ew = null; state\.ewLoading = null; state\.ewFailed = null;/
       .test(fnSrc("ewPageReset")),
   "ewPageReset clears all three earthwork flags together");
+// ...AND THE LIMIT OF WORK, which is a page fact of exactly the same kind.
+// It was cleared in loadResult only, and loadResult runs only when the new
+// page HAS a result - so on an undetected page the previous sheet's ring
+// stayed set, .on, with its "clear" button showing, while the SF figure
+// (which needs state.result) silently vanished.
+{
+  const reset = fnSrc("ewPageReset");
+  check(/state\.ewBound = null;/.test(reset),
+    "ewPageReset clears the limit of work too - the sibling gap");
+  check(/state\.ewBoundDraft = \[\]; state\.ewBoundHover = null;/.test(reset),
+    "...and the half-drawn outline with it");
+  check(/renderEwBound\(\);/.test(reset),
+    "...and repaints the box, so the panel cannot show a ring state no "
+    + "longer holds");
+  const lr = fnSrc("loadResult");
+  check(lr.indexOf("state.ewBound = null") < 0,
+    "ONE WRITER: loadResult no longer clears it behind ewPageReset's back");
+  check(fnSrc("selectPage").indexOf("state.ewBoundDraft") < 0,
+    "...and neither does selectPage");
+}
 // ...and BOTH page-change chokepoints call it. loadResult alone is not
 // enough: it only runs when the new page HAS a loadable result, so a switch
 // to an UNDETECTED page left the panel open on the previous sheet's rows.
