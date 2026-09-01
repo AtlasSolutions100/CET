@@ -18,6 +18,7 @@ import multiprocessing
 import os
 import re
 import urllib.parse
+import textwrap
 import threading
 import time
 import uuid
@@ -2390,6 +2391,38 @@ def _stored_scale_pick(job_id: str, page: int) -> dict | None:
     return d if _sane_ft(d.get("ft_per_paper_inch")) is not None else None
 
 
+# What a reviewer's number was BASED ON, when it was not their own arithmetic.
+# Absent = they typed it or picked a caption the engine had already promoted;
+# the record never guesses between the two.
+_BASIS_SUGGESTION = "engine-suggestion"
+
+
+def _scale_suggestion_for(sugg: dict | None, ft: float) -> dict | None:
+    """The unpromoted reading this number IS, or None.
+
+    Matched on the value, to 1e-6 ft per paper inch - the same tolerance
+    webui/app.js uses everywhere it matches a scale against a candidate. A
+    number that is merely close to a suggestion is not that suggestion.
+    """
+    for c in ((sugg or {}).get("candidates") or []):
+        try:
+            v = float(c.get("ft_per_paper_inch"))
+        except (TypeError, ValueError):
+            continue
+        if abs(v - float(ft)) < 1e-6:
+            return c
+    return None
+
+
+def _scale_offered(sugg: dict | None) -> list:
+    """Every reading the operator was shown, for the training ledger."""
+    out = []
+    for c in ((sugg or {}).get("candidates") or []):
+        out.append({"ft_per_paper_inch": c.get("ft_per_paper_inch"),
+                    "text": c.get("text"), "origin": c.get("origin")})
+    return out
+
+
 def _page_scale(job_id: str, page: int, res: dict,
                 sent: "ApproveScale | None" = None) -> dict | None:
     """The scale this page's quantities are computed from, and who set it.
@@ -2404,8 +2437,21 @@ def _page_scale(job_id: str, page: int, res: dict,
     re-detect and a later re-approve all agree with it; approving the
     engine's own reading retires an earlier pick rather than letting it
     outlive the screen.
+
+    A SUGGESTION the reviewer accepted is a third case, and it is neither of
+    the other two. `res["scale_suggestions"]` holds readings the engine
+    recovered off a picture of the caption and refused to promote (see
+    detect_page's scale boundary): the engine reads NO scale on that page, so
+    `eng` is None here exactly as it is for a blank sheet, and without the
+    distinction the export would say "the engine read no scale here" about a
+    page where it read one and distrusted it. So when the accepted number
+    matches a suggestion, the record says `basis = "engine-suggestion"` and
+    carries which reading was accepted. It is still a reviewer decision -
+    nothing about it is `auto` - and the number is still checked against the
+    same band as a typed one.
     """
     eng = res.get("scale") or None
+    sugg = res.get("scale_suggestions") or None
     eng_ft = None
     if eng:
         try:
@@ -2438,18 +2484,39 @@ def _page_scale(job_id: str, page: int, res: dict,
                     "text": (sent.text or "").strip() or None,
                     "set_by": _BY_REVIEWER,
                     "set_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            # Did the reviewer accept one of the engine's OWN unpromoted
+            # readings? Decided on the VALUE against this page's stored
+            # suggestions, never on the browser's flag alone - the same rule
+            # `same_as_engine` above applies to the engine's pick, and for
+            # the same reason: a flag can be stamped by a repaint, a value
+            # cannot. If the screen's number is not one of the suggestions,
+            # nothing is recorded and the pick reads as hand-set, which is
+            # what it is.
+            _sug = _scale_suggestion_for(sugg, want)
+            if _sug is not None:
+                pick["basis"] = _BASIS_SUGGESTION
+                pick["suggestion_text"] = _sug.get("text")
+                pick["suggestion_origin"] = _sug.get("origin")
+                pick["engine_source"] = (sugg or {}).get("source")
             try:
                 _scale_pick_path(job_id, page).write_text(
                     json.dumps(pick, indent=1))
             except OSError:
                 pass  # unwritable: this approve still honours the screen
             # training ledger (observation only, never raises): a human
-            # overruled the engine's reading - the core scale label
+            # overruled the engine's reading - the core scale label.
+            # `offered` is the label that makes an ABSTENTION trainable: the
+            # engine put N readings up and a person chose this one, which is
+            # exactly the ranking the engine refused to make.
             ledger.record("scale_set", job_id, page,
                           {"ft_per_paper_inch": eng_ft,
                            "text": (eng or {}).get("text"),
-                           "source": (eng or {}).get("source")},
-                          dict(pick), None,
+                           "source": (eng or {}).get("source"),
+                           "abstained": bool(sugg)},
+                          dict(pick),
+                          {"offered": _scale_offered(sugg),
+                           "accepted_suggestion": _sug is not None}
+                          if sugg else None,
                           pdf_path=(JOBS.get(job_id) or {}).get("path"))
         else:
             _had_pick = _stored_scale_pick(job_id, page)
@@ -2488,6 +2555,20 @@ def _page_scale(job_id: str, page: int, res: dict,
         "agrees": None,
         "delta_pct": None,
     })
+    # A suggestion the reviewer accepted, so the export and the printed report
+    # can say which of the two reviewer cases this is. Re-derived from THIS
+    # result's suggestions as well as from the stored pick, so a re-approve
+    # after a re-detect still describes itself correctly.
+    _sug = _scale_suggestion_for(sugg, out["ft_per_paper_inch"])
+    if _sug is not None or pick.get("basis") == _BASIS_SUGGESTION:
+        out["basis"] = _BASIS_SUGGESTION
+        out["suggestion_text"] = (
+            (_sug or {}).get("text") or pick.get("suggestion_text"))
+        out["suggestion_origin"] = (
+            (_sug or {}).get("origin") or pick.get("suggestion_origin"))
+        out["engine_source"] = (out.get("engine_source")
+                                or (sugg or {}).get("source")
+                                or pick.get("engine_source"))
     return out
 
 
@@ -2510,7 +2591,27 @@ def _scale_name(det: dict) -> str:
         return (f'{text} (set by the reviewer; the engine had read '
                 f'{det.get("engine_text") or "?"} = '
                 f'{_ft(det["engine_ft_per_paper_inch"])} ft per inch)')
+    # The engine read NOTHING it would stand behind, but on a suggestion page
+    # it did read something. "The engine read no scale here" would be false
+    # about the sheet and would hide where the number came from, so the two
+    # cases are named apart.
+    if det.get("basis") == _BASIS_SUGGESTION:
+        return (f'{text} (set by the reviewer, accepting a reading the engine '
+                f'recovered but would not vouch for: '
+                f'{det.get("suggestion_text") or "?"})')
     return f'{text} (set by the reviewer; the engine read no scale here)'
+
+
+# The report PDF's base font has no glyph for the typographic prime marks an
+# OCR'd caption comes back with, and draws them as empty boxes. Folded to the
+# ASCII pair for PRINTING only - never for the stored value, the export or
+# the record, all of which keep the caption exactly as it was read.
+_MARK_FOLD = {0x201C: '"', 0x201D: '"', 0x2033: '"', 0x2032: "'",
+              0x2018: "'", 0x2019: "'", 0x2014: "-", 0x2013: "-"}
+
+
+def _ascii_marks(s) -> str:
+    return str(s or "?").translate(_MARK_FOLD)
 
 
 def _scale_report_lines(sc: dict | None, image_dpi=None) -> list[str]:
@@ -2537,6 +2638,27 @@ def _scale_report_lines(sc: dict | None, image_dpi=None) -> list[str]:
         out.append(f'The engine had read 1 inch = {_ft(eng)} ft '
                    f'({sc.get("engineText") or "?"}). Every length below is '
                    f"computed from the reviewer's scale.")
+    elif sc.get("basis") == _BASIS_SUGGESTION:
+        # Not "the engine found no scale": it found this one and refused to
+        # promote it, and the reviewer is the one who put it in force. A
+        # reader of the printed takeoff has no other way to learn that the
+        # number under every quantity was machine-read off a picture.
+        #
+        # WRAPPED, and the caption's typography folded to ASCII. The report
+        # writer prints `_ln[:118]` in the PDF's base font, so a single long
+        # sentence is CUT MID-WORD (measured 2026-09-01: this one lost
+        # "...read by character recogniti|on off a picture of the caption",
+        # i.e. it stopped before saying the one thing it exists to say), and
+        # an OCR caption is exactly the text that carries typographic primes
+        # - Hurricane's reads 1<U+201D> = 40<U+2019> - which that font draws
+        # as empty boxes. Both are display-only: the value, the export and
+        # the record all keep the caption verbatim.
+        out += textwrap.wrap(
+            f'The reviewer accepted a reading the engine recovered but would '
+            f'not stand behind ({_ascii_marks(sc.get("suggestionText"))}, '
+            f'read by character recognition off a picture of the caption). '
+            f'The engine offered it as a suggestion only and set nothing. '
+            f"Every length below is computed from the reviewer's scale.", 116)
     else:
         out.append("The engine found no scale on this sheet. Every length "
                    "below is computed from the reviewer's scale.")
@@ -2810,6 +2932,15 @@ def approve(job_id: str, page: int, body: ApproveBody):
                 "engineText": det.get("engine_text"),
                 "setAt": det.get("set_at"),
             })
+            if det.get("basis") == _BASIS_SUGGESTION:
+                # which of the two reviewer cases this is: their own number,
+                # or one of the engine's own unpromoted readings accepted
+                export["scale"].update({
+                    "basis": _BASIS_SUGGESTION,
+                    "suggestionText": det.get("suggestion_text"),
+                    "suggestionOrigin": det.get("suggestion_origin"),
+                    "engineSource": det.get("engine_source"),
+                })
     # itemization: per-label count + footage (when scale known) + pricing
     ft_per_in = det["ft_per_paper_inch"] if det else None
     totals: dict = {}
@@ -3065,16 +3196,26 @@ def get_scale_pick(job_id: str, page: int):
     """
     f = _job_dir(job_id) / f"p{page}_result.json"
     eng = None
+    sugg = None
     if f.exists():
         try:
-            eng = (json.loads(f.read_text()).get("scale") or {}) or None
+            _r = json.loads(f.read_text())
+            eng = (_r.get("scale") or {}) or None
+            sugg = (_r.get("scale_suggestions") or {}) or None
         except (OSError, ValueError):
-            eng = None
+            eng = sugg = None
     pick = _stored_scale_pick(job_id, page)
     return {
         "engine": None if not eng else {
             "ft_per_paper_inch": eng.get("ft_per_paper_inch"),
             "text": eng.get("text"), "source": eng.get("source")},
+        # Readings the engine recovered and refused to promote. Listing them
+        # here does NOT put one in force: `in_force` deliberately ignores
+        # them, because nothing is in force until a person picks.
+        "suggestions": None if not sugg else {
+            "source": sugg.get("source"),
+            "why": (sugg.get("pick") or {}).get("why"),
+            "candidates": _scale_offered(sugg)},
         "reviewer": pick,
         "in_force": (pick or {}).get("ft_per_paper_inch")
                     or (eng or {}).get("ft_per_paper_inch"),

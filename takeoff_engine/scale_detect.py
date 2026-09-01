@@ -195,9 +195,22 @@ class ScaleCandidate:
     governs_pt: float | None = None
     governs_pct: float | None = None
     sites: int = 0
+    # HOW this reading was recovered, and WHERE off the page. Empty/None for
+    # every candidate the ordinary text scan produced - which is why both are
+    # omitted from to_dict() when unset, so the serialised candidate list of a
+    # page that already reads a scale is byte-identical to before this field
+    # existed (the no-regression property; see ScaleResult.to_dict).
+    #   "ocr-caption-window" - re-read by OCR off a high-dpi picture of a
+    #       small window around a surviving caption head, because the page's
+    #       text layer is glyph outlines (_ocr_caption_rescue).
+    # `at` is that window's caption head as (x0, y0, x1, y1) in page points,
+    # so the reviewer can be told WHERE on the sheet the reading came from
+    # rather than being handed a bare number.
+    origin: str = ""
+    at: tuple | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "text": self.text,
             "ft_per_paper_inch": self.ft_per_paper_inch,
             "near_scale_keyword": self.near_scale_keyword,
@@ -208,6 +221,11 @@ class ScaleCandidate:
                 None if self.governs_pct is None else round(self.governs_pct, 1),
             "sites": self.sites,
         }
+        if self.origin:
+            d["origin"] = self.origin
+        if self.at is not None:
+            d["at"] = [round(float(v), 1) for v in self.at]
+        return d
 
 
 @dataclass
@@ -218,8 +236,9 @@ class ScaleResult:
     # "text" | "ocr" | "graphic-bar", or why there is no reading:
     # "" = nothing recognisable printed; "ocr-unavailable" = Tesseract is
     # not installed/on PATH so the page was never checked; "ocr-error" =
-    # OCR ran and failed on this page. (to_dict() still returns None with
-    # no best - the UI wiring for the failure sources is a named follow-up.)
+    # OCR ran and failed on this page. (The UI wiring for the failure
+    # sources is still a named follow-up; the ABSTAINED case is wired - see
+    # to_dict.)
     source: str = ""
     # Independent second opinion from the drawn GRAPHIC SCALE bar, whose tick
     # spacing is geometry rather than text. A wrong scale is the most
@@ -260,8 +279,56 @@ class ScaleResult:
         return abs(a - self.bar_ft_per_paper_inch) / self.bar_ft_per_paper_inch * 100.0
 
     def to_dict(self) -> dict | None:
+        """The reading, serialised - or the ABSTENTION, serialised.
+
+        Three shapes, and which one you get is decidable without guessing:
+
+          * a reading      `best` is set. Byte-identical to what this method
+                           has always returned; nothing below the `if` was
+                           touched.
+          * an abstention  `best` is None but candidates survived. Returns a
+                           dict carrying `"abstained": True` and every
+                           candidate with its value, where it was read and
+                           why it was not promoted. `ft_per_paper_inch` and
+                           `text` are present and EXPLICITLY None: there is
+                           no scale in force and no key here may be mistaken
+                           for one.
+          * nothing        `best` is None and no candidates. Still None,
+                           exactly as before - the honest empty state is not
+                           an empty list (see detect_page).
+
+        Before 2026-09-01 the abstained case returned None too, so 26 corpus
+        pages that HAD recovered real captions serialised identically to a
+        sheet that prints nothing, and the operator saw nothing at all.
+
+        THE NO-REGRESSION RULE, and where it is enforced. This method is not
+        the boundary; `detect_page` is. A truthy dict under `result["scale"]`
+        would be read as "a scale is in force" by ~40 sites in webui/app.js
+        and by the export's `body.image_dpi / det["ft_per_paper_inch"]`, so
+        detect_page routes the abstained dict to `result["scale_suggestions"]`
+        and leaves `result["scale"]` None - the value every existing consumer
+        already gets for these pages. An abstained page's `result["scale"]`
+        is therefore unchanged, and a page that reads a scale is unchanged
+        byte-for-byte (ScaleCandidate.to_dict omits `origin`/`at` when unset).
+        """
         if not self.best:
-            return None
+            if not self.candidates:
+                return None
+            return {
+                "abstained": True,
+                # present, and None on purpose: a reader that reaches for the
+                # number finds an absence rather than a plausible default.
+                "ft_per_paper_inch": None,
+                "text": None,
+                "source": self.source,
+                "has_nts": self.has_nts,
+                "candidates": [c.to_dict() for c in self.candidates],
+                "bar_ft_per_paper_inch": self.bar_ft_per_paper_inch,
+                # both were only ever measured against a `best` there isn't
+                "agrees": None,
+                "delta_pct": None,
+                "pick": dict(self.pick),
+            }
         d = self.delta_pct
         return {
             **self.best.to_dict(),
@@ -1366,6 +1433,15 @@ def _ocr_caption_rescue(page, words) -> list:
                 if key in seen:
                     continue
                 seen.add(key)
+                # Where this reading came from, carried with it. These
+                # candidates are never promoted, so the operator is the one
+                # who decides - and a number with no provenance is not a
+                # thing anyone can decide about. `at` is the caption HEAD
+                # (the surviving "SCALE"/"GRAPHIC" word), not the window,
+                # because the head is a real thing on the page and the
+                # window is our own search box.
+                c.origin = "ocr-caption-window"
+                c.at = (h[0], h[1], h[2], h[3])
                 out.append(c)
             if found:
                 break            # this head's caption is read; next head

@@ -73,7 +73,22 @@ def main():
 
         lines.append(f"## {Path(f).name} (page {pno + 1})")
         lines.append("")
-        lines.append(f"- scale: {sc['text'] + ' [' + sc['source'] + ']' if sc else 'not found (manual 2-click fallback)'}")
+        # An ABSTAINED reading (best is None, candidates survived) serialises
+        # as a dict with `abstained` and a None `text` - truthy, but not a
+        # scale. Say what it is instead of printing "None [ocr]": these are
+        # readings a person has to choose between, and this report must not
+        # imply the engine settled it.
+        if sc and sc.get("abstained"):
+            _vals = ", ".join(
+                f"{c['text']} = {c['ft_per_paper_inch']:g} ft/in"
+                for c in sc.get("candidates") or [])
+            _sc_line = (f"NOT SET - {len(sc.get('candidates') or [])} "
+                        f"unpromoted reading(s) [{sc['source']}]: {_vals}")
+        elif sc:
+            _sc_line = sc['text'] + ' [' + sc['source'] + ']'
+        else:
+            _sc_line = 'not found (manual 2-click fallback)'
+        lines.append(f"- scale: {_sc_line}")
         lines.append(f"- dashed lines detected: {n_dash} chains, {ink:,.0f} pt ink")
         if w_prec is not None:
             lines.append(f"- dashed precision (ink-weighted): {w_prec:.1%}")
