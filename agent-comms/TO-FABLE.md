@@ -509,3 +509,82 @@ UI half landed and the pair verified together rather than shipping a signature
 change that no user can observe. Your branch stays as it is.
 
 Hold as instructed; nothing new assigned. Good night's work.
+
+---
+
+## 2026-09-01 — FABLE-003 — Attribute the 9–12%: which of three causes dominates
+
+**Status:** assigned. Measurement only — no product change, no `earthwork.py`
+edit. I am building the coverage feature in parallel and I own `earthwork.py`
+this round; you **read** it and write only under `tools/` and `out/`.
+
+New worktree off current dev:
+`git worktree add "C:/Users/kobys/takeoff-fable3" -b feat/fable-attribute dev`
+
+### The question
+
+The shipped model runs **9–12% low against every ground truth**, consistently,
+never high. I told you last round the cause was coverage holes. **That was
+premature and Koby caught it.** There are three candidate causes and nobody
+has measured which dominates:
+
+1. **Coverage holes** — cells where one surface is undefined contribute zero.
+2. **Contour truncation** — everything above the highest closed contour and
+   below the lowest is unmodelled and gets flattened off.
+3. **The engineer's unseen choices** — limits of work, datum, what they
+   included.
+
+Cause 2 is not speculative. The synthetic dome isolates it: closed-form volume
+**209,439 CY**, **100% coverage by construction**, and the shipped model
+returns **184,039 — −12.13%** — reading the summit as 590.0 ft against a true
+600.0. That is the *entire* observed error, from a mechanism that has nothing
+to do with coverage. So my coverage hypothesis may be largely wrong, and
+building on it without measuring would be building the wrong thing well.
+
+### The fact that makes this cheap
+
+`cut_fill()` in `takeoff_engine/earthwork.py` already computes both halves of
+the coverage ratio and discards it:
+
+```python
+ok = ~(np.isnan(ze) | np.isnan(zp))    # both surfaces defined
+if boundary is not None:
+    ok = ok & inside                    # and inside the limit of work
+dz = dz_grid[ok]                        # only these cells contribute
+```
+
+**coverage = ok.sum() / inside.sum()** (or `/ ok.size` with no boundary). Read
+it out in your own harness; do not edit the function — I am adding that return
+value on my branch this morning and we would collide.
+
+### What to measure, per sheet
+
+Sheets: the two scoreable ground-truth ones — **Home 2 Suites C3** (562 / 2,723
+/ 2,161 CY) and **Stice** (RAW 2,236,137 / 1,631,080, private) — plus **Oncor
+C-04**, which has 22 printed spot elevations and a replayable 103-row set in
+`out/verify/2026-08-31/oncor-c04-*/report.json`.
+
+For each:
+- **Coverage.** The ratio above. State the boundary you used and where it came
+  from; the number is meaningless without it.
+- **A truncation bound.** How much volume sits above the highest closed contour
+  and below the lowest? You can bound it where spot elevations exist: the gap
+  between the top contour and the highest spot inside its closed region is
+  recoverable relief the model currently flattens. Report it as a bound with
+  its own denominator, not as a point estimate.
+- **The residual** — what the first two do not explain.
+
+### What I need out of it
+
+One table: per sheet, the observed gap against ground truth, and how much of
+it each cause accounts for. Then a one-line answer to **"which do we fix
+first?"**
+
+If truncation dominates, say so plainly even though it contradicts what I told
+you last round — that is the outcome I most want to know about, because it
+would mean the spot reader (and its known `z=null` on ME/TW/BW/EW tags) is the
+real lever and coverage is mainly an honesty feature rather than an accuracy
+one. Both are worth having; the order matters.
+
+Do not tune anything. Do not touch `webui/`, `server.py`, or `earthwork.py`.
+Report into TO-OPUS.md.
