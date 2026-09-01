@@ -13555,10 +13555,19 @@ function draw() {
       const hot = (state.hotStyle !== null && state.hotStyle.has(sid))
         || state.hotChain === ch.chain_id;
       const shown = famShown(sid);
-      if (!shown && !hot) continue;
+      const sel = state.selected === ch.chain_id;
+      // SELECTING IS POINTING AT IT TOO. A line of an unticked family could
+      // be selected - the pill named it, the vertex handles were drawn on
+      // it - and the line itself was never painted, not even while its own
+      // row was hovered: the halo below was gated `hot && !sel`, and the
+      // measured stroke is skipped for every ghost, so a SELECTED ghost fell
+      // between the two and drew nothing at all. Now selection reaches the
+      // canvas the same way hover does, on the same terms: a soft slate
+      // ribbon, no measured line, and the "NOT counted" pill (ghostBarSync
+      // reads state.selected too).
+      if (!shown && !hot && !sel) continue;
       // GHOST = the operator is pointing at it, and it is NOT in the takeoff.
       const ghost = !shown;
-      const sel = state.selected === ch.chain_id;
       // marquee members light up in the same magenta family as the single
       // selection, a step thinner so the picked line still reads apart
       const msel = !sel && state.multiSel.size > 0 && state.multiSel.has(ch.chain_id);
@@ -13589,7 +13598,10 @@ function draw() {
       // continuous run rather than as more dashes. No new colour constant is
       // introduced and nothing about the measured line changes - the true
       // pattern is still drawn on top, at its true weight.
-      if (hot && !sel && !msel) {
+      // A ghost gets the ribbon when it is hovered OR selected; a family
+      // that IS in the takeoff keeps the old rule, where the selection's own
+      // magenta stroke replaces the halo rather than sitting under it.
+      if (ghost ? (hot || sel) : (hot && !sel && !msel)) {
         ctx.save();
         if (ghost) {
           // A GHOST WEARS NEITHER THE FAMILY'S COLOUR NOR ITS PATTERN.
@@ -16343,25 +16355,28 @@ function ghostBarSync() {
   // regression arrived with the feature, and it is the one case the feature
   // exists to prevent: a ghost that reads as a counted line.
   const off = [];
-  let line = null;                    // named only when a CHAIN is the reason
+  const lines = [];                  // ghosts reached by a CHAIN, not a family
   if (state.result) {
     if (state.hotStyle)
       for (const sid of state.hotStyle) if (!famShown(sid)) off.push(sid);
-    const cid = state.hotChain;
-    // a deleted line stays deleted: draw() `continue`s past it before the
-    // hover test, so there is no ghost to disclose
-    if (cid !== null && cid !== undefined && !state.excluded.has(cid)) {
+    const famOff = off.length;
+    // hovered OR selected: draw() ghosts on both, so both must disclose
+    for (const cid of [state.hotChain, state.selected]) {
+      // a deleted line stays deleted: draw() `continue`s past it before the
+      // hover test, so there is no ghost to disclose
+      if (cid === null || cid === undefined || state.excluded.has(cid)) continue;
       const hc = state.result.chains.find(c => c.chain_id === cid);
-      if (hc && !famShown(hc.style_id) && off.indexOf(hc.style_id) < 0) {
-        off.push(hc.style_id);
-        // ...and only then: if the family is ALSO hovered, the whole family
-        // is ghosted and naming one line inside it would understate what is
-        // on screen.
-        line = hc;
-      }
+      if (!hc || famShown(hc.style_id)) continue;
+      if (off.indexOf(hc.style_id) < 0) off.push(hc.style_id);
+      if (lines.indexOf(hc) < 0) lines.push(hc);
     }
+    // Naming one line is only honest when a line is the WHOLE reason. If a
+    // family is ghosted too, or two different lines are, the family name
+    // alone is the truthful summary.
+    if (famOff || lines.length !== 1) lines.length = 0;
   }
   off.sort((a, b) => a - b);
+  const line = lines[0] || null;
   let name = "";
   if (off.length === 1) {
     const st = state.result.styles.find(s => s.style_id === off[0]);

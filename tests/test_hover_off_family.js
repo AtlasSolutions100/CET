@@ -49,6 +49,14 @@
 //      nothing, so the gap shipped WITH the feature, and an unlabelled
 //      ghost is precisely the mistake the feature exists to prevent.
 //      Behavioural: ghostBarSync run for real over each hover path.
+//   4c. SELECTION IS A GHOSTING PATH TOO (added 2026-08-31). A line of an
+//      unticked family could be SELECTED - the pill named it, the vertex
+//      handles were drawn on it - and the line itself painted nothing at
+//      all, not even while its own row was hovered: the halo was gated
+//      `hot && !sel` and the measured stroke is skipped for every ghost, so
+//      a selected ghost fell between the two passes. It now gets the same
+//      slate ribbon and the same "NOT counted" pill, and still no measured
+//      line and no selection magenta - being picked is not being counted.
 //   5. THE OBJECT-MODE BOXES STAY OFF for a ghost, on purpose - a box IS a
 //      count. Stated here so it is a decision on the record, not a
 //      half-finished fix.
@@ -200,6 +208,25 @@ console.log("1. hover beats the tick; deletion beats hover; isolate is unchanged
     "per-CHAIN hover reaches an unticked family too (the line list's row hover)");
 }
 {
+  // SELECTING IS POINTING AT IT TOO (2026-08-31). A line of an unticked
+  // family could be selected - the pill named it, the vertex handles were
+  // drawn on it - and the line itself painted NOTHING, not even while its
+  // own row was hovered: the halo was gated `hot && !sel` and the measured
+  // stroke is skipped for every ghost, so a selected ghost fell between the
+  // two.
+  const s = runLoop({ selected: 1 });
+  check(s.some(p => p.color === CV_GHOST),
+    "SELECTING a line of an unticked family paints it - it used to paint "
+    + "nothing at all, while the selection pill described it");
+  const h = runLoop({ selected: 1, hotChain: 1 });
+  check(h.some(p => p.color === CV_GHOST),
+    "...and hovering the selected line paints it too - the case the old "
+    + "`hot && !sel` gate excluded from BOTH passes");
+  const del = runLoop({ selected: 1, excluded: new Set([1]) });
+  check(!del.some(p => p.color === CV_GHOST),
+    "a DELETED line stays deleted even when it is the selection");
+}
+{
   const s = runLoop({ hotStyle: new Set([13]), excluded: new Set([1]) });
   check(!s.some(p => p.color === CV_GHOST),
     "a DELETED line stays deleted - hover does not resurrect it");
@@ -245,6 +272,21 @@ console.log("2. a ghost does not read as counted");
   check(ghost.length !== onFam.length,
     "on/off differ in the NUMBER of strokes, not only in their colour - the "
     + "tell survives greyscale, a bad monitor and colour blindness");
+}
+{
+  // ...and SELECTION must not buy a ghost a measured line either. The
+  // selection's magenta stroke is what says "counted and picked"; on an
+  // unticked family it would say the opposite of the pill.
+  const all = runLoop({ selected: 1 });
+  const sel = all.filter(p => p.color === CV_GHOST);
+  eq(sel.length, 1, "a SELECTED ghost paints exactly one pass, the halo");
+  eq(all.length, 2, "...one ghost plus the one ticked family, nothing more");
+  check(!all.some(p => p.color === CV_SELECT),
+    "no selection magenta anywhere - a line that is not in the takeoff must "
+    + "never wear the picked colour");
+  const on = runLoop({ selected: 2 });
+  check(on.some(p => p.color === CV_SELECT),
+    "a selected line of a TICKED family still wears the selection colour");
 }
 {
   // the ghost dash lives on the halo, never on a measured line, so it can
@@ -396,6 +438,31 @@ console.log("4b. the words cover EVERY path that can ghost a line");
     const r = runBar({ isolate: 5, hotChain: 1 });
     check(!r.hidden && /NOT counted/.test(r.words),
       "a line hidden by isolate discloses through the chain path too");
+  }
+  {
+    // SELECTION is a ghosting path now, so it is a disclosing path too
+    const r = runBar({ selected: 1 });
+    check(!r.hidden && /NOT counted in the takeoff/.test(r.words),
+      "SELECTING a line of an unticked family discloses as well");
+    check(/line #1/.test(r.words), "...and names the line");
+    const t = runBar({ selected: 2 });
+    check(t.hidden, "selecting a line of a TICKED family says nothing");
+    const d = runBar({ selected: 1, excluded: new Set([1]) });
+    check(d.hidden, "a deleted selection paints no ghost and gets no pill");
+  }
+  {
+    // hovered line and selected line are DIFFERENT lines of the same
+    // unticked family: two ghosts, so naming one of them would be a lie
+    const r = runBar({ selected: 1, hotChain: 3,
+                       result: { chains: chains().concat(
+                                   [{ chain_id: 3, style_id: 13,
+                                      points: [[0, 9], [10, 9]] }]),
+                                 styles: [{ style_id: 13,
+                                            suggested_label: "hatch fam" },
+                                          { style_id: 5,
+                                            suggested_label: "solid fam" }] } });
+    check(!r.hidden && !/line #/.test(r.words),
+      "two different ghosted lines: the family name alone, no line number");
   }
 }
 
