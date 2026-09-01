@@ -1294,6 +1294,24 @@ _OCR_ONE_CONFUSION = re.compile(r"[|Il!{\[]\s*(?=[\"“”″])")
 _CAPTION_HEAD_OCR = re.compile(r"^(?:SCALE[:.]?|GRAPHIC)$", re.I)
 
 
+def _ground_value_marked(text: str) -> bool:
+    """Does the caption's GROUND value carry its own unit mark?
+
+    OCR eats the '0\" tail of an architectural scale: Thielen ID-1.04
+    prints SCALE: 1/4\" = 1'0\" and comes back 'SCALE: 1/4\" = 10',
+    which _scan reads as a quarter inch to TEN FEET - 40 ft/in where the
+    truth is 4, silently 10x wrong (measured 2026-09-01, three pages).
+    An OCR-rescued caption whose last number has no mark within reach is
+    therefore refused outright: a missing reading is recoverable by the
+    operator, a wrong one reaches a bid. Either quote kind is accepted -
+    this OCR routinely returns a foot mark as a double quote."""
+    runs = list(re.finditer(r"\d+", text))
+    if not runs:
+        return False
+    tail = text[runs[-1].end():runs[-1].end() + 3]
+    return bool(re.match(r"\s*['’′\"“”″]", tail))
+
+
 def _ocr_caption_rescue(page, words) -> list:
     """Re-read the caption WINDOWS when full-page OCR mangled the ratio.
 
@@ -1342,7 +1360,7 @@ def _ocr_caption_rescue(page, words) -> list:
             # the digit it follows before scanning.
             row = re.sub(r"(\d)\s+(?=[\"“”″])", r"\1", row)
             row = _OCR_ONE_CONFUSION.sub("1", row)
-            found = _scan(row)
+            found = [c for c in _scan(row) if _ground_value_marked(c.text)]
             for c in found:
                 key = round(c.ft_per_paper_inch, 4)
                 if key in seen:
@@ -1810,22 +1828,30 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
                 # that reads today can change its reading.
                 rcands = _ocr_caption_rescue(page, words)
                 if rcands:
-                    best, pick = _rank(rcands, page, words, linework)
-                    if pick.get("why") not in ("single", "governs"):
-                        # Several distinct OCR readings and no honest
-                        # ranking: candidates stay visible, the reading
-                        # abstains. A text-layer pick may stand UNCHECKED;
-                        # an OCR pick may not - a wrong scale is the worst
-                        # silent error this engine has.
-                        return ScaleResult(
-                            None, rcands, n2, "ocr",
-                            pick={"why": "abstained-ocr",
-                                  "reason": pick.get("reason",
-                                                     "multiple OCR values"),
-                                  "values": pick.get("values")})
-                    res = ScaleResult(best, rcands, n2, "ocr", pick=pick)
-                    return (_corroborate(res, words, page)
-                            if corroborate else res)
+                    # Rescued candidates NEVER become best, even a lone
+                    # value. Measured the same evening this was built,
+                    # promotion produced two confident wrong scales by two
+                    # different mechanisms: OCR ate the '0" of Thielen's
+                    # 1/4" = 1'0" (read 40 ft/in, truth 4 - the unit-mark
+                    # filter now refuses that shape), and on Hurricane
+                    # C.3.5 the only caption whose OCR survived was the
+                    # KEY MAP's 1"=300' while the sheet's own HORIZ
+                    # 1"=40' / VERT 1"=10' did not scan - a "single"
+                    # value that is single only by OCR sampling bias,
+                    # 7.5x wrong. There is no honest ranking over
+                    # captions we may not even have all of, so the
+                    # reading abstains and the candidates stay visible
+                    # (CLAUDE.md section 5). Upgrading a candidate to
+                    # best on independent bar-geometry agreement is the
+                    # named follow-up.
+                    values = sorted({round(c.ft_per_paper_inch, 4)
+                                     for c in rcands})
+                    return ScaleResult(
+                        None, rcands, n2, "ocr",
+                        pick={"why": "abstained-ocr",
+                              "reason": ("OCR-rescued captions are "
+                                         "candidates only, never a pick"),
+                              "values": values})
                 # "" = the sheet printed nothing we recognise;
                 # "ocr-unavailable"/"ocr-error" = the page was never
                 # actually checked (see _ocr_words_loud)
