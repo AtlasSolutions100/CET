@@ -4652,6 +4652,14 @@ function sgTickGroup(key, on) {
   if (back && back.size && back.size < g.rows.length) {
     if (!state.scopeKeep) state.scopeKeep = new Set();
     for (const s of g.rows) setInclude(s.style_id, back.has(s.style_id));
+    // The scope sentence quotes counts and footage, so it goes stale the
+    // moment a group tick moves them. It used to refresh only in the
+    // `scoped` branch below and not at all on this early return, which left
+    // two numbers in one panel disagreeing by 52 families / 18,600 ft until
+    // somebody reloaded. Harmless while a group tick was a rare gesture;
+    // Suggested disables put a one-click, five-figure change directly above
+    // that sentence on 54% of sheets.
+    renderScopeBar();
     renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
     setStatus("restored the " + back.size + " of " + g.rows.length + " "
       + g.name.toLowerCase() + " line types you had counted — "
@@ -4673,7 +4681,8 @@ function sgTickGroup(key, on) {
     }
     setInclude(s.style_id, on);
   }
-  if (scoped) { scopeApply(); renderScopeBar(); }
+  if (scoped) scopeApply();
+  renderScopeBar();          // ALWAYS - see the note on the early return above
   renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw();
   // never silent: a bulk quantity change says what it did
   const kept = mem.get(key);
@@ -12160,8 +12169,40 @@ function renderEwModelNote(j) {
 // discovered later on a report that is missing its caveat.
 const APPROVE_NOTES_MAX = 6;   // mirrors server.py approve(): body.notes[:6]
 const APPROVE_NOTE_MAX = 400;  // ...and its per-note str(x)[:400]
+// DEFECT 0, ON THE DELIVERABLE. The Suggested disables group takes real
+// footage out of the sheet total - measured at 11.6% of Kayden C5.1, 45
+// families and 17,600 ft - and until this note existed the exported elements
+// and the printed PDF were word for word identical before and after. The
+// panel on screen said so loudly; the document that reaches a client said
+// nothing, and the client half is the one that matters. A reader saw a
+// smaller number with no way to learn why.
+//
+// It goes FIRST in the list on purpose. server.py approve() keeps
+// body.notes[:6], and a caveat about the headline total outranks a caveat
+// about one section of it. approveNotesDropped() still discloses any trim.
+function sgApproveNotes() {
+  if (!state.result) return [];
+  const rows = (state.result.styles || []).filter(sgSuggested);
+  if (!rows.length) return [];
+  const ft = (a) => fmtQty(a.reduce((t, s) => t + (styleLenPt(s) || 0), 0));
+  const off = rows.filter((s) => !state.include.get(s.style_id));
+  const on = rows.filter((s) => state.include.get(s.style_id));
+  const out = [];
+  if (off.length)
+    out.push(off.length + " line famil" + (off.length === 1 ? "y" : "ies")
+      + " (" + ft(off) + ") are NOT counted in these quantities. The"
+      + " drafter's own CAD layer names identify them as drawing furniture"
+      + " - text, dimensions, leaders, title block - and the reviewer left"
+      + " them out.");
+  if (on.length)
+    out.push(on.length + " line famil" + (on.length === 1 ? "y" : "ies")
+      + " (" + ft(on) + ") carry annotation-like CAD layer names and ARE"
+      + " counted here, at the reviewer's direction.");
+  return out;
+}
+
 function approveNotes() {
-  return [...famApproveNotes(), ...ewApproveNotes()];
+  return [...sgApproveNotes(), ...famApproveNotes(), ...ewApproveNotes()];
 }
 function approveNotesDropped() {
   return Math.max(0, approveNotes().length - APPROVE_NOTES_MAX);
