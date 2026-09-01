@@ -133,9 +133,9 @@ create one.
   printed sheet; the engine indexes from 0 and output filenames use `_pN`.
   Always restate both: "engine page index 3 = printed sheet 4".
 
-### Three code shapes that produce silent wrong numbers
+### Four code shapes that produce silent wrong numbers
 
-Five defects have traced to these. None crashed, none moved the gate, each
+Seven defects have traced to these. None crashed, none moved the gate, each
 was found only by staring at one sheet - which in a takeoff tool is the
 worst kind, because a confident wrong number reaches a bid.
 
@@ -181,6 +181,26 @@ worst kind, because a confident wrong number reaches a bid.
   `.ink` is populated only for dash chains, so the `or` fallback is the
   intended read and anything treating zero as "no ink" is deleting solid
   linework. Test `is None`, never truthiness, and say which you measured.
+
+- **What you extracted is not what is printed.** A ranker can only see the
+  candidates a reader managed to recover, and it has no way to know which
+  ones the reader dropped. "The single surviving value" therefore is NOT
+  "the single printed value" - it can be sampling bias wearing the costume
+  of an uncontested answer, and **no filter over the recovered text can
+  detect it**, because the evidence that would refute it is exactly the
+  evidence that failed to arrive. Measured 2026-09-01 on Hurricane C.3.5,
+  which prints THREE scales - HORIZ 1" = 40', VERT 1" = 10', and a key map
+  at 1" = 300'. OCR recovered only the key map, so an otherwise sound
+  ranker picked 300 as a clean uncontested single: 7.5x wrong, silently.
+  On Thielen ID-1.04 the same pass ate the trailing `0"` of `1/4" = 1'0"`
+  and produced 40 where the truth is 4 - 10x, and volume moves with the
+  SQUARE of scale, so 100x in cubic yards. **Fix: when the recovery step is
+  lossy, abstain and keep the candidates visible rather than promote a
+  winner.** A disclosed-but-wrong default still anchors the operator; a
+  disclosure tells someone to be careful, a populated field tells them the
+  answer. `ScaleResult.candidates` exists for exactly this. Every reader
+  here that picks a best from what it managed to extract - legend, schedule,
+  spot tags, inline labels - has this hole; check yours before ranking.
 
 ## 6. Tuning discipline
 
