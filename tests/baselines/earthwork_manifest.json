@@ -9,18 +9,52 @@
    "source": "out/verify/2026-08-31/oncor-c04-offline/report.json (69 existing + 34 proposed rows, every z verified by eye per VERIFY.md; 13-corner limit-of-work boundary; 46 spot elevations) with the chain polylines of job e183a0d44d89 p3_result.json. Two-method check on the same rows: out/verify/2026-08-31/cutfill-contour-method (net 3.3% apart).",
    "baseline": "tests/baselines/earthwork_oncor_c04.json",
    "runs": [
-    {"name": "boundary13|auto",       "boundary": "recipe",   "surface_model": "auto",       "cell_ft": 2.0},
-    {"name": "boundary13|linear",     "boundary": "recipe",   "surface_model": "linear",     "cell_ft": 2.0},
-    {"name": "boundary13|clamped_ct", "boundary": "recipe",   "surface_model": "clamped_ct", "cell_ft": 2.0},
-    {"name": "shrunk75|auto",         "boundary": "shrunk75", "surface_model": "auto",       "cell_ft": 2.0},
-    {"name": "shrunk75|linear",       "boundary": "shrunk75", "surface_model": "linear",     "cell_ft": 2.0},
-    {"name": "shrunk75|clamped_ct",   "boundary": "shrunk75", "surface_model": "clamped_ct", "cell_ft": 2.0},
-    {"name": "no-boundary|auto",       "boundary": null, "surface_model": "auto",       "cell_ft": 2.0},
-    {"name": "no-boundary|linear",     "boundary": null, "surface_model": "linear",     "cell_ft": 2.0},
+    {"name": "boundary13|auto", "boundary": "recipe", "surface_model": "auto", "cell_ft": 2.0},
+    {"name": "boundary13|linear", "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0},
+    {"name": "boundary13|clamped_ct", "boundary": "recipe", "surface_model": "clamped_ct", "cell_ft": 2.0},
+    {"name": "shrunk75|auto", "boundary": "shrunk75", "surface_model": "auto", "cell_ft": 2.0},
+    {"name": "shrunk75|linear", "boundary": "shrunk75", "surface_model": "linear", "cell_ft": 2.0},
+    {"name": "shrunk75|clamped_ct", "boundary": "shrunk75", "surface_model": "clamped_ct", "cell_ft": 2.0},
+    {"name": "no-boundary|auto", "boundary": null, "surface_model": "auto", "cell_ft": 2.0},
+    {"name": "no-boundary|linear", "boundary": null, "surface_model": "linear", "cell_ft": 2.0},
     {"name": "no-boundary|clamped_ct", "boundary": null, "surface_model": "clamped_ct", "cell_ft": 2.0},
-    {"name": "boundary13|linear|off",  "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0, "existing_offset_ft": 0.5, "proposed_offset_ft": 0.75},
+    {
+     "name": "boundary13|linear|off",
+     "boundary": "recipe",
+     "surface_model": "linear",
+     "cell_ft": 2.0,
+     "existing_offset_ft": 0.5,
+     "proposed_offset_ft": 0.75
+    },
     {"name": "no-boundary|linear|cell1", "boundary": null, "surface_model": "linear", "cell_ft": 1.0},
-    {"name": "boundary13|linear|spots", "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0, "spots": 10}
+    {
+     "name": "boundary13|linear|spots",
+     "boundary": "recipe",
+     "surface_model": "linear",
+     "cell_ft": 2.0,
+     "spots": 10
+    }
+   ]
+  },
+  {
+   "id": "stice_p0",
+   "sheet": "Josh Stice 600-acre mass-grading sheet, engine page index 0 (CLIENT WORK - inputs gitignored under out/, never committed)",
+   "kind": "seed_flips",
+   "dir": "out/verify/2026-08-30/stice-recipe",
+   "files": {
+    "seed": "seed.json",
+    "result": "p0_result.json",
+    "flips": "flips_junk3.json",
+    "boundary": "boundary_pure6544.json"
+   },
+   "source": "out/verify/2026-08-30/stice-recipe/RECIPE.md: seed.json rows (912 existing + 575 proposed after flips_junk3.json), 80-corner grading-limit boundary_pure6544.json. Client scored the engine against his own takeoff (cut 2.1M vs his 2.2M CY, fill 2.6M vs 1.6M before the boundary).",
+   "baseline": "out/verify/2026-08-30/stice-recipe/earthwork_baseline_stice_p0.json",
+   "skip_note": "client recipe not on this machine; Stice volumes were NOT checked. Copy the four recipe files under out/verify/2026-08-30/stice-recipe/ (or set EARTHWORK_DATA_ROOT to a checkout that has them) to run it",
+   "runs": [
+    {"name": "boundary80|linear", "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0},
+    {"name": "boundary80|auto", "boundary": "recipe", "surface_model": "auto", "cell_ft": 2.0},
+    {"name": "no-boundary|linear", "boundary": null, "surface_model": "linear", "cell_ft": 2.0},
+    {"name": "no-boundary|auto", "boundary": null, "surface_model": "auto", "cell_ft": 2.0}
    ]
   }
  ]

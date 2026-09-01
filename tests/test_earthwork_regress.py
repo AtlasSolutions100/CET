@@ -249,8 +249,13 @@ def main(argv=None) -> int:
             bpath.parent.mkdir(parents=True, exist_ok=True)
             bpath.write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8",
                              newline="\n")
-            print(f"   BASELINE WRITTEN {bpath} (earthwork_sig {sig}) - commit it "
-                  f"with the reason")
+            try:
+                in_repo = bpath.resolve().relative_to(REPO).parts[0] != "out"
+            except ValueError:
+                in_repo = False
+            print(f"   BASELINE WRITTEN {bpath} (earthwork_sig {sig}) - "
+                  + ("commit it with the reason" if in_repo else
+                     "gitignored: stays beside the client inputs, never committed"))
             continue
 
         if not bpath.is_file():
