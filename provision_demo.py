@@ -56,6 +56,17 @@ CLIENTS = [
 # Stays visible to everyone: the Loves Lane civil sheets and Belle Farms.
 # Everything else on the box is a named client's drawings, and eighteen of the
 # accounts above are competing contractors, so it moves to staff-only.
+#
+# THIS LIST IS NOT THE SOURCE OF TRUTH ANY MORE - demo-plans.json is, and its
+# own header already says this file "keeps owner=None on exactly these". The
+# two had drifted: C6.0-WATER-MAIN is a demo card and was NOT on this list, so
+# a provisioning run handed it to staff and its card went dark on the box that
+# had it. The manifest names are unioned in below.
+#
+# The prefixes stay because they are WIDER than the manifest - C3.0, C9.0 and
+# C10.4 are shared today and are not demo cards. Dropping them would quietly
+# revoke eighteen contractors' access to sheets they can currently open, which
+# is a different and worse bug than the one being fixed.
 SHARED_PREFIXES = (
     "C3.0-Site-Plan",
     "C4.0-SITE-GRADING",
@@ -78,6 +89,21 @@ SHARED_PREFIXES = (
 DEFAULT_PASSWORD = "WorkOptional"
 
 
+def _demo_names() -> set[str]:
+    """Display names of the demo cards, straight from the manifest.
+
+    Absent or unreadable returns empty, which leaves the prefix list in sole
+    charge: this is an ownership tool, and it must not hand every document on
+    the box to staff because one JSON file failed to parse."""
+    here = Path(__file__).parent if "__file__" in globals() else Path(os.getcwd())
+    try:
+        raw = json.loads((here / "demo-plans.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    plans = raw.get("plans")
+    return set(plans) if isinstance(plans, dict) else set()
+
+
 def main() -> int:
     # Re-issuing is deliberately opt-in. The default path must never silently
     # reset a password somebody is already relying on - that would knock a
@@ -89,6 +115,7 @@ def main() -> int:
               f"container", file=sys.stderr)
         return 1
 
+    demo_names = _demo_names()
     existing = users.load()
     store = dict(existing)
     creds: list[tuple[str, str, bool]] = []
@@ -121,7 +148,7 @@ def main() -> int:
             src = Path(row.get("path", "")).name
             # uploads are stored as upload_<hex>_<real name>
             disp = src.split("_", 2)[-1] if src.startswith("upload_") else src
-            if disp.startswith(SHARED_PREFIXES):
+            if disp in demo_names or disp.startswith(SHARED_PREFIXES):
                 row["owner"] = None
                 kept += 1
             else:

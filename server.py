@@ -1585,7 +1585,21 @@ async def upload(file: UploadFile, request: Request, classify: int = 1):
     dest = JOBS_DIR / f"upload_{digest}_{stem}"
     if not dest.exists() or dest.stat().st_size != len(raw):
         dest.write_bytes(raw)
-    return _register(dest, classify=bool(classify), owner=_who(request))
+    # Seeding the demo set is a staff upload of a plan the manifest already
+    # names, so that is what makes a SHARED row. Without this the seeded rows
+    # belong to whoever ran the script, _demo_source skips every owned row,
+    # and all seven cards read "not on this box" on a box that just received
+    # them - which is the state this shipped in.
+    #
+    # Both halves of the test carry weight. Staff-only, because a contractor
+    # must not be able to publish to every other account by naming a file
+    # after a demo. Exact manifest name only, because that file is already the
+    # public list of what any visitor may open. A client set that happens to
+    # collide with a demo name still needs staff hands to become shared.
+    owner = _who(request)
+    if owner is not None and _is_staff(request) and _display_name(dest) in DEMO_PLANS:
+        owner = None
+    return _register(dest, classify=bool(classify), owner=owner)
 
 
 @app.get("/api/job/{job_id}/page/{page}/image")

@@ -26,6 +26,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY takeoff_engine/ ./takeoff_engine/
 COPY webui/ ./webui/
 COPY server.py .
+# The demo tab IS this file (server.py _load_demo_plans reads it, and
+# /api/demo-plans renders the cards from nothing else). Leaving it out of the
+# image does not degrade the tab, it empties it: the loader takes OSError,
+# DEMO_PLANS becomes {}, and the endpoint answers with zero cards on a box
+# that has every one of the plans uploaded. That shipped, and it cost a
+# seeding session to find. A new single-file source of truth belongs here.
+COPY demo-plans.json .
 # ops tool, not part of the service: creates the demo logins and sets
 # which plan sets are shared. In the image so it can be re-run later
 # with `docker compose exec app python provision_demo.py`.
