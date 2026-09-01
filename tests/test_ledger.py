@@ -175,6 +175,11 @@ def test_calcstate_diff():
 def make_job(job_id: str) -> Path:
     jd = Path(os.environ["TAKEOFF_JOBS_DIR"]) / job_id
     jd.mkdir(parents=True, exist_ok=True)
+    # the registry row too: the write routes refuse a directory with no row
+    # (an orphan - tests/test_orphan_job.py), exactly as the service would
+    import server
+    server.JOBS[job_id] = {"path": str(jd.with_suffix(".pdf")), "pages": 1,
+                           "owner": "tester", "status": {}}
     res = {"page": {"width_pt": 100.0, "height_pt": 100.0},
            "engine_sig": "cafe",
            "scale": None,

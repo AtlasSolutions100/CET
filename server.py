@@ -366,24 +366,44 @@ if True:
     # Ownership is enforced HERE rather than in each route. There are twenty-odd
     # /api/job/{id}/... routes and more will be added; a check that has to be
     # remembered per route is a check that eventually is not.
-    _JOB_PATH = re.compile(r"^/api/job/([0-9a-fA-F]{6,32})(?:/|$)")
+    # ANY path segment, not only a well-formed hex id: the first question
+    # below is "does the registry hold this row", and an id that could never
+    # have one is exactly the kind that must not fall through to the router.
+    _JOB_PATH = re.compile(r"^/api/job/([^/]+)(?:/|$)")
 
     def _forbidden_job(path: str, user, staff: bool = False):
-        """404 when `user` may not touch the job named in `path`, else None.
+        """404 when the job named in `path` has no registry row, or when
+        `user` may not touch it; else None.
+
+        FAILS CLOSED ON A MISSING ROW, FOR EVERY CALLER - staff and
+        single-password boxes included, which is why that check runs before
+        the `user is None or staff` return. A row can vanish while the job's
+        directory stays on disk: delete_job unlinks each file inside a
+        try/except and then drops the row regardless, and on Windows an
+        unlink that hits an open file fails silently. What is left is an
+        ORPHAN - one client's detection, pricing and approved deliverable,
+        with no owner - and the old "let the route answer its own 404"
+        branch handed it to the first signed-in account that asked. 24 of
+        the 27 job routes take no Request and go straight to _job_dir(),
+        which returns (or creates) the directory; they cannot answer
+        anything. Reproduced 2026-08-31: account B rewrote A's calcstate
+        and approved export, two 200s. tests/test_orphan_job.py sweeps every
+        job route against an orphan and is the reason a new route cannot
+        reopen this.
 
         404 and not 403: a 403 confirms the job exists and belongs to somebody
         else, which on a box holding several clients' bid documents leaks that
         the other client is here at all.
         """
-        if user is None or staff:
-            return None                 # single-password mode, or our own team
         m = _JOB_PATH.match(path)
         if not m:
             return None
         with JOBS_LOCK:
             j = JOBS.get(m.group(1))
         if j is None:
-            return None                 # let the route answer its own 404
+            return _StarJSON({"detail": "unknown job"}, status_code=404)
+        if user is None or staff:
+            return None                 # single-password mode, or our own team
         owner = j.get("owner")
         if owner is None or owner == user:
             return None                 # shared demo set, or theirs
@@ -404,6 +424,11 @@ if True:
                         {"detail": "this server has no accounts configured; "
                                    "run takeoff_engine.users to add one"},
                         status_code=503)
+                # A laptop has nobody to keep apart, but it still must not
+                # serve a job the registry has forgotten (see _forbidden_job).
+                blocked = _forbidden_job(path, None, True)
+                if blocked is not None:
+                    return blocked
                 return await call_next(request)
 
             ok, user = _read_session(request.cookies.get(SESSION_COOKIE, ""))
@@ -2697,6 +2722,7 @@ def _hex_color(v) -> "str | None":
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
 def approve(job_id: str, page: int, body: ApproveBody):
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     f = _job_dir(job_id) / f"p{page}_result.json"
     if not f.exists():
         raise HTTPException(404, "no result to approve")
@@ -3341,8 +3367,11 @@ def _calcstate_put(job_id: str, page: int, raw: bytes) -> dict:
     json.loads on the GET side would otherwise return {} and the operator's
     decisions would look deleted rather than merely stale."""
     _calcstate_guard(job_id)
-    if job_id not in JOBS and not (JOBS_DIR / job_id).is_dir():
-        raise HTTPException(404, "unknown job")
+    # The registry row, not the directory. This accepted EITHER until
+    # 2026-09-01, and a directory with no row is precisely an orphan (see
+    # _forbidden_job): that `or` is how account B's calcstate POST rewrote
+    # A's pricing and client name with a 200.
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     data = _calcstate_check(raw)
     f = _calcstate_path(job_id, page)
     # the record being replaced, read BEFORE the replace: the training
@@ -4632,6 +4661,7 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
 def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     """Cut & fill volumes between two labeled contour surfaces, after
     lowering each by its layer stack (see EarthworkBody)."""
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     result = _earthwork_run(job_id, page, body)
     _ledger_earthwork(job_id, page, body, result)
     return JSONResponse(result)
@@ -4649,6 +4679,7 @@ def earthwork_map(job_id: str, page: int, body: EarthworkBody):
     same path to re-read them without recomputing."""
     from takeoff_engine.earthwork import render_cut_fill_map
 
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     result = _earthwork_run(job_id, page, body, return_grid=True)
     png, meta = render_cut_fill_map(result.pop("grid"))
     meta.update({k: result[k] for k in
@@ -4727,6 +4758,7 @@ def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
     from takeoff_engine.earthwork import (Surface, render_cut_fill_map,
                                           zone_cut_fill)
 
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if not rf.exists():
         raise HTTPException(404, "run detect first")
@@ -5302,6 +5334,7 @@ def structure_calc(job_id: str, page: int, body: StructureBody):
     bid-sheet terms. Validates the polygons and returns per-structure rows
     plus the page totals; the UI does the same math client-side and uses
     this as a cross-check."""
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if not rf.exists():
         raise HTTPException(404, "run detect first")
