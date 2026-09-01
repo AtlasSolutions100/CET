@@ -10561,7 +10561,8 @@ async function ewFetchSuggest(gen) {
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
       })).map((row, i) => {
         // INTERVAL-INFILL rows: an elevation nobody printed, worked out by
-        // counting the unlabelled contours between two labelled ones. It
+        // counting the contours between two anchors - anchors that are
+        // themselves often unlabelled (13 of C-04's 35, measured). It
         // arrives on SKIP - it contributes no volume until the operator
         // reads the sentence and clicks EXIST or PROP - and it carries
         // that sentence so the check can be made without leaving the row.
@@ -15772,9 +15773,13 @@ function distToSeg(px, py, a, b) {
 //                    across a <=60 pt end-to-end weld from another fragment
 //                    the engine believes is the same contour
 //                    (earthwork.suggest_elevations pass 2, dist 999)
-//   interval-infill  counted between two labelled contours at the sheet's
-//                    own contour interval (earthwork.infill_intervals; the
-//                    row also carries inferred:true and a `src` sentence)
+//   interval-infill  counted between two OTHER contours at the sheet's own
+//                    contour interval (earthwork.infill_intervals; the row
+//                    also carries inferred:true and a `src` sentence).
+//                    Those two ends are NOT necessarily labelled themselves
+//                    - the server words each end by what backs it
+//                    (earthwork._anchor) and the `src` sentence says which,
+//                    if any, the sheet prints a label for.
 //
 // MEASURED, Oncor Cloudcrest engine page index 3 = printed sheet C-04,
 // 2026-08-31: 150 rows - 89 printed (20 radius + 69 gap-ocr) and 61 not
@@ -15841,9 +15846,26 @@ const ELEV_PROV = {
        + "same contour and carried that piece's elevation across. If the "
        + "join is wrong so is this number — check it against the drawing "
        + "before anything is priced on it." },
+  // THE CLIENT'S STATIC HALF MUST NOT CONTRADICT THE SERVER'S SENTENCE THAT
+  // FOLLOWS IT. This read "counted between two LABELLED contours" while
+  // elevProvenanceDetail appended the server's own `src` immediately after —
+  // and that sentence often says the opposite, e.g. "counted between 579
+  // (line 140, itself unlabelled) and 583 (line 282, itself unlabelled) …
+  // NEITHER end carries a printed label". MEASURED live on Oncor Cloudcrest
+  // engine page index 3 = printed sheet C-04 (job e183a0d44d89, fresh
+  // detect, 2026-09-01): 35 interval-infill rows — 22 counted between two
+  // ends the sheet does label, 2 with one labelled end, 11 with NEITHER end
+  // labelled. So 13 of 35 (37%) of these tooltips asserted "labelled" over a
+  // server sentence saying no such thing, in the same tooltip. The static
+  // half now states only what is always true — two OTHER contours — and
+  // hands the question of what backs each end to the server's sentence,
+  // which is the true part and is the half that must NOT be deleted.
   "interval-infill": { kind: "inferred", cls: "inferred", tag: "inferred",
     why: "NOT printed anywhere on the sheet. It was counted between two "
-       + "labelled contours at this sheet's contour interval — the same "
+       + "other contours at this sheet's contour interval. Those two ends "
+       + "are not necessarily labelled either — the sentence that follows "
+       + "is the reader's own account, and it names both ends and says "
+       + "which of them, if any, the sheet prints a label for. The same "
        + "“inferred” row the earthwork panel lists on SKIP." },
 };
 const ELEV_PROV_UNKNOWN = { kind: "unknown", cls: "unknown",
@@ -15856,7 +15878,8 @@ function elevProvenance(how) {
 }
 // The part of the sentence that is specific to THIS line rather than to the
 // method: how far the printed number was, or the server's own account of
-// which two labelled contours an infilled row was counted between.
+// which two contours an infilled row was counted between AND what backs
+// each of those two ends (they are frequently unlabelled themselves).
 function elevProvenanceDetail(ev) {
   if (!ev || typeof ev !== "object") return "";
   if (ev.how === "radius") {
@@ -16004,7 +16027,8 @@ function updateSelBar(ch) {
   // the same reason, as the earthwork panel's per-row "inferred" badge. On
   // C-04 that is 61 of 150 (see ELEV_PROV for the measurement). The tooltip
   // carries the long form and, for an infilled row, the server's own
-  // sentence naming the two labelled contours it was counted between.
+  // sentence naming the two contours it was counted between and saying
+  // which of those two, if either, the sheet actually labels.
   if (z !== undefined && z !== null) {
     const elc = document.createElement("span");
     elc.className = "sel-el" + (prov.cls ? " " + prov.cls : "");

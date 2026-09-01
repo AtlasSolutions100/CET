@@ -358,6 +358,63 @@ for (const how of NOT_PRINTED) {
     "...and the UI adds no 'labelled' the server did not say - THE FIXED "
     + "DEFECT was a fixture that asserted pass-through of a false sentence");
 }
+// ---------------------------------------------------------------------------
+// 5b. THE CLIENT'S STATIC HALF MUST NOT CONTRADICT THE SERVER SENTENCE IT IS
+//     GLUED TO. The chip title is `prov.why + elevProvenanceDetail(ev)` - one
+//     string, two authors. The static half read "counted between two LABELLED
+//     contours" and the server half, appended in the same breath, frequently
+//     says the ends are NOT labelled.
+//
+//     MEASURED live, Oncor Cloudcrest engine page index 3 = printed sheet
+//     C-04 (job e183a0d44d89, fresh detect, 2026-09-01, GET
+//     /earthwork/suggest): 35 interval-infill rows, anchors_printed 2 on 22
+//     rows, 1 on 2 rows, 0 on 11. So 13 of 35 (37%) carried a tooltip whose
+//     first sentence asserted "labelled" over its own second sentence saying
+//     one or neither end is.
+//
+//     Pinned two ways, because pinning the wording alone would only catch
+//     somebody deleting today's sentence:
+//       (a) the STATIC half may not make a positive claim about the anchors
+//           at all - it cannot know, it is the same string on every row;
+//       (b) COMPOSED with each of the three sentences the server can really
+//           produce, the tooltip may not be self-contradictory.
+// ---------------------------------------------------------------------------
+{
+  const why = elevProvenance("interval-infill").why;
+  const POSITIVE =
+    /\btwo\s+labell?ed\b|\bboth\s+labell?ed\b|\blabell?ed\s+(contours|anchors|ends)\b/i;
+  check(!POSITIVE.test(why),
+    "the static half makes NO positive claim that the anchors are labelled - "
+    + "it is the same sentence on all 35 rows and on 13 of them that claim "
+    + "is false  (got: " + JSON.stringify(why.slice(0, 90)) + "…)");
+
+  // the three sentences earthwork.infill_intervals can emit, verbatim in
+  // shape (see _anchor / tail there and tests/test_ew_suggest.py)
+  const SRC = [
+    ["both ends labelled",
+     "counted between labelled 579 (line 140) and labelled 583 (line 282) at "
+     + "the sheet's 1 ft contour interval - not a printed label, confirm "
+     + "against the sheet"],
+    ["one end labelled",
+     "counted between labelled 579 (line 140) and 583 (line 282, itself "
+     + "unlabelled) at the sheet's 1 ft contour interval - one end carries "
+     + "no printed label either, confirm against the sheet"],
+    ["neither end labelled",
+     "counted between 579 (line 140, itself unlabelled) and 583 (line 282, "
+     + "itself unlabelled) at the sheet's 1 ft contour interval - NEITHER "
+     + "end carries a printed label, confirm against the sheet"],
+  ];
+  for (const [name, src] of SRC) {
+    const chip = byClass(renderBar({
+      elev: ELEV(580, "interval-infill", src) }), "sel-el")[0];
+    const t = chip.title;
+    check(t.indexOf(src) >= 0, name + ": the server's sentence rides through");
+    const serverDenies = /itself unlabelled|NEITHER end|no printed label/i.test(t);
+    check(!(serverDenies && POSITIVE.test(t)),
+      name + ": the tooltip does not assert 'labelled' and deny it in the "
+      + "same breath - THE FIXED DEFECT (13 of C-04's 35 infill rows)");
+  }
+}
 {
   // A RADIUS HIT IS ITS OWN KIND, AND THE CAVEAT IS ON THE NUMBER.
   // "printed" is a claim about the NUMBER, never about whose number it is.
