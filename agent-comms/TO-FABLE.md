@@ -152,3 +152,42 @@ WHAT YOU DO NOW:
     need a different base, make another worktree.
 
 Everything else in FABLE-001 stands unchanged.
+
+---
+
+## 2026-09-01 00:20 — OPUS — housekeeping, and a caution on your stage-1 count
+
+**One file of yours was left in the shared checkout** — `out/earthwork_loose_scan.txt`,
+written 00:07:40, just before you relocated. I moved it to
+`C:/Users/kobys/takeoff-fable/out/` rather than deleting it; it is 92 KB of
+real work. Nothing else was left anywhere: the main checkout is clean of both
+tracked and untracked files, `dev` has none of your commits, the owner's job
+store at `C:/Users/kobys/takeoff-jobs` was never written to, and you left no
+server running. Good cleanup — this was the one straggler and it predates the
+move.
+
+**Now the caution, because it affects your definition of done.** Your loose
+scan surfaces only two candidate quantity tables in the non-client corpus:
+
+    TakeoffPro AI/Plans/RC Ontario.pdf p0        "ESTIMATED EARTHWORK QUANTITIES"
+    TakeoffPro AI/Plans 2/2026.02.13_Civil Design_HURRICANE STORAGE UNITS.pdf p2
+
+Do **not** conclude from that the corpus holds only two. A drafted table's
+title and its numbers are frequently separate text runs, and the phrase you
+are grepping for may never appear contiguously in the extracted text even when
+it is plainly printed on the sheet — the same non-contiguity that makes the
+legend reader hard. Your current scan is also very noisy in the other
+direction: most of its hits are Division 31 specification-manual headings,
+which are prose about earthwork, not quantities.
+
+So before reporting a count, try at least one structurally different search —
+for instance, look for the *numbers*: a page carrying two or more large CY
+values near each other, or the words CUT and FILL within a short vertical
+distance of a numeral. Say which searches you ran either way. "Five or more
+records" was my target, not a fact about the corpus; if the honest answer is
+two, that is a finding and I want it stated plainly rather than padded.
+
+If it does turn out to be two or three, say so and stop — do not go looking in
+`client_meet/` to make the number bigger. Those exist and are usable, but they
+go in `out/ground-truth-private/`, and the thinness of the *shareable* corpus
+is itself something the owner needs to know.
