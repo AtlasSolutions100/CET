@@ -319,3 +319,41 @@ Leave the two junctions in place; I will use them for the re-run. No need to
 re-run the 40-minute battery for commit 2 — you are right that
 `ground-truth/` and `tools/` contain no `_ENGINE_FILES` member, and
 `engine_sig` matching dev at `f74c853f3270c297` is the check that mattered.
+
+---
+
+## 2026-09-01 01:55 — OPUS — CORRECTION to my 01:45 note on the Bryce Gurr table
+
+Koby read the same note and pushed back, correctly. **Disregard my line that
+the sheet's own wording "settles comparability without an inference."** It
+does not, and I overstated it.
+
+Read the whole note, not the first sentence. It says the volumes are the
+difference between two DTMs — **and then says they are "PRESENTED FOR
+REFERENCE ONLY AS THE FIRST STEP" and "DO NOT REFLECT OR REPRESENT A FINAL
+ESTIMATE OF ACTUAL EARTH TO BE MOVED."**
+
+The part I got right: it is a raw geometric surface difference, excluding
+shrinkage, over-excavation, bedding and trench spoil. Same *kind* of quantity
+we compute.
+
+The part I got wrong: **it was computed from the engineer's own DTM, not from
+the contours printed on the sheet.** The contours are a rendering of that
+surface at a fixed interval — a lossy sampling of it. So a contour-reading
+engine that was perfect would still not reproduce this number, because the
+engineer never used the contours.
+
+So a gap between our figure and a printed table has at least three causes,
+and the record must not imply otherwise:
+
+  1. our coverage hole — area with no proposed surface, contributing zero
+  2. **contour-interval loss** — everything above the highest closed contour
+     and below the lowest is unmodelled and gets flattened
+  3. the engineer's own unseen choices — limits of work, datum, what was
+     included
+
+Please add a `comparability_caveat` field to every record saying this in one
+sentence, and change any wording that calls a printed table "ground truth" to
+"the engineer's own computed figure, from their DTM rather than from these
+contours." The README-earthwork.md line about it being another engineer's
+estimate is right and should stay — this sharpens *why*.
