@@ -41,6 +41,14 @@
 //      a rendering convention: a pill on the canvas says "NOT counted in the
 //      takeoff" in English. It must NOT use the shared status bar, which can
 //      be carrying the earthwork read's busy line.
+//   4b. THE WORDS COVER EVERY GHOSTING PATH (added 2026-08-31). The loop
+//      ghosts on `hotStyle.has(sid) || hotChain === ch.chain_id`, and
+//      ghostBarSync looked only at hotStyle - so the per-CHAIN hover (line
+//      list, calculator rows, callout rows, earthwork rows) painted a ghost
+//      with no disclosure at all. Before this feature that path painted
+//      nothing, so the gap shipped WITH the feature, and an unlabelled
+//      ghost is precisely the mistake the feature exists to prevent.
+//      Behavioural: ghostBarSync run for real over each hover path.
 //   5. THE OBJECT-MODE BOXES STAY OFF for a ghost, on purpose - a box IS a
 //      count. Stated here so it is a decision on the record, not a
 //      half-finished fix.
@@ -288,6 +296,107 @@ console.log("4. the words: 'NOT counted', and not on the shared status bar");
   check(/ghostBarSync\(\)/.test(hfo), "and mouseleave clears it");
   check(/renderZoomFact\(\);\s*\n(\s*\/\/[^\n]*\n)*\s*ghostBarSync\(\);/.test(SRC),
     "draw() re-derives it, so ticking the box while hovering updates the words");
+}
+
+// ---------------------------------------------------------------------------
+console.log("4b. the words cover EVERY path that can ghost a line");
+// ---------------------------------------------------------------------------
+// THE REGRESSION ecd939f SHIPPED. The chain loop above ghosts on
+// `hotStyle.has(sid) || hotChain === ch.chain_id`, and ghostBarSync only
+// looked at hotStyle. So the per-CHAIN hover - the per-family line list,
+// the calculator rows, the callout rows, the earthwork rows - painted a
+// line of an unticked family with NO "NOT counted" pill anywhere. Before
+// ecd939f that path painted nothing at all, so the disclosure gap arrived
+// with the feature, and it is exactly the mistake the feature exists to
+// prevent: a ghost that reads as a counted line.
+{
+  const GBS = (function () {
+    const a = SRC.indexOf("let ghostBarKey = \"\";");
+    const b = SRC.indexOf("\n}", SRC.indexOf("function ghostBarSync() {", a));
+    return SRC.slice(a, b + 2);
+  })();
+  check(!!GBS && /function ghostBarSync/.test(GBS),
+    "ghostBarSync and its dedupe key are locatable together");
+
+  function runBar(over) {
+    const el = { hidden: true, textContent: "", children: [],
+                 appendChild(c) { this.children.push(c); return c; } };
+    const state = Object.assign({
+      result: { chains: chains(),
+                styles: [{ style_id: 13, suggested_label: "hatch fam" },
+                         { style_id: 5, suggested_label: "solid fam" }] },
+      labels: new Map(), excluded: new Set(), isolate: null,
+      include: new Map([[13, false], [5, true]]),
+      hotStyle: null, hotChain: null,
+    }, over || {});
+    const scope = {
+      $: () => el,
+      state,
+      document: { createElement: () => ({ textContent: "" }),
+                  createTextNode: (t) => ({ textContent: t }) },
+      famShown: (sid) => state.isolate !== null ? sid === state.isolate
+                                                : !!state.include.get(sid),
+    };
+    const names = Object.keys(scope);
+    new Function(...names, GBS + "\nghostBarSync();")(...names.map(n => scope[n]));
+    const words = el.textContent
+      + el.children.map(c => c.textContent || "").join("");
+    return { hidden: el.hidden, words };
+  }
+
+  {
+    const r = runBar({});
+    check(r.hidden, "nothing hovered: no pill");
+  }
+  {
+    const r = runBar({ hotStyle: new Set([13]) });
+    check(!r.hidden && /NOT counted in the takeoff/.test(r.words),
+      "hovering the unticked FAMILY still says NOT counted (unchanged)");
+  }
+  {
+    // chain 1 belongs to style 13, whose tick is OFF - this is the ghost the
+    // per-chain hover paints, and it used to carry no words at all
+    const r = runBar({ hotChain: 1 });
+    check(!r.hidden,
+      "hovering one LINE of an unticked family now shows the pill - "
+      + "THE REGRESSION: it painted a ghost and said nothing");
+    check(/NOT counted in the takeoff/.test(r.words),
+      "...and it says NOT counted, the same sentence, not a second wording");
+    check(/line #1/.test(r.words),
+      "...and names the LINE, because one line is ghosted and not the whole "
+      + "family - the pill must not claim more of the sheet is showing");
+  }
+  {
+    const r = runBar({ hotChain: 2 });
+    check(r.hidden,
+      "hovering a line of a TICKED family says nothing - it is counted, and "
+      + "there is nothing to disclose");
+  }
+  {
+    const r = runBar({ hotChain: 1, excluded: new Set([1]) });
+    check(r.hidden,
+      "a DELETED line paints no ghost, so it gets no pill either "
+      + "(draw() continues past it before the hover test)");
+  }
+  {
+    // family + one of its own lines hovered at once: one entry, and the
+    // family name alone, because the WHOLE family is ghosted
+    const r = runBar({ hotStyle: new Set([13]), hotChain: 1 });
+    check(!r.hidden && !/line #/.test(r.words),
+      "family and line hovered together names the family, not one line");
+  }
+  {
+    const r = runBar({ hotStyle: new Set([13]), hotChain: 2,
+                       include: new Map([[13, false], [5, false]]) });
+    check(/2 families/.test(r.words),
+      "two unticked families reached by two different hover paths count as two");
+  }
+  {
+    // isolate hides a ticked family: the same rule, through the chain path
+    const r = runBar({ isolate: 5, hotChain: 1 });
+    check(!r.hidden && /NOT counted/.test(r.words),
+      "a line hidden by isolate discloses through the chain path too");
+  }
 }
 
 // ---------------------------------------------------------------------------

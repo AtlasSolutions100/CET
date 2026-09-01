@@ -16280,12 +16280,42 @@ let ghostBarKey = "";
 function ghostBarSync() {
   const el = $("ghostInfo");
   if (!el) return;
-  const off = (state.hotStyle && state.result)
-    ? [...state.hotStyle].filter(sid => !famShown(sid)).sort((a, b) => a - b) : [];
+  // EVERY PATH THAT CAN GHOST A LINE CARRIES THE DISCLOSURE.
+  // draw()'s chain loop ghosts on `hotStyle.has(sid) || hotChain ===
+  // ch.chain_id`, and this function only ever looked at the first half. So
+  // the per-CHAIN hover - the per-family line list, the calculator rows, the
+  // callout rows, the earthwork rows - painted a line belonging to an
+  // unticked family with nothing on screen saying it is not counted. Before
+  // hover-when-off landed (ecd939f) that path painted nothing at all, so the
+  // regression arrived with the feature, and it is the one case the feature
+  // exists to prevent: a ghost that reads as a counted line.
+  const off = [];
+  let line = null;                    // named only when a CHAIN is the reason
+  if (state.result) {
+    if (state.hotStyle)
+      for (const sid of state.hotStyle) if (!famShown(sid)) off.push(sid);
+    const cid = state.hotChain;
+    // a deleted line stays deleted: draw() `continue`s past it before the
+    // hover test, so there is no ghost to disclose
+    if (cid !== null && cid !== undefined && !state.excluded.has(cid)) {
+      const hc = state.result.chains.find(c => c.chain_id === cid);
+      if (hc && !famShown(hc.style_id) && off.indexOf(hc.style_id) < 0) {
+        off.push(hc.style_id);
+        // ...and only then: if the family is ALSO hovered, the whole family
+        // is ghosted and naming one line inside it would understate what is
+        // on screen.
+        line = hc;
+      }
+    }
+  }
+  off.sort((a, b) => a - b);
   let name = "";
   if (off.length === 1) {
     const st = state.result.styles.find(s => s.style_id === off[0]);
     name = state.labels.get(off[0]) || (st && st.suggested_label) || ("style " + off[0]);
+    // the ghost is ONE line, not the family: say which, or the pill claims
+    // more of the sheet is showing than actually is
+    if (line) name += " · line #" + line.chain_id;
   } else if (off.length > 1) {
     name = off.length + " families";
   }
