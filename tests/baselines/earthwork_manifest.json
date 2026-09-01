@@ -1,0 +1,27 @@
+{
+ "_about": "Every earthwork truth case tests/test_earthwork_regress.py replays. One entry per case; add a DEM-derived truth sheet by adding an entry, not by editing the test. Fields: id; sheet (human name, engine page index AND printed sheet); kind = how the inputs are read (fixture: one committed JSON like earthwork_oncor_c04_inputs.json; seed_flips: the offline-recipe folder layout under out/verify with seed/result/flips/boundary files); source = where the row set and its verification live; baseline = the exact-float expectation file, committed under tests/baselines/ ONLY for non-client data - client work keeps it gitignored beside its inputs; runs = the cut_fill configurations (boundary: recipe | shrunk75 | null; surface_model; cell_ft; existing_offset_ft / proposed_offset_ft; spots = N proposed spot points). Gitignored inputs that are absent print SKIPPED and are counted, never silently passed.",
+ "cases": [
+  {
+   "id": "oncor_c04",
+   "sheet": "Oncor Cloudcrest Substation Civils - 20251212, printed C-04 = engine page index 3",
+   "kind": "fixture",
+   "inputs": "tests/baselines/earthwork_oncor_c04_inputs.json",
+   "source": "out/verify/2026-08-31/oncor-c04-offline/report.json (69 existing + 34 proposed rows, every z verified by eye per VERIFY.md; 13-corner limit-of-work boundary; 46 spot elevations) with the chain polylines of job e183a0d44d89 p3_result.json. Two-method check on the same rows: out/verify/2026-08-31/cutfill-contour-method (net 3.3% apart).",
+   "baseline": "tests/baselines/earthwork_oncor_c04.json",
+   "runs": [
+    {"name": "boundary13|auto",       "boundary": "recipe",   "surface_model": "auto",       "cell_ft": 2.0},
+    {"name": "boundary13|linear",     "boundary": "recipe",   "surface_model": "linear",     "cell_ft": 2.0},
+    {"name": "boundary13|clamped_ct", "boundary": "recipe",   "surface_model": "clamped_ct", "cell_ft": 2.0},
+    {"name": "shrunk75|auto",         "boundary": "shrunk75", "surface_model": "auto",       "cell_ft": 2.0},
+    {"name": "shrunk75|linear",       "boundary": "shrunk75", "surface_model": "linear",     "cell_ft": 2.0},
+    {"name": "shrunk75|clamped_ct",   "boundary": "shrunk75", "surface_model": "clamped_ct", "cell_ft": 2.0},
+    {"name": "no-boundary|auto",       "boundary": null, "surface_model": "auto",       "cell_ft": 2.0},
+    {"name": "no-boundary|linear",     "boundary": null, "surface_model": "linear",     "cell_ft": 2.0},
+    {"name": "no-boundary|clamped_ct", "boundary": null, "surface_model": "clamped_ct", "cell_ft": 2.0},
+    {"name": "boundary13|linear|off",  "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0, "existing_offset_ft": 0.5, "proposed_offset_ft": 0.75},
+    {"name": "no-boundary|linear|cell1", "boundary": null, "surface_model": "linear", "cell_ft": 1.0},
+    {"name": "boundary13|linear|spots", "boundary": "recipe", "surface_model": "linear", "cell_ft": 2.0, "spots": 10}
+   ]
+  }
+ ]
+}

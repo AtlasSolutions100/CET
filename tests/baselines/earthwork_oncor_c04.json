@@ -1,0 +1,115 @@
+{
+ "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04'. Written by tests/test_earthwork_regress.py --accept oncor_c04; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
+ "earthwork_sig": "ad72e892d8a23f46",
+ "earthwork_sig_files": [
+  "chain.py",
+  "earthwork.py",
+  "extract.py"
+ ],
+ "accepted": {
+  "tree": "C:\\Users\\kobys\\takeoff-ewgate",
+  "date": "2026-09-01",
+  "contours": [
+   69,
+   34
+  ]
+ },
+ "cases": {
+  "boundary13|auto": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "boundary13|linear": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "boundary13|clamped_ct": {
+   "cut_yd3": 1425.4,
+   "fill_yd3": 7985.7,
+   "net_yd3": 6560.4,
+   "area_sf": 83796.0,
+   "surface_model": "clamped_ct",
+   "cell_ft": 2.0
+  },
+  "shrunk75|auto": {
+   "cut_yd3": 1326.9,
+   "fill_yd3": 3549.7,
+   "net_yd3": 2222.8,
+   "area_sf": 57324.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "shrunk75|linear": {
+   "cut_yd3": 1326.9,
+   "fill_yd3": 3549.7,
+   "net_yd3": 2222.8,
+   "area_sf": 57324.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "shrunk75|clamped_ct": {
+   "cut_yd3": 1001.0,
+   "fill_yd3": 3785.7,
+   "net_yd3": 2784.8,
+   "area_sf": 57324.0,
+   "surface_model": "clamped_ct",
+   "cell_ft": 2.0
+  },
+  "no-boundary|auto": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "no-boundary|linear": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "no-boundary|clamped_ct": {
+   "cut_yd3": 1425.4,
+   "fill_yd3": 7985.7,
+   "net_yd3": 6560.4,
+   "area_sf": 83796.0,
+   "surface_model": "clamped_ct",
+   "cell_ft": 2.0
+  },
+  "boundary13|linear|off": {
+   "cut_yd3": 2431.7,
+   "fill_yd3": 7628.2,
+   "net_yd3": 5196.4,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  },
+  "no-boundary|linear|cell1": {
+   "cut_yd3": 2006.4,
+   "fill_yd3": 7971.7,
+   "net_yd3": 5965.3,
+   "area_sf": 83767.0,
+   "surface_model": "linear",
+   "cell_ft": 1.0
+  },
+  "boundary13|linear|spots": {
+   "cut_yd3": 2039.5,
+   "fill_yd3": 8034.7,
+   "net_yd3": 5995.2,
+   "area_sf": 85956.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0
+  }
+ }
+}
