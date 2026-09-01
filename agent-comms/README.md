@@ -114,9 +114,17 @@ overrides habit. Beyond it:
 
 - **Never write to `C:/Users/kobys/takeoff-jobs`.** That is the owner's real
   job store. Use a throwaway.
-- **Client work never leaves this machine.** `client_meet/` (Stice / Liberty
-  Park is a live bid) and `Ryno Construction/` may be used for internal
-  measurement and must never appear in a demo, a video, or anything hosted.
+- **Client work must never reach anything public-facing or visible to another
+  client.** `client_meet/` (Stice / Liberty Park is a live bid) and
+  `Ryno Construction/` may be used for internal measurement, and their numbers
+  may live in this private repo — they already do, in `EXCAVATION-PLAN.md` and
+  `tools/howto/take_v2.py`. What they may never touch: the hosted box, the
+  demo manifest, a video, or any artifact that leaves the company.
+
+  (This rule previously read "never leaves this machine", which was both
+  wrong and already violated by the repo's own history. FABLE flagged the
+  inconsistency in its FABLE-001 report. A rule nobody can follow gets
+  ignored, including the part of it that mattered.)
 - **No accuracy figure without ground-truth source, expected and measured.**
   A percentage with no denominator is a failed report.
 - **State any construction convention you rely on in one plain sentence and
