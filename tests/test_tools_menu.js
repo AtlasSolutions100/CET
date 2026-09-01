@@ -153,8 +153,21 @@ check(/id="aiBtn"[^>]*title="[^"]{10,}"/.test(htmlSrc),
 // the label writes that used to blow the icon away go through the span helper
 check(!/\$\("aiBtn"\)\.textContent\s*=/.test(appSrc),
   "nothing writes $(\"aiBtn\").textContent (it would delete the icon)");
-check((appSrc.match(/toolRowLabel\("aiBtn"/g) || []).length === 4,
-  "all four Analyze label writes go through toolRowLabel");
+// WHAT THIS PROTECTS is that the Analyze label is only ever written through
+// the span helper - a direct .textContent write blows the icon away. It used
+// to assert a COUNT of four call sites, which is a test whose only failure
+// mode is "somebody refactored since I was written": the 2026-09-01 page-reset
+// work merged loadResult's and selectPage's duplicate resets into one
+// pageReset(), taking the honest count to three, and the suite failed on a
+// change that made the thing it guards strictly harder to get wrong. Asserted
+// as the invariant instead: at least one write, and no way around the helper.
+{
+  const n = (appSrc.match(/toolRowLabel\("aiBtn"/g) || []).length;
+  check(n >= 1, "the Analyze label is written through toolRowLabel  ("
+    + n + " call site" + (n === 1 ? "" : "s") + ")");
+  check(!/\$\("aiBtn"\)\s*\.\s*(?:textContent|innerText|innerHTML)\s*=/.test(appSrc),
+    "...and nothing writes that button's text any other way");
+}
 
 // ---- the three group headers are presentation only --------------------------
 // They must not be focusable, must not be buttons, and must not change which

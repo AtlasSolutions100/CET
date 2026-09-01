@@ -484,9 +484,20 @@ check(/state\.ew = null; state\.ewLoading = null; state\.ewFailed = null;/
 // ...and BOTH page-change chokepoints call it. loadResult alone is not
 // enough: it only runs when the new page HAS a loadable result, so a switch
 // to an UNDETECTED page left the panel open on the previous sheet's rows.
+//
+// SINCE 2026-09-01 the call is one hop away: F5's fix generalised into
+// pageReset(), the single writer of ALL per-page state (loadResult
+// initialised ~50 fields and selectPage cleared ~29 of them; the earthwork
+// panel was one of eighteen in that gap). The invariant is unchanged - both
+// chokepoints clear the panel - so it is asserted through the delegation
+// rather than by requiring a literal ewPageReset() in each caller, which
+// would forbid the generalisation that made the class safe.
+// See tests/test_page_reset.js.
+check(/\bewPageReset\(\);/.test(fnSrc("pageReset")),
+  "pageReset - the single per-page writer - clears the earthwork panel");
 for (const fn of ["loadResult", "selectPage"])
-  check(/\bewPageReset\(\);/.test(fnSrc(fn)),
-    fn + " clears the earthwork panel at its page-change chokepoint");
+  check(/\bpageReset\(\);/.test(fnSrc(fn)),
+    fn + " reaches it at its page-change chokepoint, via pageReset()");
 check(/state\.suggestReq = null;/.test(fnSrc("ewPageReset")),
   "...and drops any suggest in flight for the page being left");
 

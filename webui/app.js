@@ -623,38 +623,20 @@ async function selectPage(p) {
   // nothing does - so "detecting…" or an error from the PREVIOUS sheet would
   // sit under the new one, describing work on a page nobody is looking at.
   setStatus("");
-  state.page = p; state.result = null; state.isolate = null;
+  // THE PAGE'S IDENTITY - which sheet we are on, and its raster. Those two
+  // are the only per-page values this function is allowed to write itself;
+  // everything else that belongs to one sheet is cleared by pageReset(),
+  // the single writer, below. tests/test_page_reset.js fails the build if a
+  // third assignment appears here.
+  state.page = p;
   state.img = null;
-  state.selected = null; state.selPt = null;
-  // chains are per page: an undo stack that outlived the sheet would
-  // "restore" chains onto a page they never belonged to. Same rule as the
-  // work area below - page switch is the reliable chokepoint.
-  state.multiSel = new Set(); state.marquee = null;
-  state.sgPartial = new Map();
-  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
-  state.extendAnchor = null; state.drawPend = null; drawFamClose();
-  undoClear(undoStack);
-  // The WORK AREA belongs to ONE sheet. loadResult also clears it, but
-  // loadResult only runs when the new page HAS a loadable result - an
-  // undetected page skipped it and kept the PREVIOUS sheet's boxes armed
-  // (caught live on Kayden 38->39: detect would then have silently masked
-  // the wrong sheet). Page switch is the reliable chokepoint; the new
-  // page's own saved boxes come back via wzApplySaved in calcStateLoad.
-  state.workZones = []; state.wzDrag = null; state.wzRev++;
-  // THE EARTHWORK PANEL BELONGS TO ONE SHEET TOO, and this is the only
-  // chokepoint that always runs: loadResult clears it, but loadResult only
-  // runs when the new page HAS a loadable result, so switching to an
-  // UNDETECTED page left the panel open on the previous sheet's rows.
-  ewPageReset();
-  // grading zones belong to ONE sheet, drafts included; this page's own
-  // saved zones come back via gzApplySaved in calcStateLoad
-  gzPageReset();
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); elevReset(); state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
-  $("aiBanner").hidden = true;
-  state.conf = null; state.confKey = null; state.confErr = false;
-  // check-offs are per page and per detection; loadResult reseeds them, but
-  // a page with no result yet must not inherit the previous page's set
-  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
+  // EVERY PER-PAGE FACT, IN ONE CALL, AT THE CHOKEPOINT THAT ALWAYS RUNS.
+  // loadResult clears the same set, but loadResult only runs when the new
+  // page HAS a loadable result - so switching to an UNDETECTED page used to
+  // leave the previous sheet's state armed under the new drawing. F5 fixed
+  // that for the earthwork panel and only for the earthwork panel; this is
+  // the general case.
+  pageReset();
   updateSelBar(null);
   // scaleMemApply BEFORE renderSheetHead, always - see loadResult().
   scaleMemApply();
@@ -934,64 +916,127 @@ $("detectAllBtn").onclick = async () => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// EVERY FACT THAT BELONGS TO ONE SHEET, CLEARED IN ONE PLACE.
+//
+// F5 was "the earthwork panel belongs to one sheet". It was fixed by adding
+// ewPageReset() and calling it from selectPage - the chokepoint that always
+// runs, unlike loadResult, which runs only when the new page HAS a loadable
+// result. That fix was right and it was one instance of a CLASS: loadResult
+// initialised roughly fifty per-page values and selectPage cleared about
+// half of them, so switching to an UNDETECTED sheet left the other half
+// armed under a different drawing. Reproduced at 7eb2a2d: state.tr, the
+// symbol counts, the cross-section and callout panels, the area rows, the
+// extra items, the active tool and its measure points, the hover
+// highlight - and the panels themselves, so the trench panel stayed OPEN
+// holding the previous sheet's inputs over a sheet with no detection at all.
+//
+// Fixing those one at a time would leave the next field somebody adds
+// exactly as exposed. So there is now ONE per-page reset and it is the
+// SINGLE WRITER: selectPage writes only state.page and state.img, loadResult
+// writes only state.result and state.nextChainId, and everything else that
+// dies with the sheet dies here. tests/test_page_reset.js enumerates the
+// assignments in both callers and fails if either grows a third one -
+// which is the only shape of test that catches tomorrow's field rather
+// than yesterday's list.
+//
+// NOT here, deliberately: state.job / state.page / state.gen (identity, not
+// page content), state.img (the raster, owned by selectPage's own loader),
+// and the status line (loadResult is called after setStatus("done") and
+// must not wipe it).
+function pageReset() {
+  // the detection and everything derived from it
+  state.result = null; state.isolate = null;
+  state.include = new Map(); state.labels = new Map();
+  state.seedLabels = new Map(); state.chainLabels = new Map();
+  state.inheritedInc = new Map();
+  state.excluded = new Set();
+  state.nextChainId = 1;
+  // the selection, and the click that made it
+  state.selected = null; state.selPt = null; state.clickPt = null;
+  state.multiSel = new Set(); state.marquee = null;
+  // hover highlight and per-family expansion: a style_id or a chain_id means
+  // nothing outside the result it came from
+  state.hotChain = null; state.hotStyle = null; famOpen.clear();
+  // the line-styles list: group folds are per BROWSER (sgSetClosed), but the
+  // remembered partial tick sets are keyed by style_id and so are per page
+  state.sgPartial = new Map();
+  // drawing / snapping / extending
+  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.extendAnchor = null; state.drawPend = null; drawFamClose();
+  // a fresh page invalidates every snapshot on the undo stack ("Reset edits"
+  // reloads through here, and re-detect replaces every chain object)
+  undoClear(undoStack);
+  // the toolkit: an active tool and its half-taken measurement belong to the
+  // sheet they were started on
+  state.tool = null; state.measurePts = []; state.vScale = null;
+  $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
+  $("restoreBtn").hidden = true;
+  // the analyzer
+  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null;
+  state.aiAuto = false; state.aiHidden = false;
+  state.measureMode = new Map();
+  toolRowLabel("aiBtn", "Analyze");
+  $("aiBanner").hidden = true;
+  // contour elevations for the selection chip (its own single writer)
+  elevReset();
+  // EARTHWORK: the panel, its rows, its numbers and the limit of work.
+  // ewPageReset stays a function of its own because it is the F5 fix and
+  // its comment is the record of what that cost; it is called from here and
+  // from nowhere else now.
+  ewPageReset();
+  // grading zones, drafts included; this page's own saved zones come back
+  // via gzApplySaved in calcStateLoad
+  gzPageReset();
+  // the WORK AREA belongs to ONE sheet (caught live on Kayden 38->39: detect
+  // would otherwise have silently masked the wrong sheet). This page's own
+  // boxes come back from the calcstate sidecar via wzApplySaved.
+  state.workZones = []; state.wzDrag = null; state.wzRev++;
+  // the confidence banner
+  state.conf = null; state.confKey = null; state.confErr = false;
+  // review queue: check-offs belong to a page and a detection; reseeded from
+  // the calcstate sidecar once it loads (renderCheckQueue)
+  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
+  // areas
+  state.areaInc = new Map(); state.areaLabels = new Map();
+  state.areaRows = []; state.areaHot = null;
+  // hand-added takeoff rows
+  state.extraItems = [];
+  // TRENCH. Stale numbers must not survive a page switch, the consent button
+  // must not offer to "Remove" rows state.tr no longer describes, and the
+  // band table must not describe the previous sheet's run. The PANEL closes
+  // too: on an undetected sheet it used to stay open holding the previous
+  // sheet's depth and width inputs, which is the F5 symptom one panel over.
+  state.tr = null;
+  $("trPanel").hidden = true; $("trBtn").hidden = false;
+  $("trResult").textContent = "";
+  $("trTake").classList.add("off"); $("trAdd").classList.remove("on");
+  $("trBandBox").classList.add("off"); $("trBandRows").innerHTML = "";
+  // SYMBOLS / marks rollup
+  state.sym = null; state.symMarks = null; state.symInfo = null;
+  $("symPanel").hidden = true; $("symBtn").hidden = false;
+  $("rollPanel").hidden = true; $("rollBtn").hidden = false;
+  // CROSS SECTIONS and CALLOUTS
+  state.xs = null; $("xsPanel").hidden = true; $("xsBtn").hidden = false;
+  state.co = null; $("coPanel").hidden = true; $("coBtn").hidden = false;
+}
+
 async function loadResult(gen = state.gen) {
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/result`);
   if (!r.ok || gen !== state.gen) return;
   const parsed = await r.json();
   if (gen !== state.gen) return;
+  // ONE WRITER. Everything this function used to clear inline now lives in
+  // pageReset() - the same function selectPage calls - so "what does a fresh
+  // page look like" has a single definition. See pageReset's own comment for
+  // why F5 was one instance of a class rather than the bug.
+  //
+  // Below this line loadResult may only SEED FROM THE RESULT. The two
+  // assignments that follow are the whole of it, and
+  // tests/test_page_reset.js fails the build if a third appears.
+  pageReset();
   state.result = parsed;
-  state.include = new Map(); state.labels = new Map();
-  state.selected = null; state.excluded = new Set();
-  state.chainLabels = new Map(); state.clickPt = null;
-  // a fresh result invalidates every snapshot on the undo stack ("Reset
-  // edits" reloads through here, and re-detect replaces every chain object)
-  state.multiSel = new Set(); state.marquee = null;
-  state.sgPartial = new Map();
-  state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
-  state.extendAnchor = null; state.drawPend = null; drawFamClose();
-  undoClear(undoStack);
-  state.tool = null; state.measurePts = []; state.vScale = null;
-  state.ai = null; state.aiWhy = new Map(); state.aiUndo = null; state.measureMode = new Map(); state.aiAuto = false; state.seedLabels = new Map(); elevReset(); state.aiHidden = false; toolRowLabel("aiBtn", "Analyze");
-  // ewLoading rides with ew: a suggest still in flight belongs to the page
-  // that started it, and its own gen check makes it a no-op when it lands.
-  // ONE definition of "the earthwork panel is not this sheet's" - selectPage
-  // calls the same function, see ewPageReset.
-  ewPageReset();
-  state.hotChain = null; state.extraItems = [];
-  // hover highlight and per-family expansion are page state like the rest:
-  // a style_id means nothing outside the result it came from
-  state.hotStyle = null; famOpen.clear();
-  // (the limit of work and its half-drawn outline belong to ONE sheet too,
-  // and ewPageReset above is their single writer - see the comment there)
-  // the WORK AREA is per sheet for the same reason; this page's own boxes
-  // come back from the calcstate sidecar below (wzApplySaved)
-  state.workZones = []; state.wzDrag = null; state.wzRev++;
-  // grading zones too - restored by gzApplySaved once the sidecar answers
-  gzPageReset();
-  state.conf = null; state.confKey = null; state.confErr = false;
-  // review queue: check-offs belong to a page and a detection; reseeded
-  // from the calcstate sidecar once it loads (renderCheckQueue)
-  state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
-  state.areaInc = new Map(); state.areaLabels = new Map();
-  state.areaRows = []; state.areaHot = null;
-  state.tr = null; state.sym = null; state.symMarks = null; state.symInfo = null;
-  // (the earthwork panel and its numbers were cleared by ewPageReset above)
-  $("trPanel").hidden = true; $("trBtn").hidden = false;
-  // trench: same three rules as earthwork just above. Stale numbers must
-  // not survive a doc/page switch, the consent button must not offer to
-  // "Remove" rows state.tr no longer describes, and the band table must
-  // not describe the previous sheet's run.
-  $("trResult").textContent = "";
-  $("trTake").classList.add("off"); $("trAdd").classList.remove("on");
-  $("trBandBox").classList.add("off"); $("trBandRows").innerHTML = "";
-  $("symPanel").hidden = true; $("symBtn").hidden = false;
-  $("rollPanel").hidden = true; $("rollBtn").hidden = false;
-  $("xsPanel").hidden = true; $("xsBtn").hidden = false; state.xs = null;
-  $("coPanel").hidden = true; $("coBtn").hidden = false; state.co = null;
-  $("aiBanner").hidden = true;
   state.nextChainId = 1 + Math.max(0, ...state.result.chains.map(c => c.chain_id));
-  $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
-  $("restoreBtn").hidden = true;
   for (const s of state.result.styles) {
     const white = s.color && Math.min(...s.color) > 0.92;
     // white-over-wash linework is real but faint existing-conditions data;
