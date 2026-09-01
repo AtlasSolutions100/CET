@@ -997,6 +997,22 @@ function pageReset() {
   // review queue: check-offs belong to a page and a detection; reseeded from
   // the calcstate sidecar once it loads (renderCheckQueue)
   state.ckDone = null; state.ckShowAll = false; state.ckCollapsed = false;
+  // THE SAVED-INPUTS SIDECAR IS A PAGE'S OWN RECORD. calcStateLoad() clears
+  // these five and refills them, but it runs ONLY from loadResult - so on a
+  // switch to an UNDETECTED sheet they used to keep describing the previous
+  // one. `calcSavedLoaded` staying true over a stale `calcSaved` is the bad
+  // half: it is the flag that says "we have read THIS page's record", and two
+  // readers act on it - renderCheckQueue reseeds state.ckDone from
+  // state.calcSaved whenever ckDone is null, which pageReset has just made it,
+  // and the drops line reports the previous page's record as this one's.
+  // (calcStateDirty also consults it, but that path returns on !state.result
+  // first, so no save could reach the wrong page. Say what it was, not more.)
+  // Found by tests/test_page_reset.js's callee scan, 2026-09-01. A no-op on
+  // the detected path - pageReset() always runs before calcStateLoad() - and
+  // the fix for the undetected one.
+  state.calcSaved = null; state.calcSavedLoaded = false;
+  state.calcStApplied = false;
+  state.calcSaveBroken = false; state.calcSaveWarned = false;
   // areas
   state.areaInc = new Map(); state.areaLabels = new Map();
   state.areaRows = []; state.areaHot = null;
@@ -1104,7 +1120,8 @@ async function loadResult(gen = state.gen) {
   // visit lives in the server sidecar, not in this browser. Async on purpose
   // - the first paint above is already true, and this only corrects it.
   scaleRestore(gen);
-  document.getElementById("aiBtn").hidden = false;
+  // (the Analyze button is revealed by updateSelBar above, off state.result,
+  // so that a page switch can hide it again - see the comment there)
   if (state.autoAi) runAnalyze(true);   // opt-in power mode only
   // The sheet facts used to be announced here, through setStatus, where the
   // next transient message erased them. They live in the status bar's own
@@ -7718,7 +7735,30 @@ const TRADES = ["Earthwork & Grading", "Wet Utilities", "Dry Utilities",
                 "Paving & Concrete", "Footing & Foundation", "Structures",
                 "Fencing & Sitework", "General"];
 function tradeKey(label) { return "trade::" + label.trim().toUpperCase(); }
-function tradeFor(label) {
+
+// THE ANNOTATION TEST READS THE CAD LAYER. IT MUST NEVER READ THE LABEL.
+//
+// `layers` is the CAD layer name (or the list of them) behind the row whose
+// trade is being asked for - exactly what sgSuggested() consults, and for the
+// same reason the comment there gives: the name is what the DRAFTER wrote,
+// never what the operator or a legend wrote. Absent or empty means there is
+// no layer evidence, and then the trade ladder decides on its own.
+//
+// EVERY contributing layer has to say annotation, and there has to be at
+// least one. A row whose footage comes from two families, only one of them
+// named TEXT, is not drafting furniture, and a row with a layer we cannot
+// read is not evidence of anything.
+function tradeAnnoLayers(layers) {
+  const ls = layers == null ? [] : (Array.isArray(layers) ? layers : [layers]);
+  if (!ls.length) return false;
+  for (const l of ls) {
+    const n = String(l == null ? "" : l).trim();
+    if (!n || !sgAnnoName(n)) return false;
+  }
+  return true;
+}
+
+function tradeFor(label, layers) {
   const saved = store.getItem(tradeKey(label));
   if (saved && TRADES.includes(saved)) return saved;
   const L = label.toUpperCase();
@@ -7740,7 +7780,21 @@ function tradeFor(label) {
   // list that can drift - and token-based is load-bearing here too: a
   // substring test for DIM would file SE-P-SEDIMENT LOG, real erosion-control
   // line work, as General.
-  if (sgAnnoName(label)) return "General";
+  //
+  // AND IT IS TESTED ON `layers`, NOT ON `label`. The first cut of this early
+  // return ran sgAnnoName over the LABEL and sat above the whole ladder with
+  // no ranking, which is the same defect one mirror over: the operator's own
+  // words carry NOTE / NOTES / LABEL / TITLE all the time, and
+  //     PROPOSED 8" WATER MAIN - SEE NOTE 4     -> General, not Wet Utilities
+  //     PROPOSED 4" PVC FOOTER DRAIN PIPE (SEE NOTE 3)
+  //                                             -> General, not Wet Utilities
+  //     SILT FENCE, SEE NOTES                   -> General, not Fencing
+  //     CONTOUR LABEL                           -> General, not Earthwork
+  // all lost an explicit trade keyword standing in the same string. Legend
+  // English reaches here today - `ADDENDUM 1 NOTES (legend)` (4,058 pt) and
+  // `CONSTRUCTION NOTES (legend)` (1,221 pt) are both in the 116-sheet
+  // corpus - so this was one legend row away from misfiling a real family.
+  if (tradeAnnoLayers(layers)) return "General";
   if (has("CONTOUR", "GRADING", "GRADE", "EXCAVAT", "EARTHWORK", "TOPO", "SLOPE",
           "BERM", "DITCH", "SWALE", "ELEVATION", "CUT", "FILL", "TOPSOIL")) return "Earthwork & Grading";
   if (has("WATER", "SEWER", "STORM", "SANITARY", "DRAIN", "PIPE", "MAIN",
@@ -7761,6 +7815,27 @@ function tradeFor(label) {
   if (has("FENCE", "WALL", "RAIL", "GATE", "BARRIER", "LANDSCAP", "TREE",
           "SILT", "PROPERTY", "EASEMENT", "SETBACK")) return "Fencing & Sitework";
   return "General";
+}
+
+// label -> the CAD layers behind it, which is what tradeFor()'s annotation
+// test is allowed to read. Built from the STYLE rows this sheet includes, and
+// used by BOTH callers that group by trade - the itemised panel and the
+// approve payload - so the export can never file a row under a different
+// trade than the panel showed.
+//
+// A label that only ever came from state.chainLabels (typed onto individual
+// lines) or from a calculator row is absent from this map on purpose: the
+// operator wrote it, there is no drafter's layer behind it, and the ladder
+// decides it on the words alone.
+function tradeLayerMap() {
+  const m = new Map();
+  for (const s of ((state.result && state.result.styles) || [])) {
+    if (!state.include.get(s.style_id)) continue;
+    const lab = state.labels.get(s.style_id) || "unlabeled";
+    if (!m.has(lab)) m.set(lab, []);
+    m.get(lab).push(s.layer || "");
+  }
+  return m;
 }
 
 // ---------- counted twice, WITHIN one sheet -----------------------------
@@ -8579,8 +8654,10 @@ function computeTakeoffRows() {
     items.push({ label: it.label, cnt: it.unit, unit: it.unit, qty: it.qty,
                  qtyText: it.qty.toLocaleString(), priced: true, isCalc: true });
   const byTrade = new Map();
+  const trLayers = tradeLayerMap();
   for (const it of items) {
-    const tr = tradeFor(it.label);
+    // the CAD layer, never the operator's label — see tradeFor()
+    const tr = tradeFor(it.label, trLayers.get(it.label));
     if (!byTrade.has(tr)) byTrade.set(tr, []);
     byTrade.get(tr).push(it);
   }
@@ -13626,6 +13703,7 @@ $("approveBtn").onclick = async () => {
   // this a structural fix instead of a fifth hand-maintained copy.
   const ovRows = [];
   const ovSrc = computeTakeoffRows();
+  const trLayers = tradeLayerMap();   // for the `trades:` map below
   {
     const d = ovSrc;
     for (const g of (d ? d.groups : []))
@@ -13664,9 +13742,12 @@ $("approveBtn").onclick = async () => {
           .filter(it => it.isObj)
           .map(it => [it.label, it.ov && Number.isFinite(it.auto) ? it.auto : it.qty])),
       trades: Object.fromEntries([
+        // trLayers is the SAME label -> CAD layer map the itemised panel
+        // groups by, so the export cannot file a row under a trade the panel
+        // did not show
         ...[...new Set([...Object.values(labels), ...state.chainLabels.values(),
                         ...state.extraItems.map(i => i.label)])]
-          .filter(Boolean).map(l => [l, tradeFor(l)]),
+          .filter(Boolean).map(l => [l, tradeFor(l, trLayers.get(l))]),
         // A component takes its PARENT's trade, never tradeFor() on its own
         // name: "#4 rebar" run through the keyword table lands in General
         // while the concrete it belongs to is Paving & Concrete, and the
@@ -16161,9 +16242,13 @@ const ELEV_PROV = {
   // A READING OF A PICTURE IS NOT A READING OF TEXT, AND THE CHIP HAS TO
   // SHOW WHICH.
   //
-  // `inline` and `gap-ocr` make the SAME provenance claim and it is true for
-  // both: the sheet prints this number in this contour's own break. So
-  // gap-ocr keeps kind "printed" and keeps the SOLID border - the border in
+  // `inline` and `gap-ocr` make the same claim about the SOURCE and it is
+  // true for both: the sheet prints a label in this contour's own break. It
+  // is NOT the same claim about the DIGITS - `inline` copies text out of the
+  // PDF, `gap-ocr` transcribes a picture, and a transcription can disagree
+  // with what is printed. So the tooltip says "a number", never "this
+  // number": chain 417 below is a live case where the two differ. gap-ocr
+  // keeps kind "printed" and keeps the SOLID border - the border in
   // this vocabulary says where the number came from (solid = this line's own
   // label, dotted = a number printed nearby, dashed = nothing printed it),
   // and marking gap-ocr "inferred" would be a new lie in the other
@@ -16185,13 +16270,15 @@ const ELEV_PROV = {
   // read and acted on, so the caveat now rides ON the number in the same
   // grammar the chip already uses for "· inferred" and "· source unknown".
   "gap-ocr": { kind: "printed", cls: "ocr", tag: "read from a picture",
-    why: "The sheet DOES print this number in the break in this contour — "
-       + "that part is not in doubt. But the drafter drew that label as line "
-       + "work rather than text, so there is no text to read: the digits were "
-       + "read by machine off a picture of the sheet and CAN come back wrong. "
-       + "It is the reading that is uncertain here, not where it came from. "
-       + "Check the digits against the drawing before anything is priced on "
-       + "them." },
+    why: "The sheet DOES print a number in the break in this contour — that "
+       + "a label is there is not in doubt. But the drafter drew it as line "
+       + "work rather than text, so there is no text to read: the digits "
+       + "SHOWN HERE were read by machine off a picture of the sheet, and "
+       + "they can disagree with what is printed. Where several labels are "
+       + "crowded into one break this reader has already returned a number "
+       + "the sheet prints nowhere. It is the digits that are uncertain, not "
+       + "that a label is there. Check them against the drawing before "
+       + "anything is priced on them." },
   inherited: { kind: "inferred", cls: "inferred", tag: "inferred",
     why: "NOT printed on this line. Nothing is labelled on it; the engine "
        + "joined it end to end to another piece of what it takes to be the "
@@ -16321,6 +16408,17 @@ function updateSelBar(ch) {
   // line at any time"). It needs a detected sheet, nothing more; with nothing
   // selected, finishDraw asks which family the footage joins.
   $("drawBtn").disabled = !state.result;
+  // ANALYZE IS GATED THE SAME WAY, AND FOR THE SAME REASON IT IS HERE AND NOT
+  // IN loadResult. It used to be revealed by loadResult itself
+  // (`document.getElementById("aiBtn").hidden = false`) and pageReset never
+  // put it back, so switching from a detected sheet to an UNDETECTED one left
+  // Analyze on screen over a drawing with no result - the F5 symptom exactly,
+  // one control over, and invisible to test_page_reset.js because its DOM
+  // scan only knew the `$("id")` idiom. Gating it off state.result here means
+  // selectPage's own updateSelBar(null) - which runs AFTER pageReset() nulls
+  // the result - hides it, and loadResult's - which runs after the result is
+  // seeded - shows it. Same reveal, one writer.
+  $("aiBtn").hidden = !state.result;
   $("removeBtn").disabled = !ch;
   if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);

@@ -33,10 +33,38 @@
 //      both seeded FROM the result it just fetched - and must call
 //      pageReset() first, before either.
 //   4. Neither may write a DOM property directly.
+//   5. Neither may reach a new per-page field through a HELPER either: every
+//      app.js function they call that writes `state.*` is named in
+//      CALLEE_OK below, with the fields it writes that pageReset() does NOT
+//      clear enumerated in CALLEE_UNRESET, each with its reason.
 //
 // Add a field to loadResult and check 3 fails. Add one to selectPage and
-// check 2 fails. Put it in pageReset - the only remaining place - and it is
-// cleared on every page switch by construction. That is the point.
+// check 2 fails. Seed it from a new one-line helper and check 5 fails. Put
+// it in pageReset - the only remaining place - and it is cleared on every
+// page switch by construction. That is the point.
+//
+// WHAT THIS DOES NOT CATCH, STATED SO THE CLAIM IS NOT LARGER THAN THE TEST.
+// Checks 2-4 read only the two function bodies, textually. Check 5 walks ONE
+// level of call graph and no further: a field written inside an
+// ALREADY-LISTED callee's own callees is invisible to it, and so is anything
+// reached through a value (`fns[k]()`, a method on an object, a callback
+// passed elsewhere). The name resolution is textual too - a top-level
+// `function foo(` in app.js, matched by name at the call site. Suites B and
+// C are the behavioural backstop, and they only see the fields their fixture
+// seeds. The 2026-09-01 adversary escaped the pre-check-5 version with a
+// two-line helper; check 5 exists because of that, and it closes that shape
+// only.
+//
+// Check 5 found two live leaks the day it was written, both of the class
+// this file is about:
+//   * loadResult revealed #aiBtn with document.getElementById(...).hidden =
+//     false - invisible to the old DOM scan, which only knew $("id") - and
+//     pageReset never re-hid it, so Analyze stayed on screen over an
+//     undetected sheet. Moved into updateSelBar, gated on state.result.
+//   * calcStateLoad's five sidecar fields (calcSaved, calcSavedLoaded,
+//     calcStApplied, calcSaveBroken, calcSaveWarned) were cleared only by
+//     calcStateLoad itself, which runs only from loadResult. Added to
+//     pageReset.
 //
 // Suite B then RUNS pageReset against a stub DOM seeded with a previous
 // sheet's state, because a source-shape test cannot tell whether the
@@ -88,17 +116,48 @@ function stateWrites(body) {
   return out;
 }
 // `$("id").prop = ...`, `$("id").classList.add(...)`, `$("id").innerHTML = ...`
+// BOTH ACCESSORS. The first cut of this matched only `$("id")`, and
+// loadResult's `document.getElementById("aiBtn").hidden = false` walked
+// straight through a check whose message says "writes no DOM property
+// directly" - leaving Analyze on screen over an undetected sheet, which is
+// the reported symptom one control over. Anything that can name an element
+// has to be in this pattern or the claim is false.
+const EL = '(?:\\$\\("([A-Za-z0-9_]+)"\\)'
+         + '|document\\.getElementById\\("([A-Za-z0-9_]+)"\\))';
 function domWrites(body) {
   const out = new Set();
-  const re = /\$\("([A-Za-z0-9_]+)"\)(?:\.classList)?\.([A-Za-z]+)\s*(?:=(?!=)|\()/g;
+  const re = new RegExp(EL + "(?:\\.classList)?\\.([A-Za-z]+)\\s*(?:=(?!=)|\\()", "g");
   let m;
   const s = strip(body);
   while ((m = re.exec(s))) {
-    if (m[2] === "querySelector" || m[2] === "querySelectorAll") continue;
-    out.add(m[1] + "." + m[2]);
+    const id = m[1] || m[2], prop = m[3];
+    if (prop === "querySelector" || prop === "querySelectorAll") continue;
+    out.add(id + "." + prop);
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// ONE LEVEL OF CALL GRAPH, FOR CHECK 5.
+// Every top-level `function name(` in app.js, so a call site can be told from
+// an ordinary identifier. Textual, like everything else here; see the header
+// for what that misses.
+const APP_FNS = (function () {
+  const s = new Set();
+  const re = /\n(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g;
+  let m;
+  while ((m = re.exec(SRC))) s.add(m[1]);
+  return s;
+})();
+function callees(body) {
+  const out = new Set();
+  const re = /\b([A-Za-z_$][\w$]*)\s*\(/g;
+  let m;
+  const s = strip(body);
+  while ((m = re.exec(s))) if (APP_FNS.has(m[1])) out.add(m[1]);
+  return out;
+}
+function fnSrcOrNull(name) { try { return fnSrc(name); } catch (e) { return null; } }
 
 // ===========================================================================
 console.log("A. one writer: the two callers may not clear anything themselves");
@@ -135,6 +194,117 @@ for (const [name, body, ok] of [["selectPage", SELECT, SELECT_OK],
     + "and #trPanel staying open on an undetected sheet was the reported "
     + "symptom" + (dom.length ? "  — found " + dom.join(", ") : ""));
   check(/\bpageReset\(\)/.test(strip(body)), name + " calls pageReset()");
+}
+
+// ---------------------------------------------------------------------------
+// CHECK 5: THE HELPER ESCAPE.
+// ---------------------------------------------------------------------------
+// The 2026-09-01 adversary walked through checks 2-4 with two lines: move
+// `state.advProbeField = ...` out of loadResult into `advSeedProbe(parsed)`
+// and call that instead. Both scans read only the two bodies, so a new
+// per-page field AND a new DOM property survived a page switch with the
+// suite green. The invariant in the header said otherwise, and the report
+// leaned on the wording.
+//
+// So the callees are named. Adding a call to a NEW state-writing helper
+// fails here until someone writes down why it is not per-page state - which
+// is the same conversation the SELECT_OK / LOAD_OK lists force.
+const CALLEE_OK = {
+  pageReset: "the single writer itself",
+  // painters, called from BOTH selectPage and loadResult: whatever they
+  // cache is re-derived on the very next page, detected or not
+  scopeApply: "recomputes the scope verdicts for the sheet now open",
+  renderStyles: "paints the line-styles list",
+  renderAreas: "paints the areas list",
+  renderMultiBar: "paints the multi-select bar",
+  renderMiniLegend: "paints the mini legend",
+  renderItemized: "paints the itemised takeoff",
+  updateSelBar: "the selection pill and the toolkit gates, every one of them "
+              + "derived from state.result and the current selection - this "
+              + "is where #aiBtn's gate lives",
+  fitOnLoad: "fits the view to the raster this page just loaded",
+  // restorers, called from loadResult only: they refill per-page state FROM
+  // this page's own saved record, immediately after pageReset() emptied it
+  memApply: "the reviewer's saved decisions for THIS sheet's styles",
+  calcRestore: "the calculator rows he committed on THIS sheet",
+  calcStateLoad: "this page's server-side sidecar of calculator inputs",
+  arApplyItems: "re-derives the area rows from the restored selection",
+  runAnalyze: "opt-in auto-analyze; everything it writes is state.ai*",
+  loadResult: "selectPage's own tail call, checked as a caller in its own right",
+  selectPage: "self-reference in a comment-stripped body, not a call",
+};
+// Fields an allow-listed callee writes that pageReset() does NOT clear.
+// Enumerated so a NEW one shows up as a failure rather than as silence.
+const CALLEE_UNRESET = {
+  scopeApply: {
+    fields: ["scopeV", "scopeOwnerOn", "scopeKeep", "scopeOffBy"],
+    why: "scopeApply is called from selectPage on EVERY page switch, and its "
+       + "first act on a page with no result is to empty all four (see the "
+       + "!state.result arm). Pinned by the assertion below",
+  },
+  memApply: {
+    fields: ["famColor", "lineColor"],
+    why: "colour choices are CROSS-DOCUMENT memory, keyed by style "
+       + "fingerprint and chain id in localStorage - deliberately not "
+       + "per-page, and famColorReset/lineColorReset are the way back",
+  },
+};
+{
+  const RESET_FIELDS = stateWrites(RESET);
+  const OWNED = new Set(["page", "img", "result", "nextChainId", "gen"]);
+  for (const [name, body] of [["selectPage", SELECT], ["loadResult", LOAD]]) {
+    const writers = [...callees(body)].filter((c) => {
+      const b = fnSrcOrNull(c);
+      return b && (stateWrites(b).size || domWrites(b).size);
+    }).sort();
+    const unknown = writers.filter(
+      (c) => !Object.prototype.hasOwnProperty.call(CALLEE_OK, c));
+    check(unknown.length === 0,
+      name + " reaches per-page state only through callees this file names — "
+      + "a new one-line helper is how the single-writer rule gets escaped"
+      + (unknown.length ? "  — UNNAMED: " + unknown.join(", ") : ""));
+  }
+  // ...and no allow-listed callee has quietly grown a field pageReset misses
+  for (const c of Object.keys(CALLEE_OK)) {
+    if (c === "selectPage" || c === "loadResult" || c === "pageReset") continue;
+    const b = fnSrcOrNull(c);
+    if (!b) { check(false, "allow-listed callee " + c + " still exists"); continue; }
+    const allowed = new Set((CALLEE_UNRESET[c] || {}).fields || []);
+    const leaked = [...stateWrites(b)]
+      .filter((f) => !RESET_FIELDS.has(f) && !OWNED.has(f) && !allowed.has(f))
+      .sort();
+    check(leaked.length === 0,
+      c + " writes nothing per-page that pageReset() does not clear"
+      + (leaked.length ? "  — UNRESET: state." + leaked.join(", state.") : ""));
+  }
+  // the reason scopeApply's four are allowed, made executable
+  check(/\bscopeApply\(\)/.test(strip(SELECT)),
+    "scopeApply runs on EVERY page switch — the reason its four scope fields "
+    + "are exempt from the rule above");
+  const sa = fnSrcOrNull("scopeApply") || "";
+  check(/if \(!state\.result\)[\s\S]{0,160}scopeKeep = new Set\(\)/.test(strip(sa)),
+    "...and on a sheet with no result it empties scopeKeep and scopeOffBy "
+    + "itself, which is what makes them not survive the switch");
+}
+{
+  // THE OTHER HALF OF THE aiBtn LEAK: the reveal now lives in updateSelBar,
+  // gated on state.result, so the SAME call that shows it on a detected
+  // sheet hides it on an undetected one. selectPage calls it after
+  // pageReset() (result null -> hidden); loadResult after seeding the result.
+  const usb = fnSrcOrNull("updateSelBar") || "";
+  check(/\$\("aiBtn"\)\.hidden\s*=\s*!state\.result/.test(strip(usb)),
+    "Analyze is gated on state.result in updateSelBar, not revealed by "
+    + "loadResult — it used to stay on screen over an undetected sheet");
+  check(!/getElementById\("aiBtn"\)/.test(strip(LOAD)),
+    "...and loadResult no longer reveals it behind the DOM scan's back");
+  const s = strip(SELECT);
+  check(s.indexOf("pageReset()") < s.indexOf("updateSelBar("),
+    "selectPage calls pageReset() BEFORE updateSelBar(), so the gate reads a "
+    + "nulled result and hides the button");
+  const l = strip(LOAD);
+  check(l.indexOf("state.result =") < l.indexOf("updateSelBar("),
+    "loadResult seeds state.result BEFORE updateSelBar(), so the same gate "
+    + "shows it again");
 }
 {
   // ORDER MATTERS IN ONE DIRECTION ONLY: pageReset() nulls state.result, so

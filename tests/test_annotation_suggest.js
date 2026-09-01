@@ -34,7 +34,7 @@
 //     SE-P-SEDIMENT LOG   substring says annotation, and it is WRONG
 //     SP-TITLES           substring says annotation, token says no. TITLES
 //                         is not TITLE, and the token list is deliberately
-//                         not pluralised into ambiguity. 65 runs / 5,037 pt
+//                         not pluralised into ambiguity. 62 runs / 4,919 pt
 //                         keep counting. Recorded as a KNOWN CONSERVATIVE
 //                         MISS, not as a win: erring toward counting is the
 //                         safe direction here, but it is still a miss.
@@ -42,8 +42,19 @@
 // A third real title block, TTL-BLK-B4UDIG, is missed by BOTH tests: the
 // hyphen splits TTLBLK into TTL and BLK and neither is a marker, because a
 // three-letter marker is how a substring test creeps back in (TTL is also
-// "total", BLK also "black"). 14 runs / 1,025 pt keep counting. Recorded as
+// "total", BLK also "black"). 6 runs / 678 pt keep counting. Recorded as
 // a miss, not defended as a design.
+//
+// THOSE THREE ARE NOT THE WHOLE OF WHAT IS MISSED, AND THE FIRST CUT OF THIS
+// FILE READ AS IF THEY WERE. Re-swept 2026-09-01 on the headline's own basis
+// (rows that count today): six more layers whose names read as drafting
+// furniture still count, 574 runs / 108,743 pt - 31% on top of the 347,440 pt
+// the change removes, led by ZTB_Liberty Park|TB-Logo at 56,744 pt and the
+// four BORDER layers at 44,373 pt together. Every one is a MUST_NOT_MATCH
+// fixture below, with its footage, and the reason they are not markers is
+// there too. The two figures above were also on a different basis from the
+// headline (all rows: 65 / 5,037 and 14 / 1,025); both bases are in
+// out/verify/2026-09-01/honesty-defect-zero/VERIFY.md.
 //
 // ===========================================================================
 // WHY A VISIBLE GROUP AND NOT A SILENT DEFAULT-OFF
@@ -122,13 +133,38 @@ const MUST_NOT_MATCH = [
    "se-DIM-ent: real erosion-control line work, 37 runs / 11,408 pt across "
    + "the corpus. A substring test kills it, which IS the defect"],
   ["SP-TITLES",
-   "TITLES is not TITLE - a known conservative miss, 65 runs / 5,037 pt "
+   "TITLES is not TITLE - a known conservative miss, 62 runs / 4,919 pt "
    + "that keep counting. Erring toward counting is the safe direction"],
   ["TTL-BLK-B4UDIG",
    "a REAL title block the matcher misses: the hyphen splits TTLBLK into "
    + "TTL and BLK, and neither is a marker because three-letter markers are "
-   + "how a substring test creeps back in. 14 runs / 1,025 pt keep counting. "
+   + "how a substring test creeps back in. 6 runs / 678 pt keep counting. "
    + "A miss, recorded as one"],
+  // THE MISSES THE FIRST CUT OF THIS FILE DID NOT NAME, AND THEY ARE THE BIG
+  // ONES. Measured 2026-09-01 over the same 116 cached detections, on the
+  // same basis as the headline (rows that COUNT TODAY): six layers whose
+  // names read as drafting furniture, 574 runs / 108,743 pt still counting -
+  // 31% on top of the 347,440 pt the change removes, and the four BORDER
+  // layers alone (34 runs / 44,373 pt) outweigh the biggest family it does
+  // remove (TXT-PS, 44,605 pt). Pinned here so the size of the miss cannot
+  // change quietly. They are NOT markers on purpose: this corpus also carries
+  // `BG-L-Metal edger`, so a planting-bed BORDER is a plausible real family
+  // under that word, and nobody has opened these six sheets. A wrong catch
+  // here is the defect being fixed, reintroduced by the fix.
+  ["ZTB_Liberty Park|TB-Logo",
+   "a title-block logo, 537 runs / 56,744 pt - the LARGEST single miss. TB "
+   + "is not TBLK and LOGO is not a marker"],
+  ["BORDER", "sheet border, 16 runs / 27,979 pt on 6 sheets"],
+  ["SP-BORDER", "sheet border, 9 runs / 11,531 pt"],
+  ["BG-SWCR-CB-MATERIALS|BG-SHEET MATCHLINE",
+   "a match line, 3 runs / 7,626 pt"],
+  ["SP-BORDER-LINE", "sheet border, 7 runs / 2,898 pt"],
+  ["SE-BORDER", "sheet border, 2 runs / 1,965 pt"],
+  ["P6-SHEET",
+   "901 runs / 281,410 pt, and NOT claimed as a miss: SHEET names no "
+   + "drawing element, and calling 281k pt furniture off a layer name is "
+   + "exactly the reach this matcher exists to avoid. Here so that adding "
+   + "SHEET as a marker has to argue with a number first"],
   // constructed neighbours of every marker that could plausibly be fused
   ["C-STORM-MAIN", "no annotation token anywhere"],
   ["SEDIMENT", "the bare word, in case the token rule ever gains a suffix"],
@@ -347,14 +383,38 @@ console.log("\n4. loadResult seeds them OFF - the actual behaviour change");
 }
 
 // ===========================================================================
-console.log("\n5. tradeFor tests annotation FIRST and returns early");
+console.log("\n5. tradeFor's annotation test reads the CAD LAYER, first");
 // ===========================================================================
 // CLAUDE.md section 5, "first-writer-wins discards the right answer": a
 // first-match-wins ladder over substrings with no explicit ranking. STORM
 // won inside `P6-TEXT-STORM-C8.0` and the row was filed as pipe.
+//
+// THE FIRST CUT OF THAT FIX WAS THE SAME DEFECT ONE MIRROR OVER. It ran the
+// matcher over `label` - the OPERATOR's / the LEGEND's words, which is what
+// the itemised panel and the export's `trades:` map group by - and returned
+// unconditionally above the whole ladder. Measured with the shipped ladder:
+//
+//   PROPOSED 8" WATER MAIN - SEE NOTE 4              General, not Wet Utilities
+//   PROPOSED 4" PVC FOOTER DRAIN PIPE (SEE NOTE 3)   General, not Wet Utilities
+//   SILT FENCE, SEE NOTES                            General, not Fencing
+//   CONTOUR LABEL                                    General, not Earthwork
+//
+// NOTE / NOTES / LABEL beat an explicit trade keyword standing in the same
+// string, with no ranking. No corpus layer does this today - all 22 labels
+// the early return moves across the 116 cached detections are genuine text
+// layers - but legend English already reaches tradeFor: `ADDENDUM 1 NOTES
+// (legend)` (4,058 pt) and `CONSTRUCTION NOTES (legend)` (1,221 pt) are both
+// in the corpus. It was one legend row away.
+//
+// So the early return takes the CAD LAYER as its own argument, which is what
+// sgSuggested() consults and for the reason its comment gives: the layer is
+// what the DRAFTER wrote. No layer evidence => the ladder decides alone.
 {
   const TR = SRC.slice(SRC.indexOf("const TRADES = ["),
-                       SRC.indexOf("function tradeFor(label)"));
+                       SRC.indexOf("function tradeFor(label, layers)"));
+  check(TR.indexOf("function tradeAnnoLayers") >= 0,
+    "the lifted slice really contains tradeAnnoLayers (the boundary string "
+    + "still matches tradeFor's signature)");
   const saved = new Map();
   const scope = { store: { getItem: (k) => saved.get(k) || null } };
   const names = Object.keys(scope);
@@ -362,20 +422,72 @@ console.log("\n5. tradeFor tests annotation FIRST and returns early");
     PURE + "\n" + TR + fnSrc("tradeFor") + "\nreturn tradeFor;")
     (...names.map((n) => scope[n]));
 
-  eq(tradeFor("P6-TEXT-STORM-C8.0"), "General",
+  // ---- with the CAD layer supplied, the early return does its job --------
+  eq(tradeFor("P6-TEXT-STORM-C8.0", "P6-TEXT-STORM-C8.0"), "General",
     "THE FIXED DEFECT: an annotation layer is no longer filed as Wet "
     + "Utilities on the strength of the word STORM");
-  eq(tradeFor("TXT-NOTES"), "General", "TXT-NOTES is not a trade");
-  eq(tradeFor("G-ANNO-TTLB-THIN"), "General", "nor is a title block");
-  eq(tradeFor("DETAIL-DIM"), "General", "nor a dimension layer");
-  eq(tradeFor("P5-GRADE-LBL-TEXT-2"), "General",
+  eq(tradeFor("TXT-NOTES", "TXT-NOTES"), "General", "TXT-NOTES is not a trade");
+  eq(tradeFor("G-ANNO-TTLB-THIN", "G-ANNO-TTLB-THIN"), "General",
+    "nor is a title block");
+  eq(tradeFor("DETAIL-DIM", "DETAIL-DIM"), "General", "nor a dimension layer");
+  eq(tradeFor("P5-GRADE-LBL-TEXT-2", "P5-GRADE-LBL-TEXT-2"), "General",
     "...and GRADE inside a TEXT layer no longer wins either");
+  // the layer is read even when the operator has RENAMED the row: that is
+  // the whole point of consulting the drafter's name instead of the label
+  eq(tradeFor("storm line, keep", "P6-TEXT-STORM-C8.0"), "General",
+    "a renamed row is still judged on the layer the drafter wrote");
 
-  // EVERY OTHER TRADE IS UNCHANGED. An early return that swallowed real
-  // linework would be a worse defect than the one it fixes.
+  // ---- THE REGRESSION THIS SUITE EXISTS FOR ------------------------------
+  // the same four labels with NO layer evidence keep their trade keyword.
+  eq(tradeFor('PROPOSED 8" WATER MAIN - SEE NOTE 4'), "Wet Utilities",
+    "an operator's label that merely CITES a note is still Wet Utilities — "
+    + "NOTE must not beat WATER MAIN");
+  eq(tradeFor('PROPOSED 4" PVC FOOTER DRAIN PIPE (SEE NOTE 3)'), "Wet Utilities",
+    "...nor beat DRAIN PIPE");
+  eq(tradeFor("SILT FENCE, SEE NOTES"), "Fencing & Sitework",
+    "...nor beat SILT FENCE");
+  eq(tradeFor("CONTOUR LABEL"), "Earthwork & Grading",
+    "...and LABEL must not beat CONTOUR");
+  // LEGEND ENGLISH, verbatim from the corpus, on its real CAD layer. Both of
+  // these land in General either way — their labels carry no trade word — so
+  // the assertion that matters is that they get there by the ladder falling
+  // through and NOT by an early return. The third line is the proof: same
+  // layer, a legend label that does name a trade, and the trade survives.
+  const RWAY = "23-084 Billings #3 Lot Lines|VZ-PROP-RWAY";
+  eq(tradeFor("ADDENDUM 1 NOTES (legend)", RWAY), "General",
+    "corpus legend row, 4,058 pt: General, and nothing in the layer said so");
+  eq(tradeFor("CONSTRUCTION NOTES (legend)", "V-TRAF"), "General",
+    "corpus legend row, 1,221 pt, same");
+  eq(tradeFor("PROPOSED STORM DRAIN — SEE NOTES (legend)", RWAY), "Wet Utilities",
+    "THE ONE THAT WAS ONE LEGEND ROW AWAY: a legend label carrying both a "
+    + "trade word and the word NOTES keeps its trade, because the layer "
+    + "behind it is real line work");
+
+  // ---- what counts as layer evidence ------------------------------------
+  eq(tradeFor("P6-TEXT-STORM-C8.0", []), "Wet Utilities",
+    "an EMPTY layer list is not evidence: 23% of chains corpus-wide carry no "
+    + "layer, and absence must not be read as a verdict");
+  eq(tradeFor("P6-TEXT-STORM-C8.0", [""]), "Wet Utilities",
+    "...and neither is a blank layer name");
+  eq(tradeFor("P6-TEXT-STORM-C8.0", [null]), "Wet Utilities",
+    "...or a missing one");
+  eq(tradeFor("mixed row", ["TXT-NOTES", "C-STORM-MAIN"]), "General",
+    "a row fed by TWO families, only one of them named TEXT, is NOT swept to "
+    + "General by the early return (it lands there by the ladder here, but "
+    + "not by the annotation test — the next assertion is the one that "
+    + "proves it)");
+  eq(tradeFor("storm main", ["TXT-NOTES", "C-STORM-MAIN"]), "Wet Utilities",
+    "...proof: the same mixed pair with a trade word in the label keeps its "
+    + "trade. Every contributing layer has to say annotation");
+  eq(tradeFor("storm main", ["TXT-NOTES", "G-ANNO-TTLB"]), "General",
+    "...and when every contributing layer DOES say annotation, it fires");
+
+  // ---- EVERY OTHER TRADE IS UNCHANGED -----------------------------------
+  // An early return that swallowed real linework would be a worse defect
+  // than the one it fixes.
   eq(tradeFor("PROPOSED STORM DRAIN PIPE"), "Wet Utilities",
     "real storm pipe is still Wet Utilities");
-  eq(tradeFor("SE-P-SEDIMENT LOG"), "General",
+  eq(tradeFor("SE-P-SEDIMENT LOG", "SE-P-SEDIMENT LOG"), "General",
     "the sediment log is not annotation — and se-DIM-ent must not make it so");
   eq(tradeFor("EXISTING CONTOUR"), "Earthwork & Grading", "contours unchanged");
   eq(tradeFor("CONCRETE FOOTING"), "Footing & Foundation", "footings unchanged");
@@ -387,16 +499,67 @@ console.log("\n5. tradeFor tests annotation FIRST and returns early");
   // AND THE OPERATOR STILL OUTRANKS THE ENGINE. A trade set by hand is a
   // decision; the early return must sit behind it, not in front of it.
   saved.set("trade::P6-TEXT-STORM-C8.0", "Wet Utilities");
-  eq(tradeFor("P6-TEXT-STORM-C8.0"), "Wet Utilities",
+  eq(tradeFor("P6-TEXT-STORM-C8.0", "P6-TEXT-STORM-C8.0"), "Wet Utilities",
     "a trade the operator set by hand still wins over the annotation test");
   saved.clear();
 
   // the ranking is real, not incidental: the annotation test must appear
-  // before the first trade arm in the source
+  // before the first trade arm in the source...
   const t = fnSrc("tradeFor");
-  check(t.indexOf("sgAnnoName") >= 0
-        && t.indexOf("sgAnnoName") < t.indexOf("Earthwork & Grading"),
+  check(t.indexOf("tradeAnnoLayers(layers)") >= 0
+        && t.indexOf("tradeAnnoLayers(layers)") < t.indexOf("Earthwork & Grading"),
     "the annotation test is FIRST in the ladder, not appended to the end");
+  // ...and it must not have quietly gone back to reading the label
+  check(!/sgAnnoName\s*\(\s*(label|L)\s*\)/.test(t),
+    "tradeFor never runs the annotation matcher over the LABEL — that is the "
+    + "defect, and it is cheap to reintroduce by deleting one argument");
+}
+
+// ===========================================================================
+console.log("\n5b. both trade callers pass the CAD layer, from one map");
+// ===========================================================================
+// A fix that only reached one of the two call sites would leave the export's
+// `trades:` map disagreeing with the itemised panel it is supposed to mirror.
+{
+  const mapSrc = fnSrc("tradeLayerMap");
+  check(/state\.result[\s\S]*styles/.test(mapSrc),
+    "tradeLayerMap reads the STYLE rows — where the CAD layer lives");
+  check(/state\.include\.get/.test(mapSrc),
+    "...only the included ones, the same gate computeTakeoffRows applies");
+  check(/state\.labels\.get\(s\.style_id\) \|\| "unlabeled"/.test(mapSrc),
+    "...and keys them by the SAME label expression computeTakeoffRows uses, "
+    + "or the map would miss the rows it is built for");
+  check(!/chainLabels|extraItems/.test(mapSrc),
+    "a chain label or a calculator row has no drafter's layer behind it and "
+    + "must not be given one");
+
+  // Both callers, in the source, with COMMENTS STRIPPED — prose above a fix
+  // must not satisfy the assertion the fix is supposed to earn, and this
+  // file's own comments name tradeFor() a dozen times. A call with no second
+  // argument is the shape of the defect.
+  const CODE = SRC.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const live = [];
+  for (let i = CODE.indexOf("tradeFor("); i >= 0;
+           i = CODE.indexOf("tradeFor(", i + 1)) {
+    if (/[\w$.]/.test(CODE[i - 1] || "")) continue;          // ...tradeForX(
+    if (/function\s+$/.test(CODE.slice(Math.max(0, i - 20), i))) continue;
+    let d = 0, k = CODE.indexOf("(", i);
+    for (; k < CODE.length; k++) {
+      if (CODE[k] === "(") d++;
+      else if (CODE[k] === ")" && --d === 0) break;
+    }
+    live.push(CODE.slice(i, k + 1));
+  }
+  check(live.length === 2,
+    "exactly two live tradeFor call sites — the panel and the approve payload"
+    + "  (found " + JSON.stringify(live) + ")");
+  for (const c of live)
+    check(/^tradeFor\([^,]+,/.test(c),
+      "call site passes a layer argument: " + c);
+  check(SRC.indexOf("tradeFor(it.label, trLayers.get(it.label))") >= 0,
+    "the itemised panel passes the layers for the row's own label");
+  check(SRC.indexOf("tradeFor(l, trLayers.get(l))") >= 0,
+    "and the approve payload passes them from the same map");
 }
 
 // ===========================================================================

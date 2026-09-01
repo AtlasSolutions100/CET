@@ -135,8 +135,12 @@ function byClass(node, cls) {
 
 function renderBar(opts) {
   const els = {};
+  // aiBtn is in this list because updateSelBar gates it on state.result, the
+  // same way it gates drawBtn - see the comment there and suite A of
+  // tests/test_page_reset.js
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn",
-                    "drawBtn", "removeBtn", "selInfo"]) els[id] = elem("div");
+                    "drawBtn", "removeBtn", "selInfo",
+                    "aiBtn"]) els[id] = elem("div");
   const state = {
     result: { styles: [{ style_id: 7, suggested_label: "dash1 d18.0 g51.7" }] },
     chainLabels: new Map(), labels: new Map(),
@@ -312,10 +316,19 @@ for (const how of PRINTED) {
 // ---------------------------------------------------------------------------
 console.log("5c. an OCR'd elevation does not look like a printed one");
 // ---------------------------------------------------------------------------
-// `inline` and `gap-ocr` make the SAME provenance claim - the sheet prints
-// this number in this contour's own break - and it is TRUE for both. What
-// differs is that gap-ocr's digits were machine-read off a raster, because
-// the drafter exploded the label to vectors and there is no text to read.
+// `inline` and `gap-ocr` make the same claim about the SOURCE - the sheet
+// prints a label in this contour's own break - and it is TRUE for both. They
+// do NOT make the same claim about the DIGITS: `inline` copies text out of
+// the PDF, `gap-ocr` transcribes a raster because the drafter exploded the
+// label to vectors, and a transcription can disagree with what is printed.
+//
+// THE ROUND THAT ADDED THIS CHIP ALSO ADDED A FALSE SENTENCE AND PINNED IT
+// HERE. The tooltip read "The sheet DOES print THIS number in the break in
+// this contour - that part is not in doubt", which asserts that the digits
+// on screen are the digits on the sheet - the one thing an OCR pass cannot
+// promise, and false on the very row the same round recorded as a misread
+// (chain 417 below). The assertion under it, /DOES print/, was satisfied by
+// the false wording. It now pins "a number" and REJECTS "this number".
 //
 // MEASURED live on Oncor C-04 (job e183a0d44d89, fresh detect 2026-09-01):
 // gap-ocr is 69 of 150 rows - 46%, the LARGEST bucket - and the one class
@@ -341,7 +354,7 @@ console.log("5c. an OCR'd elevation does not look like a printed one");
   // would be a fresh lie, and the whole point is that the risk is
   // TRANSCRIPTION, not source.
   check(!/inferred/.test(ocr.textContent) && !/inferred/.test(ocr.className),
-    "it is NOT marked inferred - the sheet does print this label");
+    "it is NOT marked inferred - the sheet does print a label in this break");
   eq(elevProvenance("gap-ocr").kind, "printed",
     "...and it still counts as printed wherever the split is taken by kind");
   check(!/picture/.test(inl.textContent),
@@ -358,9 +371,16 @@ console.log("5c. an OCR'd elevation does not look like a printed one");
     + "the source");
   // and the tooltip says which half is uncertain
   const t = ocr.title;
-  check(/DOES print|does print/.test(t),
-    "the tooltip affirms the source rather than casting doubt on it");
-  check(/read by machine|machine|OCR|picture/i.test(t) && /wrong|misread/i.test(t),
+  check(/(DOES|does) print a number/.test(t),
+    "the tooltip affirms the SOURCE - the sheet does print a number in this "
+    + "break - rather than casting doubt on it");
+  check(!/(DOES|does) print this number/.test(t)
+        && !/(DOES|does) print the number (shown|above)/.test(t),
+    "...and does NOT claim the sheet prints THIS number: the digits on "
+    + "screen are the reader's, and on Oncor C-04 chain 417 they were 551 "
+    + "where the sheet prints 582 / 582 / 581 / 579 / 580");
+  check(/read by machine|machine|OCR|picture/i.test(t)
+        && /(disagree|wrong|misread|prints nowhere)/i.test(t),
     "...and names the transcription as the thing that can fail");
 }
 for (const how of NOT_PRINTED) {
