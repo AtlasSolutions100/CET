@@ -4425,7 +4425,14 @@ def earthwork_suggest(job_id: str, page: int):
                  if int(c.chain_id) not in seeded
                  and int(c.chain_id) not in excl
                  and _is_plan_chain(c)]
-        r = infill_intervals(assigned, cands)
+        # WHAT BACKS EACH ANCHOR. An assigned row's own elevation may be
+        # `inherited` - no label printed on that line at all - and calling
+        # it "labelled" in the suggestion's sentence is a false statement
+        # about the sheet (13 of C-04's 35 infilled rows had BOTH ends
+        # inherited). The reader already knows; hand it over.
+        anchor_how = {int(r0["chain_id"]): r0.get("how")
+                      for r0 in sug if r0.get("chain_id") is not None}
+        r = infill_intervals(assigned, cands, anchor_how=anchor_how)
         infill_diag[side] = {"interval": r["interval"],
                              "families": r.get("families"),
                              "candidates_in_family":

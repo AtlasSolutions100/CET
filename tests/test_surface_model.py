@@ -185,8 +185,55 @@ check(got == {2: 101.0, 3: 102.0, 4: 103.0},
       f"the monotone fan lands when the count matches dz/interval - 1 ({got})")
 check(all(x["inferred"] and x["how"] == "interval-infill" for x in r["rows"]),
       "every fan row is flagged inferred at the source")
-check(all("counted between labelled 100" in x["src"] for x in r["rows"]),
+# AN ANCHOR IS ONLY "LABELLED" WHEN SOMETHING VOUCHES FOR IT.
+#
+# THE DEFECT this replaces: the sentence said "counted between labelled
+# {z} (line {id})" unconditionally, and an assigned row's own elevation can
+# be `inherited` - welded across from another fragment, with no label
+# printed on that line at all. Measured live on Oncor Cloudcrest engine page
+# index 3 = printed sheet C-04 (job e183a0d44d89, 2026-09-01): 13 of the 35
+# infilled rows cited an anchor like that, and chain 95's sentence named
+# lines 140 and 282 as "labelled" when BOTH are inherited. That sentence is
+# relayed verbatim into the selection chip's tooltip, so the app was stating
+# a falsehood about the sheet on the screen an estimator checks it against.
+#
+# With no anchor_how at all the reader knows nothing, so it must ABSTAIN -
+# never upgrade to "labelled".
+check(all("itself unlabelled" in x["src"] for x in r["rows"]),
+      "with nothing vouching for the anchors, the sentence does not call "
+      "them labelled")
+check(not any("labelled 100 (line 1)" in x["src"] for x in r["rows"]),
+      "...and specifically never claims a printed label it cannot see")
+check(all(x["anchors_printed"] == 0 for x in r["rows"]),
+      "the claim is a number too, so a caller can assert it without "
+      "matching a sentence")
+
+# ...and when the reader DOES vouch for both ends, the word comes back.
+r_ok = infill_intervals(assigned, cands,
+                        anchor_how={1: "gap-ocr", 5: "inline", 9: "radius"})
+check(all("counted between labelled 100" in x["src"] for x in r_ok["rows"]),
       "each row names the two labelled contours it was counted between")
+check(all(x["anchors_printed"] == 2 for x in r_ok["rows"]),
+      "...and records that both ends are label-backed")
+
+# ONE END BACKED, ONE NOT - the case the old sentence flattened.
+r_mix = infill_intervals(assigned, cands,
+                         anchor_how={1: "gap-ocr", 5: "inherited",
+                                     9: "inherited"})
+check(all("labelled 100 (line 1)" in x["src"] for x in r_mix["rows"]),
+      "the backed end is still called labelled")
+check(all("(line 5, itself unlabelled)" in x["src"] for x in r_mix["rows"]),
+      "...and the inherited end is named as unlabelled, not as a label")
+check(all(x["anchors_printed"] == 1 for x in r_mix["rows"]),
+      "...and the count says one of two")
+check(all("one end carries no printed label" in x["src"] for x in r_mix["rows"]),
+      "...and the sentence's tail says so in words too")
+# an unrecognised reader tag is not a label either: abstain, never upgrade
+r_unk = infill_intervals(assigned, cands,
+                         anchor_how={1: "some-new-reader-v3", 5: "gap-ocr",
+                                     9: "gap-ocr"})
+check(all("(line 1, itself unlabelled)" in x["src"] for x in r_unk["rows"]),
+      "a `how` the engine has not been taught is not promoted to 'labelled'")
 
 # REFUSE: one sibling missing, so the count says 2 where 3 are needed
 r2 = infill_intervals(assigned, [c for c in cands if c["chain_id"] != 3])

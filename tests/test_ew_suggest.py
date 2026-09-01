@@ -291,6 +291,110 @@ def test_c04_chain813_uniform_curve_is_not_a_break():
                                for r in regs]))
 
 
+# ---- the tag printed WITH the number, and the no-default-provenance rule --
+
+def test_radius_match_carries_the_sheets_own_spot_tag():
+    """A TAGGED NUMBER IS NOT A CONTOUR LABEL, AND THE ROW HAS TO SAY SO.
+
+    Measured live on Oncor Cloudcrest engine page index 3 = printed sheet
+    C-04 (job e183a0d44d89, 2026-09-01): contour chain 168 came back
+    z 551.2, how "radius", dist 2.7, label_xy (429.6, 733.0). Read straight
+    out of the PDF at that point, the text is "551.2" with "BW" next to it
+    on the same row and "556.1 TW" above. The sheet's OWN legend prints
+    "BW 100.0  PROPOSED BOTTOM OF WALL ELEVATION" and "TW 100.0  PROPOSED
+    TOP OF WALL ELEVATION" - so 551.2 is a retaining-wall spot height, and
+    a "550" contour leader sits a few points further off. The chip showed a
+    bare "EL 551.2" and nothing on screen said otherwise.
+
+    GLOSSARY (read off this sheet's legend, not assumed): BW = bottom of
+    wall, TW = top of wall. Both are SPOT heights, not contour labels.
+    """
+    contour = _hline(1, 100.0, klass="dash1", width=0.5)
+    # the number 8 pt above the line, its tag printed just to the right -
+    # the plan-body order, "551.2 BW"
+    words = [_word(60.0, 108.0, "551.2"), _word(76.0, 108.0, "BW")]
+    rows = suggest_elevations([contour], words)
+    assert len(rows) == 1, rows
+    r = rows[0]
+    assert r["how"] == "radius", r
+    assert r["label_tag"] == "BW", f"the sheet's own tag was dropped: {r}"
+
+
+def test_the_legend_order_of_tag_and_number_is_read_too():
+    # C-04's legend writes the pair the other way round: "BW 100.0".
+    contour = _hline(1, 100.0, klass="dash1", width=0.5)
+    words = [_word(76.0, 108.0, "551.2"), _word(60.0, 108.0, "TW")]
+    rows = suggest_elevations([contour], words)
+    assert rows[0]["label_tag"] == "TW", rows
+
+
+def test_an_untagged_number_reports_no_tag_rather_than_a_guess():
+    contour = _hline(1, 100.0, klass="dash1", width=0.5)
+    words = [_word(60.0, 108.0, "551")]
+    rows = suggest_elevations([contour], words)
+    assert rows[0]["label_tag"] is None, rows
+
+
+def test_a_tag_on_another_text_row_is_not_borrowed():
+    # "556.1 TW" sits 20 pt above "551.2" on C-04; the rows must not merge.
+    contour = _hline(1, 100.0, klass="dash1", width=0.5)
+    words = [_word(60.0, 108.0, "551.2"), _word(76.0, 128.0, "TW")]
+    rows = suggest_elevations([contour], words)
+    assert rows[0]["label_tag"] is None, rows
+
+
+def test_an_inherited_row_never_reports_a_distance_it_measured():
+    # dist 999 is a SENTINEL: no label on that chain at all. It has to stay
+    # distinguishable from a measurement, and `how` is what says so - a real
+    # radius match can never exceed max_d_pt = 16.0.
+    a = _hline(1, 100.0, x0=0.0, x1=100.0, klass="dash1", width=0.5)
+    b = _hline(2, 100.0, x0=130.0, x1=240.0, klass="dash1", width=0.5)
+    words = [_word(50.0, 104.0, "560")]
+    rows = {r["chain_id"]: r for r in suggest_elevations([a, b], words)}
+    assert rows[2]["how"] == "inherited", rows
+    assert rows[2]["dist"] == 999.0, rows
+    assert rows[1]["dist"] < 16.0, rows
+
+
+def test_a_row_with_no_recorded_provenance_abstains_instead_of_saying_radius():
+    """THE LATENT DEFECT, KILLED AT THE ROOT.
+
+    The emit read `how.get(cid, "radius")`, so any future writer to `seen`
+    that forgot to set `how` would be reported as a printed label - and the
+    UI's abstain branch could never fire for that class of row, because the
+    server's default is the opposite of abstaining. `_put` is now the only
+    writer and takes `kind` positionally, so the omission is unwritable; if
+    the invariant is ever broken anyway, the emit must say "unknown".
+    """
+    import inspect
+    import re
+
+    from takeoff_engine import earthwork as ew
+
+    src = inspect.getsource(ew.suggest_elevations)
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert '"how": how.get(cid, "radius")' not in code, \
+        "the emit still defaults an unrecorded provenance to a printed one"
+    assert 'how.get(cid) or "unknown"' in code, code[-400:]
+    # and every ASSIGNMENT to `seen` goes through the one writer that
+    # records the provenance alongside it
+    writes = [ln.strip() for ln in code.splitlines()
+              if re.search(r"\bseen\[[^\]]*\]\s*=[^=]", ln)]
+    assert len(writes) == 1 and writes[0].startswith("seen[cid] ="), writes
+    assert "def _put(cid, d, v, cx, cy, kind" in code, \
+        "`kind` must stay positional so it cannot be forgotten"
+
+
+def test_printed_how_list_matches_what_the_reader_can_emit():
+    from takeoff_engine.earthwork import PRINTED_HOWS, is_printed_how
+
+    assert set(PRINTED_HOWS) == {"radius", "inline", "gap-ocr"}
+    assert is_printed_how("gap-ocr") and not is_printed_how("inherited")
+    assert not is_printed_how("interval-infill")
+    assert not is_printed_how(None) and not is_printed_how("unknown")
+
+
 def _main():
     fns = [(k, v) for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

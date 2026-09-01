@@ -1178,30 +1178,111 @@ def _label_regions(chains: list, exclude: set | None = None) -> dict:
     return regions
 
 
+# WHICH `how` VALUES MEAN "A LABEL ON THE SHEET WAS READ".
+#
+# One list, used by the server's own wording (infill_intervals' anchor
+# sentence) and mirrored by ELEV_PROV in webui/app.js. "printed" is a claim
+# about the NUMBER - that some text on the sheet really says it - and never
+# about WHOSE number it is: a `radius` hit is the nearest printed token
+# within max_d_pt, which on a crowded sheet is regularly a spot annotation
+# belonging to something else (see _label_tag below).
+PRINTED_HOWS = ("radius", "inline", "gap-ocr")
+
+
+def is_printed_how(how) -> bool:
+    """True only when a label printed on the sheet was actually read."""
+    return how in PRINTED_HOWS
+
+
+# A TAGGED ELEVATION IS NOT A CONTOUR LABEL.
+#
+# Oncor C-04's own LEGEND keys its spot annotations - it prints
+#   "100.0  PROPOSED SPOT ELEVATION", "ME 100.0  MATCH EXISTING ELEVATION",
+#   "TW 100.0  PROPOSED TOP OF WALL ELEVATION",
+#   "BW 100.0  PROPOSED BOTTOM OF WALL ELEVATION",
+#   "EW 100.0  PROPOSED END OF WALL ELEVATION"
+# (convention read off THIS SHEET's legend, not an industry prior). The plan
+# body prints the pair the other way round, "551.2 BW", on one text line.
+#
+# That matters because the radius pass matches the nearest printed number
+# within 16 pt. On C-04 chain 168 the nearest number is 2.7 pt away and it
+# is "551.2 BW" - a bottom-of-wall spot height, with a "550" contour leader
+# a few points further off. Reported as a bare "EL 551.2" the chip states a
+# wall height as a contour elevation, and nothing on screen says otherwise.
+#
+# So the tag travels with the match: any 1-4 letter ALL-CAPS token printed
+# on the same text row, immediately before or after the number, is recorded
+# as `label_tag` and the UI marks the chip with it. We do NOT expand the
+# abbreviation - the sheet's legend is where its meaning lives.
+_TAG_RE = re.compile(r"^[A-Z]{1,4}$")
+_TAG_ROW_FRAC = 0.6      # vertical centres within 0.6x the number's height
+_TAG_GAP_FRAC = 1.6      # horizontal gap up to 1.6x its height
+
+
+def _tag_index(words: list) -> list:
+    """The ALL-CAPS tokens a `_label_tag` lookup can attach to a number."""
+    out = []
+    for w in words:
+        try:
+            t = str(w[4]).strip()
+        except (IndexError, TypeError):
+            continue
+        if _TAG_RE.match(t):
+            out.append((float(w[0]), float(w[1]), float(w[2]), float(w[3]), t))
+    return out
+
+
+def _label_tag(w, tags: list):
+    """The tag printed with this number on the same text row, or None.
+
+    Nearest wins, and both orders are accepted: the plan body writes
+    "551.2 BW" and the legend writes "BW 100.0".
+    """
+    x0, y0, x1, y1 = float(w[0]), float(w[1]), float(w[2]), float(w[3])
+    h = max(y1 - y0, 1.0)
+    cy = (y0 + y1) / 2
+    best = None
+    for ax0, ay0, ax1, ay1, t in tags:
+        if abs((ay0 + ay1) / 2 - cy) > _TAG_ROW_FRAC * h:
+            continue
+        gap = ax0 - x1 if ax0 >= x1 else x0 - ax1
+        if gap < -0.5 or gap > _TAG_GAP_FRAC * h:
+            continue
+        if best is None or gap < best[0]:
+            best = (gap, t)
+    return best[1] if best else None
+
+
 def suggest_elevations(chains: list, words: list,
                        max_d_pt: float = 16.0,
                        gap_z: dict | None = None,
                        exclude: set | None = None) -> list:
     """Auto-pair elevation-looking labels with the contour they sit on.
 
-    Returns [{chain_id, z, label_xy, dist, how}] - a SUGGESTION for the
-    review UI; the human confirms/edits, per the agreed human-in-loop flow.
+    Returns [{chain_id, z, label_xy, dist, how, label_tag}] - a SUGGESTION
+    for the review UI; the human confirms/edits, per the agreed
+    human-in-loop flow.
     `how` discloses the evidence: "inline" (native token in the chain's own
     break), "gap-ocr" (OCR of the break), "radius" (nearest label within
     max_d_pt), "inherited" (propagated along the contour, pass 2).
+    `label_tag` is the ALL-CAPS annotation printed with the matched number
+    ("BW", "TW", "ME", ...) or None - see _label_tag: a tagged number is a
+    spot annotation the sheet's legend keys, not a contour label, and the
+    chip has to be able to say so.
     Chains in `exclude` never seed and never take a label - see the
     explicit source ranking below.
     """
-    import re
 
     exclude = exclude or set()
+    tags = _tag_index(words)
     cands = []
     for w in words:
         t = str(w[4]).strip()
         if re.fullmatch(r"\d{3,4}(\.\d{1,2})?", t):
             v = float(t)
             if 10.0 <= v <= 9999.0:
-                cands.append(((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, v))
+                cands.append(((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, v,
+                              _label_tag(w, tags)))
     if not cands:
         return []
     # Explicit source ranking, stored in the `dist` slot so the existing
@@ -1219,7 +1300,18 @@ def suggest_elevations(chains: list, words: list,
     #         raster re-read of the same spot
     #   d     nearest-label radius match, d <= max_d_pt ("radius")
     #   999   inherited along the contour               ("inherited")
-    out, seen, how = [], {}, {}
+    out, seen, how, tag = [], {}, {}, {}
+
+    # ONE WRITER FOR `seen`, AND IT CANNOT FORGET THE PROVENANCE.
+    # The emit below used to read `how.get(cid, "radius")` - so a future
+    # writer that set `seen` and forgot `how` would be REPORTED AS PRINTED,
+    # and the UI's abstain branch could never fire for it. Every write goes
+    # through here, `kind` is positional, and `tag` is reset with the value
+    # so a replaced match can never keep the old one's annotation.
+    def _put(cid, d, v, cx, cy, kind, tg=None):
+        seen[cid] = (d, v, cx, cy)
+        how[cid] = kind
+        tag[cid] = tg
 
     samples, owner = [], []
     for c in chains:
@@ -1264,7 +1356,7 @@ def suggest_elevations(chains: list, words: list,
         for cid, regs in regions.items():
             for kind, cx, cy, ux, uy, span in regs:
                 flat.append((cid, kind, cx, cy, ux, uy, span))
-        for ci, (tx, ty, v) in enumerate(cands):
+        for ci, (tx, ty, v, tg) in enumerate(cands):
             best = None
             for cid, kind, cx, cy, ux, uy, span in flat:
                 dx, dy = tx - cx, ty - cy
@@ -1289,9 +1381,8 @@ def suggest_elevations(chains: list, words: list,
             d_rank = max(float(d_near), 0.05)
             if cid in seen and seen[cid][0] <= d_rank:
                 continue
-            seen[cid] = (d_rank, v, tx, ty)
-            how[cid] = "inline"
-    for ci, (cx, cy, v) in enumerate(cands):
+            _put(cid, d_rank, v, tx, ty, "inline", tg)
+    for ci, (cx, cy, v, tg) in enumerate(cands):
         if ci in consumed:
             continue
         d, i = tree.query([cx, cy])
@@ -1301,8 +1392,7 @@ def suggest_elevations(chains: list, words: list,
         # one contour can carry several copies of its label; keep closest
         if cid in seen and seen[cid][0] <= d:
             continue
-        seen[cid] = (d, v, cx, cy)
-        how[cid] = "radius"
+        _put(cid, d, v, cx, cy, "radius", tg)
     # gap-OCR labels (see gap_label_elevations) are read out of the chain's
     # own break - stronger than any radius hit except a native token
     # actually printed on the line (see the ranking above)
@@ -1340,8 +1430,7 @@ def suggest_elevations(chains: list, words: list,
                                    and seen[cid][0] > 0.5
                                    and not (how.get(cid) == "radius"
                                             and seen[cid][0] <= _ON_LINE_PT)):
-                seen[cid] = (0.5, v, cx, cy)
-                how[cid] = "gap-ocr"
+                _put(cid, 0.5, v, cx, cy, "gap-ocr")
             elif how.get(cid) == "inline" and abs(seen[cid][1] - v) > 0.01:
                 # inline vs gap-OCR disagreement. Two measured shapes:
                 #  - DIFFERENT texts occupy the area: on C-04 the break
@@ -1367,8 +1456,7 @@ def suggest_elevations(chains: list, words: list,
                 support = min((abs(v - x) for x in anchor if x != v),
                               default=1e9)
                 if not same_text and support <= 5.0:
-                    seen[cid] = (0.5, v, cx, cy)
-                    how[cid] = "gap-ocr"
+                    _put(cid, 0.5, v, cx, cy, "gap-ocr")
     # Pass 2 - propagate along the contour. A long contour splits into
     # several chains at wide gaps, and only the fragment nearest a printed
     # label matches directly (Oncor p4: 29 labeled chains, but each
@@ -1453,13 +1541,20 @@ def suggest_elevations(chains: list, words: list,
             _, _, cx, cy = seen[src]
             for m in members:
                 if m not in seen:
-                    seen[m] = (999.0, z, cx, cy)  # dist marks it inherited
-                    how[m] = "inherited"
+                    # dist 999 is a SENTINEL, not a measurement - see
+                    # EW_DIST_INHERITED in webui/app.js, which is why no
+                    # screen may render it as "999pt away".
+                    _put(m, 999.0, z, cx, cy, "inherited", tag.get(src))
     for cid, (d, v, cx, cy) in seen.items():
+        # NO DEFAULT PROVENANCE. `_put` is the only writer and it always
+        # records one, so this can only fire if that invariant is broken -
+        # and then it must ABSTAIN ("unknown"), never claim "radius", which
+        # the UI reads as printed.
         out.append({"chain_id": cid, "z": v,
                     "label_xy": [round(cx, 1), round(cy, 1)],
                     "dist": round(float(d), 1),
-                    "how": how.get(cid, "radius")})
+                    "how": how.get(cid) or "unknown",
+                    "label_tag": tag.get(cid)})
     return sorted(out, key=lambda r: r["z"])
 
 
@@ -2048,11 +2143,22 @@ def _median_contour_spacing(items) -> float:
 
 
 def infill_intervals(assigned: list, candidates: list,
-                     interval_ft=None, note_ft=None) -> dict:
-    """Suggest elevations for unlabelled contours between two labelled ones.
+                     interval_ft=None, note_ft=None,
+                     anchor_how: dict | None = None) -> dict:
+    """Suggest elevations for unlabelled contours between two anchors.
 
     assigned:   [{chain_id, pts Nx2 page pt, z, family}] on ONE surface
     candidates: [{chain_id, pts, family}] unlabelled chains, same surface
+    anchor_how: {chain_id: the assigned row's own `how`}. WITHOUT IT THE
+                SENTENCE MUST NOT SAY "LABELLED". An assigned row's
+                elevation may itself be `inherited` - welded across from
+                another fragment, with no label printed on that line at
+                all - and on Oncor C-04 that is true of BOTH ends of 13 of
+                the 35 infilled rows. Calling such an anchor "labelled" is
+                a false statement about the sheet, printed on the tooltip
+                an estimator checks the suggestion against. Anything this
+                map does not vouch for is worded as an anchor, not a label
+                (abstain, never upgrade).
 
     `family` is the chain's style family (style_id): A TRANSECT COUNTS ONLY
     SAME-FAMILY SIBLINGS. A contour's unlabelled neighbours are drawn in the
@@ -2066,10 +2172,14 @@ def infill_intervals(assigned: list, candidates: list,
 
     Returns {"rows": [...], "interval": {...}, "refused": {...},
              "n_transects": int}. Each row is
-    {chain_id, z, how: "interval-infill", inferred: True, votes, src}
+    {chain_id, z, how: "interval-infill", inferred: True, votes, src,
+     anchors_printed}
     where `src` is the sentence shown to the operator - it names the two
-    labelled contours the fan was counted between, so the suggestion can be
-    checked against the sheet without leaving the panel.
+    contours the fan was counted between and says, of each, whether the
+    sheet prints a label on it, so the suggestion can be checked against
+    the sheet without leaving the panel. `anchors_printed` is that same
+    fact as a number (0, 1 or 2) so a caller can assert the CLAIM rather
+    than match the sentence.
 
     Nothing here decides anything: these are SUGGESTIONS the operator
     confirms, and every one is flagged inferred so an inferred elevation is
@@ -2219,16 +2329,30 @@ def infill_intervals(assigned: list, candidates: list,
     for cid in conflicted:
         votes.pop(cid, None)
     out["refused"]["vote_conflict"] = len(conflicted)
+    howof = anchor_how or {}
+
+    def _anchor(cid, z):
+        """Name one end of the fan, and say what backs it."""
+        if is_printed_how(howof.get(int(cid))):
+            return f"labelled {_fmt_z(z)} (line {cid})", True
+        return f"{_fmt_z(z)} (line {cid}, itself unlabelled)", False
+
     for cid, v in sorted(votes.items()):
         oid, oz, cend, zend = v["src"]
         nz = _fmt_z(v["z"])
+        a_txt, a_ok = _anchor(oid, oz)
+        b_txt, b_ok = _anchor(cend, zend)
+        n_ok = int(a_ok) + int(b_ok)
+        tail = ("not a printed label, confirm against the sheet" if n_ok == 2
+                else "one end carries no printed label either, confirm "
+                     "against the sheet" if n_ok == 1
+                else "NEITHER end carries a printed label, confirm against "
+                     "the sheet")
         out["rows"].append({
             "chain_id": int(cid), "z": v["z"], "how": "interval-infill",
-            "inferred": True, "votes": v["n"],
-            "src": (f"counted between labelled {_fmt_z(oz)} (line {oid}) "
-                    f"and {_fmt_z(zend)} (line {cend}) at the sheet's "
-                    f"{_fmt_z(step)} ft contour interval - not a printed "
-                    f"label, confirm against the sheet"),
+            "inferred": True, "votes": v["n"], "anchors_printed": n_ok,
+            "src": (f"counted between {a_txt} and {b_txt} at the sheet's "
+                    f"{_fmt_z(step)} ft contour interval - {tail}"),
             "label": f"{nz} (inferred)"})
     return out
 
