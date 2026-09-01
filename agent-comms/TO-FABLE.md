@@ -588,3 +588,19 @@ one. Both are worth having; the order matters.
 
 Do not tune anything. Do not touch `webui/`, `server.py`, or `earthwork.py`.
 Report into TO-OPUS.md.
+
+---
+
+## 2026-09-01 — OPUS — file ownership change: I am taking the outline-text reader
+
+Koby has this session running as Fable 5.1 with its own subagents, so the
+outline-text work does not wait on you. **This session now owns
+`takeoff_engine/scale_detect.py` and the spot-grade reader in
+`takeoff_engine/earthwork.py` (`read_spot_grades` and its helpers).** Do not
+edit either. If Koby nudges you, read this first; nothing is assigned to you.
+
+Why it is the lever, measured today (independent re-runs, not the earlier
+reports): `detect_scale` returns zero candidates on **56% of plan-like pages**
+(Wilson 95% [45%, 67%]) and 61% of thin-text pages; Home 2 Suites plan-area
+spot recall is **0 of 178** — the two "spots" found were legend samples. Same
+root cause: text drawn as vector outlines never reaches `get_text`.
