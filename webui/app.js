@@ -109,10 +109,12 @@ const state = window.state = {
   // second one whose loser overwrote the winner's rows with "run Detect
   // first". Cleared in a finally, and nulled with `ew` on every page change.
   ewLoading: null,
-  // the suggest was tried for this page and did not come back (dropped
-  // connection, 500). Distinct from "never tried" so the retry sentence can
-  // say so instead of leaving the operator on a hint that never changes.
-  ewFailed: false,
+  // the suggest was tried for this page and did not come back. NOT a
+  // boolean: {status, detail} from the server, because "this page was never
+  // detected" (404) can never be fixed by a retry while a dropped
+  // connection can, and one flag for both printed the retry sentence over
+  // the permanent case. null = never tried. See ewFailMsg.
+  ewFailed: null,
   // THE ONE IN-FLIGHT /earthwork/suggest, {key, promise}. Two independent
   // features read that endpoint - the earthwork panel and the selection
   // pill's elevation chip - and they were issuing separate requests for the
@@ -639,7 +641,6 @@ async function selectPage(p) {
   // the wrong sheet). Page switch is the reliable chokepoint; the new
   // page's own saved boxes come back via wzApplySaved in calcStateLoad.
   state.workZones = []; state.wzDrag = null; state.wzRev++;
-  state.ewBoundDraft = []; state.ewBoundHover = null;
   // THE EARTHWORK PANEL BELONGS TO ONE SHEET TOO, and this is the only
   // chokepoint that always runs: loadResult clears it, but loadResult only
   // runs when the new page HAS a loadable result, so switching to an
@@ -960,14 +961,11 @@ async function loadResult(gen = state.gen) {
   // hover highlight and per-family expansion are page state like the rest:
   // a style_id means nothing outside the result it came from
   state.hotStyle = null; famOpen.clear();
-  // a limit of work belongs to ONE sheet: the next page's grading line is
-  // a different polygon, and carrying this one over would clip the new
-  // sheet's volumes to an outline drawn somewhere else
-  state.ewBound = null;
+  // (the limit of work and its half-drawn outline belong to ONE sheet too,
+  // and ewPageReset above is their single writer - see the comment there)
   // the WORK AREA is per sheet for the same reason; this page's own boxes
   // come back from the calcstate sidecar below (wzApplySaved)
   state.workZones = []; state.wzDrag = null; state.wzRev++;
-  state.ewBoundDraft = []; state.ewBoundHover = null;
   // grading zones too - restored by gzApplySaved once the sidecar answers
   gzPageReset();
   state.conf = null; state.confKey = null; state.confErr = false;
@@ -6126,6 +6124,11 @@ function calcStatePayload() {
         z: calcNum(r.z), surface: r.surface || null,
         width: r.width || 0, dist: r.dist == null ? null : r.dist,
         manual: !!r.manual,
+        // provenance is a page fact that must survive a reload: without it
+        // a restored row falls back to "we did not record where this came
+        // from" and the report's printed/not-printed split goes with it
+        ...(r.how ? { how: r.how } : {}),
+        ...(r.tag ? { tag: r.tag } : {}),
         // an INFERRED elevation stays inferred across a reload. Without
         // this the badge and the report's inferred-count line vanish on
         // the next visit and a counted elevation reads as a printed one -
@@ -6343,6 +6346,8 @@ function ewApplySaved() {
           row.inferred = true;
           if (r.inferred_why) row.inferredWhy = r.inferred_why;
         }
+        if (r.how && !row.how) row.how = r.how;
+        if (r.tag && !row.tag) row.tag = r.tag;
         applied++;
       } else if (ch && !ch.custom) {
         // usually a hand-added contour: its chain is still on the sheet
@@ -6351,6 +6356,8 @@ function ewApplySaved() {
           width: calcNum(r.width) !== null ? r.width : (ch.width || 0),
           dist: r.dist == null ? null : r.dist,
           surface: surf, manual: !!r.manual,
+          ...(r.how ? { how: r.how } : {}),
+          ...(r.tag ? { tag: r.tag } : {}),
           ...(r.inferred ? { inferred: true,
                              inferredWhy: r.inferred_why || "" } : {}) });
         applied++;
@@ -10258,6 +10265,29 @@ function syncCardCounts() {
 const EW_SUGGEST_WAIT = "the first read of a page takes a minute or more";
 const EW_SUGGEST_BUSY = "reading this sheet's elevation labels — " + EW_SUGGEST_WAIT;
 const EW_SUGGEST_FAIL = "could not read this sheet's elevations — press EARTHWORK to try again";
+// ...and the one failure that is NOT retryable. The endpoint answers
+// 404 {"detail":"run detect first"} on a page that has never been detected,
+// and pressing EARTHWORK again can never change that.
+const EW_NEED_DETECT = "run Detect on this sheet first — its elevations "
+  + "cannot be read until its lines are detected";
+// WHY THE READ FAILED, NOT JUST THAT IT DID.
+//
+// state.ewFailed was a bare boolean, so every failure printed the retry
+// sentence - including the one failure that can never succeed on a retry.
+// Live on job e183a0d44d89 page 6 (never detected): EARTHWORK fetched, the
+// server answered 404 "run detect first", suggestOnce threw the body away,
+// and all three surfaces (status bar, #ewRows, #ewBusy) told the operator
+// to "press EARTHWORK to try again". The button's own branch already HAD
+// the right sentence - `state.ewFailed ? FAIL : "run Detect first"` - but
+// ewFailed was set for every failure, so the arm naming the real cause was
+// dead on exactly the case it names. Same F2 shape as state.elev's
+// three-valued null, one panel over. It now holds {status, detail}.
+function ewFailMsg() {
+  const f = state.ewFailed;
+  if (!f) return "";
+  if (f.status === 404 || !state.result) return EW_NEED_DETECT;
+  return EW_SUGGEST_FAIL;
+}
 // The fifth state: rows are loaded, but they were read off a DIFFERENT sheet
 // (see ewIsThisPage). Never "not ready yet" - ready, and about the wrong
 // drawing, which is worse.
@@ -10282,8 +10312,21 @@ function ewIsThisPage() {
 // chokepoint (the same rule the work area and the grading zones already
 // follow); the guard below is the second line, not the first.
 function ewPageReset() {
-  state.ew = null; state.ewLoading = null; state.ewFailed = false;
+  state.ew = null; state.ewLoading = null; state.ewFailed = null;
   state.suggestReq = null;
+  // THE LIMIT OF WORK IS A PAGE FACT LIKE THE ROWS, AND IT LIVES HERE NOW.
+  // It used to be cleared in loadResult only - and loadResult runs only
+  // when the new page HAS a result. Reproduced live on job e183a0d44d89:
+  // set the limit on C-04 ("57 lines stitched (style 15) - 3,930 points -
+  // 180,597 SF"), switch to page 6 (never detected), press EARTHWORK - the
+  // panel opened with 0 rows and the box still read the OTHER sheet's ring,
+  // .on, "clear" showing. The SF silently vanished because that figure
+  // needs state.result, so the one number that would have exposed the
+  // staleness is the one that drops out. Same sibling gap a0a71cc closed
+  // for state.ew, left open for its neighbour.
+  state.ewBound = null;
+  state.ewBoundDraft = []; state.ewBoundHover = null;
+  renderEwBound();
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
   // the ROWS as well as the flag: hiding the panel leaves the previous
@@ -10317,8 +10360,12 @@ function ewNotReady(what) {
   if (state.ew) return false;
   if (state.ewLoading)
     setStatus(EW_SUGGEST_BUSY + " — " + what + " will be ready in a moment", "busy");
-  else if (state.ewFailed) setStatus(EW_SUGGEST_FAIL, "err");
-  else if (!state.result) setStatus("run Detect first", "err");
+  // "not detected" is checked FIRST. It used to sit behind the ewFailed
+  // arm, and one press of EARTHWORK on an undetected page set ewFailed -
+  // so from then on this branch could never be reached on the one page it
+  // describes.
+  else if (!state.result) setStatus(EW_NEED_DETECT, "err");
+  else if (state.ewFailed) setStatus(ewFailMsg(), "err");
   else setStatus("open the EARTHWORK panel first (press EARTHWORK)", "err");
   return true;
 }
@@ -10348,6 +10395,19 @@ $("ewBtn").onclick = async () => {
   $("ewAddRow").classList.remove("active");
   $("ewBoundPick").classList.remove("active");
   renderEwBound();
+  // DO NOT ASK A QUESTION THE SERVER HAS ALREADY REFUSED. Every other
+  // earthwork control on this page goes through ewNotReady; this button was
+  // the one that did not, so on an undetected page it fetched, collected a
+  // 404 and then told the operator to retry a read that can never succeed.
+  // The panel still OPENS - the operator pressed the button - it just says
+  // what is actually missing and issues no request.
+  if (!state.result) {
+    $("ewRows").textContent = EW_NEED_DETECT;
+    ewBusyPut(EW_NEED_DETECT, "err");
+    setStatus(EW_NEED_DETECT, "err");
+    renderEwTake();
+    return;
+  }
   if (!state.ew) {
     // Put the busy line WHERE THE EYE IS. Every other long operation in this
     // file writes one to the status bar - "detecting…" , "opening…",
@@ -10365,7 +10425,7 @@ $("ewBtn").onclick = async () => {
     // fetch belongs to a sheet nobody is looking at
     if (gen !== state.gen) return;
     if (!ok) {
-      const msg = state.ewFailed ? EW_SUGGEST_FAIL : "run Detect first";
+      const msg = ewFailMsg() || EW_NEED_DETECT;
       $("ewRows").textContent = msg;
       ewBusyPut(msg, "err");
       setStatus(msg, "err");
@@ -10419,7 +10479,17 @@ function suggestOnce() {
   if (cur && cur.key === key) return cur.promise;
   const promise = (async () => {
     const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) {
+      // KEEP THE SERVER'S REASON. Throwing the body away is what left the
+      // UI unable to tell "this page was never detected" (404, permanent)
+      // from "the read fell over" (retryable), so it offered a retry for
+      // both. See ewFailMsg.
+      const body = await r.json().catch(() => ({}));
+      const err = new Error("HTTP " + r.status);
+      err.status = r.status;
+      err.detail = (body && body.detail) || "";
+      throw err;
+    }
     return await r.json();
   })();
   const done = () => {
@@ -10449,7 +10519,7 @@ async function ewEnsure() {
   // loaded (ewIsThisPage).
   if (ewIsThisPage()) return true;
   if (state.ewLoading) return state.ewLoading;
-  state.ewFailed = false;
+  state.ewFailed = null;
   const p = ewFetchSuggest(state.gen);
   state.ewLoading = p;
   try { return await p; }
@@ -10466,7 +10536,9 @@ async function ewFetchSuggest(gen) {
   try {
     j = await suggestOnce();
   } catch (err) {
-    if (gen === state.gen) state.ewFailed = true;
+    if (gen === state.gen)
+      state.ewFailed = { status: (err && err.status) || 0,
+                         detail: (err && err.detail) || "" };
     return false;
   }
   {
@@ -10479,6 +10551,11 @@ async function ewFetchSuggest(gen) {
       job: state.job, page: state.page,
       rows: j.suggestions.map(s => ({
         chain_id: s.chain_id, z: s.z, width: s.width || 0, dist: s.dist,
+        // WHERE THE NUMBER CAME FROM, on the row itself. Without this the
+        // panel had only `dist` and the server's `inferred` flag, and
+        // printed the 999 "no label at all" sentinel as "label 999pt away"
+        // while the selection chip called the same row inferred.
+        how: s.how || null, tag: s.label_tag || null,
         // default split by stroke weight - existing plots lighter than
         // proposed on most grading sheets; every row is user-flippable
         surface: (s.width || 0) <= wmed ? "existing" : "proposed",
@@ -10547,7 +10624,10 @@ async function ewFetchSuggest(gen) {
 // state.ewBound = { pts: [[x,y],...], src: "chain 412" | "outline", closed }
 // Page points, the same space the chains live in, which is what the server
 // integrates over. Held OUTSIDE state.ew so re-running the calculator does
-// not silently drop it; cleared on a page change like every other page fact.
+// not silently drop it. Cleared by ewPageReset(), which selectPage always
+// calls - the only chokepoint a page change reliably passes through. It used
+// to be cleared in loadResult instead, and an UNDETECTED page skips that
+// entirely, so the previous sheet's ring stayed on screen and in state.
 function ewBoundSet(pts, src) {
   const p = (pts || []).filter(q => Array.isArray(q) && q.length >= 2)
                        .map(q => [+q[0], +q[1]]);
@@ -11242,12 +11322,75 @@ function ewItemLabel(layer) {
 // "Place ", so it needs its own alternative.
 const EW_ITEM_RE = /^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Place |Export |Import Structural$|(Cut|Fill) \(earthwork\))/;
 
+// THE PANEL AND THE SELECTION CHIP MUST NOT CONTRADICT EACH OTHER.
+//
+// They did. The chip was taught `how` on 2026-08-31 and started reading
+// "EL 554 · inferred" for an `inherited` contour, while the panel one screen
+// away printed "chain 87 · w 0.2 · label 999pt away" for the SAME row at the
+// same moment - 26 of C-04's 150. Two lies in one line: 999 is
+// suggest_elevations' SENTINEL for "no label on this chain at all, the
+// value was welded across from another fragment" (earthwork.py `_put(m,
+// 999.0, ...)`, and a real radius match can never exceed max_d_pt = 16.0),
+// and the panel is the screen carrying the EXIST / PROP buttons that feed
+// the volume, so it is the one that must not be wrong.
+//
+// Both screens now read the SAME `how` through the SAME table (ELEV_PROV),
+// and the sentinel is never rendered as a measurement.
+const EW_DIST_INHERITED = 999;   // earthwork.py suggest_elevations pass 2
+
+// Is this row's elevation something nobody printed? Asked of `how`, not of
+// the server's `inferred` flag: the server sets that on interval-infill
+// rows ONLY, and `inherited` rows - equally unprinted - never carry it.
+// A row the operator typed is not inferred; they know what they typed.
+function ewRowInferred(row) {
+  if (!row || row.manual) return false;
+  if (row.inferred) return true;
+  return elevProvenance(row.how).kind === "inferred";
+}
+
+// One line saying where this row's number came from. Never the sentinel,
+// never "label Npt away" for a row with no label on it.
+function ewRowSource(row) {
+  if (!row) return "";
+  if (row.manual) return "typed in by you";
+  const how = row.how;
+  // Kept SHORT: this line sits in a ~200 px column beside 150 rows, and the
+  // panel had already been trimmed once for being too busy. Long enough to
+  // be true, short enough not to bury the EXIST/PROP buttons.
+  if (how === "inherited")
+    return "NO label on this line — carried along the contour";
+  if (how === "interval-infill" || (row.inferred && !how))
+    return "elevation INFERRED, not printed";
+  if (how === "gap-ocr")
+    return "label in its own break, read from a picture";
+  if (how === "inline") return "label printed in this line's own break";
+  if (how === "radius") {
+    const d = row.dist === EW_DIST_INHERITED ? null : row.dist;
+    const near = d === null ? "label nearby" : `label ${d} pt away`;
+    return (row.tag ? `“${row.tag}” ${near}` : near)
+      + " — may not be this line's";
+  }
+  // No `how` at all (an old saved row, or a reader we have not been taught):
+  // ABSTAIN. The distance alone used to be printed here, and that is what
+  // rendered the 999 sentinel as a measurement.
+  return "we did not record where this elevation came from";
+}
+
 function renderEw() {
   const box = $("ewRows");
   box.innerHTML = "";
   if (!state.ew || !state.ew.rows.length) {
-    box.innerHTML = '<div class="ew-hint">No elevations printed on this sheet — ' +
-      'click <b>+ Add contour</b>, click the line, type its elevation.</div>';
+    // "EMPTY IS NOT AN ANSWER" (the same shape as the elevation reader's
+    // failed-vs-answered-empty split). An empty row set can mean the
+    // drafter labelled nothing, or that the reader missed them, or that
+    // the excluded families / white masks took every seeding chain out of
+    // the pool. The panel cannot tell those apart, so it must not assert
+    // the first one.
+    box.innerHTML = '<div class="ew-hint">We found no contour elevations on '
+      + 'this sheet. That can mean the sheet labels none, or that our reader '
+      + 'missed them, or that the families you excluded held them — we '
+      + 'cannot tell which. Click <b>+ Add contour</b>, click the line, type '
+      + 'its elevation.</div>';
     return;
   }
   // blank (not-yet-typed) elevations sink to the bottom; NaN must never
@@ -11281,12 +11424,9 @@ function renderEw() {
     // click, add, remove) re-sorts anyway
     const meta = document.createElement("div");
     meta.className = "ew-meta";
-    meta.textContent = row.manual
-      ? `chain ${row.chain_id} · w ${row.width} · manual`
-      : row.inferred
-      ? `chain ${row.chain_id} · w ${row.width} · elevation INFERRED, not printed`
-      : `chain ${row.chain_id} · w ${row.width} · label ${row.dist}pt away`;
-    if (row.inferred) {
+    meta.textContent = `chain ${row.chain_id} · w ${row.width} · `
+      + ewRowSource(row);
+    if (ewRowInferred(row)) {
       // The badge and the sentence, on the row, not in a tooltip: an
       // inferred elevation must never be able to pass for a read one.
       div.classList.add("ew-inferred");
@@ -11542,14 +11682,49 @@ function renderEwBasis(j, body) {
   renderEwModelNote(j);
 }
 
-// How many INFERRED elevations the operator actually accepted into a
-// surface. Counted off the live rows, not off the suggest payload: a row
-// the operator left on SKIP or deleted contributes nothing and must not be
+// WHAT BACKS EVERY ELEVATION THE OPERATOR ACTUALLY ACCEPTED.
+//
+// Counted off the live rows, not off the suggest payload: a row the
+// operator left on SKIP or deleted contributes nothing and must not be
 // disclosed as if it did.
-function ewInferredAccepted() {
+//
+// THE DEFECT THIS REPLACES. The old version counted `r.inferred`, which the
+// server sets on interval-infill rows ALONE - `inherited` rows (26 of
+// C-04's 150; no label printed on those lines at all) never carry it. The
+// note built from that count then read "35 of the contour elevations in
+// this volume were INFERRED ... not read from a printed label", which SAYS
+// nothing about the other 115 and IMPLIES all of them were label-backed.
+// On the document an estimator bids from, that silently reclassified 26
+// unlabelled contours as printed. The split is now taken from `how`, the
+// same table the chip and the panel row read, and every bucket is named.
+function ewAcceptedSplit() {
   const rows = (state.ew && state.ew.rows) || [];
-  return rows.filter(r => r.inferred && isFinite(r.z)
-    && (r.surface === "existing" || r.surface === "proposed")).length;
+  const out = { total: 0, printed: 0, nearby: 0, nearbyTagged: 0,
+                infill: 0, inherited: 0, manual: 0, unknown: 0 };
+  for (const r of rows) {
+    if (!isFinite(r.z)) continue;
+    if (r.surface !== "existing" && r.surface !== "proposed") continue;
+    out.total++;
+    if (r.manual) { out.manual++; continue; }
+    if (r.how === "inherited") { out.inherited++; continue; }
+    if (r.how === "interval-infill" || (r.inferred && !r.how)) {
+      out.infill++; continue;
+    }
+    const kind = elevProvenance(r.how).kind;
+    if (kind === "printed") out.printed++;
+    else if (kind === "nearby") {
+      out.nearby++;
+      if (r.tag) out.nearbyTagged++;
+    } else out.unknown++;
+  }
+  return out;
+}
+// Accepted rows whose elevation is NOT read from any label on the sheet.
+// Kept under its old name because the approve note and its test both ask
+// this question - but it is now every unprinted mechanism, not one of them.
+function ewInferredAccepted() {
+  const a = ewAcceptedSplit();
+  return a.infill + a.inherited + a.manual + a.unknown;
 }
 
 // The two names the operator sees, used everywhere a model is named so the
@@ -11583,6 +11758,7 @@ function renderEwModelNote(j) {
 // count is checked here and disclosed on the status line rather than
 // discovered later on a report that is missing its caveat.
 const APPROVE_NOTES_MAX = 6;   // mirrors server.py approve(): body.notes[:6]
+const APPROVE_NOTE_MAX = 400;  // ...and its per-note str(x)[:400]
 function approveNotes() {
   return [...famApproveNotes(), ...ewApproveNotes()];
 }
@@ -11598,7 +11774,7 @@ function ewApproveNotes() {
   // tens of percent on a sparse sheet - so the model, WHY it was chosen and
   // the measurement behind the choice travel with the volume. Inferred
   // elevations get their own line only when some were actually accepted.
-  const nInf = ewInferredAccepted();
+  const acc = ewAcceptedSplit();
   return [
     "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
     + "rows) is a contour interpolation, not a measured volume.",
@@ -11607,10 +11783,11 @@ function ewApproveNotes() {
     + (j.surface_model_why ? ` ${j.surface_model_why}.` : "")
     + (j.label_band_ft == null ? "" :
       ` Measured label sparsity ${j.label_band_ft} ft.`),
-    ...(nInf ? [`${nInf} of the contour elevations in this volume were `
-      + "INFERRED by counting unlabelled contours between two labelled "
-      + "ones at the sheet's contour interval, not read from a printed "
-      + "label, and were accepted by the reviewer."] : []),
+    // WHAT BACKS THE ELEVATIONS, mechanism by mechanism. The old line
+    // counted one mechanism and left the reader to assume the rest were
+    // printed; this one accounts for every accepted row (see
+    // ewAcceptedSplit) and stays inside `approve`'s 400-char per-note cap.
+    ...ewBasisNote(acc),
     `Interpolated from ${j.existing_contours} existing and `
     + `${j.proposed_contours} proposed contours over `
     + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `
@@ -11623,6 +11800,34 @@ function ewApproveNotes() {
     + "Estimate #853) it read 2.3-2.5x high, over 1.42x that estimator's own "
     + "clear-and-grub area.",
   ];
+}
+
+// The one sentence on the printed report that says what backs the numbers.
+// Returns [] when every accepted elevation was read out of a contour's own
+// break - there is then nothing to caveat. Split out so the wording is
+// testable against a row set rather than against a fixed string.
+function ewBasisNote(a) {
+  const notPrinted = a.infill + a.inherited + a.manual + a.unknown;
+  if (!a.total || (!notPrinted && !a.nearby)) return [];
+  const bits = [];
+  if (a.infill) bits.push(`${a.infill} counted between contours at the `
+    + "sheet's interval");
+  if (a.inherited) bits.push(`${a.inherited} carried along the contour from `
+    + "another piece of it (no label on those lines)");
+  if (a.manual) bits.push(`${a.manual} typed in by the reviewer`);
+  if (a.unknown) bits.push(`${a.unknown} of unrecorded origin`);
+  const head = `Of ${a.total} contour elevations accepted here, ` + (notPrinted
+    ? `${notPrinted} are printed NOWHERE on the sheet: ${bits.join("; ")}.`
+    : "all are printed on the sheet.");
+  const near = !a.nearby ? ""
+    : ` Of the ${a.printed + a.nearby} printed, ${a.nearby} are the nearest `
+      + "number BESIDE the line, not a label in its break"
+      + (a.nearbyTagged ? `; ${a.nearbyTagged} of those carry a legend-keyed `
+        + "spot tag (BW/TW/ME), so they are probably not contour labels." : ".");
+  // `approve` truncates each note at 400 chars (APPROVE_NOTE_MAX) and says
+  // nothing when it does, so the TAIL of a disclosure is what would be lost.
+  // Drop the secondary clause whole rather than ship a cut sentence.
+  return [(head + near).length <= APPROVE_NOTE_MAX ? head + near : head];
 }
 
 // The balance panel. Every row states WHICH AREA produced it on the row
@@ -15584,15 +15789,44 @@ function distToSeg(px, py, a, b) {
 // line and the next on a grading sheet (this sheet's is printed in its own
 // legend and the server quotes it back in `src`). Convention read off the
 // sheet, not assumed.
+// The visible mark a `radius` hit carries ON THE NUMBER.
+//
+// TAGGED NUMBERS. /earthwork/suggest reports `label_tag`: the ALL-CAPS
+// token printed on the same text row as the matched number ("BW", "TW",
+// "ME", "EW" on Oncor C-04). Those are spot annotations whose meanings the
+// sheet prints in its OWN legend - C-04's reads "BW 100.0  PROPOSED BOTTOM
+// OF WALL ELEVATION" - so a tagged number was placed for that annotation
+// and is almost certainly not this contour's elevation. The tag is shown
+// verbatim and never expanded: the sheet's legend is where its meaning
+// lives, and inventing an expansion is what CLAUDE.md §4 forbids.
+function elevRadiusMark(ev) {
+  const d = (ev && ev.dist !== null && ev.dist !== undefined) ? ev.dist : null;
+  const tg = ev && ev.tag ? String(ev.tag) : "";
+  if (tg)
+    return "“" + tg + "” label"
+      + (d === null ? " nearby" : " " + d + " pt away");
+  return d === null ? "label nearby, not in the break" : "label " + d + " pt away";
+}
 const ELEV_PROV = {
-  radius: { kind: "printed", cls: "", tag: "",
-    // The distance matters and rides along below: this is the NEAREST
-    // printed number, not necessarily this contour's own label. On C-04
-    // chain 168 the nearest number 2.7 pt away is "551.2 BW" - a bottom-of-
-    // wall spot grade, printed on the sheet but not a contour label. The
-    // chip may say the number is printed; it must not say it belongs here.
-    why: "Read off a label this sheet prints beside this line — real text in "
-       + "the PDF, not a reading of ours." },
+  // A THIRD KIND, BECAUSE A RADIUS HIT IS NOT A LABEL READ.
+  // `radius` is the NEAREST printed number within 16 pt of the line - real
+  // text on the sheet, but nothing says it belongs to THIS contour.
+  // Measured on C-04 chain 168: the nearest number, 2.7 pt away, is
+  // "551.2 BW", and the sheet's own legend keys BW as PROPOSED BOTTOM OF
+  // WALL ELEVATION - a wall spot height, with a "550" contour leader a few
+  // points further off. The chip used to read a bare "EL 551.2" with a
+  // solid border, indistinguishable from a label read out of this line's
+  // own break, and the whole caveat lived in a tooltip. It is now ON THE
+  // NUMBER (elevRadiusMark above): the distance always, and the sheet's own
+  // tag whenever the matched token carries one.
+  radius: { kind: "nearby", cls: "nearby", tag: "", mark: elevRadiusMark,
+    why: "The number IS printed on this sheet, but not in this line’s own "
+       + "break — it is the nearest printed number to the line, and that it "
+       + "belongs to this contour is our assumption, not the sheet’s "
+       + "statement. A tagged number (“BW”, “TW”, “ME”…) is a spot "
+       + "annotation this sheet keys in its own legend, so it is placed for "
+       + "that annotation and probably is not a contour label at all — "
+       + "check the drawing before anything is priced on it." },
   inline: { kind: "printed", cls: "", tag: "",
     why: "Read off the label this sheet prints in the break in this contour "
        + "— real text in the PDF, not a reading of ours." },
@@ -15625,11 +15859,27 @@ function elevProvenance(how) {
 // which two labelled contours an infilled row was counted between.
 function elevProvenanceDetail(ev) {
   if (!ev || typeof ev !== "object") return "";
-  if (ev.how === "radius" && ev.dist !== null && ev.dist !== undefined)
-    return ` The nearest printed number is ${ev.dist} pt from this line and `
-      + `the reader takes it to be this contour's — on a crowded sheet that `
-      + `can be a spot grade or a neighbour's label instead.`;
+  if (ev.how === "radius") {
+    const bits = [];
+    if (ev.dist !== null && ev.dist !== undefined)
+      bits.push(`The nearest printed number is ${ev.dist} pt from this line.`);
+    if (ev.tag)
+      bits.push(`On the sheet it is printed as “${ev.z} ${ev.tag}” — look up `
+        + `“${ev.tag}” in this sheet's own legend.`);
+    return bits.length ? " " + bits.join(" ") : "";
+  }
   return ev.src ? " " + ev.src : "";
+}
+
+// The word (or phrase) the chip puts next to the number. Static for most
+// provenances; a `radius` hit computes it per row because the distance and
+// the sheet's own tag are what make it checkable.
+function elevChipTag(prov, ev) {
+  if (prov && typeof prov.mark === "function") {
+    const m = prov.mark(ev);
+    if (m) return m;
+  }
+  return (prov && prov.tag) || "";
 }
 
 // The sentence the operator gets when the elevation read fails. It names
@@ -15686,7 +15936,7 @@ async function ensureElev() {
   if (stale()) return;
   state.elev = { status: "ready", byChain: new Map(j.suggestions.map(
     s => [s.chain_id, { z: s.z, how: s.how, src: s.src || "",
-                        dist: s.dist }])) };
+                        dist: s.dist, tag: s.label_tag || null }])) };
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
 function updateSelBar(ch) {
@@ -15758,7 +16008,8 @@ function updateSelBar(ch) {
   if (z !== undefined && z !== null) {
     const elc = document.createElement("span");
     elc.className = "sel-el" + (prov.cls ? " " + prov.cls : "");
-    elc.textContent = `EL ${z}` + (prov.tag ? ` · ${prov.tag}` : "");
+    const mark = elevChipTag(prov, ev);
+    elc.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
     elc.title = prov.why + elevProvenanceDetail(ev);
     info.appendChild(elc);
   }
@@ -18458,7 +18709,7 @@ async function gzRestoreCompute() {
   if (!ok) {
     // NOT "run Detect first" - detect has run; this is a failed or missing
     // elevation read, and the operator can retry it from the panel.
-    const why = state.ewFailed ? "could not read this sheet's elevations"
+    const why = state.ewFailed ? ewFailMsg()
                                : "open the EARTHWORK panel to read this sheet's elevations";
     for (const z of state.gzones) z.err = why;
     if (speak) setStatus(why + " — grading zones did not recompute", "err");

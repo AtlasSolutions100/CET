@@ -1465,6 +1465,14 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
    what gets read. The dashed border is the tell that survives greyscale. */
 .sel-el.inferred { background: var(--t-info-bg); border-color: var(--t-info);
   border-style: dashed; }
+/* A NUMBER PRINTED BESIDE THE LINE, NOT IN ITS BREAK (`radius`). Real text
+   on the sheet, matched to this contour by proximity alone - on C-04 that
+   is a "551.2 BW" wall spot 2.7 pt from contour 168. Neither solid (which
+   reads as "this line's own label") nor dashed (which reads as "nothing
+   printed this"): a DOTTED edge, its own third state, and the distance -
+   plus the sheet's own tag when there is one - in the chip text. */
+.sel-el.nearby { border-style: dotted; border-color: var(--t-warn, var(--line));
+  background: var(--t-warn-bg, var(--chip)); }
 /* ...and the abstain state: the reader did not say where the number came
    from, so the chip does not claim either way. */
 .sel-el.unknown { border-style: dashed; color: var(--dim); }

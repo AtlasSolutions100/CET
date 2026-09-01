@@ -41,18 +41,32 @@
 //      claim that is false for a large minority of the rows.
 //
 //      Measured against the live service, Oncor Cloudcrest engine page
-//      index 3 = printed sheet C-04 (GET /earthwork/suggest, 2026-08-31):
-//      150 suggestions, how = 69 gap-ocr + 20 radius + 26 inherited +
-//      35 interval-infill. 61 of 150 - 40.7% - carry an elevation that is
-//      printed NOWHERE on the sheet: `inherited` was carried across an
-//      end-to-end weld from another chain, `interval-infill` was counted
-//      between two labelled contours.
+//      index 3 = printed sheet C-04 (GET /earthwork/suggest, re-measured
+//      2026-09-01 on job e183a0d44d89): 150 suggestions, how = 69 gap-ocr
+//      + 20 radius + 26 inherited + 35 interval-infill. 61 of 150 - 40.7% -
+//      carry an elevation printed NOWHERE on the sheet: `inherited` was
+//      carried across an end-to-end weld from another chain,
+//      `interval-infill` was counted between two other contours.
 //
-//      So this suite asserts the DISTINCTION, in both directions and in the
-//      chip's own visible text (not only its tooltip): printed says
-//      printed, inferred says inferred, and a `how` the UI does not
-//      recognise abstains instead of guessing either way. A test that only
-//      fails when somebody deletes a fixed sentence is worse than no test.
+//      THREE KINDS, NOT TWO (2026-09-01). `radius` was grouped with the
+//      in-break reads and got a bare number, and that was the next lie
+//      down: it is the NEAREST printed number within 16 pt, not this
+//      line's own label. On chain 168 the nearest number, 2.7 pt away, is
+//      "551.2 BW" - and this sheet's own legend prints "BW 100.0
+//      PROPOSED BOTTOM OF WALL ELEVATION", so it is a retaining-wall spot
+//      height, with a "550" contour leader a few points further off. 20 of
+//      the 150 rows (13%) are radius. It is now its own kind, dotted, with
+//      the distance - and the sheet's own tag when there is one - in the
+//      chip TEXT.
+//
+//      So this suite asserts the DISTINCTION, in every direction and in the
+//      chip's own visible text (not only its tooltip): a label read in the
+//      line's break says nothing extra, a nearby number says how far and
+//      what it is tagged, an inference says inferred, and a `how` the UI
+//      does not recognise abstains instead of guessing any of them. A test
+//      that only fails when somebody deletes a fixed sentence is worse than
+//      no test - and a test whose fixture IS a false sentence is worse
+//      still (see suite 5's infill relay).
 //
 // webui/app.js is not a module and touches the DOM at load, so the
 // behavioural suites eval the extracted functions against a hand-built stub
@@ -95,8 +109,10 @@ const PROV_SRC = (function () {
   if (a < 0) throw new Error("ELEV_PROV not found in app.js");
   const f = SRC.indexOf("\nfunction elevProvenance(how) {", a);
   if (f < 0) throw new Error("elevProvenance not found in app.js");
-  return SRC.slice(a, f) + fnSrc("elevProvenance")
-       + "\n" + fnSrc("elevProvenanceDetail");
+  return fnSrc("elevRadiusMark") + "\n" + SRC.slice(a, f)
+       + fnSrc("elevProvenance")
+       + "\n" + fnSrc("elevProvenanceDetail")
+       + "\n" + fnSrc("elevChipTag");
 })();
 const elevProvenance = new Function(PROV_SRC + "\nreturn elevProvenance;")();
 
@@ -155,10 +171,11 @@ function renderBar(opts) {
 // The shape ensureElev actually stores. Two rules in one helper: the state
 // is a status + a map, never a sentinel, and the map's value is an object,
 // never a bare number.
-const ELEV = (z, how, src, dist) => ({
+const ELEV = (z, how, src, dist, tag) => ({
   status: "ready",
   byChain: new Map([[192, { z, how, src: src || "",
-                            dist: dist === undefined ? null : dist }]]),
+                            dist: dist === undefined ? null : dist,
+                            tag: tag || null }]]),
 });
 
 // ---------------------------------------------------------------------------
@@ -218,7 +235,7 @@ for (const [name, ev] of [
 {
   // 0 is a real elevation. It is falsy; the guard must be a null/undefined
   // test, not truthiness (CLAUDE.md §5: "0.0 is not None").
-  const info = renderBar({ elev: ELEV(0, "radius") });
+  const info = renderBar({ elev: ELEV(0, "inline") });
   const chip = byClass(info, "sel-el")[0];
   check(!!chip, "elevation 0 still renders - falsy is not missing");
   eq(chip && chip.textContent, "EL 0", "...and reads EL 0");
@@ -263,7 +280,15 @@ console.log("5. the chip says where the number came from - printed vs not");
 // ---------------------------------------------------------------------------
 // The five `how` values /earthwork/suggest emits, and what each one means.
 // Counts are the live C-04 read (150 rows) recorded in the header.
-const PRINTED = ["radius", "inline", "gap-ocr"];
+// A LABEL READ OUT OF THIS LINE'S OWN BREAK is the only thing that gets a
+// bare number. `radius` used to be in here and that was the defect: it is
+// the nearest printed number within 16 pt, and on C-04 chain 168 the
+// nearest number 2.7 pt away is "551.2 BW" - a wall spot height keyed in
+// the sheet's OWN legend ("BW 100.0  PROPOSED BOTTOM OF WALL ELEVATION"),
+// with a "550" contour leader a few points further off. The chip read a
+// bare "EL 551.2" with a solid border, indistinguishable from a real
+// in-break read, and every caveat lived in the tooltip.
+const PRINTED = ["inline", "gap-ocr"];
 const NOT_PRINTED = ["inherited", "interval-infill"];
 for (const how of PRINTED) {
   const p = elevProvenance(how);
@@ -298,32 +323,87 @@ for (const how of NOT_PRINTED) {
   check(a !== b, "the two inferred mechanisms explain themselves differently");
   check(/join/i.test(a), "inherited says the value was carried across a join");
   check(/counted between/i.test(b), "interval-infill says it was counted");
-  // the server's own sentence names the two labelled contours; it rides
-  // through so the check can be made without opening the earthwork panel
-  const chip = byClass(renderBar({
+  // THE SERVER'S SENTENCE RIDES THROUGH VERBATIM, AND THAT IS THE POINT:
+  // the UI must relay what the reader actually claimed and must never
+  // upgrade it. An earlier version of this suite used
+  //   "counted between labelled 579 (line 140) and 583 (line 282)"
+  // as its fixture - a sentence that is FALSE on the sheet it was measured
+  // from. On Oncor C-04 chains 140 and 282 are both `inherited`: no label
+  // is printed on either, and 13 of the 35 infilled rows cited an anchor
+  // like that. So the suite carried the false claim as its own example of
+  // correct output. The server now words each anchor by what backs it
+  // (earthwork.infill_intervals `anchor_how`, asserted in
+  // tests/test_ew_suggest.py); the fixtures below are the two sentences it
+  // can really produce, and what is pinned here is that the UI carries the
+  // difference through instead of flattening it.
+  const backed = byClass(renderBar({
     elev: ELEV(580, "interval-infill",
-      "counted between labelled 579 (line 140) and 583 (line 282)"),
+      "counted between labelled 579 (line 140) and labelled 583 (line 282) "
+      + "at the sheet's 1 ft contour interval - not a printed label, "
+      + "confirm against the sheet"),
   }), "sel-el")[0];
-  check(/line 140/.test(chip.title) && /line 282/.test(chip.title),
+  check(/line 140/.test(backed.title) && /line 282/.test(backed.title),
     "the server's src sentence rides along in the tooltip");
+  const unbacked = byClass(renderBar({
+    elev: ELEV(580, "interval-infill",
+      "counted between 579 (line 140, itself unlabelled) and 583 "
+      + "(line 282, itself unlabelled) at the sheet's 1 ft contour "
+      + "interval - NEITHER end carries a printed label, confirm against "
+      + "the sheet"),
+  }), "sel-el")[0];
+  check(/itself unlabelled/.test(unbacked.title)
+        && /NEITHER end/.test(unbacked.title),
+    "an anchor that carries no printed label says so, through the UI");
+  check(!/labelled 579/.test(unbacked.title),
+    "...and the UI adds no 'labelled' the server did not say - THE FIXED "
+    + "DEFECT was a fixture that asserted pass-through of a false sentence");
 }
 {
+  // A RADIUS HIT IS ITS OWN KIND, AND THE CAVEAT IS ON THE NUMBER.
   // "printed" is a claim about the NUMBER, never about whose number it is.
-  // Measured on C-04 chain 168: the nearest printed value 2.7 pt away is
-  // "551.2 BW" - a bottom-of-wall spot grade the sheet really does print,
-  // matched to a contour by proximity alone. So a radius hit carries its
-  // distance and says the ownership is the reader's assumption.
-  // GLOSSARY: BW = bottom of wall; a spot height, not a contour label.
+  // Measured live on C-04 (job e183a0d44d89, engine page index 3 = printed
+  // sheet C-04) chain 168: z 551.2, how "radius", dist 2.7, label_xy
+  // (429.6, 733.0). Read straight out of the PDF at that point the text is
+  // "551.2" followed on the SAME text row by "BW", with "556.1 TW" above
+  // it; and the sheet's own LEGEND prints "BW 100.0  PROPOSED BOTTOM OF
+  // WALL ELEVATION" / "TW 100.0  PROPOSED TOP OF WALL ELEVATION". So that
+  // number is a retaining-wall spot height, not this contour's label.
+  // GLOSSARY (read off this sheet's legend, not assumed): BW = bottom of
+  // wall, TW = top of wall - spot heights, not contour labels.
+  const p = elevProvenance("radius");
+  eq(p.kind, "nearby",
+    "radius is neither a label read nor an inference - its own third kind");
   const chip = byClass(renderBar({ elev: ELEV(551.2, "radius", "", 2.7) }),
                        "sel-el")[0];
-  check(/2\.7 pt/.test(chip.title),
-    "a radius match reports how far away the printed number actually was");
-  check(/takes it to be|assum/i.test(chip.title),
-    "...and calls the ownership an assumption, not a reading");
+  eq(chip.textContent, "EL 551.2 \u00b7 label 2.7 pt away",
+    "the distance is in the CHIP TEXT - THE FIXED DEFECT: it used to read a "
+    + "bare 'EL 551.2', solid-bordered, with the caveat in a tooltip");
+  check(/\bnearby\b/.test(chip.className),
+    "...and a class, so the tell survives greyscale (dotted border)");
+  check(!/inferred/.test(chip.textContent),
+    "it does not overclaim either: the number IS printed somewhere");
+
+  // THE SHEET'S OWN TAG, whenever the matched token carries one.
+  const tagged = byClass(renderBar({
+    elev: ELEV(551.2, "radius", "", 2.7, "BW") }), "sel-el")[0];
+  eq(tagged.textContent, "EL 551.2 \u00b7 \u201cBW\u201d label 2.7 pt away",
+    "a tagged number shows the sheet's own tag ON the number");
+  check(/BW/.test(tagged.title) && /legend/i.test(tagged.title),
+    "...and the tooltip sends the reader to the sheet's legend for it");
+  check(!/bottom of wall/i.test(tagged.title),
+    "...and does NOT expand the abbreviation: the sheet's legend is where "
+    + "its meaning lives, and inventing one is what CLAUDE.md §4 forbids");
+  check(/assum/i.test(chip.title),
+    "the tooltip calls the ownership an assumption, not a reading");
+  check(!/^Read off a label/.test(chip.title),
+    "...and never says the sheet printed it FOR THIS LINE");
+
   const far = byClass(renderBar({ elev: ELEV(551.2, "radius", "", null) }),
                       "sel-el")[0];
   check(!/pt from this line/.test(far.title),
     "with no distance recorded it invents none");
+  eq(far.textContent, "EL 551.2 \u00b7 label nearby, not in the break",
+    "...and still says the number is not this line's own label");
 }
 {
   // ABSTAIN. A `how` this UI has not been taught must not be guessed either
