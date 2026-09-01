@@ -34,6 +34,25 @@
 //      old sheet's elevation. A wrong number, not a missing one, and this
 //      codebase's worst shape. Evaluated, not grepped.
 //   5. THE FULL SENTENCE IS RECOVERABLE ON HOVER for whatever else clips.
+//   6. THE CHIP SAYS WHERE THE NUMBER CAME FROM, AND SAYS IT HONESTLY.
+//      Until 2026-08-31 the chip's tooltip read "read off the sheet's own
+//      printed labels" for EVERY elevation, and an earlier version of this
+//      file asserted that sentence was present - so the suite pinned a
+//      claim that is false for a large minority of the rows.
+//
+//      Measured against the live service, Oncor Cloudcrest engine page
+//      index 3 = printed sheet C-04 (GET /earthwork/suggest, 2026-08-31):
+//      150 suggestions, how = 69 gap-ocr + 20 radius + 26 inherited +
+//      35 interval-infill. 61 of 150 - 40.7% - carry an elevation that is
+//      printed NOWHERE on the sheet: `inherited` was carried across an
+//      end-to-end weld from another chain, `interval-infill` was counted
+//      between two labelled contours.
+//
+//      So this suite asserts the DISTINCTION, in both directions and in the
+//      chip's own visible text (not only its tooltip): printed says
+//      printed, inferred says inferred, and a `how` the UI does not
+//      recognise abstains instead of guessing either way. A test that only
+//      fails when somebody deletes a fixed sentence is worse than no test.
 //
 // webui/app.js is not a module and touches the DOM at load, so the
 // behavioural suites eval the extracted functions against a hand-built stub
@@ -68,6 +87,18 @@ function fnSrc(name) {
   }
   throw new Error("unbalanced braces reading " + name);
 }
+
+// The provenance table and its lookup, lifted whole: updateSelBar calls
+// elevProvenance, and the point of this suite is what that table decides.
+const PROV_SRC = (function () {
+  const a = SRC.indexOf("const ELEV_PROV = {");
+  if (a < 0) throw new Error("ELEV_PROV not found in app.js");
+  const f = SRC.indexOf("\nfunction elevProvenance(how) {", a);
+  if (f < 0) throw new Error("elevProvenance not found in app.js");
+  return SRC.slice(a, f) + fnSrc("elevProvenance")
+       + "\n" + fnSrc("elevProvenanceDetail");
+})();
+const elevProvenance = new Function(PROV_SRC + "\nreturn elevProvenance;")();
 
 // --- the smallest DOM updateSelBar can run against -------------------------
 function elem(tag) {
@@ -116,16 +147,20 @@ function renderBar(opts) {
     colorSrcLabel: () => "x", colorPopForChain: () => {},
   };
   const names = Object.keys(scope);
-  new Function(...names, fnSrc("updateSelBar") + "\nreturn updateSelBar;")
+  new Function(...names,
+    PROV_SRC + "\n" + fnSrc("updateSelBar") + "\nreturn updateSelBar;")
     (...names.map(n => scope[n]))(ch);
   return els.selInfo;
 }
+// the shape ensureElev actually stores: never a bare number
+const ELEV = (z, how, src, dist) =>
+  new Map([[192, { z, how, src: src || "", dist: dist === undefined ? null : dist }]]);
 
 // ---------------------------------------------------------------------------
 console.log("1. the elevation is a chip, not the tail of the shrinkable string");
 // ---------------------------------------------------------------------------
 {
-  const info = renderBar({ elevMap: new Map([[192, 545]]) });
+  const info = renderBar({ elevMap: ELEV(545, "gap-ocr") });
   const txt = byClass(info, "sel-txt")[0];
   const chip = byClass(info, "sel-el")[0];
 
@@ -148,7 +183,8 @@ console.log("1. the elevation is a chip, not the tail of the shrinkable string")
 console.log("2. no elevation, no chip (not an empty box)");
 // ---------------------------------------------------------------------------
 for (const [name, map] of [
-  ["a line the sheet never labelled", new Map([[999, 12]])],
+  ["a line the sheet never labelled",
+   new Map([[999, { z: 12, how: "radius" }]])],
   ["an empty elevation map", new Map()],
   ["the map still loading (null)", null],
   ["the map never requested (undefined)", undefined],
@@ -159,13 +195,13 @@ for (const [name, map] of [
 {
   // z present but null - the server does emit null z on spot grades, and a
   // "EL null" chip would be worse than none
-  const info = renderBar({ elevMap: new Map([[192, null]]) });
+  const info = renderBar({ elevMap: ELEV(null, "radius") });
   eq(byClass(info, "sel-el").length, 0, "a null elevation renders no chip");
 }
 {
   // 0 is a real elevation. It is falsy; the guard must be a null/undefined
   // test, not truthiness (CLAUDE.md §5: "0.0 is not None").
-  const info = renderBar({ elevMap: new Map([[192, 0]]) });
+  const info = renderBar({ elevMap: ELEV(0, "radius") });
   const chip = byClass(info, "sel-el")[0];
   check(!!chip, "elevation 0 still renders - falsy is not missing");
   eq(chip && chip.textContent, "EL 0", "...and reads EL 0");
@@ -199,21 +235,118 @@ check(/\.fam-sel \{[^}]*max-width:\s*180px/.test(CSS),
 console.log("4. the whole sentence is recoverable on hover");
 // ---------------------------------------------------------------------------
 {
-  const info = renderBar({ elevMap: new Map([[192, 545]]) });
+  const info = renderBar({ elevMap: ELEV(545, "gap-ocr") });
   const txt = byClass(info, "sel-txt")[0];
   eq(txt.title, txt.textContent,
     "whatever DOES clip (a long family label, the point count) is on the title");
-  const chip = byClass(info, "sel-el")[0];
-  check(chip.title && /read off the sheet/.test(chip.title),
-    "the chip says where the number came from - the sheet's own printed labels");
 }
 
 // ---------------------------------------------------------------------------
-console.log("5. ensureElev refuses to write into another page");
+console.log("5. the chip says where the number came from - printed vs not");
+// ---------------------------------------------------------------------------
+// The five `how` values /earthwork/suggest emits, and what each one means.
+// Counts are the live C-04 read (150 rows) recorded in the header.
+const PRINTED = ["radius", "inline", "gap-ocr"];
+const NOT_PRINTED = ["inherited", "interval-infill"];
+for (const how of PRINTED) {
+  const p = elevProvenance(how);
+  eq(p.kind, "printed", how + " is a label the sheet actually prints");
+  eq(p.tag, "", how + ": nothing is added to the number - it IS the sheet's");
+  const chip = byClass(renderBar({ elevMap: ELEV(545, how) }), "sel-el")[0];
+  eq(chip && chip.textContent, "EL 545", how + ": the chip reads the number");
+  check(!/inferred|unknown/.test(chip.className),
+    how + ": and carries no inferred/unknown class");
+}
+for (const how of NOT_PRINTED) {
+  const p = elevProvenance(how);
+  eq(p.kind, "inferred", how + " is NOT printed anywhere on the sheet");
+  const chip = byClass(renderBar({ elevMap: ELEV(580, how) }), "sel-el")[0];
+  check(chip && /inferred/.test(chip.textContent),
+    how + ": the word is in the CHIP TEXT, where the number is - not only "
+    + "in a tooltip nobody opens");
+  eq(chip && chip.textContent, "EL 580 · inferred", how + ": exact chip text");
+  check(/\binferred\b/.test(chip.className),
+    how + ": ...and a class, so the tell survives greyscale (dashed border)");
+  check(/NOT printed/.test(chip.title),
+    how + ": the tooltip states it plainly too");
+  check(!/read off (the )?(sheet|a label)/i.test(chip.title),
+    how + ": and it must NOT claim the sheet printed it - THE FIXED DEFECT");
+}
+{
+  // the two mechanisms are genuinely different and the tooltip must not
+  // blur them: a weld that joined the wrong two objects is a different
+  // failure from a miscount, and only one of them has a server sentence
+  const a = elevProvenance("inherited").why;
+  const b = elevProvenance("interval-infill").why;
+  check(a !== b, "the two inferred mechanisms explain themselves differently");
+  check(/join/i.test(a), "inherited says the value was carried across a join");
+  check(/counted between/i.test(b), "interval-infill says it was counted");
+  // the server's own sentence names the two labelled contours; it rides
+  // through so the check can be made without opening the earthwork panel
+  const chip = byClass(renderBar({
+    elevMap: ELEV(580, "interval-infill",
+      "counted between labelled 579 (line 140) and 583 (line 282)"),
+  }), "sel-el")[0];
+  check(/line 140/.test(chip.title) && /line 282/.test(chip.title),
+    "the server's src sentence rides along in the tooltip");
+}
+{
+  // "printed" is a claim about the NUMBER, never about whose number it is.
+  // Measured on C-04 chain 168: the nearest printed value 2.7 pt away is
+  // "551.2 BW" - a bottom-of-wall spot grade the sheet really does print,
+  // matched to a contour by proximity alone. So a radius hit carries its
+  // distance and says the ownership is the reader's assumption.
+  // GLOSSARY: BW = bottom of wall; a spot height, not a contour label.
+  const chip = byClass(renderBar({ elevMap: ELEV(551.2, "radius", "", 2.7) }),
+                       "sel-el")[0];
+  check(/2\.7 pt/.test(chip.title),
+    "a radius match reports how far away the printed number actually was");
+  check(/takes it to be|assum/i.test(chip.title),
+    "...and calls the ownership an assumption, not a reading");
+  const far = byClass(renderBar({ elevMap: ELEV(551.2, "radius", "", null) }),
+                      "sel-el")[0];
+  check(!/pt from this line/.test(far.title),
+    "with no distance recorded it invents none");
+}
+{
+  // ABSTAIN. A `how` this UI has not been taught must not be guessed either
+  // way - not "printed" (the old lie) and not "inferred" (a new one).
+  for (const [name, map] of [
+    ["an unrecognised how", ELEV(545, "some-new-reader")],
+    ["no how at all", ELEV(545, undefined)],
+    ["a bare number, the pre-fix shape", new Map([[192, 545]])],
+  ]) {
+    const chip = byClass(renderBar({ elevMap: map }), "sel-el")[0];
+    check(!!chip, name + ": the number is still shown");
+    eq(chip.textContent, "EL 545 · source unknown",
+      name + ": ...and the chip says it does not know where it came from");
+    check(!/read off/i.test(chip.title) && !/NOT printed/.test(chip.title),
+      name + ": the tooltip claims neither printed nor inferred");
+  }
+  eq(elevProvenance("some-new-reader").kind, "unknown",
+    "an unknown reader tag resolves to the abstain row");
+}
+{
+  // the honest vocabulary is the one the app already uses one screen away:
+  // the earthwork panel's per-row badge. One word for one distinction.
+  check(/ew-inf-tag/.test(SRC) && /"inferred"/.test(SRC),
+    "the earthwork row badge still exists - the chip reuses its word");
+  check(/\.sel-el\.inferred \{[^}]*border-style:\s*dashed/.test(CSS),
+    "the inferred chip is dashed, like the earthwork panel's inferred input");
+  check(/\.sel-el\.unknown \{[^}]*border-style:\s*dashed/.test(CSS),
+    "and so is the abstain chip");
+}
+
+// ---------------------------------------------------------------------------
+console.log("6. ensureElev refuses to write into another page");
 // ---------------------------------------------------------------------------
 function runEnsure(mid) {
   const state = { elevMap: undefined, gen: 1, job: "J", page: 3, selected: null };
-  const body = { suggestions: [{ chain_id: 192, z: 545 }] };
+  const body = { suggestions: [
+    { chain_id: 192, z: 545, how: "gap-ocr" },
+    { chain_id: 95, z: 580, how: "interval-infill", inferred: true,
+      src: "counted between labelled 579 and 583" },
+  ] };
   const scope = {
     state,
     fetch: async () => { if (mid) mid(state); return { ok: true, json: async () => body }; },
@@ -226,8 +359,14 @@ function runEnsure(mid) {
   return fn().then(() => state);
 }
 runEnsure(null).then(st => {
-  check(st.elevMap instanceof Map && st.elevMap.get(192) === 545,
-    "the happy path still builds the map");
+  const got = st.elevMap instanceof Map ? st.elevMap.get(192) : null;
+  check(got && got.z === 545, "the happy path still builds the map");
+  check(got && got.how === "gap-ocr",
+    "and it keeps `how` alongside the number - an elevation with no "
+    + "provenance is what let the chip claim every one of them was printed");
+  const inf = st.elevMap.get(95);
+  check(inf && inf.how === "interval-infill" && /579/.test(inf.src),
+    "...and the server's src sentence for an infilled row");
   return runEnsure(s => { s.page = 2; });
 }).then(st => {
   check(!(st.elevMap instanceof Map),

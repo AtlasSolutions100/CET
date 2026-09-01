@@ -15428,9 +15428,91 @@ function distToSeg(px, py, a, b) {
   return Math.hypot(px-qx, py-qy);
 }
 
+// WHERE A CONTOUR'S ELEVATION CAME FROM, AND WHY THE CHIP HAS TO SAY.
+//
+// /earthwork/suggest tags every row with `how`. Only three of its five
+// values mean a label PRINTED ON THE SHEET was read:
+//   radius / inline  native PDF text sitting on (or in the break of) this
+//                    line - glyphs, exact
+//   gap-ocr          the label printed in this line's own break, read off
+//                    the raster because the drafter exploded it to vectors
+// The other two are the engine's own arithmetic and nothing on the sheet
+// states them:
+//   inherited        no label on this chain at all. The value was carried
+//                    across a <=60 pt end-to-end weld from another fragment
+//                    the engine believes is the same contour
+//                    (earthwork.suggest_elevations pass 2, dist 999)
+//   interval-infill  counted between two labelled contours at the sheet's
+//                    own contour interval (earthwork.infill_intervals; the
+//                    row also carries inferred:true and a `src` sentence)
+//
+// MEASURED, Oncor Cloudcrest engine page index 3 = printed sheet C-04,
+// 2026-08-31: 150 rows - 89 printed (20 radius + 69 gap-ocr) and 61 not
+// (26 inherited + 35 interval-infill), 40.7% of them. The chip used to tell
+// the operator that all 150 were "read off the sheet's own printed labels".
+//
+// Anything else - a row with no `how`, or a value this function has not been
+// taught - is UNKNOWN and says so. Abstain, never guess a provenance
+// (CLAUDE.md §5: where no honest ranking exists, keep it visible).
+//
+// GLOSSARY: "contour interval" = the fixed height step between one contour
+// line and the next on a grading sheet (this sheet's is printed in its own
+// legend and the server quotes it back in `src`). Convention read off the
+// sheet, not assumed.
+const ELEV_PROV = {
+  radius: { kind: "printed", cls: "", tag: "",
+    // The distance matters and rides along below: this is the NEAREST
+    // printed number, not necessarily this contour's own label. On C-04
+    // chain 168 the nearest number 2.7 pt away is "551.2 BW" - a bottom-of-
+    // wall spot grade, printed on the sheet but not a contour label. The
+    // chip may say the number is printed; it must not say it belongs here.
+    why: "Read off a label this sheet prints beside this line — real text in "
+       + "the PDF, not a reading of ours." },
+  inline: { kind: "printed", cls: "", tag: "",
+    why: "Read off the label this sheet prints in the break in this contour "
+       + "— real text in the PDF, not a reading of ours." },
+  "gap-ocr": { kind: "printed", cls: "", tag: "",
+    why: "Read off the label this sheet prints in the break in this contour. "
+       + "That label is drawn as line work rather than text, so it was read "
+       + "from a picture of the sheet and CAN be misread — check it against "
+       + "the drawing." },
+  inherited: { kind: "inferred", cls: "inferred", tag: "inferred",
+    why: "NOT printed on this line. Nothing is labelled on it; the engine "
+       + "joined it end to end to another piece of what it takes to be the "
+       + "same contour and carried that piece's elevation across. If the "
+       + "join is wrong so is this number — check it against the drawing "
+       + "before anything is priced on it." },
+  "interval-infill": { kind: "inferred", cls: "inferred", tag: "inferred",
+    why: "NOT printed anywhere on the sheet. It was counted between two "
+       + "labelled contours at this sheet's contour interval — the same "
+       + "“inferred” row the earthwork panel lists on SKIP." },
+};
+const ELEV_PROV_UNKNOWN = { kind: "unknown", cls: "unknown",
+  tag: "source unknown",
+  why: "The elevation reader did not say where this number came from, so we "
+     + "cannot tell you whether the sheet prints it or whether we worked it "
+     + "out. Treat it as unconfirmed until you have checked the drawing." };
+function elevProvenance(how) {
+  return ELEV_PROV[how] || ELEV_PROV_UNKNOWN;
+}
+// The part of the sentence that is specific to THIS line rather than to the
+// method: how far the printed number was, or the server's own account of
+// which two labelled contours an infilled row was counted between.
+function elevProvenanceDetail(ev) {
+  if (!ev || typeof ev !== "object") return "";
+  if (ev.how === "radius" && ev.dist !== null && ev.dist !== undefined)
+    return ` The nearest printed number is ${ev.dist} pt from this line and `
+      + `the reader takes it to be this contour's — on a crowded sheet that `
+      + `can be a spot grade or a neighbour's label instead.`;
+  return ev.src ? " " + ev.src : "";
+}
+
 // contour elevations, read once per page off the sheet's own labels
 // (the earthwork reader already pairs them); selecting a topo line then
-// shows its elevation without opening any panel
+// shows its elevation without opening any panel. The map's VALUE is an
+// object, never a bare number: the number alone cannot say where it came
+// from, and shipping it alone is what let the chip claim all of them were
+// printed.
 async function ensureElev() {
   if (state.elevMap !== undefined) return;
   state.elevMap = null;  // in flight
@@ -15446,7 +15528,9 @@ async function ensureElev() {
   try {
     const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
     m = r.ok
-      ? new Map((await r.json()).suggestions.map(s => [s.chain_id, s.z]))
+      ? new Map((await r.json()).suggestions.map(
+          s => [s.chain_id, { z: s.z, how: s.how, src: s.src || "",
+                              dist: s.dist }]))
       : new Map();
   } catch { m = new Map(); }
   if (gen !== state.gen || job !== state.job || page !== state.page) return;
@@ -15469,7 +15553,13 @@ function updateSelBar(ch) {
     ? ` · point ${state.selPt + 1}/${ch.points.length} selected`
     : ` · ${ch.points.length} points`;
   if (state.elevMap === undefined) ensureElev();
-  const z = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
+  // {z, how, src} - see ELEV_PROV. A bare number would be an elevation with
+  // no provenance, which is the whole defect this shape exists to prevent;
+  // if one ever arrives it falls through to "source unknown" below rather
+  // than being shown as if the sheet printed it.
+  const ev = state.elevMap instanceof Map ? state.elevMap.get(ch.chain_id) : undefined;
+  const z = (ev && typeof ev === "object") ? ev.z : ev;
+  const prov = elevProvenance(ev && typeof ev === "object" ? ev.how : undefined);
   // the length here is the line's GEOMETRY; when a work area is drawn and
   // this line crosses its edge, say what part of it actually counts
   const wf = wzChainFrac(ch);
@@ -15501,12 +15591,18 @@ function updateSelBar(ch) {
   // cannot be ellipsized, so the number is now width-proof.
   // Nothing renders when the line has no elevation (a non-contour, or a
   // contour the sheet never labelled) - no empty box.
+  // THE PROVENANCE TRAVELS WITH THE NUMBER, NOT IN A TOOLTIP.
+  // The number is what gets read and acted on, so an elevation the sheet
+  // does NOT print is marked in the chip text itself - the same word, and
+  // the same reason, as the earthwork panel's per-row "inferred" badge. On
+  // C-04 that is 61 of 150 (see ELEV_PROV for the measurement). The tooltip
+  // carries the long form and, for an infilled row, the server's own
+  // sentence naming the two labelled contours it was counted between.
   if (z !== undefined && z !== null) {
     const elc = document.createElement("span");
-    elc.className = "sel-el";
-    elc.textContent = `EL ${z}`;
-    elc.title = "Elevation this contour carries, read off the sheet's own "
-      + "printed labels — the same reading the earthwork panel uses.";
+    elc.className = "sel-el" + (prov.cls ? " " + prov.cls : "");
+    elc.textContent = `EL ${z}` + (prov.tag ? ` · ${prov.tag}` : "");
+    elc.title = prov.why + elevProvenanceDetail(ev);
     info.appendChild(elc);
   }
   // family switcher, right on the bar: the SAME mutation the Reclassify

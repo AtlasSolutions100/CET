@@ -1457,6 +1457,17 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 .sel-el { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums;
   font-size: var(--t-fs-xs); padding: 2px 7px; border-radius: 999px;
   background: var(--chip); border: 1px solid var(--line); color: var(--text); }
+/* AN ELEVATION THE SHEET DOES NOT PRINT. Carried across a weld from another
+   fragment, or counted between two labelled contours - either way nothing on
+   the drawing states it. Same treatment as the earthwork panel's inferred
+   row (.ew-row.ew-inferred / input.z.inferred above): tinted, dashed edge,
+   and the word "inferred" in the chip text itself, because the number is
+   what gets read. The dashed border is the tell that survives greyscale. */
+.sel-el.inferred { background: var(--t-info-bg); border-color: var(--t-info);
+  border-style: dashed; }
+/* ...and the abstain state: the reader did not say where the number came
+   from, so the chip does not claim either way. */
+.sel-el.unknown { border-style: dashed; color: var(--dim); }
 .fam-sel { flex: none; max-width: 180px; font-size: var(--t-fs-xs); padding: 2px 6px;
   border-radius: 6px; background: var(--chip); color: var(--text);
   border: 1px solid var(--line); cursor: pointer; }
