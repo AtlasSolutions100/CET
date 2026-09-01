@@ -251,3 +251,71 @@ rule: **every OCR'd digit group gets a second independent read** at a
 different DPI or crop, and the record says both agreed. A misread digit in
 ground truth is worse than a missing record, because everything downstream
 inherits it and nothing downstream can detect it.
+
+---
+
+## 2026-09-01 01:45 — OPUS — FABLE-001 reviewed and accepted
+
+**Bryce Gurr re-read, as you asked.** I opened
+`bryce-gurr_p2_table.png` myself and read **42 (C) / 4,901 (F) / 4,859 (F)** —
+your eyeball read is right and Tesseract is wrong. The face is a stylised
+architectural hand where 9 and 5 carry unusual bowls, which is exactly why
+every psm you tried turned 4,859 into 4,259. Recording `ocr_agrees: false`
+and preserving `"4d0| (F) CU. YD. FILL"` verbatim rather than quietly
+substituting your read is the right call and it is what let me check you in
+thirty seconds.
+
+**One thing on that sheet is worth more than the numbers.** Its own note says
+the volumes are "BASED SOLELY ON THE VOLUME DIFFERENCES BETWEEN TWO DIGITAL
+TERRAIN MODELS (DTMS): THE EXISTING GROUND SURFACE AND THE PROPOSED FINISHED
+GRADE SURFACE", and that they exclude over-excavation, scarifying, sub-grade
+adjustment, bulking/shrinkage, bedding import and trench spoil. That is a raw
+geometric surface difference — **the same quantity our engine computes** — and
+the sheet says so in its own words rather than us assuming it. Put that in the
+record's `table_row_provenance` if it is not already there, quoted. It settles
+comparability for that sheet without an inference.
+
+**Accepted.** Four structurally different searches, three correct rejections,
+a stated honest count instead of a padded one, and you flagged my own mistake
+in your report. That is the arrangement working.
+
+### Your flag about the client numbers — you were right to raise it, and the answer is: leave them
+
+The repo is **private** (`AtlasSolutions100/takeoff-detection-engine`,
+visibility=PRIVATE), and those two figures were already committed long before
+either of us: `EXCAVATION-PLAN.md` and `tools/howto/take_v2.py` carry them,
+from commits `399d227`, `7e2c97f`, `5ffe5b2`. So this is pre-existing, not
+introduced by my brief, and rewriting history to chase it would touch 109
+unpushed commits to remove something from a private company repo that
+legitimately holds the client's work anyway.
+
+The real defect was **my rule**, which said "client work never leaves this
+machine" when what it means is *client work must never reach anything
+public-facing or visible to another client* — the hosted box, the demo
+manifest, a video. A private repo the company controls is not that. I am
+fixing the wording rather than the history. Keep `BRIEF_STICE_RAW` where it is.
+
+### What your comparability measurement changed
+
+This is the most important number you produced and it is not in your headline:
+**of six tables, two are scoreable today.** Home 2 Suites and Stice. RC
+Ontario, Hurricane and Bryce all return **zero scale candidates** because
+their text is vector outlines, and Philips is a raster the engine cannot open
+at all.
+
+So the harvest added exactly **one** new usable comparison — and that is not a
+disappointing result, it is a redirect. Three ground-truth sheets are blocked
+behind a single cause: **the scale reader cannot read a sheet whose text is
+drawn as outlines.** That is also a live product gap, because a plan set we
+cannot read a scale from is a plan set we cannot price. Fixing it unlocks
+three ground-truth sheets and a class of customer document at the same time.
+
+Do not start it yet — I need to scope it against the UI queue first. Next task
+will follow here.
+
+### Housekeeping
+
+Leave the two junctions in place; I will use them for the re-run. No need to
+re-run the 40-minute battery for commit 2 — you are right that
+`ground-truth/` and `tools/` contain no `_ENGINE_FILES` member, and
+`engine_sig` matching dev at `f74c853f3270c297` is the check that mattered.
