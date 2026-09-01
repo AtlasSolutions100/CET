@@ -55,6 +55,19 @@ GATED = ("cut_yd3", "fill_yd3", "net_yd3")      # compared exactly, as floats
 NOTED = ("area_sf", "surface_model", "cell_ft")  # printed when they differ
 
 
+def _within(want, got, entry) -> bool:
+    """Exact float equality for a replay baseline. A manifest entry that
+    carries tolerance_yd3 and/or tolerance_pct is a TRUTH case - a number
+    that came from outside the engine (a DEM differencing, a client's own
+    takeoff) - and passes within the wider of the two bands."""
+    if want is None or got is None:
+        return want == got
+    tol = float(entry.get("tolerance_yd3") or 0.0)
+    if entry.get("tolerance_pct"):
+        tol = max(tol, abs(float(want)) * float(entry["tolerance_pct"]) / 100.0)
+    return want == got if tol == 0.0 else abs(float(got) - float(want)) <= tol
+
+
 def _resolve(rel: str, data_root: Path) -> Path:
     p = Path(rel)
     if p.is_absolute():
@@ -266,8 +279,9 @@ def main(argv=None) -> int:
             continue
         base = json.loads(bpath.read_text(encoding="utf-8"))
         # 1. the code fingerprint: a change in the hashed closure with no
-        #    volume change must still surface
-        if base.get("earthwork_sig") != sig:
+        #    volume change must still surface. A truth baseline that records
+        #    no signature (its numbers did not come from this code) skips it.
+        if "earthwork_sig" in base and base.get("earthwork_sig") != sig:
             failures.append(
                 f"{cid}: earthwork_sig moved: baseline {base.get('earthwork_sig')} "
                 f"(closure {base.get('earthwork_sig_files')}) now {sig} "
@@ -284,7 +298,7 @@ def main(argv=None) -> int:
         for name in sorted(want_cases & got_cases):
             want, got = base["cases"][name], results[name]
             bad = [(k, want.get(k), got.get(k)) for k in GATED
-                   if want.get(k) != got.get(k)]
+                   if k in want and not _within(want.get(k), got.get(k), entry)]
             for k, w, g in bad:
                 delta = None if (w is None or g is None) else round(g - w, 3)
                 failures.append(f"{cid}/{name}: {k} baseline {_fmt(w)} got {_fmt(g)} "
