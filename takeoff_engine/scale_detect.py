@@ -1282,6 +1282,78 @@ def _ocr_zoom(page, region, min_conf: int = 35) -> list:
         return []
 
 
+# OCR confusion immediately before an inch mark: the leading "1" of a
+# stylised caption comes back as a bar/bracket ('SCALE: |"=20\'' measured on
+# Approved Construction Set p2, 2026-09-01). Only the character glued to a
+# quote mark is rewritten - a bare | elsewhere stays untouched.
+_OCR_ONE_CONFUSION = re.compile(r"[|Il!{\[]\s*(?=[\"“”″])")
+
+# Caption heads worth a second look when the full-page pass parsed nothing:
+# the word SCALE (with or without punctuation) or the GRAPHIC of
+# "GRAPHIC SCALE IN FEET".
+_CAPTION_HEAD_OCR = re.compile(r"^(?:SCALE[:.]?|GRAPHIC)$", re.I)
+
+
+def _ocr_caption_rescue(page, words) -> list:
+    """Re-read the caption WINDOWS when full-page OCR mangled the ratio.
+
+    Measured failure this recovers (survey 2026-09-01, FABLE-002): on
+    sheets whose text is vector outlines, the 150-dpi pass reads the
+    caption only partially - Hurricane C.3.1 comes back 'SCALE: = 40'
+    with the 1\" dropped, so _scan has nothing to match even though every
+    word of 'SCALE: 1" = 40\'' is printed on the sheet. 296 of 728
+    plan-like corpus pages return no reading, and the three
+    vector-outline earthwork ground-truth sheets are all in that set.
+
+    So: find the surviving caption HEADS in the full-page words, re-OCR a
+    small window around each at high dpi (_ocr_zoom), normalise the
+    one-glyph confusions, and _scan the reassembled rows. Cost is bounded
+    (at most 8 windows, each ~400x100 pt) and only paid on pages that had
+    no reading at all.
+    """
+    heads = []
+    for w in words:
+        if _CAPTION_HEAD_OCR.match(w[4].strip()):
+            # one window per distinct location; two heads of the same
+            # caption ("GRAPHIC" + "SCALE") collapse into one
+            if any(abs(w[0] - h[0]) < 60 and abs(w[1] - h[1]) < 40
+                   for h in heads):
+                continue
+            heads.append(w)
+        if len(heads) >= 8:
+            break
+    out, seen = [], set()
+    for h in heads:
+        x0, y0 = h[0], h[1]
+        # Three window shapes per head, because the window CONTENT steers
+        # Tesseract's segmentation (measured on Hurricane C.3.1: a tight
+        # single-row window reads 'SCALE: 1" 40" ='; a wider one drops the
+        # 1" entirely). Tight row first, then wide, then the band BELOW the
+        # head for bar-style captions whose ratio prints under the ruler.
+        for region in ((x0 - 80, y0 - 18, x0 + 240, y0 + 30),
+                       (x0 - 60, y0 - 25, x0 + 340, y0 + 75),
+                       (x0 - 50, y0 + 25, x0 + 330, y0 + 95)):
+            zw = _ocr_zoom(page, region, min_conf=30)
+            if not zw:
+                continue
+            row = _row_text(zw)
+            # High-dpi OCR of these fonts detaches the inch mark into its
+            # own token ('SCALE: 1 " 40"'): glue a quote mark back onto
+            # the digit it follows before scanning.
+            row = re.sub(r"(\d)\s+(?=[\"“”″])", r"\1", row)
+            row = _OCR_ONE_CONFUSION.sub("1", row)
+            found = _scan(row)
+            for c in found:
+                key = round(c.ft_per_paper_inch, 4)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(c)
+            if found:
+                break            # this head's caption is read; next head
+    return out
+
+
 def graphic_scale_bar(words: list, page=None,
                       ocr_retry: bool = False) -> ScaleCandidate | None:
     """Measure a drawn scale bar - the ruler with tick labels.
@@ -1733,6 +1805,27 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
                 bar = graphic_scale_bar(words, page, ocr_retry=True)
                 if bar:
                     return ScaleResult(bar, [bar], n2, "graphic-bar")
+                # Caption-window rescue, strictly additive: it runs only
+                # on pages every path above found NOTHING on, so no page
+                # that reads today can change its reading.
+                rcands = _ocr_caption_rescue(page, words)
+                if rcands:
+                    best, pick = _rank(rcands, page, words, linework)
+                    if pick.get("why") not in ("single", "governs"):
+                        # Several distinct OCR readings and no honest
+                        # ranking: candidates stay visible, the reading
+                        # abstains. A text-layer pick may stand UNCHECKED;
+                        # an OCR pick may not - a wrong scale is the worst
+                        # silent error this engine has.
+                        return ScaleResult(
+                            None, rcands, n2, "ocr",
+                            pick={"why": "abstained-ocr",
+                                  "reason": pick.get("reason",
+                                                     "multiple OCR values"),
+                                  "values": pick.get("values")})
+                    res = ScaleResult(best, rcands, n2, "ocr", pick=pick)
+                    return (_corroborate(res, words, page)
+                            if corroborate else res)
                 # "" = the sheet printed nothing we recognise;
                 # "ocr-unavailable"/"ocr-error" = the page was never
                 # actually checked (see _ocr_words_loud)
