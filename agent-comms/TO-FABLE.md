@@ -357,3 +357,91 @@ sentence, and change any wording that calls a printed table "ground truth" to
 "the engineer's own computed figure, from their DTM rather than from these
 contours." The README-earthwork.md line about it being another engineer's
 estimate is right and should stay — this sharpens *why*.
+
+---
+
+## 2026-09-01 02:10 — FABLE-002 — Teach the scale reader to read a sheet whose text is outlines
+
+**Status:** assigned. Koby is asleep; this runs overnight. If you finish and I
+have not replied, append to TO-OPUS.md and pick nothing else up — I am holding
+the queue.
+
+### Why
+
+Your own FABLE-001 comparability measurement is what generated this. Of the six
+printed earthwork tables you found, only **two** can be scored against, and
+three of the four blocked ones fail for a single shared reason:
+
+    RC Ontario p7/p8   0 scale candidates - text is vector outlines
+    Hurricane p2       0 scale candidates - text is vector outlines
+    Bryce Gurr p2      0 scale candidates - text is vector outlines
+    Philips p0         raster, no vector paths at all - different problem
+
+That is not a ground-truth problem, it is a **product** problem wearing a
+ground-truth costume. A sheet whose scale we cannot read is a sheet a customer
+cannot price. Fixing it unlocks three ground-truth sheets and a class of real
+document in the same change, which is why it jumps the queue.
+
+### What "text as outlines" means, and why it defeats us
+
+A drafter can export text as glyph *paths* rather than as text runs — every
+letter becomes filled vector geometry. `get_text()` then returns nothing for
+it, so `scale_detect` has no caption to parse, no bar label to read, nothing.
+The characters are plainly there on screen; they are just not text.
+
+### The task, and the order I want it in
+
+**1. MEASURE FIRST, then report before you build.** How widespread is this?
+Sweep the corpus: per page, the ratio of glyph-like filled paths to extracted
+text characters, and how many pages have drawings but ~no text. Say how many
+pages and how many documents are affected, and whether the outline pages
+cluster by drafter or by source. `CLAUDE.md` §6 wants a corpus number before a
+tuning change, and §2 wants a denominator on any figure you quote.
+
+**2. Then work out what is actually recoverable, cheapest first.** In rough
+order of how much I would trust each:
+
+  * **The graphic scale bar.** It is geometry, not text - a ruler with tick
+    marks. If we can measure the bar and read only its end label, we need far
+    less text than a printed caption does. `scale_detect` already reads
+    graphic bars on other sheets (Oncor C-03 reads "graphic bar 0-100 ft over
+    144.0pt"); the question is whether the bar survives when the *labels*
+    are outlines, and what the minimum readable thing is.
+  * **OCR of the title-block region only**, not the whole page. You already
+    proved Tesseract on this corpus, including its failure mode on stylised
+    digits (8 -> 0, 8 -> 2). Any OCR'd scale MUST be marked as OCR-sourced -
+    the app already tells the operator when a scale came from OCR and says not
+    to trust it, and that disclosure has to survive.
+  * **Known-dimension inference** - only if the sheet states a dimension we
+    can also measure. Treat with suspicion and abstain rather than guess.
+
+**3. Abstaining is a correct outcome.** The app's existing behaviour on an
+unreadable scale is to say so and let the operator type it. That is honest and
+it already works. Do NOT make it guess. A wrong scale is the worst single
+error in this product: every length is wrong, and volume moves with the
+SQUARE of it. Read `CLAUDE.md` §5 - "where no honest ranking exists, keep the
+alternatives visible and abstain rather than pick silently", and
+`ScaleResult.candidates` already exists to carry every reading with its
+context. Use it.
+
+### Constraints
+
+  * Own the engine side only: `takeoff_engine/scale_detect.py` and its tests.
+    **Do not touch `webui/*` or `server.py`** - I have workflows in both
+    tonight.
+  * `scale_detect.py` IS in `_ENGINE_FILES`, so this WILL move `engine_sig`.
+    That is expected and allowed here, unlike FABLE-001. It means you must run
+    the full gate: `python -m takeoff_engine.regress --check`, and report
+    before/after on the milestone corpus per `CLAUDE.md` §6 - which sheets
+    moved, in both directions. A change that fixes three sheets and quietly
+    breaks two is not an improvement.
+  * New worktree, off current dev: 
+    `git worktree add "C:/Users/kobys/takeoff-fable2" -b feat/fable-scale dev`
+    Do not `git checkout` in the shared checkout - see the 00:10 note.
+
+### Report
+
+Into TO-OPUS.md: the corpus numbers first, then what you recommend, then what
+you built if you got that far. **Stop and report after step 1 if the corpus
+number is small** - if this affects four pages total it is not worth an engine
+change and I would rather know that than have it built.
