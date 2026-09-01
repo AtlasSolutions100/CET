@@ -221,6 +221,109 @@ def _run_sheet(args):
 
 BASELINE = Path(__file__).parent.parent / "gate-baseline.json"
 
+
+# ---------------------------------------------------------------------------
+# The VOLUME signature.
+#
+# detect_page.engine_sig() fingerprints the code that decides what a detect
+# result contains, and it is what invalidates cached detections. Measured
+# 2026-09-01: its _ENGINE_FILES lists ten modules and earthwork.py - the
+# module that computes the cubic yards a bid depends on - is not one of them.
+# So an earthwork edit moved no signature, invalidated no cache and tripped
+# no gate; the only volume test (tests/test_grading_zone.py) checks the
+# engine against its own grid arithmetic, not against a certified recipe.
+#
+# This is the second fingerprint, kept SEPARATE from engine_sig on purpose:
+#   * a volume-only change must not invalidate detection caches (every
+#     demo page would come back stale for a change that moved no chain);
+#   * a detection change must not silently re-baseline volumes.
+# It lives here and not beside engine_sig() because detect_page.py is one of
+# engine_sig's hashed inputs: adding a function there would move engine_sig
+# for a change that touches no detection - exactly what the split forbids.
+#
+# The hashed set is the IMPORT CLOSURE of earthwork.py (plus any
+# surface*.py that lands beside it), walked over the package's own import
+# graph with ast, never a hand-kept list - the list is how earthwork.py went
+# missing from engine_sig in the first place. On dev at b0c3baf it is
+# earthwork.py -> chain.py (_sample_polyline resamples every contour before
+# it enters the TIN) -> extract.py (StrokeUnit). chain.py and extract.py are
+# therefore in BOTH closures, and a change to either moves both signatures;
+# that is correct, since it can move both a chain count and a volume, and
+# the two gates then each say what they saw.
+# ---------------------------------------------------------------------------
+_EARTHWORK_ROOTS = ("earthwork.py", "surface*.py")
+
+
+def _package_imports(path: Path, pkg: Path) -> set:
+    """Module names under `pkg` that `path` imports, anywhere in the file -
+    module level or inside a function, since a lazy import still runs."""
+    import ast
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:                      # from . import x / from .x import y
+                if node.module:
+                    names.add(node.module.split(".")[0])
+                else:
+                    names.update(a.name for a in node.names)
+            elif node.module == pkg.name:       # from takeoff_engine import x
+                names.update(a.name for a in node.names)
+            elif node.module and node.module.startswith(pkg.name + "."):
+                names.add(node.module.split(".")[1])
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith(pkg.name + "."):
+                    names.add(a.name.split(".")[1])
+    found = set()
+    for n in names:
+        if (pkg / f"{n}.py").is_file():
+            found.add(f"{n}.py")
+        elif (pkg / n).is_dir():
+            found.update(str(q.relative_to(pkg)).replace("\\", "/")
+                         for q in sorted((pkg / n).rglob("*.py")))
+    return found
+
+
+def earthwork_sig_files(pkg: "Path | None" = None) -> list:
+    """The exact closure earthwork_sig() hashes, package-relative, sorted.
+
+    Roots are _EARTHWORK_ROOTS; the walk follows every intra-package import
+    transitively. A missing root (no surface*.py yet) is simply absent.
+    """
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    todo = []
+    for pat in _EARTHWORK_ROOTS:
+        todo += [q.name for q in sorted(pkg.glob(pat)) if q.is_file()]
+    seen = []
+    while todo:
+        rel = todo.pop(0)
+        if rel in seen:
+            continue
+        seen.append(rel)
+        for dep in sorted(_package_imports(pkg / rel, pkg)):
+            if dep not in seen:
+                todo.append(dep)
+    return sorted(seen)
+
+
+def earthwork_sig(pkg: "Path | None" = None) -> str:
+    """Content hash (sha1[:16], like engine_sig) over earthwork_sig_files().
+
+    Bytes, not mtimes, for the reason engine_sig's docstring gives: a fresh
+    checkout or image rebuild must not move it, a real edit must.
+    """
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    h = hashlib.sha1()
+    for rel in earthwork_sig_files(pkg):
+        h.update(rel.encode() + b":")
+        h.update(hashlib.sha1((pkg / rel).read_bytes()).digest())
+        h.update(b"|")
+    return h.hexdigest()[:16]
+
 # Tolerance on a class-accuracy fraction. Detection is deterministic (accept
 # loops are order-pinned), so this is not for run-to-run noise - it is for
 # float formatting drift across library versions.
