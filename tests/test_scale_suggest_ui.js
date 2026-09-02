@@ -183,8 +183,9 @@ check(/no scale is set — you can type it yourself/.test(js),
 // ---- 6. the honest empty state is not regressed -------------------------
 check(/if \(!uniq\.length\) return;/.test(rs),
   "a page with no suggestions renders no suggestion block at all");
-check(/No scale could be read off this sheet/.test(js),
-  "and the banner's original no-scale sentence is still there for it");
+check(/noScaleSentence\(sug\.length\)/.test(js),
+  "and the banner's no-scale sentence for it is read off the engine's "
+  + "record (noScaleSentence), never asserted about the sheet");
 
 // ---- the chip and the banner tell the truth about the state -------------
 check(/no scale set — \$\{_nsug\} unchecked reading/.test(js),
@@ -235,7 +236,7 @@ check(!/\.sh-suggest[^{]*\{[^}]*var\(--accent\)/.test(css),
   "and never in the accent colour reserved for a corroborated reading");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=147/.test(html), "app.js cache buster bumped to 147");
+check(/app\.js\?v=148/.test(html), "app.js cache buster bumped to 148");
 check(/style\.css\?v=69/.test(html), "style.css cache buster bumped to 69");
 
 console.log();

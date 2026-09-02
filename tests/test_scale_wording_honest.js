@@ -134,8 +134,10 @@ check(T(st(SUG3)).sheetFactsText()
       === "914 lines in 180 styles · no scale set — 3 unchecked readings "
       + "offered, none chosen",
   "status bar, three readings: the count matches the number of buttons");
-check(T(st(null)).sheetFactsText() === "914 lines in 180 styles · no scale found",
-  "a page with neither a scale nor readings keeps its old line");
+check(T(st(null)).sheetFactsText()
+      === "914 lines in 180 styles · no scale set — the engine read none",
+  "a page with neither a scale nor readings says no scale is SET and that "
+  + "the engine read none - not that the sheet has none");
 check(T(st(SUG, { text: `1"=20'`, source: "text", agrees: null }))
   .sheetFactsText() === `914 lines in 180 styles · scale 1"=20' (text)`,
   "a page with a scale in force is unchanged - the suggestion arm is only "
@@ -152,7 +154,7 @@ check(/for \(const c of uniq\)/.test(rs)
   "and still shows every reading, unranked");
 
 // ---- the cache buster moved, or nobody sees any of this ----------------
-check(/app\.js\?v=147/.test(html), "app.js cache buster bumped to 147");
+check(/app\.js\?v=148/.test(html), "app.js cache buster bumped to 148");
 
 console.log();
 if (fails) { console.error(fails + " FAILED"); process.exit(1); }
