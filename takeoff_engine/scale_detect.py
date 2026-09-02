@@ -1549,6 +1549,15 @@ def bar_tick_labels(words: list) -> set:
     return out
 
 
+def _zoom_measure(page, window, psm: int, source: str, measure):
+    """One high-dpi re-read of a bar window, through the same guards."""
+    zws = [w for w in _ocr_zoom(page, window, psm=psm) if str(w[4]).strip()]
+    if not zws:
+        return None
+    zrows = _label_rows(zws)
+    return measure(zrows, zws, source) if zrows else None
+
+
 def graphic_scale_bar(words: list, page=None,
                       ocr_retry: bool = False,
                       words_source: str = "text") -> ScaleCandidate | None:
@@ -1604,6 +1613,9 @@ def graphic_scale_bar(words: list, page=None,
     is stamped one of:
       native / native-ticks       label boxes from the PDF's own text
       psm6-zoom / psm6-zoom-ticks label boxes from `_ocr_zoom(..., psm=6)`
+      ocr-zoom / ocr-zoom-ticks   label boxes from `_ocr_zoom(..., psm=11)`,
+                                  the pre-stage-1b retry, kept as a last
+                                  resort so no page loses a bar it had
       ocr / ocr-ticks             label boxes from the caller's own OCR
     A `*-ticks` reading measured its span on drawn tick geometry; the
     plain form spanned label centres (no page, so no ticks to snap to).
@@ -1774,13 +1786,27 @@ def graphic_scale_bar(words: list, page=None,
         # ladder wins when it passes: it is the independent one.
         if page is not None and ocr_retry and (
                 cand is None or words_source != "text"):
-            zoom = _ocr_zoom(page, (hx - 330, hy - 95, hx + 330, hy + 95),
-                             psm=6)
-            zws = [w for w in zoom if str(w[4]).strip()]
-            zrows = _label_rows(zws) if zws else []
-            zcand = _measure(zrows, zws, "psm6-zoom") if zrows else None
+            win = (hx - 330, hy - 95, hx + 330, hy + 95)
+            zcand = _zoom_measure(page, win, 6, "psm6-zoom", _measure)
             if zcand is not None:
                 return zcand
+            if cand is None:
+                # Nothing from the caller's words and nothing at psm 6.
+                # The psm-11 zoom is what this page had BEFORE this stage,
+                # and psm 6 is better on average, not everywhere: measured
+                # over the 6,460-page OCR sweep, Bozeman Yards Block 104
+                # p44 (`0 20' 40'` under SCALE IN FEET, truth 20 ft/in) is
+                # read by the psm-11 zoom and not by the psm-6 one. Keeping
+                # it as a last resort makes this stage strictly additive on
+                # the bar path - it cannot cost a page a reading it had.
+                # It is NOT independent of a psm-11 caption (SPEC 6.2 rule
+                # 1 lists native text, the psm-6 zoom, and ticks with an
+                # endpoint from those - not this), and `ocr-zoom` says so,
+                # so it can be a page's own bar reading and can never
+                # corroborate a caption the same recogniser produced.
+                zcand = _zoom_measure(page, win, 11, "ocr-zoom", _measure)
+                if zcand is not None:
+                    return zcand
         if cand is not None:
             return cand
     return None
@@ -1946,7 +1972,42 @@ def _corroborate(res: ScaleResult, words: list, page=None) -> ScaleResult:
     res.bar_ft_per_paper_inch = bar.ft_per_paper_inch
     d = res.delta_pct
     res.agrees = (d is not None and d <= BAR_AGREE_PCT)
+    # WHICH recogniser read the ladder travels with the corroboration. A
+    # second opinion is only a second opinion if it came from somewhere
+    # else, and a reader cannot check that after the fact from a number.
+    if bar.bar_source:
+        res.pick["bar_source"] = bar.bar_source
     return res
+
+
+def _independent_bar(page, native_words, ocr_ws):
+    """A bar reading the OCR caption did not produce itself (SPEC 6.2 rule 1).
+
+    The caption in hand came from the 150-dpi psm-11 page pass. A ladder
+    that same pass read is NOT a second opinion on it: one recogniser, one
+    render, one mistake, and the rate guard cannot see it because the guard
+    derives its rate from those same labels. Independent means the labels
+    came from (i) the PDF's own text, (ii) the psm-6 pixel zoom, or (iii)
+    drawn tick geometry with an endpoint label from (i)/(ii) - which is
+    what a `native*` or `psm6-zoom*` bar_source says.
+
+    Native words are tried first and cost nothing when the page has no
+    native caption head (the outline sheets this matters on have none).
+    """
+    for ws, src, retry in ((native_words or [], "text", False),
+                           (ocr_ws or [], "ocr", True)):
+        if not ws:
+            continue
+        try:
+            bar = graphic_scale_bar(ws, page, ocr_retry=retry,
+                                    words_source=src)
+        except Exception:
+            continue
+        if not bar or not bar.ft_per_paper_inch:
+            continue
+        if (bar.bar_source or "").startswith(("native", "psm6-zoom")):
+            return bar
+    return None
 
 
 # The origin stamped on a get_text() reading refused as a join artefact:
@@ -2049,8 +2110,9 @@ def read_text_layer(text: str, words: list | None, page=None,
         # real text on most CAD sheets, and OCR mangles them ("100'" -> "00").
         bar = graphic_scale_bar(words, page)
         if bar:
-            return with_joins(ScaleResult(bar, [bar], nts, "graphic-bar",
-                                          pick={"why": "bar"}))
+            return with_joins(ScaleResult(
+                bar, [bar], nts, "graphic-bar",
+                pick={"why": "bar", "bar_source": bar.bar_source}))
     except Exception:
         pass
     if joins:
@@ -2067,6 +2129,96 @@ def read_text_layer(text: str, words: list | None, page=None,
     return None
 
 
+def _ocr_promotion(best, cands, nts, pick, page, native_words,
+                   words) -> ScaleResult:
+    """The OCR caption path's promotion decision (SPEC 7.5).
+
+    An OCR caption is what a lossy recogniser HAPPENED to recover, and no
+    filter over the recovered text can see what it dropped - the evidence
+    that would refute the survivor is exactly the evidence that failed to
+    arrive (CLAUDE.md section 5, fourth shape). Measured on this branch,
+    2026-09-02, with the bar read at psm 6:
+
+      RC Ontario p10 promotes 10 off a DETAIL 1 caption while the sheet's
+        own bar draws `0 10 20 40` under `1" = 20'` - 2x on length, 4x on
+        area.
+      Hurricane Storage p1 promotes 1.0 off a detail's `1" = 1'-0"` while
+        the site plan's bar draws `0 40' 80'` under `SCALE: 1" = 40'` -
+        40x low.
+      Hurricane Storage p3 promotes 10 where the sheet prints
+        `SCALE: 1" = 40'` - 4x low.
+
+    So a caption an independent bar CONTRADICTS is refused: `best` is None,
+    the candidates stay on view, and `pick["values_refused"]` names the
+    value that was not promoted. An abstained page is not a silent one -
+    `to_dict` serialises it with `abstained` true, `detect_page` routes it
+    to `scale_suggestions`, and accepting the value there is one click,
+    recorded as a REVIEWER decision (tests/test_scale_suggestions.py).
+
+    WHERE NO INDEPENDENT BAR EXISTS AT ALL, the reading is kept and stamped
+    `pick["corroborated"] = False`, and this is a DELIBERATE NARROWING of
+    SPEC 7.5, which asks for an abstention there too. The reason is
+    measured, not preferred. Over the whole corpus - `detect_scale` with
+    OCR on all 6,460 pages whose text layer reads nothing, 2026-09-02 -
+    SPEC 7.5 as written turns 83 pages into abstentions: 6 where a bar
+    contradicts the caption, and 77 where no bar could be read at all. Of
+    those 77, five were checked against 400-dpi crops of the sheets and
+    FOUR were already right:
+      CO3 Rifle p8   `1 inch = 30 ft.` under a 15/30/60/120 ladder - right
+      Town Pump E1.1 `1/8"=1'-0"` (8 ft/in), no bar printed at all - right
+      RC Ontario p9  SECTION A-A `HORIZONTAL SCALE: 1" = 10'` - right
+      RC Ontario p13 `GRAPHIC SCALE: 1"=50'` over a 50/0/50/100/150 bar
+                     whose checkerboard draws no stroke `_page_ticks`
+                     accepts, so the tick guard refuses it - right
+      Hurricane p3   promotes 10 where the sheet prints `1" = 40'` - WRONG
+    Abstaining on all 77 to catch that one costs 13 correct readings per
+    wrong one removed. The refusal ON CONTRADICTION removes all 6 wrong
+    ones and costs nothing.
+
+    WHAT THIS LEAVES OPEN, stated because it is the real hole: a caption
+    that is wrong and has no readable bar to refute it still ships, and
+    Hurricane p3 is exactly that page. `corroborated: False` discloses it
+    and a disclosure is weaker than an abstention (CLAUDE.md section 5).
+    Closing it needs a reader that recovers the captions OCR drops - the
+    outline lanes, stages 3-4 - not a blanket refusal of the OCR path.
+
+    THE TEXT PATH IS NOT TOUCHED. A native caption's promotion rules are
+    unchanged in this stage; only `source == "ocr"` readings come here.
+    """
+    if best is None:
+        return ScaleResult(best, cands, nts, "ocr", pick=pick)
+    bar = _independent_bar(page, native_words, words)
+    d = None
+    if bar is not None and bar.ft_per_paper_inch:
+        d = (abs(best.ft_per_paper_inch - bar.ft_per_paper_inch)
+             / bar.ft_per_paper_inch * 100.0)
+    if bar is None:
+        # nothing independent to check against - kept, and said so
+        pick = dict(pick)
+        pick["corroborated"] = False
+        pick["bar_source"] = None
+        return ScaleResult(best, cands, nts, "ocr", pick=pick)
+    if d is not None and d <= BAR_AGREE_PCT:
+        pick = dict(pick)
+        pick["bar_source"] = bar.bar_source
+        pick["corroborated"] = True
+        out = ScaleResult(best, cands, nts, "ocr", pick=pick)
+        out.bar_ft_per_paper_inch = bar.ft_per_paper_inch
+        out.agrees = True
+        return out
+    out = ScaleResult(
+        None, cands, nts, "ocr",
+        pick={"why": "abstained-ocr-single",
+              "reason": ("a bar read independently of this OCR caption "
+                         "contradicts it"),
+              "values_refused": sorted(
+                  {round(c.ft_per_paper_inch, 4) for c in cands}),
+              "bar_source": None if bar is None else bar.bar_source})
+    if bar is not None:
+        out.bar_ft_per_paper_inch = bar.ft_per_paper_inch
+    return out
+
+
 def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
                  corroborate: bool = True, linework=None) -> ScaleResult:
     """Read the sheet's scale. `linework` - the page's already-built chains,
@@ -2080,6 +2232,7 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         words = page_words(page)
     except Exception:
         words = None
+    native_words = words
     res = read_text_layer(text, words, page, linework, corroborate, nts)
     if res is not None and res.best is not None:
         return res
@@ -2157,7 +2310,8 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
             nts = nts or bool(_NTS.search(ocr_text))
             if cands:
                 best, pick = _rank(cands, page, words, linework)
-                return ScaleResult(best, cands, nts, "ocr", pick=pick)
+                return _ocr_promotion(best, cands, nts, pick, page,
+                                      native_words, words)
             bar = graphic_scale_bar(words)
             if bar:
                 return ScaleResult(bar, [bar], nts, "graphic-bar",
