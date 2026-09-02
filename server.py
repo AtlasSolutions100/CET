@@ -17,6 +17,7 @@ import math
 import multiprocessing
 import os
 import re
+import sys
 import urllib.parse
 import textwrap
 import threading
@@ -367,24 +368,44 @@ if True:
     # Ownership is enforced HERE rather than in each route. There are twenty-odd
     # /api/job/{id}/... routes and more will be added; a check that has to be
     # remembered per route is a check that eventually is not.
-    _JOB_PATH = re.compile(r"^/api/job/([0-9a-fA-F]{6,32})(?:/|$)")
+    # ANY path segment, not only a well-formed hex id: the first question
+    # below is "does the registry hold this row", and an id that could never
+    # have one is exactly the kind that must not fall through to the router.
+    _JOB_PATH = re.compile(r"^/api/job/([^/]+)(?:/|$)")
 
     def _forbidden_job(path: str, user, staff: bool = False):
-        """404 when `user` may not touch the job named in `path`, else None.
+        """404 when the job named in `path` has no registry row, or when
+        `user` may not touch it; else None.
+
+        FAILS CLOSED ON A MISSING ROW, FOR EVERY CALLER - staff and
+        single-password boxes included, which is why that check runs before
+        the `user is None or staff` return. A row can vanish while the job's
+        directory stays on disk: delete_job unlinks each file inside a
+        try/except and then drops the row regardless, and on Windows an
+        unlink that hits an open file fails silently. What is left is an
+        ORPHAN - one client's detection, pricing and approved deliverable,
+        with no owner - and the old "let the route answer its own 404"
+        branch handed it to the first signed-in account that asked. 24 of
+        the 27 job routes take no Request and go straight to _job_dir(),
+        which returns (or creates) the directory; they cannot answer
+        anything. Reproduced 2026-08-31: account B rewrote A's calcstate
+        and approved export, two 200s. tests/test_orphan_job.py sweeps every
+        job route against an orphan and is the reason a new route cannot
+        reopen this.
 
         404 and not 403: a 403 confirms the job exists and belongs to somebody
         else, which on a box holding several clients' bid documents leaks that
         the other client is here at all.
         """
-        if user is None or staff:
-            return None                 # single-password mode, or our own team
         m = _JOB_PATH.match(path)
         if not m:
             return None
         with JOBS_LOCK:
             j = JOBS.get(m.group(1))
         if j is None:
-            return None                 # let the route answer its own 404
+            return _StarJSON({"detail": "unknown job"}, status_code=404)
+        if user is None or staff:
+            return None                 # single-password mode, or our own team
         owner = j.get("owner")
         if owner is None or owner == user:
             return None                 # shared demo set, or theirs
@@ -405,6 +426,11 @@ if True:
                         {"detail": "this server has no accounts configured; "
                                    "run takeoff_engine.users to add one"},
                         status_code=503)
+                # A laptop has nobody to keep apart, but it still must not
+                # serve a job the registry has forgotten (see _forbidden_job).
+                blocked = _forbidden_job(path, None, True)
+                if blocked is not None:
+                    return blocked
                 return await call_next(request)
 
             ok, user = _read_session(request.cookies.get(SESSION_COOKIE, ""))
@@ -728,8 +754,19 @@ def reopen_job(job_id: str):
     if not src.exists():
         raise HTTPException(410, "that plan set is no longer on this server")
     if not sizes:
-        # registry rows predate sizes, or classification never finished
-        return _register(src)
+        # registry rows predate sizes, or classification never finished.
+        # THE ROW'S OWNER TRAVELS WITH IT. _register's default owner is
+        # None, and None is the SHARED marker: every signed-in account may
+        # list, open, render and detect an owner-less row. Until 2026-09-01
+        # this call passed no owner, so one reopen of a client's un-sized
+        # row - by the client, or by staff on their behalf - minted a
+        # second row for the SAME PDF with owner None and the document was
+        # on every other client's landing page. _register never rewrites
+        # an existing row's owner (its reuse key includes the owner, and
+        # reuse repairs mtime only), so passing the owner through is the
+        # whole fix; a genuinely shared row (owner None) stays shared.
+        # tests/test_reopen_owner.py pins both.
+        return _register(src, owner=j.get("owner"))
     return {"job_id": job_id, "pages": pages, "kinds": kinds,
             "sizes": sizes, "name": _display_name(src)}
 
@@ -1158,24 +1195,75 @@ DEMO_THUMBS = JOBS_DIR / "_demo_thumbs"
 
 # name -> resolved source path. Re-validated on read, and a full plan-root
 # scan is rate-limited: an unseeded box must not walk the corpus on every
-# paint of the landing page.
+# paint of the landing page. A client's file NEVER enters this cache - see
+# _demo_scan_refused.
 _DEMO_SRC: dict = {}
 _DEMO_SCAN_AT = 0.0
 _DEMO_SCAN_EVERY_S = 30.0
 _DEMO_PAGES: dict = {}
+# resolved paths the scan refused as a client's file, so the collision is
+# logged once per file rather than once per 30 s rescan
+_DEMO_REFUSED: set = set()
+
+
+def _demo_scan_refused(p: Path, name: str, jobs_root: Path, owned: set) -> bool:
+    """True when a plan-root scan candidate is a CLIENT'S file and must not
+    become the demo, whatever it is called. Two belts, either one refuses:
+      (a) it lies under JOBS_DIR. A staff seed there is a shared row and the
+          row loop in _demo_source has already found it, so a PDF the scan
+          meets under JOBS_DIR is somebody's upload;
+      (b) its path is registered to a row with an owner, under any root.
+    Both compare RESOLVED paths, so another spelling of the same file (../,
+    a symlink, drive-letter case) is the same file, and a path that cannot
+    be resolved is refused too - it cannot be shown to be the corpus.
+    The collision is logged once so staff can see that a client set is
+    wearing a demo name; nothing is cached for it."""
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return True
+    key = os.path.normcase(str(rp))
+    why = None
+    try:
+        rp.relative_to(jobs_root)
+        why = "it sits inside the jobs directory, so it is an upload"
+    except ValueError:
+        if key in owned:
+            why = "it is registered to a client account"
+    if why is None:
+        return False
+    if key not in _DEMO_REFUSED:
+        _DEMO_REFUSED.add(key)
+        print("[demo] a client file collides with the demo name %r: not "
+              "serving %s as the demo because %s. Only a STAFF upload of "
+              "our own copy publishes that name." % (name, rp, why),
+              file=sys.stderr)
+    return True
 
 
 def _demo_source(name: str):
     """The PDF behind a manifest entry, or None when this box does not have it.
 
     Two places it can legitimately be:
-      * already registered as a job - which is how a HOSTED box has it, since
-        the only way in there is /api/upload writing
-        JOBS_DIR/upload_<hash>_<name>.pdf;
+      * already registered as a SHARED job (owner None) - which is how a
+        HOSTED box has it: /api/upload writes JOBS_DIR/upload_<hash>_<name>.pdf
+        and makes the row shared only when STAFF uploaded a manifest name;
       * loose under PLAN_ROOTS - which is how this laptop has it, straight out
         of the TakeoffPro AI corpus.
     Registered rows are checked first, so a seeded box never walks its plan
     roots at all.
+
+    THE SCAN IS FOR THE CORPUS, NEVER FOR A CLIENT'S FILE. The default
+    PLAN_ROOTS ends with JOBS_DIR, and on a box without the corpus beside the
+    repo - the hosted box - it degrades to JOBS_DIR alone, where the only
+    PDFs are client uploads. Before this was pinned, an unseeded hosted box
+    scanned those, found a client's own "Belle Farms Structural Plans.pdf",
+    and _demo_job registered a SHARED row over it: every account on the box
+    could open, render and detect that client's set through the demo card,
+    and it appeared on their /api/recent. So a candidate under JOBS_DIR, or
+    registered to any owner, is refused by _demo_scan_refused and is never
+    written into _DEMO_SRC. A client set that collides with a demo name stays
+    private until staff upload OUR copy (tests/test_demo_source_scan.py).
 
     Never raises and never invents: a name it cannot place returns None, and
     the card then says so in words rather than erroring or vanishing.
@@ -1205,6 +1293,16 @@ def _demo_source(name: str):
         return None                     # scanned recently and it was not there
     _DEMO_SCAN_AT = now
     want = set(DEMO_PLANS) - set(_DEMO_SRC)
+    jobs_root = JOBS_DIR.resolve()
+    with JOBS_LOCK:
+        owned_raw = [j.get("path", "") for j in JOBS.values()
+                     if j.get("owner") is not None]
+    owned = set()
+    for raw in owned_raw:
+        try:
+            owned.add(os.path.normcase(str(Path(raw).resolve())))
+        except (OSError, RuntimeError):
+            continue
     for root in PLAN_ROOTS:
         if not want:
             break
@@ -1213,11 +1311,14 @@ def _demo_source(name: str):
         try:
             for p in sorted(root.rglob("*.pdf")):
                 n = _display_name(p)
-                if n in want:
-                    _DEMO_SRC[n] = str(p)
-                    want.discard(n)
-                    if not want:
-                        break
+                if n not in want:
+                    continue
+                if _demo_scan_refused(p, n, jobs_root, owned):
+                    continue
+                _DEMO_SRC[n] = str(p)
+                want.discard(n)
+                if not want:
+                    break
         except OSError:
             continue
     hit = _DEMO_SRC.get(name)
@@ -1596,7 +1697,10 @@ async def upload(file: UploadFile, request: Request, classify: int = 1):
     # must not be able to publish to every other account by naming a file
     # after a demo. Exact manifest name only, because that file is already the
     # public list of what any visitor may open. A client set that happens to
-    # collide with a demo name still needs staff hands to become shared.
+    # collide with a demo name still needs staff hands to become shared - and
+    # _demo_source's plan-root scan refuses it too (never a file under
+    # JOBS_DIR, never a path registered to an owner), so an UNSEEDED box
+    # does not fall back to the client's upload either.
     owner = _who(request)
     if owner is not None and _is_staff(request) and _display_name(dest) in DEMO_PLANS:
         owner = None
@@ -2819,6 +2923,7 @@ def _hex_color(v) -> "str | None":
 
 @app.post("/api/job/{job_id}/page/{page}/approve")
 def approve(job_id: str, page: int, body: ApproveBody):
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     f = _job_dir(job_id) / f"p{page}_result.json"
     if not f.exists():
         raise HTTPException(404, "no result to approve")
@@ -3482,8 +3587,11 @@ def _calcstate_put(job_id: str, page: int, raw: bytes) -> dict:
     json.loads on the GET side would otherwise return {} and the operator's
     decisions would look deleted rather than merely stale."""
     _calcstate_guard(job_id)
-    if job_id not in JOBS and not (JOBS_DIR / job_id).is_dir():
-        raise HTTPException(404, "unknown job")
+    # The registry row, not the directory. This accepted EITHER until
+    # 2026-09-01, and a directory with no row is precisely an orphan (see
+    # _forbidden_job): that `or` is how account B's calcstate POST rewrote
+    # A's pricing and client name with a 200.
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     data = _calcstate_check(raw)
     f = _calcstate_path(job_id, page)
     # the record being replaced, read BEFORE the replace: the training
@@ -4773,6 +4881,7 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
 def earthwork_calc(job_id: str, page: int, body: EarthworkBody):
     """Cut & fill volumes between two labeled contour surfaces, after
     lowering each by its layer stack (see EarthworkBody)."""
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     result = _earthwork_run(job_id, page, body)
     _ledger_earthwork(job_id, page, body, result)
     return JSONResponse(result)
@@ -4790,6 +4899,7 @@ def earthwork_map(job_id: str, page: int, body: EarthworkBody):
     same path to re-read them without recomputing."""
     from takeoff_engine.earthwork import render_cut_fill_map
 
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     result = _earthwork_run(job_id, page, body, return_grid=True)
     png, meta = render_cut_fill_map(result.pop("grid"))
     meta.update({k: result[k] for k in
@@ -4868,6 +4978,7 @@ def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
     from takeoff_engine.earthwork import (Surface, render_cut_fill_map,
                                           zone_cut_fill)
 
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if not rf.exists():
         raise HTTPException(404, "run detect first")
@@ -5443,6 +5554,7 @@ def structure_calc(job_id: str, page: int, body: StructureBody):
     bid-sheet terms. Validates the polygons and returns per-structure rows
     plus the page totals; the UI does the same math client-side and uses
     this as a cross-check."""
+    JOBS.get(job_id) or _404()      # writes: see _forbidden_job
     rf = _job_dir(job_id) / f"p{page}_result.json"
     if not rf.exists():
         raise HTTPException(404, "run detect first")

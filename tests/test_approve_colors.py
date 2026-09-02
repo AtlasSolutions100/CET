@@ -85,6 +85,10 @@ RESULT = {
 }
 _d = server._job_dir(JOB)
 (_d / f"p{PAGE}_result.json").write_text(json.dumps(RESULT))
+# the registry row too: approve refuses a directory with no row (an orphan -
+# tests/test_orphan_job.py), exactly as the service would
+server.JOBS[JOB] = {"path": str(_d.with_suffix(".pdf")), "pages": 1,
+                    "owner": "tester", "status": {}}
 
 
 def approve(**over):

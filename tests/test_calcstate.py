@@ -12,7 +12,9 @@ What is pinned here and why:
   * GET returns {} for absent AND for corrupt, so the UI restore path is one
     unconditional GET;
   * a job_id that is not a direct child of JOBS_DIR (`..`) is refused - this
-    route writes to disk.
+    route writes to disk;
+  * a job_id with no registry row is refused EVEN WHEN its directory exists:
+    that is an orphan, and until 2026-09-01 the check accepted either.
 
 fastapi.testclient is NOT usable in this venv (starlette's testclient module
 raises at import: it wants the httpx2 package, which requirements.txt does
@@ -44,6 +46,13 @@ os.environ["TAKEOFF_LEDGER_DIR"] = tempfile.mkdtemp(prefix="calcstate_test_lg_")
 from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
+
+def _row(jid: str) -> None:
+    """Register a job the way upload/_register does. The write path checks
+    the REGISTRY ROW, not the directory: a directory with no row is an
+    orphan (tests/test_orphan_job.py) and must be refused."""
+    server.JOBS[jid] = {"path": str(Path(_TMP) / f"{jid}.pdf"), "pages": 1,
+                        "owner": "tester", "status": {}}
 
 
 def _err(fn, *a):
@@ -82,6 +91,7 @@ def test_size_cap_refuses_with_413():
 
 def test_put_then_get_round_trips():
     (Path(_TMP) / "jobA").mkdir(exist_ok=True)
+    _row("jobA")
     blob = {"v": 1, "engine_sig": "sig123",
             "ew": {"rows": [{"chain_id": 7, "z": 101.5, "surface": "existing"}]}}
     out = server._calcstate_put("jobA", 3, json.dumps(blob).encode())
@@ -94,6 +104,7 @@ def test_put_then_get_round_trips():
 
 def test_write_is_atomic_and_oversize_keeps_the_earlier_record():
     (Path(_TMP) / "jobB").mkdir(exist_ok=True)
+    _row("jobB")
     first = {"v": 1, "tr": {"od_in": 6}}
     server._calcstate_put("jobB", 0, json.dumps(first).encode())
     # no tmp file left behind
@@ -124,6 +135,15 @@ def test_traversal_and_unknown_jobs_are_refused():
     e = _err(server._calcstate_put, "never_opened_job", 0, b"{}")
     assert e is not None and e.status_code == 404, e
     assert not (Path(_TMP) / "never_opened_job").exists()
+    # an ORPHAN: the directory is there, the registry row is not. Refused,
+    # and the file it holds is not touched.
+    (Path(_TMP) / "orphan_job").mkdir(exist_ok=True)
+    f = server._calcstate_path("orphan_job", 0)
+    f.write_text('{"marker": "OWNER"}')
+    assert "orphan_job" not in server.JOBS
+    e = _err(server._calcstate_put, "orphan_job", 0, b'{"marker": "INTRUDER"}')
+    assert e is not None and e.status_code == 404, e
+    assert f.read_text() == '{"marker": "OWNER"}'
 
 
 if __name__ == "__main__":
