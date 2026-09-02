@@ -74,6 +74,21 @@ check(/read by machine/.test(allMachine[0] || ""),
 check(/check them against the drawing/i.test(allMachine[0] || ""),
   "and says what to do about it");
 
+// Seen on the live report 2026-09-02: the machine-read sentence was
+// followed by "Of 17 contour elevations accepted here, all are printed on
+// the sheet", which is true of the LABELS and reads as a retraction of the
+// caveat. Where every accepted elevation was machine-read, the second
+// sentence carries the fact that was actually useful instead.
+check(!/all are printed on the sheet/.test(allMachine[0] || ""),
+  "an all-machine-read sheet does not follow the caveat with a sentence "
+  + "that reads as taking it back");
+check(/label the drafter drew/.test(allMachine[0] || ""),
+  "it says the label is real and only the digits were recognised");
+check(/all are printed on the sheet/.test(
+        ewBasisNote(mk({ total: 20, printed: 20, machine: 8 }))[0] || ""),
+  "while a PARTLY machine-read sheet keeps the printed count - there the "
+  + "two sentences are about different rows");
+
 const native = ewBasisNote(mk({ total: 17, printed: 17 }));
 check(native.length === 0,
   "a fully native sheet is unchanged - still no note, so the disclosure "
@@ -102,7 +117,7 @@ check(/ew-basis-ocr/.test(basis), "in its own styled line");
 check(/\.ew-basis \.ew-basis-ocr/.test(css), "which style.css styles");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=153/.test(html), "app.js cache buster bumped to 153");
+check(/app\.js\?v=154/.test(html), "app.js cache buster bumped to 154");
 check(/style\.css\?v=74/.test(html), "style.css cache buster bumped to 74");
 
 console.log();

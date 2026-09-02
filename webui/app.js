@@ -12875,9 +12875,24 @@ function ewBasisNote(a) {
     + "another piece of it (no label on those lines)");
   if (a.manual) bits.push(`${a.manual} typed in by the reviewer`);
   if (a.unknown) bits.push(`${a.unknown} of unrecorded origin`);
-  const head = `Of ${a.total} contour elevations accepted here, ` + (notPrinted
-    ? `${notPrinted} are printed NOWHERE on the sheet: ${bits.join("; ")}.`
-    : "all are printed on the sheet.");
+  // "all are printed on the sheet" is TRUE - each of those breaks holds a
+  // label - but printed straight after the machine-read sentence it reads
+  // as a contradiction of it. Seen on the live report 2026-09-02: "...read
+  // by machine off a picture of the sheet, not from its text ... Of 17
+  // contour elevations accepted here, all are printed on the sheet." Where
+  // every accepted elevation was machine-read, the useful fact is the one
+  // that sentence was carrying all along - the label is real, only the
+  // digits were recognised - so say THAT instead of appearing to take the
+  // caveat back.
+  const allMachine = mach && mach >= a.total;
+  const head = notPrinted
+    ? `Of ${a.total} contour elevations accepted here, ${notPrinted} are `
+      + `printed NOWHERE on the sheet: ${bits.join("; ")}.`
+    : allMachine
+      ? `Every one of them is a label the drafter drew on this sheet, not an `
+        + `elevation this tool inferred.`
+      : `Of ${a.total} contour elevations accepted here, all are printed on `
+        + `the sheet.`;
   // FIRST in the returned sentence, because `approve` truncates the tail:
   // of everything here this is the clause an estimator must not lose.
   // Kept short on purpose: with the notPrinted clause behind it the pair
