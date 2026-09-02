@@ -221,6 +221,168 @@ def _run_sheet(args):
 
 BASELINE = Path(__file__).parent.parent / "gate-baseline.json"
 
+
+# ---------------------------------------------------------------------------
+# The VOLUME signature.
+#
+# detect_page.engine_sig() fingerprints the code that decides what a detect
+# result contains, and it is what invalidates cached detections. Measured
+# 2026-09-01: its _ENGINE_FILES lists ten modules and earthwork.py - the
+# module that computes the cubic yards a bid depends on - is not one of them.
+# So an earthwork edit moved no signature, invalidated no cache and tripped
+# no gate; the only volume test (tests/test_grading_zone.py) checks the
+# engine against its own grid arithmetic, not against a certified recipe.
+#
+# This is the second fingerprint, kept SEPARATE from engine_sig on purpose:
+#   * a volume-only change must not invalidate detection caches (every
+#     demo page would come back stale for a change that moved no chain);
+#   * a detection change must not silently re-baseline volumes.
+# It lives here and not beside engine_sig() because detect_page.py is one of
+# engine_sig's hashed inputs: adding a function there would move engine_sig
+# for a change that touches no detection - exactly what the split forbids.
+#
+# The hashed set is the IMPORT CLOSURE of earthwork.py (plus any
+# surface*.py that lands beside it), walked over the package's own import
+# graph with ast, never a hand-kept list - the list is how earthwork.py went
+# missing from engine_sig in the first place. On dev at b0c3baf it is
+# earthwork.py -> chain.py (_sample_polyline resamples every contour before
+# it enters the TIN) -> extract.py (StrokeUnit). chain.py and extract.py are
+# therefore in BOTH closures, and a change to either moves both signatures;
+# that is correct, since it can move both a chain count and a volume, and
+# the two gates then each say what they saw.
+#
+# takeoff_engine/__init__.py is a ROOT, not a discovered dependency: it runs
+# on every `import takeoff_engine.anything` and no import statement names
+# it, so an ast walk over the graph can never reach it. Demonstrated
+# 2026-09-01 (adversarial review, F1): a wrapper appended there that adds
+# 1 ft of proposed offset whenever cell_ft == 3.0 moved Oncor C-04
+# boundary13|linear from cut 2006.8 / fill 7979.1 to 3793.0 / 6680.1 CY
+# with "12 cases passed" and both signatures unchanged. The same reasoning
+# covers the other files Python executes without an import naming them -
+# conftest.py, sitecustomize.py, usercustomize.py, a *.pth in the package -
+# which are hashed whenever they exist (_EARTHWORK_HOOK_FILES) and listed
+# in the closure under their package-relative path so a baseline records
+# that they were absent. Site-packages .pth files and a user-site
+# customize module live OUTSIDE the repo and cannot be pinned by a content
+# hash; earthwork_import_hooks() reports them so the test can print them.
+# ---------------------------------------------------------------------------
+_EARTHWORK_ROOTS = ("__init__.py", "earthwork.py", "surface*.py")
+# Executed-on-import files that no import statement names, relative to the
+# package directory. Hashed when present; a baseline lists exactly which.
+_EARTHWORK_HOOK_FILES = (
+    "conftest.py", "sitecustomize.py", "usercustomize.py", "*.pth",
+    "../conftest.py", "../sitecustomize.py", "../usercustomize.py",
+    "../tests/conftest.py", "../*.pth",
+)
+
+
+def earthwork_import_hooks() -> list:
+    """What runs on `import takeoff_engine` from OUTSIDE the repo, so it can
+    be reported beside the signature rather than pretended away: every .pth
+    in a site directory (each is executed at interpreter start), a loaded
+    sitecustomize / usercustomize, PYTHONPATH. None of it is hashed - it is
+    not in the tree - which is exactly why it is printed."""
+    import site
+    out = []
+    dirs = []
+    try:
+        dirs += list(site.getsitepackages())
+    except AttributeError:
+        pass
+    try:
+        if site.ENABLE_USER_SITE:
+            dirs.append(site.getusersitepackages())
+    except AttributeError:
+        pass
+    for d in dirs:
+        for p in sorted(Path(d).glob("*.pth")) if Path(d).is_dir() else []:
+            out.append(f"pth {p}")
+    for m in ("sitecustomize", "usercustomize"):
+        mod = sys.modules.get(m)
+        if mod is not None:
+            out.append(f"{m} {getattr(mod, '__file__', '?')}")
+    if os.environ.get("PYTHONPATH"):
+        out.append(f"PYTHONPATH={os.environ['PYTHONPATH']}")
+    return out
+
+
+def _package_imports(path: Path, pkg: Path) -> set:
+    """Module names under `pkg` that `path` imports, anywhere in the file -
+    module level or inside a function, since a lazy import still runs."""
+    import ast
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:                      # from . import x / from .x import y
+                if node.module:
+                    names.add(node.module.split(".")[0])
+                else:
+                    names.update(a.name for a in node.names)
+            elif node.module == pkg.name:       # from takeoff_engine import x
+                names.update(a.name for a in node.names)
+            elif node.module and node.module.startswith(pkg.name + "."):
+                names.add(node.module.split(".")[1])
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.startswith(pkg.name + "."):
+                    names.add(a.name.split(".")[1])
+    found = set()
+    for n in names:
+        if (pkg / f"{n}.py").is_file():
+            found.add(f"{n}.py")
+        elif (pkg / n).is_dir():
+            found.update(str(q.relative_to(pkg)).replace("\\", "/")
+                         for q in sorted((pkg / n).rglob("*.py")))
+    return found
+
+
+def earthwork_sig_files(pkg: "Path | None" = None) -> list:
+    """The exact closure earthwork_sig() hashes, package-relative, sorted.
+
+    Roots are _EARTHWORK_ROOTS; the walk follows every intra-package import
+    transitively. A missing root (no surface*.py yet) is simply absent.
+    """
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    todo = []
+    for pat in _EARTHWORK_ROOTS:
+        todo += [q.name for q in sorted(pkg.glob(pat)) if q.is_file()]
+    for pat in _EARTHWORK_HOOK_FILES:
+        # pathlib.glob does not walk '..' segments: split the directory off
+        # the name and keep the '../' prefix in the recorded relative path
+        sub, _, name = pat.rpartition("/")
+        base = pkg / sub if sub else pkg
+        todo += [f"{sub}/{q.name}" if sub else q.name
+                 for q in sorted(base.glob(name)) if q.is_file()]
+    seen = []
+    while todo:
+        rel = todo.pop(0)
+        if rel in seen:
+            continue
+        seen.append(rel)
+        for dep in sorted(_package_imports(pkg / rel, pkg)):
+            if dep not in seen:
+                todo.append(dep)
+    return sorted(seen)
+
+
+def earthwork_sig(pkg: "Path | None" = None) -> str:
+    """Content hash (sha1[:16], like engine_sig) over earthwork_sig_files().
+
+    Bytes, not mtimes, for the reason engine_sig's docstring gives: a fresh
+    checkout or image rebuild must not move it, a real edit must.
+    """
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    h = hashlib.sha1()
+    for rel in earthwork_sig_files(pkg):
+        h.update(rel.encode() + b":")
+        h.update(hashlib.sha1((pkg / rel).read_bytes()).digest())
+        h.update(b"|")
+    return h.hexdigest()[:16]
+
 # Tolerance on a class-accuracy fraction. Detection is deterministic (accept
 # loops are order-pinned), so this is not for run-to-run noise - it is for
 # float formatting drift across library versions.
@@ -350,6 +512,30 @@ def _check(now: dict) -> int:
     return 0
 
 
+def _earthwork_check(require: bool = False) -> int:
+    """The volume gate: tests/test_earthwork_regress.py, run as a subprocess
+    so its output streams and its exit code is the verdict (0 pass, 1 fail).
+    It replays the certified recipes through earthwork.cut_fill AND through
+    server.earthwork_calc and compares exact floats to committed baselines,
+    and checks earthwork_sig() against the signature each baseline recorded.
+    It has its OWN --accept (per truth case); this file's --accept never
+    touches a volume baseline. `require` (--require here, or
+    EARTHWORK_REQUIRE=1 in the environment, which the subprocess inherits)
+    makes a SKIPPED client case a FAIL - set it wherever the client inputs
+    are supposed to be."""
+    import subprocess
+    test = Path(__file__).parent.parent / "tests" / "test_earthwork_regress.py"
+    print("\nEARTHWORK GATE  python "
+          f"{test.relative_to(Path(__file__).parent.parent)}"
+          + (" --require" if require else ""))
+    if not test.is_file():
+        print(f"GATE: earthwork test missing at {test} - FAIL")
+        return 1
+    sys.stdout.flush()
+    return subprocess.call([sys.executable, str(test)]
+                           + (["--require"] if require else []))
+
+
 def _wmean(pairs):
     """Ink-weighted mean of (value, ink) pairs; None when there is no ink."""
     tot = sum(w for _, w in pairs)
@@ -366,11 +552,66 @@ def main():
                     help="compare against gate-baseline.json and exit 1 on "
                          "a regression")
     ap.add_argument("--accept", action="store_true",
-                    help="rewrite gate-baseline.json from this run")
+                    help="rewrite gate-baseline.json from this run (the "
+                         "earthwork baselines are NOT touched: see "
+                         "tests/test_earthwork_regress.py --accept)")
     ap.add_argument("--json", metavar="PATH",
                     help="also write the machine-readable summary here")
+    ap.add_argument("--require", action="store_true",
+                    help="with --check: a SKIPPED earthwork truth case (client "
+                         "inputs absent) is a FAIL - same as EARTHWORK_REQUIRE=1")
     args = ap.parse_args()
     t0 = time.time()
+    if not args.check:
+        sys.exit(_run_corpus(args, t0))
+
+    # --check: TWO gates, each with its own verdict, and the exit code is
+    # the OR. The earthwork gate runs FIRST and on its own: until
+    # 2026-09-01 it ran after the ten-sheet chain gate, so a chain crash (a
+    # missing corpus sheet, a ProcessPool traceback) ended the run before
+    # the volume verdict existed - a bid-moving earthwork change hid behind
+    # an unrelated path problem. Now a crash in either gate is reported as
+    # that gate's FAIL and the other gate's verdict is still printed.
+    #
+    # Both fingerprints, side by side: the detection one (what a cached
+    # result was made by) and the volume one (what a cubic yard was made
+    # by). They move independently on purpose.
+    from .detect_page import engine_sig
+    print(f"engine_sig {engine_sig()}   earthwork_sig {earthwork_sig()}   "
+          f"earthwork closure: {', '.join(earthwork_sig_files())}")
+    verdicts = {}
+    try:
+        verdicts["earthwork"] = _earthwork_check(require=args.require)
+    except BaseException as e:  # noqa: BLE001 - a crash is a FAIL, not an exit
+        _report_crash("earthwork", e)
+        verdicts["earthwork"] = 1
+    try:
+        verdicts["chain"] = _run_corpus(args, t0)
+    except BaseException as e:  # noqa: BLE001
+        _report_crash("chain", e)
+        verdicts["chain"] = 1
+    print("\n" + "=" * 72)
+    for name in ("earthwork", "chain"):
+        rc = verdicts[name]
+        print(f"VERDICT {name:10s} {'PASS' if rc == 0 else 'FAIL'} (exit {rc})")
+    rc = max(verdicts.values())
+    print(f"VERDICT both       {'PASS' if rc == 0 else 'FAIL'} (exit {rc}) "
+          f"- either gate failing fails the build; wall {time.time()-t0:.0f}s")
+    sys.exit(rc)
+
+
+def _report_crash(gate: str, e: BaseException) -> None:
+    import traceback
+    print(f"\n{gate.upper()} GATE CRASHED - counted as FAIL: "
+          f"{type(e).__name__}: {e}")
+    if not isinstance(e, SystemExit):
+        traceback.print_exc()
+
+
+def _run_corpus(args, t0) -> int:
+    """The chain gate: run the corpus, print the report, and with --check
+    return _check()'s verdict (0 pass, 1 regression). --accept rewrites
+    gate-baseline.json from this run."""
     corpus = CORPUS + CORPUS_BEAUMONT + (CORPUS_FULL_EXTRA if args.full else [])
     # resolve every sheet BEFORE forking: a missing file must say so in one
     # clear line, not as a FileNotFoundError inside a ProcessPool traceback
@@ -531,7 +772,8 @@ def main():
         BASELINE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"\nbaseline rewritten: {BASELINE}")
     if args.check:
-        sys.exit(_check(summary))
+        return _check(summary)
+    return 0
 
 
 if __name__ == "__main__":

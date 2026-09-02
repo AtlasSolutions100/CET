@@ -1,0 +1,96 @@
+{
+ "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04_server'. Written by tests/test_earthwork_regress.py --accept oncor_c04_server; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
+ "compare": "recipe",
+ "earthwork_sig": "2dd8a829e97957d4",
+ "earthwork_sig_files": [
+  "__init__.py",
+  "chain.py",
+  "earthwork.py",
+  "extract.py"
+ ],
+ "accepted": {
+  "tree": "C:\\Users\\kobys\\takeoff-ewgate",
+  "date": "2026-09-02",
+  "contours": [
+   69,
+   34
+  ]
+ },
+ "cases": {
+  "server|defaults|boundary13": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.0,
+   "proposed_offset_ft": 0.0,
+   "ft_per_paper_inch": 30.0
+  },
+  "server|defaults|no-boundary": {
+   "cut_yd3": 2006.8,
+   "fill_yd3": 7979.1,
+   "net_yd3": 5972.3,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.0,
+   "proposed_offset_ft": 0.0,
+   "ft_per_paper_inch": 30.0
+  },
+  "server|layers6in-9in|boundary13": {
+   "cut_yd3": 2431.7,
+   "fill_yd3": 7628.2,
+   "net_yd3": 5196.4,
+   "area_sf": 83796.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.5,
+   "proposed_offset_ft": 0.75,
+   "ft_per_paper_inch": 30.0
+  },
+  "server|scale40|boundary13": {
+   "cut_yd3": 3566.9,
+   "fill_yd3": 14162.1,
+   "net_yd3": 10595.2,
+   "area_sf": 148932.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.0,
+   "proposed_offset_ft": 0.0,
+   "ft_per_paper_inch": 40.0
+  },
+  "server|scale20|boundary13": {
+   "cut_yd3": 892.6,
+   "fill_yd3": 3554.9,
+   "net_yd3": 2662.3,
+   "area_sf": 37236.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.0,
+   "proposed_offset_ft": 0.0,
+   "ft_per_paper_inch": 20.0
+  },
+  "server|spots10|boundary13": {
+   "cut_yd3": 2039.5,
+   "fill_yd3": 8034.7,
+   "net_yd3": 5995.2,
+   "area_sf": 85956.0,
+   "surface_model": "linear",
+   "cell_ft": 2.0,
+   "existing_offset_ft": 0.0,
+   "proposed_offset_ft": 0.0,
+   "ft_per_paper_inch": 30.0
+  }
+ },
+ "server_defaults": {
+  "cell_ft": 2.0,
+  "surface_model": "auto",
+  "strip_area_sf": null,
+  "cut_reuse_pct": 100.0,
+  "export_factor": 1.0,
+  "import_factor": 1.0,
+  "boundary": null
+ }
+}
