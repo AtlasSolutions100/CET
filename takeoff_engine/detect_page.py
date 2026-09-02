@@ -336,7 +336,25 @@ def detect_page(pdf_path: str, page: int) -> dict:
     for st in style_list:
         if st["style_id"] in _legend_labels:
             st["suggested_label"] = _legend_labels[st["style_id"]] + " (legend)"
-    scale = detect_scale(pg).to_dict()
+    # THE SCALE BOUNDARY. `scale` means "the scale in force on this page", and
+    # every consumer downstream - areas, door swings, the export's
+    # pixelsPerUnit, ~40 read sites in webui/app.js - treats a truthy value as
+    # exactly that. An ABSTAINED reading is not that: the engine recovered
+    # captions it will not vouch for, and promoting one was measured
+    # confidently wrong twice in one evening (CLAUDE.md section 5, the fourth
+    # shape).
+    #
+    # So the two travel in different fields. `scale` stays None on an
+    # abstained page - the same value it has always had there, which is what
+    # makes carrying the candidates non-regressive - and the survivors ride in
+    # `scale_suggestions` for the review UI to OFFER and a person to pick,
+    # never to apply. A page with no reading AND no candidates gets None for
+    # both, so the honest "no scale on this sheet" state is untouched.
+    _sc = detect_scale(pg).to_dict()
+    scale_suggestions = None
+    if _sc and _sc.get("abstained"):
+        scale_suggestions, _sc = _sc, None
+    scale = _sc
     from .extract import fill_boxes, door_swings
     try:
         fills = fill_boxes(pg)
@@ -407,6 +425,10 @@ def detect_page(pdf_path: str, page: int) -> dict:
         "drops": _drops,
         "sheet_no": sheet_no,
         "scale": scale,
+        # Readings the engine recovered but WILL NOT vouch for - offered to
+        # the reviewer, never in force. None on every page that reads a scale
+        # and on every page that prints none. See the scale boundary above.
+        "scale_suggestions": scale_suggestions,
         "legend": legend["entries"],
         "styles": style_list,
         "chains": [c.to_dict() for c in chains],

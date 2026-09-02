@@ -851,6 +851,20 @@ canvas.ml-swatch { width: 40px; height: 9px; }
                     border-color: var(--accent); font-weight: 700; }
 .sh-scale-pick[disabled] { opacity: .4; cursor: not-allowed; }
 
+/* readings the engine recovered and REFUSED to promote (webui/app.js
+   renderScaleSuggest). Amber like the typed box, never the accent colour:
+   these are offers, not a reading the sheet is using. None of these buttons
+   may ever carry `.on` - a highlighted suggestion is a default, and a
+   default is the one thing this block exists not to be. */
+.sh-suggest { border-top: 1px dashed var(--line); margin-top: 4px;
+              padding-top: 7px; }
+.sh-suggest-lab { flex: 1 1 100%; font-size: var(--t-fs-xs);
+                  color: var(--t-warn); line-height: 1.5; }
+.sh-suggest-lab b { color: var(--t-text); }
+.sh-suggest-why { flex: 1 1 100%; margin-top: 4px; font-size: var(--t-fs-xs);
+                  line-height: 1.5; color: var(--dim); }
+.sh-suggest-why b { font-family: var(--mono); color: var(--text); }
+
 /* the operator types the scale. A sheet whose scale the engine could not
    read - 62% of cold pages that produce real linework - had no way to be
    priced at all, and a sheet with ONE wrong reading had no second button to

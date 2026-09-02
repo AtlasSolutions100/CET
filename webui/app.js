@@ -1535,7 +1535,22 @@ function renderSheetHead() {
       // "calibrate" used to be the only place that word appeared in this UI
       // and nothing implemented it. The box below does, so the chip points
       // at it instead of naming a thing that did not exist.
-      meta.append(chip("no scale — type one below", "warn"));
+      //
+      // With unpromoted readings on the page the chip must still say NO
+      // SCALE first - nothing is in force and nothing was chosen - and then
+      // point at them. Naming the count without the refusal ("2 scales
+      // found") would read as a reading the sheet has.
+      const _nsug = scaleSuggestions().length;
+      meta.append(chip(_nsug
+        ? `no scale set — ${_nsug} unchecked reading`
+          + `${_nsug === 1 ? "" : "s"} below`
+        : "no scale set — type one below", "warn"));
+    } else if (sc.from_suggestion) {
+      // A reading the engine recovered and refused to promote, which a
+      // person then accepted. It can never wear the corroborated colour: no
+      // second source ever agreed with it, and the machine that read it is
+      // the least trustworthy reader this app has.
+      meta.append(chip(sc.text + " — YOU PICKED AN UNCHECKED READING", "warn"));
     } else if (sc.typed_by_reviewer) {
       // A number a person typed has nothing behind it but their word. It can
       // never wear the corroborated colour, and it says whose it is
@@ -1562,6 +1577,9 @@ function renderSheetHead() {
   el.append(name, meta);
   renderScalePick(el);
   renderScaleTyped(el);
+  // AFTER the type-it-yourself box, deliberately: suggestions are a shortcut
+  // past typing and must never sit above the path that always works.
+  renderScaleSuggest(el);
   renderConfidence();
 }
 
@@ -1635,6 +1653,7 @@ function renderScalePick(host) {
         // one. Object.assign copies forward, and a stale typed_by_reviewer
         // would keep saying SET BY HAND over a caption the sheet prints.
         typed_by_reviewer: false,
+        from_suggestion: false,
       });
       try { store.setItem(scaleKey(), String(c.ft_per_paper_inch)); } catch (e) { /* private mode */ }
       try { store.removeItem(scaleTypedKey()); } catch (e) { /* private mode */ }
@@ -1791,17 +1810,32 @@ function scaleMemApply() {
     state.result.scale = scaleTypedObj(sc, typed.ft, typed.text);
     return;
   }
-  if (!sc || !sc.candidates) return;
   let want;
   try { want = store.getItem(scaleKey()); } catch (e) { return; }
   if (!want) return;
+  // An accepted SUGGESTION is remembered under the same key, and it has to be
+  // reapplied the same way, or a re-detect silently drops the sheet back to
+  // unscaled with the operator's decision gone. It is checked before the
+  // promoted candidates because the two lists are never both populated: an
+  // abstained page has no `scale` at all (detect_page's scale boundary).
+  const sug = scaleSuggestions().find(
+    c => Math.abs(c.ft_per_paper_inch - parseFloat(want)) < 1e-6);
+  if (sug) {
+    if (sc && Math.abs(+sc.ft_per_paper_inch - sug.ft_per_paper_inch) < 1e-6)
+      return;
+    // the object only - this runs inside a render pass, so it must not call
+    // scaleRepaint() the way the click path does
+    state.result.scale = suggestedScaleObj(sug);
+    return;
+  }
+  if (!sc || !sc.candidates) return;
   const hit = sc.candidates.find(
     c => Math.abs(c.ft_per_paper_inch - parseFloat(want)) < 1e-6);
   if (!hit || Math.abs(hit.ft_per_paper_inch - sc.ft_per_paper_inch) < 1e-6) return;
   state.result.scale = Object.assign({}, sc, {
     text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
     count: hit.count, agrees: null, delta_pct: null, picked_by_reviewer: true,
-    typed_by_reviewer: false,
+    typed_by_reviewer: false, from_suggestion: false,
   });
 }
 
@@ -1855,6 +1889,11 @@ function scaleTypedObj(sc, ft, text) {
     agrees: null, delta_pct: null,
     picked_by_reviewer: true,
     typed_by_reviewer: true,
+    // Object.assign copies forward. A stale from_suggestion would keep the
+    // chip and the report saying "you picked an unchecked reading" over a
+    // number the reviewer has since typed themselves - the same trap the
+    // typed_by_reviewer reset in renderScalePick exists for.
+    from_suggestion: false,
   });
 }
 
@@ -2068,9 +2107,17 @@ function renderScaleTyped(host) {
   } else if (!scaleTypedOpen) {
     const lab = document.createElement("span");
     lab.className = "dim";
+    // Neither arm says what the sheet does or does not print. On a page
+    // carrying unpromoted readings the sheet does say, the engine just will
+    // not vouch for what it read - and saying otherwise would tell the
+    // operator not to bother looking at the suggestions right below. On a
+    // page with none, the engine read nothing; the sheet may still print a
+    // caption the reader missed (CLAUDE.md §5, fourth shape).
     lab.textContent = sc
       ? "the reading above is wrong?"
-      : "nothing on this sheet says what it was drawn to.";
+      : scaleSuggestions().length
+        ? "no scale is set — you can type it yourself:"
+        : "the engine read no scale here — you can type it yourself:";
     const b = document.createElement("button");
     b.className = "sh-scale-pick sh-scale-set";
     b.textContent = sc ? "set the scale by hand" : "type the scale";
@@ -2112,7 +2159,7 @@ function renderScaleTyped(host) {
       } else {
         echo.className = "sh-typed-echo ok";
         echo.innerHTML = "reads as " + p.said
-          + ` Nothing on this sheet corroborates it.`;
+          + ` Nothing has been checked against it.`;
       }
       use.disabled = !!(p.err || p.err === "");
       return p;
@@ -2141,6 +2188,221 @@ function renderScaleTyped(host) {
     reread();
     setTimeout(() => { try { inp.focus(); inp.select(); } catch (e) {} }, 0);
   }
+  host.appendChild(row);
+}
+
+// ---------- readings the engine will not stand behind --------------------
+// A sheet whose text is plotted as glyph OUTLINES has no text layer to read,
+// so every caption path returns nothing and the page cannot be priced. The
+// caption-window OCR rescue (takeoff_engine/scale_detect._ocr_caption_rescue)
+// re-reads a picture of each surviving caption head and recovers real values
+// on 26 corpus pages - and the engine deliberately ABSTAINS on all of them
+// rather than promoting one, because promotion was measured confidently wrong
+// twice in one evening:
+//
+//   * Thielen ID-1.04: OCR ate the trailing 0" of `1/4" = 1'0"` and produced
+//     40 ft/in where the truth is 4. Ten times out on every length; volume
+//     moves with the SQUARE of scale, so a hundred times out in cubic yards.
+//   * Hurricane C.3.5 PRINTS THREE scales - HORIZ 1"=40', VERT 1"=10' and a
+//     key map at 1"=300'. Only the key map's OCR survived, and a sound ranker
+//     read that as an uncontested single: 7.5x wrong, silently. No filter
+//     over the recovered text can catch this, because the evidence that would
+//     refute it is exactly the evidence that failed to arrive (CLAUDE.md §5).
+//
+// So these are SUGGESTIONS and nothing more. The rules this block enforces:
+//
+//   1. NOTHING IS PRE-SELECTED. The sheet stays unscaled until a person
+//      picks. No button carries the `on` class and `state.result.scale` is
+//      left null until a click.
+//   2. Every one says where it was read and why it is not trusted, in the
+//      words the owner of this project can act on - he is not an estimator.
+//   3. Picking is a DECISION: it lands through the same one path a typed
+//      scale does, so it is stamped, approved, recorded in p<N>_scale.json,
+//      ledgered, and printed on the face of the report PDF.
+//   4. SEVERAL are shown side by side, never narrowed. 12 of the 26 pages
+//      carry 2-3, and silently preferring one is the exact defect the
+//      abstention exists to prevent.
+//   5. The type-it-yourself box stays, above this and unchanged. These are a
+//      shortcut past typing, not a replacement for it.
+//
+// A page with no reading AND no suggestions renders none of this and keeps
+// its honest empty state - see detect_page's scale boundary, which is what
+// keeps `result.scale` null on both.
+
+// The distinct unpromoted readings for this page, in the engine's own order.
+// Deduped on value exactly as scaleCandidates() dedupes the promoted list, so
+// the count in the banner's sentence and the number of buttons cannot differ.
+function scaleSuggestions() {
+  const sg = state.result && state.result.scale_suggestions;
+  const uniq = [];
+  for (const c of ((sg && sg.candidates) || [])) {
+    if (!c || !c.ft_per_paper_inch) continue;
+    if (!uniq.some(u => Math.abs(u.ft_per_paper_inch - c.ft_per_paper_inch) < 1e-6))
+      uniq.push(c);
+  }
+  return uniq;
+}
+
+// Roughly where on the sheet this caption was read, from the caption head's
+// own page coordinates. Plain compass words, not numbers: the operator is
+// being asked to go and look at that part of the drawing. Returns "" when the
+// engine did not record a position - it is never invented.
+function sugWhere(c) {
+  const at = c && c.at;
+  const pg = state.result && state.result.page;
+  if (!at || at.length < 2 || !pg || !(pg.width_pt > 0) || !(pg.height_pt > 0))
+    return "";
+  const fx = at[0] / pg.width_pt, fy = at[1] / pg.height_pt;
+  const v = fy < 0.34 ? "top" : fy > 0.66 ? "bottom" : "middle";
+  const h = fx < 0.34 ? "left" : fx > 0.66 ? "right" : "centre";
+  return v === "middle" && h === "centre" ? "the middle of the sheet"
+    : v === "middle" ? `the ${h} edge of the sheet`
+    : h === "centre" ? `the ${v} of the sheet`
+    : `the ${v}-${h} of the sheet`;
+}
+
+// What the engine RECORDS about the drawn scale bar on an abstained page,
+// as one sentence. The abstained payload carries `bar_ft_per_paper_inch`
+// exactly as a read scale does; the reader that fills it
+// (scale_detect.graphic_scale_bar) returns a reading or nothing, and records
+// nothing about bar geometry it found but could not label. So the honest
+// negative is "did not find one it could read" - never "there is no bar",
+// which this UI cannot know and was measured saying falsely (Hurricane
+// C.3.5 prints one). The positive arm is reachable only if the engine ever
+// carries a bar reading alongside an abstention; it exists so the sentence
+// is read off the data rather than assumed.
+function scaleBarSentence() {
+  const sg = state.result && state.result.scale_suggestions;
+  const bar = sg && +sg.bar_ft_per_paper_inch;
+  return bar > 0
+    ? `The engine measured a drawn scale bar at ${bar.toFixed(2)} ft per `
+      + `inch but did not match it against these readings.`
+    : `The engine did not find a scale bar on this sheet that it could read.`;
+}
+
+// The scale object an accepted suggestion produces. It stamps
+// `picked_by_reviewer` (which is what travels on the approve payload and
+// makes the server record a reviewer decision) and `from_suggestion` (which
+// is what every sentence downstream reads to say WHICH kind of reviewer
+// decision it was). It does NOT stamp typed_by_reviewer: nobody typed this.
+// Built here and nowhere else, so the click path and the reapply-after-detect
+// path cannot describe the same decision two different ways.
+function suggestedScaleObj(c) {
+  return {
+    text: c.text,
+    ft_per_paper_inch: +c.ft_per_paper_inch,
+    // the reading's own provenance, carried so the chip and the banner can
+    // keep saying it was machine-read rather than quietly losing that
+    source: (state.result.scale_suggestions || {}).source || "ocr",
+    origin: c.origin || "",
+    at: c.at || null,
+    has_nts: !!(state.result.scale_suggestions || {}).has_nts,
+    // NOTHING corroborates it: the bar comparison was never run against a
+    // value the engine refused to promote
+    agrees: null, delta_pct: null, bar_ft_per_paper_inch: null,
+    picked_by_reviewer: true,
+    typed_by_reviewer: false,
+    from_suggestion: true,
+  };
+}
+
+// The ONE way an accepted suggestion lands from a click, mirroring
+// applyTypedScale: undo capture, the object above, session store, repaint.
+function applySuggestedScale(c) {
+  if (scaleUndo.key !== scaleTypedKey()) {
+    scaleUndo.key = scaleTypedKey();
+    scaleUndo.scale = state.result.scale || null;
+  }
+  state.result.scale = suggestedScaleObj(c);
+  try {
+    store.setItem(scaleKey(), String(+c.ft_per_paper_inch));
+    store.removeItem(scaleTypedKey());
+  } catch (e) { /* private mode: this session still honours it */ }
+  scaleRepaint();
+}
+
+function renderScaleSuggest(host) {
+  if (!state.result) return;
+  const uniq = scaleSuggestions();
+  if (!uniq.length) return;
+  const sc = state.result.scale;
+  const inForce = sc && +sc.ft_per_paper_inch > 0;
+
+  const row = document.createElement("div");
+  row.className = "sh-scales sh-suggest";
+
+  const lab = document.createElement("span");
+  lab.className = "sh-suggest-lab";
+  // The headline states the STATE of the sheet first, because that is the
+  // thing a reader can act wrongly on. Until a click there is no scale.
+  lab.innerHTML = inForce
+    ? `the engine read ${uniq.length === 1 ? "this" : `these ${uniq.length}`} `
+      + `off the sheet but would not stand behind `
+      + `${uniq.length === 1 ? "it" : "any of them"}:`
+    : `<b>No scale is set on this sheet.</b> The engine recovered `
+      + `${uniq.length === 1 ? "one reading" : `${uniq.length} readings`} it `
+      + `will not stand behind — pick one only if you have checked it:`;
+  row.appendChild(lab);
+
+  for (const c of uniq) {
+    const b = document.createElement("button");
+    // NO `on` class, ever, and not even when this suggestion is the value
+    // currently in force: `on` is the picker's "this is what the sheet is
+    // using" state, and painting it here on first render is precisely the
+    // pre-selection this block must not do.
+    b.className = "sh-scale-pick";
+    b.textContent = `use ${(+c.ft_per_paper_inch).toFixed(2)} ft/in`;
+    const where = sugWhere(c);
+    b.title = `${c.text}${where ? ` — read near ${where}` : ""}. `
+      + `Nothing on this sheet has been checked against it.`;
+    b.onclick = () => {
+      applySuggestedScale(c);
+      setStatus(`scale set to ${(+c.ft_per_paper_inch).toFixed(2)} ft per inch `
+        + `from a reading the engine did not trust — every quantity on this `
+        + `sheet recalculated. Approve to record it.`);
+    };
+    row.appendChild(b);
+  }
+
+  const why = document.createElement("div");
+  why.className = "sh-suggest-why";
+  const list = uniq.map(c => {
+    const where = sugWhere(c);
+    return `<b>${esc(c.text)}</b> = ${(+c.ft_per_paper_inch).toFixed(2)} ft `
+      + `per inch${where ? `, read near ${where}` : ""}`;
+  }).join("; ");
+  // The register: plain words, no jargon, and the reason it is not trusted
+  // stated rather than implied by a colour.
+  //
+  // Every sentence here says what the ENGINE knows, never what the DRAWING
+  // has. Measured 2026-09-01 on Hurricane C.3.5 (page index 6): this block
+  // told the operator the sheet had NO drawn bar backing the reading, on a
+  // sheet that PRINTS a 0/40'/80' bar directly above the caption; the
+  // engine had failed to read it, not found it absent - and that bar is
+  // the one printed thing separating 1"=40' from the key map's 1"=300' the
+  // block was offering, 7.5x apart. It also gave a cause ("this sheet's
+  // text is drawn as shapes") that nothing tests: the page carries 643 text
+  // characters in five embedded fonts. So: the bar sentence reads what the
+  // payload records (bar_ft_per_paper_inch, null on every abstained page
+  // today because the abstention only runs after the bar reader returned
+  // nothing), the checked-against sentence is the button tooltip's voice,
+  // and there is no "because" clause at all.
+  const one = uniq.length === 1;
+  why.innerHTML = `${list}. ${one ? "It was" : "They were"} read `
+    + `by machine off a picture of the caption, and the digits can be `
+    + `misread. ${scaleBarSentence()} Nothing on this sheet has been `
+    + `checked against ${one ? "it" : "them"} — no scale bar, no printed `
+    + `square-foot figure. `
+    + (uniq.length === 1
+      ? `The same reading may also have MISSED other scales printed on this `
+        + `sheet, so being the only one offered does not make it the only one `
+        + `printed: check the drawing before you use it.`
+      : `The engine cannot tell which of them the drawing you are taking off `
+        + `was drawn to, and it may also have missed others printed here. `
+        + `Check the sheet and pick the one that governs your drawing.`)
+    + ` Or ignore ${uniq.length === 1 ? "it" : "them"} and type the scale `
+    + `yourself above.`;
+  row.appendChild(why);
   host.appendChild(row);
 }
 
@@ -2188,13 +2450,27 @@ async function scaleRestore(gen) {
   // and it must not be invented: if the value matches a reading the engine
   // found, restore it as a PICK; otherwise no caption on this sheet says it,
   // which is what "typed" means.
+  //
+  // A SUGGESTION the reviewer accepted is the third case and is checked
+  // first, because on those pages `sc` is null - the engine reads no scale
+  // there - so the candidate branch below cannot see it and the value would
+  // fall through to "typed". That is not a cosmetic mislabel: the chip, the
+  // banner and the printed report would all say the reviewer invented a
+  // number that the engine in fact read off the sheet and distrusted, which
+  // tells the reader to check the wrong thing.
+  const sug = scaleSuggestions().find(
+    c => Math.abs(+c.ft_per_paper_inch - ft) < 1e-6);
   const hit = (sc && sc.candidates || []).find(
     c => c && Math.abs(+c.ft_per_paper_inch - ft) < 1e-6);
-  if (hit) {
+  if (sug) {
+    state.result.scale = suggestedScaleObj(sug);
+    try { store.setItem(scaleKey(), String(+sug.ft_per_paper_inch)); } catch (e) {}
+  } else if (hit) {
     state.result.scale = Object.assign({}, sc, {
       text: hit.text, ft_per_paper_inch: hit.ft_per_paper_inch,
       count: hit.count, agrees: null, delta_pct: null,
       picked_by_reviewer: true, typed_by_reviewer: false,
+      from_suggestion: false,
     });
     try { store.setItem(scaleKey(), String(hit.ft_per_paper_inch)); } catch (e) {}
   } else {
@@ -2398,10 +2674,46 @@ function confLines() {
   const cf = state.conf;
   const tag = confTagCheck();
   const uniq = scaleCandidates();
+  const sug = scaleSuggestions();
 
   // ---- scale: the number every length, area and volume sits on ----------
-  if (!sc) {
-    say("stop", `<b>No scale could be read off this sheet.</b> Until one `
+  if (!sc && sug.length) {
+    // STILL RED, and it says NO SCALE first. There are readings on offer, but
+    // the sheet is unscaled until a person picks one, and the colour rule is
+    // "red where there is no scale at all" - offering a suggestion does not
+    // give the sheet a scale. This branch exists so the banner stops telling
+    // the operator the engine read nothing, which on these 26 pages is false
+    // and sends him to type a number the engine had already recovered.
+    say("stop", `<b>No scale is in force on this sheet — nothing has been `
+      + `chosen.</b> Until one is set, nothing here can be quoted in feet, `
+      + `square feet or cubic yards; the lengths below are paper measurements `
+      + `of the drawing, not real-world distances. The engine did recover `
+      + `${sug.length === 1 ? "one reading" : `${sug.length} readings`} it `
+      + `<b>will not stand behind</b> — `
+      + sug.map(c => `<span class="conf-num">${confScale(c.ft_per_paper_inch)}`
+          + `</span> (${confQuote(c.text)})`).join(", ")
+      + `. ${sug.length === 1 ? "It was" : "They were"} read by machine off a `
+      + `picture of the caption, and the digits can be misread. `
+      + `${scaleBarSentence()} Nothing on this sheet has been checked `
+      + `against ${sug.length === 1 ? "it" : "them"}. `
+      + (sug.length === 1
+        ? `The same reading may have missed other scales printed here, so its `
+          + `being the only one is no evidence it is the only one printed.`
+          + ` — measured: on one corpus sheet printing three scales, only the `
+          + `key map's survived, and taking it would have been 7.5 times out.`
+        : `The engine cannot tell which of them governs the drawing you are `
+          + `taking off, and it may have missed others printed here too.`)
+      + ` Check the sheet, then either pick one below or type the scale `
+      + `yourself. Nothing is chosen for you.`);
+    if (cf && cf.has_nts)
+      say("stop", `The sheet also prints <b>NOT TO SCALE</b>. If that note `
+        + `covers the drawing rather than one detail on it, measuring it is `
+        + `unsafe even by hand — take the numbers written on the drawing.`);
+  } else if (!sc) {
+    // The lead sentence is read off the engine's record (noScaleSentence,
+    // shared with the check queue and the areas card): here `sug` is empty,
+    // so it says the engine read nothing - never that the sheet has nothing.
+    say("stop", `<b>${noScaleSentence(sug.length)}</b> Until one `
       + `is set, nothing here can be quoted in feet, square feet or cubic `
       + `yards — the lengths below are paper measurements of the drawing, `
       + `not real-world distances. Set the scale by hand before pricing `
@@ -2411,6 +2723,33 @@ function confLines() {
       say("stop", `The sheet also prints <b>NOT TO SCALE</b>. If that note `
         + `covers the drawing rather than one detail on it, measuring it is `
         + `unsafe even by hand — take the numbers written on the drawing.`);
+  } else if (sc.from_suggestion) {
+    // AMBER, and before every branch that can print green - same structural
+    // guarantee as the typed branch below. This number was read by the least
+    // trustworthy reader this app has, and NOTHING has been checked against
+    // it; a second source agreeing was never even measured, because the
+    // engine refused to promote it in the first place. The sentence says
+    // that - what the engine did - not what the sheet does or does not
+    // print, which it has no way to know.
+    const others = sug.filter(
+      c => Math.abs(+c.ft_per_paper_inch - +sc.ft_per_paper_inch) >= 1e-6);
+    say("warn", `<b>You picked <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span> from the readings the `
+      + `engine would not stand behind</b> (it read ${confQuote(sc.text)} off `
+      + `a picture of the caption`
+      + (sugWhere(sc) ? ` near ${sugWhere(sc)}` : ``)
+      + `). <b>Nothing on this sheet has been checked against it</b> — the `
+      + `digits could have been misread, and no drawn scale bar or printed `
+      + `area figure has been matched against this number. `
+      + (others.length
+        ? `The engine offered `
+          + others.map(c => `<span class="conf-num">`
+              + `${confScale(c.ft_per_paper_inch)}</span>`).join(" and ")
+          + ` as well and could not tell which governs this drawing. `
+        : ``)
+      + `Every length, area and volume below is computed from it, and the `
+      + `exported takeoff and the report PDF both say on their face that you `
+      + `set it from a reading the engine did not trust.`);
   } else if (sc.typed_by_reviewer) {
     // AMBER, and FIRST of the branches that can be reached with a scale in
     // force - before the two that can print green. Green's contract is a
@@ -2426,8 +2765,8 @@ function confLines() {
       : ``;
     say("warn", `<b>Scale set by hand: <span class="conf-num">`
       + `${confScale(sc.ft_per_paper_inch)}</span></b> (you typed `
-      + `${confQuote(sc.text)}). <b>Nothing on the sheet corroborates it</b> — `
-      + `no printed caption, no drawn scale bar and no printed area figure `
+      + `${confQuote(sc.text)}). <b>Nothing has been checked against it</b> — `
+      + `no printed caption, drawn scale bar or printed area figure `
       + `has been matched against this number. Every length, area and volume `
       + `below is computed from it, and the exported takeoff and the report `
       + `PDF both say on their face that the reviewer set it.` + was);
@@ -2458,17 +2797,17 @@ function confLines() {
       + `reading this app has, and nothing else found on this sheet backs it `
       + `up. Check it against a dimension printed on the drawing.`);
   } else if (sc.source === "graphic-bar") {
-    say("warn", `<b>No scale caption was found on this sheet, so the ruler `
-      + `drawn on it was measured instead: <span class="conf-num">`
+    say("warn", `<b>The engine read no scale caption on this sheet, so it `
+      + `measured the ruler drawn on it instead: <span class="conf-num">`
       + `${confScale(sc.ft_per_paper_inch)}</span>.</b> That number comes `
       + `from the spacing of the bar's tick marks. It is one reading, with `
       + `nothing to confirm it.`);
   } else {
     say("warn", `<b>Scale taken from one printed caption: `
       + `<span class="conf-num">${confScale(sc.ft_per_paper_inch)}</span></b> `
-      + `(the sheet reads ${confQuote(sc.text)}). No drawn scale bar and no `
-      + `printed area figure were found here, so there is nothing on the `
-      + `sheet to check that caption against.`);
+      + `(the sheet reads ${confQuote(sc.text)}). The engine found no drawn `
+      + `scale bar and no printed area figure it could check that caption `
+      + `against, so it stands on that one reading.`);
   }
 
   // ---- several scales printed: which one governs the drawing? -----------
@@ -2579,8 +2918,8 @@ function confLines() {
         + `rounded, so there was nothing to choose between them. We used `
         + `${used}.` + swap);
     } else if (kind === "bar") {
-      say("warn", head + `No scale caption was read on this sheet, so the `
-        + `ruler drawn on it was measured instead: ${used}.` + swap);
+      say("warn", head + `The engine read no scale caption on this sheet, so `
+        + `it measured the ruler drawn on it instead: ${used}.` + swap);
     } else {
       say("warn", head + `We used ${used}. <b>We cannot show what picked it</b> `
         + `out of what this sheet gave us, so treat that as unchecked: `
@@ -2927,6 +3266,27 @@ function ckDrops(saved, chainIds, styleIds) {
   return { ew: ew, tr: tr };
 }
 
+// The one sentence for a sheet with no scale in force, read off what the
+// engine RECORDED: `nsug` distinct readings it recovered and refused to
+// promote (scaleSuggestions().length). It says what the ENGINE did - read
+// captions it will not stand behind, or read none - and never what the
+// DRAWING has or lacks, which nothing in this UI can know. Measured
+// 2026-09-01 on Hurricane C.3.5 (page index 6): the sheet prints THREE
+// scales and a 0/40'/80' bar, the engine recovers one caption (the key
+// map's) as an abstained reading, and the banner, this queue and the areas
+// card each told the operator the SHEET had no scale. Shared by all three
+// so they cannot disagree about the same fact, and pure (no DOM, no
+// state.*) so the queue block stays evaluable standalone.
+//   nsug = 0 -> "The engine did not read a scale on this sheet."
+//   nsug = N -> "The engine read N scale captions it will not stand
+//               behind — check them."
+function noScaleSentence(nsug) {
+  const n = +nsug || 0;
+  if (!n) return "The engine did not read a scale on this sheet.";
+  return "The engine read " + (n === 1 ? "one scale caption" : n + " scale captions")
+    + " it will not stand behind — check " + (n === 1 ? "it" : "them") + ".";
+}
+
 // Build the queue from plain data. Input contract (everything optional
 // except totalPt/styles; an absent source contributes no entries and, where
 // it means a check has not run, one `pending` line):
@@ -2935,6 +3295,8 @@ function ckDrops(saved, chainIds, styleIds) {
 //   styles    [{sid, pt, name, legend, layerLeaf, named, included, weldPt}]
 //   scale     {present, text, ftIn, conflict, corroborated, barFt,
 //              deltaPct, source, operator, multi:{n,lo,hi,settled}|null}
+//             with present:false also nsug - how many abstained readings the
+//             engine recovered (0 when it read nothing)
 //   tag       {agrees, implied, ratio, n} | null   (printed-sf cross-check)
 //   datum     {state:"checked"|"pending"|"failed", conflict, declared,
 //              bandBase, bandN}
@@ -2952,10 +3314,19 @@ function ckBuild(inp) {
 
   // ---- the scale: the one number under every other number ---------------
   if (!sc.present) {
+    // The head says what the engine did (noScaleSentence), never what the
+    // sheet has; with abstained readings on offer it points at them.
+    const nsug = +sc.nsug || 0;
     out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
-      head: "No scale could be read off this sheet.",
-      text: "Nothing below is real feet until one is set - use the scale "
-        + "box in the sheet header before pricing anything from this page.",
+      head: noScaleSentence(nsug),
+      text: "Nothing below is real feet until one is set - "
+        + (nsug
+          ? "the " + (nsug === 1 ? "reading is" : "readings are") + " offered "
+            + "in the sheet header; check " + (nsug === 1 ? "it" : "each")
+            + " against the drawing before you pick one, or type the scale "
+            + "yourself there."
+          : "use the scale box in the sheet header before pricing anything "
+            + "from this page."),
       act: { t: "sheethead" } });
   } else if (sc.conflict) {
     out.push({ id: "scale", sev: "stop", w: totalPt * CK_W_PAGE,
@@ -2969,7 +3340,7 @@ function ckBuild(inp) {
     out.push({ id: "scale", sev: "warn", w: totalPt * CK_W_OCR,
       head: "The scale was read by OCR off a scan.",
       text: "Character recognition is the least trustworthy reading this app "
-        + "has and nothing on the sheet backs it up - check 1 in = "
+        + "has and nothing has been checked against it - check 1 in = "
         + ckDec(sc.ftIn) + " ft against a dimension printed on the drawing.",
       act: { t: "sheethead" } });
   }
@@ -2989,7 +3360,7 @@ function ckBuild(inp) {
           + ckDec(m.lo) + " to " + ckDec(m.hi) + " ft/in) and the pick is "
           + "still yours to confirm in the header."
         : "From 1 in = " + ckDec(m.lo) + " ft to 1 in = " + ckDec(m.hi)
-          + " ft, and nothing on the sheet settled which governs the "
+          + " ft, and the engine could not settle which governs the "
           + "drawing - confirm the pick in the header before pricing."),
       act: { t: "sheethead" } });
   }
@@ -3178,7 +3549,9 @@ function ckCollect() {
       weldPt: weld.get(s.style_id) || 0,
     };
   });
-  let scale = { present: false };
+  // With no scale in force the queue's head is read off how many abstained
+  // readings the engine recovered - the same list the header offers.
+  let scale = { present: false, nsug: scaleSuggestions().length };
   if (sc) {
     const uniq = scaleCandidates();
     const why = (sc.typed_by_reviewer || sc.picked_by_reviewer)
@@ -5695,7 +6068,10 @@ function renderAreas() {
   parts.push(sc.ft_per_paper_inch
     ? `scale used: 1 inch = ${(+sc.ft_per_paper_inch).toFixed(2)} ft`
       + (sc.text ? ` (read as “${esc(sc.text)}”)` : "")
-    : `<b>no scale on this sheet</b> — areas shown in pt², no SF`);
+    // what the engine did - read nothing, or read captions it abstained on
+    // - never a claim that the sheet lacks one, which this card cannot know
+    : `<b>${noScaleSentence(scaleSuggestions().length)}</b> Areas shown in `
+      + `pt², no SF.`);
   let cls = "ar-scale";
   // Every SF and LF in this panel is now recomputed from `area_pt2` /
   // `perim_pt` at the scale IN FORCE (see arSf / arLf), so the old "these
@@ -5741,7 +6117,7 @@ function renderAreas() {
         + `the sheet at this scale — they agree.`);
     }
   } else if (inForce !== null) {
-    parts.push(`no printed “N sf” tag on this sheet to check it against.`);
+    parts.push(`the engine found no printed “N sf” tag to check it against.`);
   }
   scaleBox.className = cls;
   scaleBox.innerHTML = parts.join("<br>");
@@ -12618,7 +12994,7 @@ $("trCalc").onclick = () => {
   const t = state.tr;
   if (!t || t.style_id === null) { $("trResult").textContent = "pick the pipe run first"; return; }
   const sc = state.result.scale;
-  if (!sc) { $("trResult").textContent = "no scale on this page — volumes need feet"; return; }
+  if (!sc) { $("trResult").textContent = "no scale set on this page — volumes need feet"; return; }
   const ftPerPt = sc.ft_per_paper_inch / 72.0;
   const chains = state.result.chains.filter(c =>
     c.style_id === t.style_id && !state.excluded.has(c.chain_id));
@@ -18304,21 +18680,31 @@ function setStatus(t, cls) { const el = $("status"); el.textContent = t; el.clas
 // matters - WHERE THE SCALE CAME FROM survived only until the next transient
 // message overwrote it. It is its own element now and it stays put.
 //
-// sheetFactsText() is loadResult()'s old string, character for character:
-// same counts, same " · scale ", same source in parentheses, same
-// ", matches the drawn bar" / ", but the drawn bar says N ft/in" /
-// " · no scale found". Nothing is summarised away and nothing new is
-// asserted. The red "err" state for a contradiction moves with it, and now
-// persists instead of flashing once.
+// sheetFactsText() is loadResult()'s old string: same counts, same
+// " · scale ", same source in parentheses, same ", matches the drawn bar" /
+// ", but the drawn bar says N ft/in". The red "err" state for a
+// contradiction moves with it, and now persists instead of flashing once.
+//
+// One arm is new. With no scale in force and unpromoted readings on offer
+// (state.result.scale_suggestions) the line used to read " · no scale
+// found" while the sheet panel three lines above it offered those very
+// readings - the two halves of one screen disagreeing about the same fact.
+// It now says what the header chip says: no scale is SET, and how many
+// readings are waiting unchecked. The page that has neither says the same
+// two things - no scale is SET, and the engine read none - rather than the
+// old "found" wording, which read as a fact about the sheet.
 function sheetFactsText() {
   if (!state.result) return "";
   const sc = state.result.scale;
+  const nsug = sc ? 0 : scaleSuggestions().length;
   return `${state.result.chains.length} lines in ${state.result.styles.length} styles`
     + (sc ? ` · scale ${sc.text} (${sc.source}`
         + (sc.agrees === true ? ", matches the drawn bar"
           : sc.agrees === false ? `, but the drawn bar says ${sc.bar_ft_per_paper_inch} ft/in`
           : "") + ")"
-      : " · no scale found");
+      : nsug ? ` · no scale set — ${nsug} unchecked reading`
+          + `${nsug === 1 ? "" : "s"} offered, none chosen`
+      : " · no scale set — the engine read none");
 }
 function renderSheetFacts() {
   const el = $("sheetFacts"), seg = $("sbSheet");
@@ -18516,7 +18902,7 @@ function stPickAt(px, py) {
   const c = stCalc(st.draft);
   setStatus(c.area_sf !== null
     ? `outline taken: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
-    : "outline taken — no scale on this page, so only pt can be shown");
+    : "outline taken — no scale set on this page, so only pt can be shown");
   renderSt(); draw();
 }
 function stDrawClick(px, py) {
@@ -18550,7 +18936,7 @@ function stFinishDraw() {
   const c = stCalc(st.draft);
   setStatus(c.area_sf !== null
     ? `outline closed: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
-    : "outline closed — no scale on this page, so only pt can be shown");
+    : "outline closed — no scale set on this page, so only pt can be shown");
   renderSt(); draw();
 }
 function stCanvasClick(e) {
@@ -18663,7 +19049,7 @@ function stNumInput(obj, key, step, onchange) {
 }
 function stResultText(c) {
   if (c.area_sf === null)
-    return `${stFmt(c.area_pt2, 0)} pt² · ${stFmt(c.perim_pt, 0)} pt — no scale on this page, volumes need feet`;
+    return `${stFmt(c.area_pt2, 0)} pt² · ${stFmt(c.perim_pt, 0)} pt — no scale set on this page, volumes need feet`;
   return `mass ${stFmt(stR1(c.mass_cy))} CY · structure dig ${stFmt(stR1(c.struct_cy))} CY` +
     ` · backfill ${stFmt(stR1(c.backfill_cy))} CY · slab prep ${stFmt(c.slab_sf, 0)} SF`;
 }
@@ -18687,7 +19073,7 @@ function renderSt() {
   drawB.onclick = () => state.tool === "st-draw" ? stDisarm("") : stArm("st-draw");
   modes.append(pick, drawB);
   const scaleNote = mk("span", "ew-meta",
-    fpp ? `scale ${state.result.scale.text}` : "NO SCALE — pt only");
+    fpp ? `scale ${state.result.scale.text}` : "NO SCALE SET — pt only");
   modes.appendChild(scaleNote);
   body.appendChild(modes);
 
@@ -18759,7 +19145,7 @@ function renderSt() {
     row.appendChild(g);
     row.appendChild(mk("div", "ew-meta", c.mass_cy !== null
       ? `mass ${stFmt(stR1(c.mass_cy))} · dig ${stFmt(stR1(c.struct_cy))} · backfill ${stFmt(stR1(c.backfill_cy))} CY`
-      : "no scale"));
+      : "no scale set"));
     row.onmouseenter = () => { st.hot = k; draw(); };
     row.onmouseleave = () => { st.hot = null; draw(); };
     rows.appendChild(row);
@@ -18776,7 +19162,7 @@ $("stAdd").onclick = async () => {
   const d = st.draft;
   if (!d) return;
   const c = stCalc(d);
-  if (c.area_sf === null) { $("stResult").textContent = "no scale on this page — volumes need feet"; return; }
+  if (c.area_sf === null) { $("stResult").textContent = "no scale set on this page — volumes need feet"; return; }
   st.items.push(d); st.draft = null; st.seq += 1;
   stApplyItems();
   renderSt(); draw();
