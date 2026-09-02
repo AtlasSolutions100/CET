@@ -72,6 +72,9 @@
    34
   ]
  },
+ "fixtures": {
+  "earthwork_oncor_c04_inputs.json": "0777453de615bc956b76bf9cd14f3830a9e1c29442f31e4f409ed1f2883ff1eb"
+ },
  "cases": {
   "server|defaults|boundary13": {
    "cut_yd3": 2006.8,

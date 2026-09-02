@@ -203,6 +203,11 @@ def _baseline_problems(base, entry) -> list:
         if not (isinstance(sig, str) and len(sig) == 16):
             bad.append(f"recipe baseline has no earthwork_sig (got {sig!r}) - "
                        f"a code change could not be seen")
+    if kind == "recipe":
+        fx = base.get("fixtures")
+        if not isinstance(fx, dict) or not fx:
+            bad.append("recipe baseline pins no fixture sha256 (fixtures: {}) - "
+                       "an edited input file could not be seen")
     cases = base.get("cases")
     if not isinstance(cases, dict) or not cases:
         bad.append("baseline has no cases - nothing to compare")
@@ -241,12 +246,15 @@ def _resolve(rel: str, data_root: Path) -> Path:
 #   {"ft_per_pt", "existing_rows": [{chain_id, z}], "proposed_rows": [...],
 #    "chains": {chain_id: [[x, y], ...]}, "boundary": [[x, y], ...] | None,
 #    "spots": [{x, y, z}, ...]}
+# Each returns (inputs, where, files): `files` is every path it READ, in
+# order, and the baseline pins each one's sha256 (see the N2 block in main):
+# an edited fixture with an unchanged baseline is a FAIL that names the file.
 
 def _load_fixture(entry, data_root):
     """kind 'fixture': one self-contained JSON (tests/baselines/*_inputs.json)."""
     p = _resolve(entry["inputs"], data_root)
     if not p.is_file():
-        return None, f"missing {p}"
+        return None, f"missing {p}", []
     fx = json.loads(p.read_text(encoding="utf-8"))
     return {
         "ft_per_pt": float(fx["ft_per_paper_inch"]) / 72.0,
@@ -255,7 +263,7 @@ def _load_fixture(entry, data_root):
         "chains": {int(k): v for k, v in fx["chains"].items()},
         "boundary": fx.get("boundary"),
         "spots": fx.get("spots") or [],
-    }, str(p)
+    }, str(p), [p]
 
 
 def _load_seed_flips(entry, data_root):
@@ -266,7 +274,7 @@ def _load_seed_flips(entry, data_root):
     paths = {k: d / v for k, v in entry["files"].items()}
     missing = [str(p) for p in paths.values() if not p.is_file()]
     if missing:
-        return None, "missing " + ", ".join(missing)
+        return None, "missing " + ", ".join(missing), []
     seed = json.loads(paths["seed"].read_text(encoding="utf-8"))
     res = json.loads(paths["result"].read_text(encoding="utf-8"))
     flips = json.loads(paths["flips"].read_text(encoding="utf-8"))
@@ -291,7 +299,7 @@ def _load_seed_flips(entry, data_root):
         "chains": {int(c["chain_id"]): c["points"] for c in res["chains"]},
         "boundary": bnd,
         "spots": [],
-    }, str(d)
+    }, str(d), [paths[k] for k in ("seed", "result", "flips", "boundary")]
 
 
 LOADERS = {"fixture": _load_fixture, "seed_flips": _load_seed_flips}
@@ -631,7 +639,7 @@ def main(argv=None) -> int:
                 failures.append(f"{cid}: manifest entry: {line}")
             print(f"\n{cid}: FAIL manifest entry - " + "; ".join(probs))
             continue
-        inputs, where = LOADERS[entry["kind"]](entry, data_root)
+        inputs, where, fixture_files = LOADERS[entry["kind"]](entry, data_root)
         if inputs is None:
             print(f"SKIPPED {cid}: inputs not present locally ({where}) - "
                   f"{entry.get('skip_note', 'no volumes were checked for this case')}")
@@ -686,11 +694,15 @@ def main(argv=None) -> int:
                 "earthwork_closure": closure,
                 "accepted": {"tree": str(tree), "date": time.strftime("%Y-%m-%d"),
                              "contours": results[next(iter(results))]["_contours"]},
+                "fixtures": {f.name: _sha256(f) for f in fixture_files},
                 "cases": {name: {k: r.get(k) for k in GATED + PINNED + _noted(entry)}
                           for name, r in results.items()},
             }
             if via_server:
                 out["server_defaults"] = server_defaults(server)
+            for f in fixture_files:
+                print(f"   FIXTURE {f.name} sha256 {out['fixtures'][f.name]} "
+                      f"pinned in the baseline")
             bpath.parent.mkdir(parents=True, exist_ok=True)
             bpath.write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8",
                              newline="\n")
@@ -743,6 +755,30 @@ def main(argv=None) -> int:
             print(f"   sha256 {got_sha[:16]}... "
                   f"{'matches' if want_sha == got_sha else 'MISMATCH vs'} "
                   f"{shp.relative_to(REPO)}")
+        # -0.5. the INPUTS. Every file the loader read is pinned by sha256 in
+        #    the baseline. Until 2026-09-02 nothing was: +1 ft on one row of
+        #    the 148 KB one-line Oncor fixture produced 28 FAIL lines, then
+        #    --accept "succeeded" with the signature unchanged and a git diff
+        #    nobody could read. Now the edit is a FAIL that names the file
+        #    and both hashes, --accept prints the new hash, and the fixture
+        #    is written one row / one chain per line so the diff is legible.
+        pinned_fx = base.get("fixtures") if isinstance(base.get("fixtures"), dict) else {}
+        for f in fixture_files:
+            got_h = _sha256(f)
+            want_h = pinned_fx.get(f.name)
+            if want_h is None:
+                if entry["compare"] == "recipe":
+                    failures.append(f"{cid}: fixture {f.name} has no sha256 pinned "
+                                    f"in {bpath.name} (now {got_h[:16]}...) - run "
+                                    f"--accept {cid} and commit the hash")
+                continue
+            if want_h != got_h:
+                failures.append(f"{cid}: fixture {f.name} changed: baseline "
+                                f"{want_h[:16]}... now {got_h[:16]}... - the inputs "
+                                f"moved, not the engine; if intended, --accept {cid} "
+                                f"and say why in the commit")
+            print(f"   fixture {f.name} sha256 {got_h[:16]}... "
+                  f"{'pinned OK' if want_h == got_h else 'CHANGED vs baseline'}")
         # 0. the baseline's shape, field by field. A recipe baseline that
         #    lost its earthwork_sig, a case dict emptied out, a null where a
         #    volume belongs: each is a named FAIL, never a quieter pass.
