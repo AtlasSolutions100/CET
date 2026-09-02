@@ -247,13 +247,30 @@ ok("the engine read no scale here" in server._scale_name(det2 or {}),
 # --- corpus: the three demo sheets ---------------------------------------
 
 W = Path(r"C:\Users\kobys\OneDrive\Desktop\past\P\Takeoff Automation")
+# (relative path, page index, what the page must do)
+#   ("abstain", [values])  the rescue's abstention, with the values offered
+#   ("reads", value)       a promoted reading within 2% of value
+#
+# Two rows moved with stage 1b (SPEC 7.4: psm 6 in the bar zoom, and the
+# zoom running when the 150-dpi rows were refused or are non-native).
+# Both were pinned here as "the engine has nothing to say"; both now read
+# their DRAWN bar off tick geometry, and both readings were checked
+# against 400-dpi crops of the sheets themselves on 2026-09-02:
+#   Hurricane C.3.1 p2 prints `0 40' 80'` over `SCALE: 1" = 40'`
+#       - was: abstained, candidate 40.0 from the caption window
+#       - now: reads 40.0167 off the bar's ticks (source "graphic-bar")
+#   RC Ontario p7 prints `0 5 10 20` over `1" = 10' WHEN PRINTED AT FULL
+#       SIZE (24" X 36")`
+#       - was: to_dict() None - no reading and no candidates at all
+#       - now: reads 10.0 off the bar's ticks
+# The Bryce Gurr row is the one this file is really about (two printed
+# scales, neither promotable) and is unchanged.
 CORPUS = [
-    # (relative path, page index, expected distinct candidate values)
     (r"TakeoffPro AI\Plans 2\2026.02.13_Civil Design_HURRICANE STORAGE UNITS.pdf",
-     2, [40.0]),
+     2, ("reads", 40.0)),
     (r"TakeoffPro AI\Plans 2\Approved Construction Set_2-17-26 (2).pdf",
-     2, [5.0, 20.0]),
-    (r"TakeoffPro AI\Plans\RC Ontario.pdf", 7, None),   # None = no reading
+     2, ("abstain", [5.0, 20.0])),
+    (r"TakeoffPro AI\Plans\RC Ontario.pdf", 7, ("reads", 10.0)),
 ]
 
 
@@ -282,8 +299,13 @@ else:
         doc = pymupdf.open(p)
         got = detect_scale(doc[pi]).to_dict()
         doc.close()
-        if want is None:
-            eq(got, None, f"{p.name} p{pi}: no reading and no candidates -> None")
+        kind, want = want
+        if kind == "reads":
+            v = (got or {}).get("ft_per_paper_inch")
+            ok(v is not None and abs(v - want) / want <= 0.02,
+               f"{p.name} p{pi}: reads its drawn bar (got {v}, want ~{want})")
+            ok((got or {}).get("abstained") is None,
+               f"{p.name} p{pi}: a promoted reading carries no abstained key")
             continue
         ok(got is not None and got.get("abstained") is True,
            f"{p.name} p{pi}: abstains with candidates carried")
