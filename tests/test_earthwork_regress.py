@@ -167,6 +167,17 @@ def _within(want, got, entry) -> bool:
     return want == got if tol == 0.0 else abs(float(got) - float(want)) <= tol
 
 
+def _in_baselines_dir(rel) -> bool:
+    """True for a repo-relative path under tests/baselines/ with no '..' -
+    the only place a COMMITTED baseline or sha256 pin can live."""
+    if not isinstance(rel, str) or not rel:
+        return False
+    q = Path(rel)
+    if q.is_absolute() or ".." in q.parts:
+        return False
+    return q.parts[:2] == ("tests", "baselines") and len(q.parts) == 3
+
+
 def _manifest_problems(entry) -> list:
     """Why this manifest entry cannot be trusted to gate anything."""
     bad = []
@@ -176,6 +187,18 @@ def _manifest_problems(entry) -> list:
         return bad
     if not isinstance(entry.get("runs"), list) or not entry["runs"]:
         bad.append("runs is empty - nothing would be computed")
+    # A baseline that is not committed under tests/baselines/ (client work
+    # kept gitignored beside its inputs) is pinned by a committed sha256 or
+    # it is not pinned at all. Until 2026-09-02 an entry could simply omit
+    # baseline_sha256, re-accept the gitignored file locally, and the gate
+    # never said the recipe had no pin.
+    bl = entry.get("baseline")
+    if not isinstance(bl, str) or not bl:
+        bad.append(f"baseline is {bl!r}; must be a path")
+    elif not _in_baselines_dir(bl) and not entry.get("baseline_sha256"):
+        bad.append(f"baseline {bl!r} is outside tests/baselines/ and the entry "
+                   f"carries no baseline_sha256 - an out-of-repo baseline is "
+                   f"pinned by a committed hash or it gates nothing")
     if kind == "tolerance":
         if not (float(entry.get("tolerance_yd3") or 0.0) > 0.0
                 or float(entry.get("tolerance_pct") or 0.0) > 0.0):
