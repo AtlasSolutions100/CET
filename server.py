@@ -1449,18 +1449,26 @@ def _demo_job(name: str, src: Path) -> str:
             doc.close()
         except Exception:
             return _register(src, owner=None)["job_id"]
+        # DECIDE under the lock, CALL _register after it. JOBS_LOCK is a
+        # plain Lock, and _register takes it: the old branch called
+        # _register from inside this block when the row had vanished, and
+        # the demo open then deadlocked the web process - every request
+        # after it queued on the lock forever. Reproduced in
+        # tests/test_demo_job_lock.py by popping the row while the PDF is
+        # being re-read.
         with JOBS_LOCK:
             j = JOBS.get(jid)
-            if j is None:
-                return _register(src, owner=None)["job_id"]
-            j["path"] = str(src)
-            j["mtime"] = mtime
-            j["pages"] = n
-            j["sizes"] = sizes
-            j["kinds"] = None
-            j["kinds_progress"] = 0
-            j["status"] = {}
-            _save_registry()
+            if j is not None:
+                j["path"] = str(src)
+                j["mtime"] = mtime
+                j["pages"] = n
+                j["sizes"] = sizes
+                j["kinds"] = None
+                j["kinds_progress"] = 0
+                j["status"] = {}
+                _save_registry()
+        if j is None:
+            return _register(src, owner=None)["job_id"]
         _classify_async(jid, str(src), n)
     return jid
 
