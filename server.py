@@ -1265,6 +1265,43 @@ def _demo_scan_refused(p: Path, name: str, jobs_root: Path, owned: set) -> bool:
     return True
 
 
+def _demo_rows_split() -> tuple:
+    """(shared, owned): the resolved, case-folded paths of the owner-less
+    rows and of the owned rows, read under JOBS_LOCK. A path that cannot
+    be resolved is in neither set - it cannot be shown to be anything."""
+    with JOBS_LOCK:
+        raw = [(j.get("path", ""), j.get("owner")) for j in JOBS.values()]
+    shared, owned = set(), set()
+    for path, owner in raw:
+        try:
+            key = os.path.normcase(str(Path(path).resolve()))
+        except (OSError, RuntimeError):
+            continue
+        (shared if owner is None else owned).add(key)
+    return shared, owned
+
+
+def _demo_cache_ok(p: Path, name: str) -> bool:
+    """True while a cached demo source is STILL one we may serve: the path
+    of a SHARED row (how a seeded box has it - a staff upload under
+    JOBS_DIR, or a row from before per-user mode), or an unowned corpus
+    file the scan would accept right now.
+
+    The writers into _DEMO_SRC apply _demo_scan_refused; the cache hit did
+    not. So a path that entered the cache by any other route, or a row
+    whose owner changed underneath it, was served as the demo until the
+    process restarted. Re-checked on every hit: the row read is one lock
+    acquisition and a few path resolves, nothing that walks the disk."""
+    try:
+        key = os.path.normcase(str(p.resolve(strict=True)))
+    except (OSError, RuntimeError):
+        return False
+    shared, owned = _demo_rows_split()
+    if key in shared:
+        return True
+    return not _demo_scan_refused(p, name, JOBS_DIR.resolve(), owned)
+
+
 def _demo_source(name: str):
     """The PDF behind a manifest entry, or None when this box does not have it.
 
@@ -1298,9 +1335,10 @@ def _demo_source(name: str):
     hit = _DEMO_SRC.get(name)
     if hit:
         p = Path(hit)
-        if p.exists():
+        if p.exists() and _demo_cache_ok(p, name):
             return p
-        _DEMO_SRC.pop(name, None)       # the file went away; do not serve it
+        # the file went away, or it is a client's: do not serve it
+        _DEMO_SRC.pop(name, None)
     with JOBS_LOCK:
         rows = sorted((jid, j.get("path", "")) for jid, j in JOBS.items()
                       if j.get("owner") is None)
@@ -1318,15 +1356,7 @@ def _demo_source(name: str):
     _DEMO_SCAN_AT = now
     want = set(DEMO_PLANS) - set(_DEMO_SRC)
     jobs_root = JOBS_DIR.resolve()
-    with JOBS_LOCK:
-        owned_raw = [j.get("path", "") for j in JOBS.values()
-                     if j.get("owner") is not None]
-    owned = set()
-    for raw in owned_raw:
-        try:
-            owned.add(os.path.normcase(str(Path(raw).resolve())))
-        except (OSError, RuntimeError):
-            continue
+    _shared, owned = _demo_rows_split()
     for root in PLAN_ROOTS:
         if not want:
             break
