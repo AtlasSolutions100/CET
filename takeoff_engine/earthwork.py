@@ -1283,7 +1283,41 @@ def suggest_elevations(chains: list, words: list,
             if 10.0 <= v <= 9999.0:
                 cands.append(((w[0] + w[2]) / 2, (w[1] + w[3]) / 2, v,
                               _label_tag(w, tags)))
-    if not cands:
+    # AN OCR-ONLY POPULATION IS STILL A POPULATION.
+    #
+    # Until 2026-09-02 this returned [] whenever the page had no native
+    # elevation-looking token, BEFORE the gap_z merge below - so a sheet
+    # whose every label is a glyph outline (pymupdf: 0 words) got zero rows
+    # although the gap-OCR pass had read its labels, and /earthwork answered
+    # 400 "each surface needs at least one labeled contour". Measured on the
+    # DEM-truth outline sheet dem_hurricane_bench_a_pad_2ft_outline p0: 17
+    # cached gap reads (3376..3428), 0 rows. That is the corpus failure mode
+    # the sheet was built to reproduce (text_layer: NONE), not a corner case.
+    #
+    # What an OCR-only population is ALLOWED to do (cands empty, gap_z set):
+    #   - pass 0 (inline) and pass 1 (radius) have nothing to match and
+    #     write nothing; `seen` reaches the merge empty;
+    #   - the 25-ft ANCHOR rule below still runs, over the gap values alone,
+    #     once there are 6+ of them: a lone impossible read (5388 among
+    #     33xx) is still dropped. Mutually-supporting misreads pass it, as
+    #     they already do on a native sheet;
+    #   - the NATIVE BAND gate (3+ glyph-derived values, 100 ft) CANNOT run:
+    #     there are no natives. NOTHING stands in for it here. The server's
+    #     `wit` filter and its glyph-first group ranking also have no native
+    #     row and no resolved spot grade to lean on (on an outline sheet the
+    #     spot grades are outlines too), so the only defence left is the
+    #     disclosure: every such row carries how="gap-ocr", which
+    #     webui/app.js ELEV_PROV renders as "read from a picture" (cls
+    #     "ocr", solid border) with the tooltip that the digits themselves
+    #     can be wrong. The `how` vocabulary is unchanged - a new value
+    #     would render as "source unknown" there;
+    #   - pass 2 (inherited) propagates gap-ocr rows along the contour
+    #     exactly as it propagates native ones.
+    # With cands NON-EMPTY nothing here changes: the early return, the
+    # ranking and every guard are as before (tests/test_gap_ocr_rows.py
+    # pins a frozen 36e065f fixture; tests/test_earthwork_regress.py pins
+    # the volumes).
+    if not cands and not gap_z:
         return []
     # Explicit source ranking, stored in the `dist` slot so the existing
     # keep-the-closest comparisons ARE the ranking (no first-writer-wins):
@@ -1350,7 +1384,8 @@ def suggest_elevations(chains: list, words: list,
     # have their own chain as the strict nearest once the mask and
     # property-line families are excluded from the pool.
     consumed = set()
-    regions = _label_regions(chains, exclude=exclude)
+    # no native token: nothing to place in a region (OCR-only path above)
+    regions = _label_regions(chains, exclude=exclude) if cands else {}
     if regions:
         flat = []
         for cid, regs in regions.items():
