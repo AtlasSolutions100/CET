@@ -17,6 +17,7 @@ import math
 import multiprocessing
 import os
 import re
+import sys
 import urllib.parse
 import threading
 import time
@@ -1193,24 +1194,75 @@ DEMO_THUMBS = JOBS_DIR / "_demo_thumbs"
 
 # name -> resolved source path. Re-validated on read, and a full plan-root
 # scan is rate-limited: an unseeded box must not walk the corpus on every
-# paint of the landing page.
+# paint of the landing page. A client's file NEVER enters this cache - see
+# _demo_scan_refused.
 _DEMO_SRC: dict = {}
 _DEMO_SCAN_AT = 0.0
 _DEMO_SCAN_EVERY_S = 30.0
 _DEMO_PAGES: dict = {}
+# resolved paths the scan refused as a client's file, so the collision is
+# logged once per file rather than once per 30 s rescan
+_DEMO_REFUSED: set = set()
+
+
+def _demo_scan_refused(p: Path, name: str, jobs_root: Path, owned: set) -> bool:
+    """True when a plan-root scan candidate is a CLIENT'S file and must not
+    become the demo, whatever it is called. Two belts, either one refuses:
+      (a) it lies under JOBS_DIR. A staff seed there is a shared row and the
+          row loop in _demo_source has already found it, so a PDF the scan
+          meets under JOBS_DIR is somebody's upload;
+      (b) its path is registered to a row with an owner, under any root.
+    Both compare RESOLVED paths, so another spelling of the same file (../,
+    a symlink, drive-letter case) is the same file, and a path that cannot
+    be resolved is refused too - it cannot be shown to be the corpus.
+    The collision is logged once so staff can see that a client set is
+    wearing a demo name; nothing is cached for it."""
+    try:
+        rp = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return True
+    key = os.path.normcase(str(rp))
+    why = None
+    try:
+        rp.relative_to(jobs_root)
+        why = "it sits inside the jobs directory, so it is an upload"
+    except ValueError:
+        if key in owned:
+            why = "it is registered to a client account"
+    if why is None:
+        return False
+    if key not in _DEMO_REFUSED:
+        _DEMO_REFUSED.add(key)
+        print("[demo] a client file collides with the demo name %r: not "
+              "serving %s as the demo because %s. Only a STAFF upload of "
+              "our own copy publishes that name." % (name, rp, why),
+              file=sys.stderr)
+    return True
 
 
 def _demo_source(name: str):
     """The PDF behind a manifest entry, or None when this box does not have it.
 
     Two places it can legitimately be:
-      * already registered as a job - which is how a HOSTED box has it, since
-        the only way in there is /api/upload writing
-        JOBS_DIR/upload_<hash>_<name>.pdf;
+      * already registered as a SHARED job (owner None) - which is how a
+        HOSTED box has it: /api/upload writes JOBS_DIR/upload_<hash>_<name>.pdf
+        and makes the row shared only when STAFF uploaded a manifest name;
       * loose under PLAN_ROOTS - which is how this laptop has it, straight out
         of the TakeoffPro AI corpus.
     Registered rows are checked first, so a seeded box never walks its plan
     roots at all.
+
+    THE SCAN IS FOR THE CORPUS, NEVER FOR A CLIENT'S FILE. The default
+    PLAN_ROOTS ends with JOBS_DIR, and on a box without the corpus beside the
+    repo - the hosted box - it degrades to JOBS_DIR alone, where the only
+    PDFs are client uploads. Before this was pinned, an unseeded hosted box
+    scanned those, found a client's own "Belle Farms Structural Plans.pdf",
+    and _demo_job registered a SHARED row over it: every account on the box
+    could open, render and detect that client's set through the demo card,
+    and it appeared on their /api/recent. So a candidate under JOBS_DIR, or
+    registered to any owner, is refused by _demo_scan_refused and is never
+    written into _DEMO_SRC. A client set that collides with a demo name stays
+    private until staff upload OUR copy (tests/test_demo_source_scan.py).
 
     Never raises and never invents: a name it cannot place returns None, and
     the card then says so in words rather than erroring or vanishing.
@@ -1240,6 +1292,16 @@ def _demo_source(name: str):
         return None                     # scanned recently and it was not there
     _DEMO_SCAN_AT = now
     want = set(DEMO_PLANS) - set(_DEMO_SRC)
+    jobs_root = JOBS_DIR.resolve()
+    with JOBS_LOCK:
+        owned_raw = [j.get("path", "") for j in JOBS.values()
+                     if j.get("owner") is not None]
+    owned = set()
+    for raw in owned_raw:
+        try:
+            owned.add(os.path.normcase(str(Path(raw).resolve())))
+        except (OSError, RuntimeError):
+            continue
     for root in PLAN_ROOTS:
         if not want:
             break
@@ -1248,11 +1310,14 @@ def _demo_source(name: str):
         try:
             for p in sorted(root.rglob("*.pdf")):
                 n = _display_name(p)
-                if n in want:
-                    _DEMO_SRC[n] = str(p)
-                    want.discard(n)
-                    if not want:
-                        break
+                if n not in want:
+                    continue
+                if _demo_scan_refused(p, n, jobs_root, owned):
+                    continue
+                _DEMO_SRC[n] = str(p)
+                want.discard(n)
+                if not want:
+                    break
         except OSError:
             continue
     hit = _DEMO_SRC.get(name)
@@ -1631,7 +1696,10 @@ async def upload(file: UploadFile, request: Request, classify: int = 1):
     # must not be able to publish to every other account by naming a file
     # after a demo. Exact manifest name only, because that file is already the
     # public list of what any visitor may open. A client set that happens to
-    # collide with a demo name still needs staff hands to become shared.
+    # collide with a demo name still needs staff hands to become shared - and
+    # _demo_source's plan-root scan refuses it too (never a file under
+    # JOBS_DIR, never a path registered to an owner), so an UNSEEDED box
+    # does not fall back to the client's upload either.
     owner = _who(request)
     if owner is not None and _is_staff(request) and _display_name(dest) in DEMO_PLANS:
         owner = None

@@ -250,14 +250,19 @@ server.DEMO_PLANS = {
     "here.pdf": {"page": 1, "shows": "a sheet this box has"},
     "gone.pdf": {"page": 0, "shows": "a sheet this box does not have"},
 }
-# a real one-page PDF, so _demo_pages and the raster route have something to
-# read; written into JOBS_DIR, which is one of PLAN_ROOTS
+# a real two-page PDF, so _demo_pages and the raster route have something to
+# read. It goes under a SEPARATE plan root, the way the corpus sits beside
+# the repo on a laptop: _demo_source's scan never accepts a PDF under
+# JOBS_DIR, because on a hosted box that is a client's upload
+# (tests/test_demo_source_scan.py).
 import pymupdf as _mu  # noqa: E402
 
+CORPUS_DIR = Path(tempfile.mkdtemp(prefix="projects_test_corpus_")).resolve()
+server.PLAN_ROOTS.append(CORPUS_DIR)
 _doc = _mu.open()
 _doc.new_page(width=612, height=792)
 _doc.new_page(width=612, height=792)
-_doc.save(str(JOBS_DIR / "here.pdf"))
+_doc.save(str(CORPUS_DIR / "here.pdf"))
 _doc.close()
 
 d = server.demo_plans()
