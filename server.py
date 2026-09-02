@@ -434,6 +434,22 @@ if True:
                 return await call_next(request)
 
             ok, user = _read_session(request.cookies.get(SESSION_COOKIE, ""))
+            # AN OWNERLESS SESSION IS NOT SIGNED IN ONCE ACCOUNTS EXIST.
+            # Single-password mode issues cookies whose payload is {"u": null}
+            # - the only signed-in state that mode has. They live seven days,
+            # and session.key survives the switch to accounts, so such a
+            # cookie stays VALID after users.json appears. Everything below
+            # then reads user=None as "single-password mode": _forbidden_job
+            # lets None through every job route and _is_staff reports True.
+            # Demonstrated live on b528e74 with three accounts: /api/me
+            # answered {user: null}, /api/recent listed a client's private
+            # upload, her job opened and her page rendered - a signed-in
+            # nobody who outranked everybody. This is the ONE place the
+            # request's user is derived, so this is where it fails closed:
+            # with accounts on the box, no name means no session, and the
+            # caller is treated exactly like one with no cookie at all.
+            if ok and user is None and _users.load():
+                ok = False
             if not ok:
                 # An API caller wants a status code; a person wants the login
                 # page, and to land back where they were pointed.
@@ -558,8 +574,16 @@ def _who(request: Request):
 
 def _is_staff(request: Request) -> bool:
     """Our own team: sees every document, may delete any of them. True in
-    single-password mode too, where there is nothing to separate."""
-    return bool(request.scope.get("tk_staff")) or _who(request) is None
+    single-password mode too, where there is nothing to separate.
+
+    "No user" only means single-password mode while the box HAS no accounts.
+    The middleware now refuses an ownerless session once accounts exist, so
+    a route should never see user None on a per-user box - but this is the
+    function every staff gate in the file calls, and it must not be the
+    thing that turns a nameless caller into staff if some future path lets
+    one through. Both conditions, or it is not staff."""
+    return bool(request.scope.get("tk_staff")) or (
+        _who(request) is None and not _users.load())
 
 
 # ---------------------------------------------------------------------------
