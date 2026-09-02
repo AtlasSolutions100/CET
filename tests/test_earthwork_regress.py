@@ -336,6 +336,15 @@ def run_case_server(case, inputs, server, job_id, page):
     surface_model - so server.py's own defaults, _layer_stack and _page_scale
     are what produce the number."""
     jd = server._job_dir(job_id)
+    # The route fails CLOSED on a job dir with no registry row (orphan gate,
+    # feat/orphan-fail-closed: `JOBS.get(job_id) or _404()`), exactly as it
+    # would for a stray directory on the box - so the fixture job is
+    # registered the way an upload would be, as a shared (owner None) row.
+    with server.JOBS_LOCK:
+        server.JOBS.setdefault(job_id, {
+            "path": str(jd / "oncor_c04_fixture.pdf"),
+            "name": "oncor_c04_fixture.pdf", "owner": None,
+            "pages": page + 1, "sizes": None})
     ft_in = inputs["ft_per_pt"] * 72.0
     res = {"chains": [{"chain_id": cid, "points": pts}
                       for cid, pts in inputs["chains"].items()],
