@@ -148,32 +148,59 @@ SURFACE_MODELS = ("auto", "linear", "clamped_ct")
 # spots against 2 labelled contours), and a floor that counted contours
 # alone would refuse that sheet.
 #
-# MEASURED OVER EVERY SURFACE PAIR REACHABLE ON THIS BOX
-# (out/verify/2026-09-02/volume-floor/candidates.txt + measure_candidates.py;
-# 15 pairs: the Oncor C-04 fixture with and without its 46 spots, the Stice
-# p0 recipe, all five DEM-truth sheets, and seven TakeoffPro AI grading
-# sheets read through the live /earthwork/suggest route). TWELVE of the 15
-# have rows on both sides and so can produce a volume at all; the other
-# three (Plans2 C2.1, Plans2 C4, Belle Farms ROAD GRADING 1) offer no
-# proposed rows and are refused before and after, unchanged.
+# MEASURED OVER EVERY SURFACE PAIR REACHABLE ON THIS BOX, IN EVERY PANEL
+# CONFIGURATION AN OPERATOR CAN PRODUCE. The first version of this block
+# quoted one configuration and did not say so, which made the floor look far
+# gentler than it is. What varies is where the SPOT GRADES go, and that is
+# two clicks on the panel (webui/app.js: state.ew.spotSide, and the per-tag
+# checkboxes state.ew.spotOn):
+#   contours      no spot grades at all - every tag unticked, or a sheet
+#                 that offers none
+#   spots_pr      the panel's DEFAULT: spotSide "proposed", tags FG/ME/EG/PE
+#   spots_ex      one click on EXIST - the same tags, existing surface
+#   allspots_pr   every RESOLVED spot regardless of tag, onto proposed. This
+#                 is what the first measurement used, and it is the ONLY one
+#                 of the five in which the floor refuses nothing real.
+#   allspots_ex   the same, onto existing
 #
-# Distinct elevations per surface across those 12 pairs, smallest first:
-#   Barn C0.00 existing 1 / proposed 1   <- REFUSED, and rightly (below)
-#   Barn C4.1-NW proposed        2   (1 contour + 1 FF spot)  <- at the floor
+# 28 sheets driven live open -> detect -> /earthwork/suggest, plus the Oncor
+# C-04 fixture and the Stice p0 recipe: 30 pairs, of which 14 have rows on
+# BOTH sides and so can produce a volume at all. The other 16 offer no
+# proposed rows (existing-conditions maps, demo and erosion sheets, the two
+# Belle Farms road sheets, and the OCR-only pages the ladder gate empties)
+# and are refused before and after, unchanged.
+#
+# WHICH OF THE 14 THE FLOOR REFUSES, per configuration:
+#   contours       4 refused: Barn C4.1-NW, C4.2-NE, C4.4-SE and Home2
+#                             Suites C3 - each with a proposed surface of
+#                             ONE distinct elevation
+#   spots_pr       3 refused: Barn C4.1-NW, C4.2-NE, C4.4-SE (Home2's one
+#                             FG spot lands on proposed and rescues it)
+#   spots_ex       4 refused: those three + Home2 Suites C3
+#   allspots_pr    0 refused
+#   allspots_ex    4 refused: those three + Home2 Suites C3
+# So the floor refuses THREE real client grading sheets under the panel's
+# own default, and a fourth in two of the five configurations - not "one of
+# twelve". Those refusals are correct on the merits: in each of them the
+# proposed surface is a single distinct elevation, which is exactly the flat
+# plane this floor exists to stop. What was wrong was the evidence.
+#
+# Smallest surfaces that PASS, by distinct elevations:
+#   Barn C4.3-SW proposed        2  (3 rows, relief 1.0 ft) - the tightest
+#   Barn C4.1-NW proposed        2  (1 contour + 1 FF spot, relief 3.52 ft)
+#                                   in allspots_pr only; the FF tag is not
+#                                   in the panel's default set, so under
+#                                   spots_pr that spot lands on neither side
+#   Barn C4.4-SE proposed        2  (allspots_pr, relief 1.48 ft)
+#   Barn C4.0 proposed           3
 #   dem_pad_5ft proposed         3
-#   Barn C4.3-SW proposed        3
-#   Barn C4.0 proposed           4
-#   ... every other surface      5 .. 356
-# So the floor refuses ONE of the 12, and it is the one where no volume
-# should ever have been published: Barn C0.00-EXISTING-CONDITIONS-SITE-MAP
-# p0, whose entire "proposed surface" is a single gap-OCR row at 464 ft
-# against an existing pair at 535 ft - an existing-conditions map that has
-# no proposed surface at all. ELEVEN legitimate pairs pass, and their
-# volumes are unchanged to the digit (tests/test_earthwork_regress.py, 29
-# cases; the DEM control sheet byte-compared).
+#   ... every other surface      4 .. 356
+# Two is therefore still the right count floor: three real sheets sit
+# exactly on it and a floor of 3 would refuse all of them.
 #
-# Barn C4.1-NW sits exactly ON the floor with no margin. That is stated
-# rather than smoothed over, and it is why the floor is 2 and not 3.
+# The eleven pairs that pass under the panel default pass with their volumes
+# unchanged to the digit (tests/test_earthwork_regress.py, 29 cases; the DEM
+# control sheet byte-compared).
 MIN_DISTINCT_Z = 2
 
 # ...AND THE COUNT ALONE IS NOT THE TEST. "2 distinct elevations" is a
