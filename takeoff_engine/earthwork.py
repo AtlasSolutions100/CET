@@ -123,6 +123,422 @@ _BAND_PROBE_MAX = 20000
 SURFACE_MODELS = ("auto", "linear", "clamped_ct")
 
 
+# --- THE VOLUME FLOOR: what a surface must carry before a volume ships ---
+#
+# A contour surface is a CLAIM ABOUT TERRAIN. Until 2026-09-02 the only
+# entry test cut_fill applied was "the interpolator built", which one
+# polyline with 3+ sampled points satisfies - and a Delaunay TIN over N
+# samples that all carry the SAME elevation is a horizontal plane. Nothing
+# on the sheet says the ground is flat there; the plane is the
+# interpolator's invention, and every cubic yard measured against it is
+# invented with it.
+#
+# Reproduced live on the DEM-truth outline sheet
+# (dem_hurricane_bench_a_pad_2ft_outline p0, whose contour interval is
+# 2 ft): POST /earthwork with existing=[{chain_id 205, z 324}] and
+# proposed=[{chain_id 214, z 826}] returned fill 17,997.6 CY over
+# area_sf 968 - 502 ft of fill in a 31 ft x 31 ft footprint - with
+# existing_contours 1 and proposed_contours 1 printed beside it as if that
+# were a basis.
+#
+# MIN_DISTINCT_Z = 2 is the smallest number that can describe a slope: one
+# elevation is a plane, two are a gradient the sheet actually printed. It
+# counts CONTOUR ROWS AND SPOT GRADES TOGETHER - a detailed grading sheet
+# often prints one contour and a crowd of FG/TS elevations (Barn C3.4: 45
+# spots against 2 labelled contours), and a floor that counted contours
+# alone would refuse that sheet.
+#
+# MEASURED OVER EVERY SURFACE PAIR REACHABLE ON THIS BOX, IN EVERY PANEL
+# CONFIGURATION AN OPERATOR CAN PRODUCE. The first version of this block
+# quoted one configuration and did not say so, which made the floor look far
+# gentler than it is. What varies is where the SPOT GRADES go, and that is
+# two clicks on the panel (webui/app.js: state.ew.spotSide, and the per-tag
+# checkboxes state.ew.spotOn):
+#   contours      no spot grades at all - every tag unticked, or a sheet
+#                 that offers none
+#   spots_pr      the panel's DEFAULT: spotSide "proposed", tags FG/ME/EG/PE
+#   spots_ex      one click on EXIST - the same tags, existing surface
+#   allspots_pr   every RESOLVED spot regardless of tag, onto proposed. This
+#                 is what the first measurement used, and it is the ONLY one
+#                 of the five in which the floor refuses nothing real.
+#   allspots_ex   the same, onto existing
+#
+# 28 sheets driven live open -> detect -> /earthwork/suggest, plus the Oncor
+# C-04 fixture and the Stice p0 recipe: 30 pairs, of which 14 have rows on
+# BOTH sides and so can produce a volume at all. The other 16 offer no
+# proposed rows (existing-conditions maps, demo and erosion sheets, the two
+# Belle Farms road sheets, and the OCR-only pages the ladder gate empties)
+# and are refused before and after, unchanged.
+#
+# WHICH OF THE 14 THE FLOOR REFUSES, per configuration:
+#   contours       4 refused: Barn C4.1-NW, C4.2-NE, C4.4-SE and Home2
+#                             Suites C3 - each with a proposed surface of
+#                             ONE distinct elevation
+#   spots_pr       3 refused: Barn C4.1-NW, C4.2-NE, C4.4-SE (Home2's one
+#                             FG spot lands on proposed and rescues it)
+#   spots_ex       4 refused: those three + Home2 Suites C3
+#   allspots_pr    0 refused
+#   allspots_ex    4 refused: those three + Home2 Suites C3
+# So the floor refuses THREE real client grading sheets under the panel's
+# own default, and a fourth in two of the five configurations - not "one of
+# twelve". Those refusals are correct on the merits: in each of them the
+# proposed surface is a single distinct elevation, which is exactly the flat
+# plane this floor exists to stop. What was wrong was the evidence.
+#
+# Smallest surfaces that PASS, by distinct elevations:
+#   Barn C4.3-SW proposed        2  (3 rows, relief 1.0 ft) - the tightest
+#   Barn C4.1-NW proposed        2  (1 contour + 1 FF spot, relief 3.52 ft)
+#                                   in allspots_pr only; the FF tag is not
+#                                   in the panel's default set, so under
+#                                   spots_pr that spot lands on neither side
+#   Barn C4.4-SE proposed        2  (allspots_pr, relief 1.48 ft)
+#   Barn C4.0 proposed           3
+#   dem_pad_5ft proposed         3
+#   ... every other surface      4 .. 356
+# Two is therefore still the right count floor: three real sheets sit
+# exactly on it and a floor of 3 would refuse all of them.
+#
+# The eleven pairs that pass under the panel default pass with their volumes
+# unchanged to the digit (tests/test_earthwork_regress.py, 29 cases; the DEM
+# control sheet byte-compared).
+MIN_DISTINCT_Z = 2
+
+# ...AND THE COUNT ALONE IS NOT THE TEST. "2 distinct elevations" is a
+# COUNT; what makes a surface terrain rather than a plane is RELIEF, and two
+# values a ten-thousandth of a foot apart satisfy the count while describing
+# the same horizontal plane MIN_DISTINCT_Z exists to refuse. Reproduced live
+# 2026-09-02 on dem_hurricane_bench_a_pad_2ft_outline p0 (:9904, this
+# branch): existing=[{205, 324.0}, {220, 324.0001}] and
+# proposed=[{214, 826.0}, {222, 826.0001}] answered HTTP 200,
+# fill 3,367,118.5 CY over area_sf 181,100 - both surfaces reported
+# distinct_elevations 2 and relief_ft 0.0.
+#
+# MIN_RELIEF_FT = 0.01 ft, and it is the finest thing this corpus can print.
+# Census of every elevation the readers recovered over the 28-sheet sweep
+# below plus the two fixtures - 578 values: 384 carry no decimal, 49 carry
+# one, 145 carry two, NONE carries three. The smallest step between two
+# distinct elevations on any one sheet:
+#   Town Pump #3 C4.00 Grading Map p0   0.01 ft   <- the finest in the corpus
+#   Belle Farms ROAD GRADING 2 of 2 p0  0.02 ft
+#   dem_road_2ft p0                     0.2 ft
+#   Oncor C-04 fixture / Stice p0       0.1 ft
+#   every other sheet                   0.2 .. 2 ft
+# So 0.01 ft is EXACTLY one printed increment on the finest sheet here: two
+# adjacent printed values on Town Pump still pass (0.01 >= 0.01), and a span
+# below it cannot be two different numbers a sheet printed. It can only be
+# one label read twice, a digit misplaced, or a value nothing drew.
+#
+# WHAT IT REFUSES, measured over every surface pair reachable (28 live
+# sheets through /earthwork/suggest + the Oncor C-04 fixture and the Stice
+# p0 recipe, each in all five panel configurations - see MIN_DISTINCT_Z's
+# block): NOTHING REAL. The smallest relief on any surface that passes the
+# count floor is 1.0 ft (Barn C4.3-SW proposed: 3 rows, 2 distinct, in the
+# contours-only, spots-on-proposed and spots-on-existing configurations),
+# then 1.48 ft (Barn C4.4-SE proposed, all-spots-on-proposed), 3.1 ft (Town
+# Pump existing), 3.52 ft (Barn C4.1-NW proposed, all-spots-on-proposed -
+# the "1 contour + 1 FF spot" case), and everything else 4 ft to 230 ft.
+# The floor is 100x below the tightest legitimate surface measured and 100x
+# above the adversary's 0.0001 ft; the only thing it refuses anywhere in the
+# corpus is that adversary shape, in all five configurations.
+#
+# It makes MIN_DISTINCT_Z arithmetically redundant - one elevation has
+# relief 0.0, which is below this - and MIN_DISTINCT_Z is kept anyway, for
+# its SENTENCE: "carries only ONE elevation (324 ft), assign a contour at a
+# different elevation" is something an operator can act on, and "spans only
+# 0 ft" is not. Both refusals carry error_code surface_no_relief, because
+# they are the same finding; `surface.distinct_elevations` and
+# `surface.relief_ft` in the detail say which one fired.
+#
+# WHAT IT DOES NOT ADDRESS, stated because the adversary's number invites
+# it: the 3.37M CY in that reproduction is large because the two surfaces
+# sit 502 ft apart, not because either is flat. Disjoint elevation ranges
+# stay DISCLOSED and never refused (surface_basis.caution, and see the
+# rejected candidates below) - that decision is unchanged.
+MIN_RELIEF_FT = 0.01
+
+# CANDIDATES MEASURED AND REJECTED, so the next session does not re-derive
+# them (same folder, same 15 pairs):
+#  * "the surface's internal elevation gaps must be <= K x the sheet's
+#    contour interval". REFUTED BY STICE. contour_interval reads Stice p0's
+#    interval as 0.1 ft (design labels carry a decimal, and 0.1 is the modal
+#    step over 331 deltas) while its largest internal gap is 84.5 ft - a
+#    ratio of 845. Oncor reads 5, the DEM sheets 1-6. No K keeps Stice and
+#    refuses anything.
+#  * "the two surfaces' elevation ranges must overlap". Every one of the 11
+#    legitimate pairs measures a gap of exactly 0.0 ft and both adversary
+#    shapes measure 502 and 116, so on THIS corpus it separates perfectly -
+#    but the corpus contains no pure-fill embankment and no deep-cut pad,
+#    which are ordinary jobs whose two surfaces legitimately do not overlap.
+#    A guard that refuses real work is worse than the hole, so disjoint
+#    ranges are DISCLOSED (surface_basis.caution, rendered beside the
+#    volume) and never refused. Unlike a single-elevation plane, a disjoint
+#    pair is suspicious rather than baseless: every dz it produces is still
+#    a difference of two elevations the sheet printed.
+
+
+def surface_basis(surf: "Surface") -> dict:
+    """What one surface actually rests on - counted, never inferred.
+
+    Returned on every volume (result["surface_basis"]) and quoted back in
+    the refusal when the floor stops one, so the operator is told WHICH
+    surface and WHAT it found rather than "each surface needs at least one
+    labeled contour".
+    """
+    zc = [float(z) for _pts, z in surf.contours]
+    zp = [float(z) for _x, _y, z in surf.points]
+    zs = sorted({round(v, 4) for v in zc + zp})
+    return {"name": surf.name,
+            "n_contours": len(zc), "n_spots": len(zp),
+            "distinct_elevations": len(zs),
+            "elevations_ft": (zs if len(zs) <= 12
+                              else zs[:6] + ["..."] + zs[-6:]),
+            "z_min_ft": (zs[0] if zs else None),
+            "z_max_ft": (zs[-1] if zs else None),
+            # FOUR decimals, not three. This is the number MIN_RELIEF_FT is
+            # tested against, and rounding it to 3 reported the 0.0001 ft
+            # adversary surface as "relief_ft 0.0" while the count floor
+            # passed it and a volume shipped. `zs` is already rounded to 4,
+            # so nothing here invents precision it did not have.
+            "relief_ft": (round(zs[-1] - zs[0], 4) if len(zs) > 1 else 0.0)}
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def _floor_refusal(surf: "Surface", interp_ok: bool):
+    """None when this surface may produce a volume, else the refusal dict."""
+    b = surface_basis(surf)
+    if not surf.contours and not surf.points:
+        return {"error": f"the {b['name']} surface has no contours and no "
+                         f"spot grades assigned - there is nothing to "
+                         f"interpolate",
+                "error_code": "surface_empty", "surface": b}
+    if not interp_ok:
+        return {"error": f"the {b['name']} surface has fewer than 3 sample "
+                         f"points ({_plural(b['n_contours'], 'contour')}, "
+                         f"{_plural(b['n_spots'], 'spot grade')}) - a TIN "
+                         f"needs three points to exist",
+                "error_code": "surface_too_few_samples", "surface": b}
+    if b["distinct_elevations"] < MIN_DISTINCT_Z:
+        z = b["z_min_ft"]
+        return {"error": f"the {b['name']} surface carries only ONE "
+                         f"elevation ({z:g} ft) across "
+                         f"{_plural(b['n_contours'], 'contour')} and "
+                         f"{_plural(b['n_spots'], 'spot grade')}. The "
+                         f"surface between them is a flat plane this tool "
+                         f"invented, not ground the sheet drew, so no "
+                         f"volume is published. Assign a contour at a "
+                         f"DIFFERENT elevation to {b['name']}, or add spot "
+                         f"grades that are not all {z:g} ft.",
+                "error_code": "surface_no_relief", "surface": b}
+    # THE COUNT TEST CANNOT SEE A PLANE THAT COUNTS TO TWO (see
+    # MIN_RELIEF_FT). Same guard, same code - the operator is being told the
+    # same thing, that this surface has no relief - but the sentence has to
+    # name the SPAN, because "you have two elevations" is not the problem.
+    if b["relief_ft"] < MIN_RELIEF_FT:
+        return {"error": f"the {b['name']} surface carries "
+                         f"{_plural(b['distinct_elevations'], 'elevation')} "
+                         f"({b['z_min_ft']:.10g} to "
+                         f"{b['z_max_ft']:.10g} ft) but "
+                         f"they span only {b['relief_ft']:g} ft - less than "
+                         f"the {MIN_RELIEF_FT:g} ft finest increment any "
+                         f"sheet prints, so this is a flat plane whatever "
+                         f"the digits say and no volume is published. Check "
+                         f"those readings against the drawing: two "
+                         f"elevations that close are one label read twice "
+                         f"or a digit misplaced, not a slope.",
+                "error_code": "surface_no_relief", "surface": b}
+    return None
+
+
+def _basis_pair(existing: "Surface", proposed: "Surface") -> dict:
+    """surface_basis for both sides plus the disclosed range comparison."""
+    be, bp = surface_basis(existing), surface_basis(proposed)
+    out = {"existing": be, "proposed": bp, "ranges_overlap": True,
+           "range_gap_ft": 0.0, "caution": None}
+    if be["z_min_ft"] is None or bp["z_min_ft"] is None:
+        return out
+    lo = max(be["z_min_ft"], bp["z_min_ft"])
+    hi = min(be["z_max_ft"], bp["z_max_ft"])
+    if hi >= lo:
+        return out
+    gap = round(lo - hi, 3)
+    out.update(ranges_overlap=False, range_gap_ft=gap,
+               caution=(f"the two surfaces do not overlap in elevation: "
+                        f"existing runs {be['z_min_ft']:g}-{be['z_max_ft']:g}"
+                        f" ft and proposed {bp['z_min_ft']:g}-"
+                        f"{bp['z_max_ft']:g} ft, a {gap:g} ft gap that no "
+                        f"contour on either surface crosses, so every cell "
+                        f"is cut (or filled) by at least that much. That is "
+                        f"normal on a raised pad or a deep excavation and "
+                        f"WRONG when a row was assigned to the wrong "
+                        f"surface or a digit was misread - check the rows "
+                        f"before pricing."))
+    return out
+
+
+# --- LADDER: is a set of elevations shaped like drawn contours? ----------
+#
+# THE HOLE THIS CLOSES (measured 2026-09-02). Every consensus filter this
+# codebase had keys on NATIVE text: the native band gate in
+# suggest_elevations needs 3+ glyph-derived values, server.py's `wit`
+# filter needs 6+ glyph or resolved-spot values, and its group ranking
+# keeps a band only when the band holds 2+ rows or a glyph-backed one. On a
+# sheet whose every label is a vector outline there are none of those, so
+# all three are inert and a gap-OCR population of ANY shape became rows.
+# Overwriting the DEM outline sheet's gap cache with three crafted reads
+# (324 / 710 / 826) on real chains gave 3 rows, all how="gap-ocr",
+# suggestions_dropped 0 - three "surfaces" 500 ft apart on a sheet whose
+# contour interval is 2 ft. Those three values are not invented for the
+# test: the v2 OCR pass read 826/710/324 out of dimension texts on Barn
+# C3.0, and the native band gate is the only thing that stopped them there.
+#
+# WHAT IS REFUTABLE WITH NO NATIVE TEXT AT ALL: contours are drawn at a
+# CONSTANT interval (general drafting practice, and every sheet in this
+# corpus states its own in a note), so a population read off them steps by
+# that interval - or a small multiple of it where a label was missed - OVER
+# AND OVER. A set whose every adjacent gap differs is not a contour ladder,
+# whatever the digits say. That test needs nothing but the values.
+#
+# WHAT THE NUMBERS BELOW WERE MEASURED ON, and how the first attempt got it
+# wrong. ladder_verdict runs INSIDE suggest_elevations, over every row the
+# readers produced, BEFORE server.py's `wit` filter and its glyph-first
+# group ranking ever see them. The first version of this comment was written
+# against the values the ROUTE returns, which is the population AFTER those
+# filters - a different set on every page where anything is filtered - and
+# it described Barn C0.00 p0 as "{464, 535}, 2 distinct, NOT TESTABLE, rows
+# kept". Live through /earthwork/suggest that page reports n_values 4,
+# testable true, interval 71 ft, repeats 1/3, laddered FALSE, dropped 6,
+# kept 0: every row dropped, not kept. The numbers here are now read off
+# `ocr_ladder.verdict`, which IS the pre-filter measurement.
+#
+# THE DENOMINATOR. A 30-page sweep (28 sheets through the live open ->
+# detect -> /earthwork/suggest path, plus Oncor engine pages 3 and 4) finds
+# NINE pages where the gate fires - a page qualifies only when NO row on it
+# is glyph-backed (inline/radius). The first count said three.
+#
+# LADDER_MIN_REPEATS = 2. "repeats" = how many adjacent gaps equal the modal
+# gap. Every OCR-only page in that sweep, and the two crafted shapes:
+#
+#   LADDERS (rows kept)
+#     Oncor engine p4          46 distinct, step 1 ft, repeats 42/45,
+#                              share 0.93 -> all 106 rows kept
+#     dem_pad_2ft_outline p0   16 distinct, step 2 ft, repeats  9/15,
+#                              share 0.60 -> all 17 rows kept (this is the
+#                              fix that recovered them in the first place)
+#     Plans2 C2.1 Grading p0   11 distinct, step 1 ft, repeats  8/10,
+#                              share 0.80 -> all 18 rows kept
+#     the 3-row OCR fixture    {3380, 3382, 3384}, repeats 2/2, share 1.00
+#                              -> LADDER. Not a corpus page: it is pinned by
+#                              tests/test_gap_ocr_rows.py, and it is the
+#                              reason 2 rather than 8 is the floor.
+#   NOT LADDERS (every row dropped)
+#     Barn C0.00 p0             4 distinct, step 71 ft, repeats 1/3, 0.33
+#     Barn C2.1 Demo p0         5 distinct, step 52 ft, repeats 1/4, 0.25
+#     Ernies Too C2.1 Demo p0   3 distinct, step  3 ft, repeats 1/2, 0.50
+#     Ernies Too C4 Grading p0  4 distinct, step 265 ft, repeats 1/3, 0.33
+#     Plans2 C4 GRADING p0      4 distinct, step 265 ft, repeats 1/3, 0.33
+#                               ({145, 435, 700, 4004} - a grading plan
+#                               cannot read 145 ft and 4004 ft at once)
+#     remay C1.4 Grading p0     3 distinct, step  1 ft, repeats 1/2, 0.50
+#     the crafted adversary     {324, 710, 826}, repeats 1/2, share 0.50
+#   NOT TESTABLE (rows kept and disclosed - see _ladder_gate)
+#     Home2 Suites C3 Grading   2 distinct {411, 444} -> 9 rows kept
+#
+# The separation `repeats` earns is 42, 9 and 8 against 1, 1, 1, 1, 1, 1 -
+# far wider than the first measurement could see. It is `repeats` that earns
+# it and not `share`: two of the six refused pages (Ernies Too C2.1 Demo and
+# remay C1.4 Grading) measure share exactly 0.50, as does the crafted
+# adversary, and LADDER_MIN_SHARE does not reject any of the three - only
+# their single repeat does.
+#
+# WHY 2 AND NOT 8. On corpus pages alone anything in [2, 8] separates
+# perfectly. 2 is kept because it is the smallest number that can
+# demonstrate a repeat at all, and because the smallest population this
+# codebase asserts must SURVIVE - the 3-value gap-OCR fixture, repeats 2/2 -
+# sits exactly on it. Raising the floor to match the corpus margin would
+# refuse a population whose every gap is the same step, which is the most
+# ladder-shaped thing there is.
+LADDER_MIN_REPEATS = 2
+# ...and the modal step must still account for half the gaps, so a
+# population that repeats one step twice by coincidence among many others is
+# not called a ladder. Measured over the same nine pages: the ladders
+# measure 0.93, 0.80 and 0.60, the non-ladders 0.50, 0.50, 0.50, 0.33, 0.33
+# and 0.25. 0.50 therefore rejects NOTHING that `repeats` does not already
+# reject (the three at exactly 0.50 are not below it) and clears the closest
+# legitimate page, the outline sheet, by 0.10.
+LADDER_MIN_SHARE = 0.5
+# Splitting multiplier. Inside one ladder a gap larger than this is a
+# different population, not a stretch of unlabelled contours. Largest
+# internal gap on each of the three laddered corpus pages, in units of that
+# page's own step: dem_pad_2ft_outline 12 ft = 6.0x, Oncor p4 3 ft = 3.0x,
+# Plans2 C2.1 2 ft = 2.0x. All three come back n_bands 1, so no real page
+# here is split at all; 8 leaves a third again above the worst of them, and
+# is what bands a lone 5388 off a 3376-3382 ladder.
+LADDER_BAND_MULT = 8.0
+
+
+def ladder_verdict(values, min_repeats: int = LADDER_MIN_REPEATS,
+                   min_share: float = LADDER_MIN_SHARE,
+                   band_mult: float = LADDER_BAND_MULT) -> dict:
+    """Does this set of elevations step like drawn contours?
+
+    Pure: takes numbers, returns a verdict. `laddered` False means the
+    population cannot be shown to step and nothing in it should mint a
+    surface. `testable` False means it is too small to judge either way,
+    and a caller must NOT read that as a refusal - see suggest_elevations,
+    which keeps those rows and discloses them rather than inventing a
+    verdict. The one such page in the sweep (Home2 Suites C3 Grading p0, 2
+    distinct values {411, 444}, 9 rows kept) is then refused by the volume
+    floor anyway, on its proposed side - but that is the floor's decision
+    and not this function's, and a 2-value population landing both values
+    on BOTH surfaces would be a legitimate one-step pair the floor passes.
+    keep_lo/keep_hi bound the largest band when it IS a ladder.
+    """
+    v = sorted({round(float(x), 2) for x in values if x is not None})
+    out = {"n_values": len(v), "testable": False, "laddered": False,
+           "interval_ft": None, "repeats": 0, "n_gaps": 0, "share": None,
+           "n_bands": 0, "keep_lo": None, "keep_hi": None, "why": ""}
+    if len(v) < 3:
+        out["why"] = (f"{_plural(len(v), 'distinct elevation')} - too few to "
+                      f"show a repeating contour interval either way")
+        return out
+    d = np.round(np.diff(np.asarray(v, dtype=float)), 2)
+    d = d[d > 1e-6]
+    if not len(d):
+        out["why"] = "the elevations do not step"
+        return out
+    vals, cnt = np.unique(d, return_counts=True)
+    i = int(cnt.argmax())
+    step, m = float(vals[i]), int(cnt[i])
+    share = round(float(m) / len(d), 3)
+    out.update(testable=True, interval_ft=step, repeats=m,
+               n_gaps=int(len(d)), share=share)
+    if m < min_repeats or share < min_share:
+        out["why"] = (f"these {len(v)} elevations do not step like contours: "
+                      f"the commonest gap between adjacent values is "
+                      f"{step:g} ft and it occurs {m} time"
+                      f"{'' if m == 1 else 's'} in {len(d)} ({share:.0%}). "
+                      f"Contours are drawn at a constant interval, so a "
+                      f"population read off them repeats one step at least "
+                      f"{min_repeats} times and over {min_share:.0%} of the "
+                      f"gaps.")
+        return out
+    cuts = [k + 1 for k in range(len(d)) if d[k] > band_mult * step]
+    edges = [0] + cuts + [len(v)]
+    bands = [(edges[k], edges[k + 1]) for k in range(len(edges) - 1)]
+    a, b = max(bands, key=lambda ab: (ab[1] - ab[0], v[ab[1] - 1] - v[ab[0]]))
+    out.update(laddered=True, n_bands=len(bands),
+               keep_lo=v[a], keep_hi=v[b - 1],
+               why=(f"steps by {step:g} ft ({m} of {len(d)} gaps, "
+                    f"{share:.0%})"
+                    + ("" if len(bands) == 1 else
+                       f"; {len(bands)} bands more than {band_mult:g}x"
+                       f"{step:g} ft apart, keeping {v[a]:g}-{v[b - 1]:g} ft")))
+    return out
+
+
 def _clamped_ct_eval(P, Z):
     """f(gx, gy) -> z: C1 CloughTocher clipped to the local contour bracket.
 
@@ -262,9 +678,17 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
                          f"{', '.join(SURFACE_MODELS)}"}
     fe, pe = existing.interpolator()
     fp, pp = proposed.interpolator()
-    if fe is None or fp is None:
-        return {"error": "each surface needs at least one labeled contour "
-                         "(and 3+ sample points)"}
+    # THE FLOOR (see MIN_DISTINCT_Z above). Each surface is judged on its
+    # own and NAMED in its own refusal: the old single sentence ("each
+    # surface needs at least one labeled contour (and 3+ sample points)")
+    # never said which side was short, and its "at least one" WAS the hole -
+    # one contour is a plane and a plane is not terrain. Existing is tested
+    # first so a body short on both sides names existing, deterministically.
+    for _surf, _ok in ((existing, fe is not None), (proposed, fp is not None)):
+        bad = _floor_refusal(_surf, _ok)
+        if bad is not None:
+            bad["basis"] = _basis_pair(existing, proposed)
+            return bad
     lo = np.maximum(pe.min(axis=0), pp.min(axis=0))
     hi = np.minimum(pe.max(axis=0), pp.max(axis=0))
     if (hi <= lo).any():
@@ -396,6 +820,14 @@ def cut_fill(existing: Surface, proposed: Surface, ft_per_pt: float,
         "label_band_ft": band_ft,
         "label_band_existing_ft": band_ex.get("median_ft"),
         "label_band_proposed_ft": band_pr.get("median_ft"),
+        # WHAT THE NUMBER RESTS ON, counted per surface, on every answer -
+        # not only when something is wrong. existing_contours /
+        # proposed_contours above count ROWS; this counts DISTINCT
+        # ELEVATIONS, which is the quantity the floor is about and the one
+        # a reader needs to see a flat plane coming. `caution` is the
+        # disjoint-range disclosure (see _basis_pair): a sentence, never a
+        # refusal, and null on every corpus pair measured.
+        "surface_basis": _basis_pair(existing, proposed),
     }
     if return_grid:
         # row i / col j of dz covers page-pt box
@@ -773,11 +1205,53 @@ def zone_cut_fill(existing: Surface, polygon, ft_per_pt: float,
     if mode not in ("pad", "plane", "balance", "strip_only"):
         return {"error": f"unknown design mode {mode!r} - expected pad, "
                          "plane, balance or strip_only"}
+    # THE FLOOR, ON THE EXISTING SURFACE (see _floor_refusal for the
+    # /earthwork one). Until 2026-09-02 this route's only entry test was "3
+    # sample points", so the very rows /earthwork refuses published a volume
+    # here: measured on the DEM outline sheet, an existing surface of ONE
+    # contour at 324 ft against a declared pad at 826 ft returned 417,664 CY
+    # of fill through /earthwork/zone while POST /earthwork on the same job,
+    # page and chain answered 400 surface_no_relief. A guard that lives on
+    # one route and not on its sibling is not a guard - it is a detour, and
+    # this one had the priced takeoff and the drawing on the far side of it.
+    #
+    # THE TEST IS NOT THE SAME ONE, and the difference is the point. In
+    # cut_fill BOTH surfaces are read off the sheet, so a surface carrying
+    # one elevation means one label was read and everything off that line is
+    # invention. Here the design is DECLARED by the operator, and the
+    # question about the existing side is only whether the engine MEASURED
+    # the ground or invented it. Five spot grades that all read 100.0 ft are
+    # a positive statement that the ground is level - ordinary on a paved
+    # lot or a pad being re-graded, and tests/test_grading_zone.py's plane
+    # cases are exactly that. ONE label is silence beyond its own line.
+    # So the count that matters here is INDEPENDENT LABELS, not distinct
+    # elevations: a no-relief refusal on this route would refuse real work.
     fe, _pe = existing.interpolator()
+    _b = surface_basis(existing)
+    if not existing.contours and not existing.points:
+        return {"error": "the existing surface has no contours and no spot "
+                         "grades assigned - there is nothing to interpolate",
+                "error_code": "surface_empty",
+                "surface": _b, "basis": {"existing": _b}}
     if fe is None:
         return {"error": "the existing surface needs at least 3 sample "
                          "points - assign labelled contours and/or spot "
-                         "grades to EXISTING first"}
+                         "grades to EXISTING first",
+                "error_code": "surface_too_few_samples",
+                "surface": _b, "basis": {"existing": _b}}
+    if _b["n_contours"] + _b["n_spots"] < 2:
+        return {"error": f"the existing surface rests on a SINGLE label "
+                         f"({_plural(_b['n_contours'], 'contour')}, "
+                         f"{_plural(_b['n_spots'], 'spot grade')} at "
+                         f"{_b['z_min_ft']:g} ft). Every foot of ground away "
+                         f"from it is a level plane this tool invented, and "
+                         f"the design is differenced against that invention, "
+                         f"so no volume is published. Assign a second "
+                         f"labelled contour or spot grade to EXISTING - it "
+                         f"may read the same elevation, but it has to be "
+                         f"read.",
+                "error_code": "surface_one_label",
+                "surface": _b, "basis": {"existing": _b}}
 
     cell_ft = float(cell_ft or 2.0)
     if cell_ft <= 0:
@@ -1256,7 +1730,8 @@ def _label_tag(w, tags: list):
 def suggest_elevations(chains: list, words: list,
                        max_d_pt: float = 16.0,
                        gap_z: dict | None = None,
-                       exclude: set | None = None) -> list:
+                       exclude: set | None = None,
+                       diag: dict | None = None) -> list:
     """Auto-pair elevation-looking labels with the contour they sit on.
 
     Returns [{chain_id, z, label_xy, dist, how, label_tag}] - a SUGGESTION
@@ -1271,6 +1746,10 @@ def suggest_elevations(chains: list, words: list,
     chip has to be able to say so.
     Chains in `exclude` never seed and never take a label - see the
     explicit source ranking below.
+    `diag`, when a dict is passed, is filled with what the LADDER GATE did
+    (key "ocr_ladder": applied / dropped / the verdict) so the caller can
+    report it. The rows themselves are the return value either way; a
+    caller that passes nothing loses only the explanation.
     """
 
     exclude = exclude or set()
@@ -1302,15 +1781,20 @@ def suggest_elevations(chains: list, words: list,
     #     33xx) is still dropped. Mutually-supporting misreads pass it, as
     #     they already do on a native sheet;
     #   - the NATIVE BAND gate (3+ glyph-derived values, 100 ft) CANNOT run:
-    #     there are no natives. NOTHING stands in for it here. The server's
-    #     `wit` filter and its glyph-first group ranking also have no native
-    #     row and no resolved spot grade to lean on (on an outline sheet the
-    #     spot grades are outlines too), so the only defence left is the
-    #     disclosure: every such row carries how="gap-ocr", which
-    #     webui/app.js ELEV_PROV renders as "read from a picture" (cls
-    #     "ocr", solid border) with the tooltip that the digits themselves
-    #     can be wrong. The `how` vocabulary is unchanged - a new value
-    #     would render as "source unknown" there;
+    #     there are no natives, and the server's `wit` filter and glyph-first
+    #     group ranking have no native row and no resolved spot grade to
+    #     lean on either (on an outline sheet the spot grades are outlines
+    #     too). SINCE 2026-09-02 THE LADDER GATE STANDS IN FOR IT - see
+    #     ladder_verdict and the block at the end of this function: with no
+    #     native text anywhere on the page, the gap-OCR population must show
+    #     a repeating contour interval on its own terms or none of it mints
+    #     a row. It is a WEAKER test than the native band gate (a regular
+    #     ladder of wrong digits would pass it) and it is not a substitute
+    #     for the disclosure: every surviving row still carries
+    #     how="gap-ocr", which webui/app.js ELEV_PROV renders as "read from
+    #     a picture" (cls "ocr", solid border) with the tooltip that the
+    #     digits themselves can be wrong. The `how` vocabulary is unchanged
+    #     - a new value would render as "source unknown" there;
     #   - pass 2 (inherited) propagates gap-ocr rows along the contour
     #     exactly as it propagates native ones.
     # With cands NON-EMPTY nothing here changes: the early return, the
@@ -1590,7 +2074,69 @@ def suggest_elevations(chains: list, words: list,
                     "dist": round(float(d), 1),
                     "how": how.get(cid) or "unknown",
                     "label_tag": tag.get(cid)})
-    return sorted(out, key=lambda r: r["z"])
+    rows = sorted(out, key=lambda r: r["z"])
+    return _ladder_gate(rows, diag)
+
+
+# NO NATIVE WITNESS, NO FREE PASS. The three filters that police an OCR row
+# all key on native text (see the block inside suggest_elevations), so on a
+# page where NOT ONE row is glyph-backed they are all inert and the gap-OCR
+# population minted rows unchecked. This is the stand-in, and it keys on the
+# only thing such a page has: the shape of the population itself.
+#
+# WHERE IT LIVES AND WHY HERE. In suggest_elevations, not in server.py's
+# suggest route. The rule reads nothing but the rows' own z values and the
+# `how` already on them, which is exactly what this function owns; the route
+# holds spot grades and legend boxes that would make no difference to it,
+# and every other caller of this function - the offline recipe under
+# out/verify, tests/test_ew_suggest.py, tests/test_gap_ocr_rows.py - would
+# have been left unguarded had it gone in the route. The route's job is to
+# REPORT the drop (suggestions_dropped, ocr_ladder), which it now does.
+#
+# IT RUNS ONLY WHEN NO ROW IS GLYPH-BACKED, WHICH IS NOT THE SAME AS "ONLY
+# ON OCR-ONLY SHEETS". This comment used to say the gate "never fires" on a
+# native sheet. That is false, and it matters, because it was doing the work
+# of a safety argument. Measured over a 30-page sweep: Oncor engine page 4
+# is a native sheet whose elevation rows happen to be gap-OCR and inherited
+# with not one inline or radius row, so the gate DOES fire there - it
+# ladders at 1 ft over 42 of 45 gaps (share 0.93) and keeps all 106 rows.
+# Nothing moves, but the guarantee is "it happens to ladder cleanly", not
+# "it cannot reach this page", and those are different promises. The pages
+# where the gate genuinely cannot fire are the ones with inline/radius rows:
+# Oncor p3 (C-04, 20 radius rows), Stice p0, all four native DEM sheets, and
+# every Barn C4.x grading sheet. Their row sets are byte-identical to before.
+def _ladder_gate(rows: list, diag: dict | None) -> list:
+    gap = [r for r in rows if r.get("how") == "gap-ocr"]
+    native = [r for r in rows if r.get("how") in ("inline", "radius")]
+    if not gap or native:
+        if diag is not None:
+            diag["ocr_ladder"] = {
+                "applied": False, "dropped": 0,
+                "why": ("this page has glyph-derived elevation rows, so the "
+                        "native filters apply and the ladder gate stands "
+                        "down") if native else
+                       "no gap-OCR rows on this page"}
+        return rows
+    v = ladder_verdict([r["z"] for r in rows])
+    if not v["testable"]:
+        # ABSTAIN, DO NOT REFUSE. Too few values to show a step either way,
+        # and a population this small is the floor's problem, not the
+        # gate's - the one such page in the sweep (Home2 Suites C3 Grading
+        # p0, {411, 444}, 9 rows) is refused by cut_fill on its proposed
+        # side, while 2 values landing on both surfaces would be a
+        # legitimate one-step pair. Dropping them here would only hide from
+        # the operator what the reader saw. They stay, disclosed as gap-ocr,
+        # and the verdict says why no test was possible.
+        kept = rows
+    elif v["laddered"]:
+        kept = [r for r in rows if v["keep_lo"] <= r["z"] <= v["keep_hi"]]
+    else:
+        kept = []
+    if diag is not None:
+        diag["ocr_ladder"] = {"applied": True,
+                              "dropped": len(rows) - len(kept),
+                              "kept": len(kept), "verdict": v}
+    return kept
 
 
 # OCR patch budget, counted in TESSERACT CALLS (the numpy gates are free).

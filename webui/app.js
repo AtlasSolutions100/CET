@@ -11426,6 +11426,10 @@ async function ewFetchSuggest(gen) {
       // state.extraItems, so an approve produces no earthwork line at all.
       // Session-only and per detection result, like the rest of this panel.
       added: false,
+      // What the reader DROPPED getting to those rows, and why - see
+      // renderEwDropped. Held on the panel state so a re-render keeps it.
+      dropped: j.suggestions_dropped || 0,
+      ladder: j.ocr_ladder || null,
     };
     // the durable inputs for this page (server sidecar), applied before
     // the panel's first paint; chain-keyed values only where the chain
@@ -12196,8 +12200,38 @@ function ewRowSource(row) {
   return "we did not record where this elevation came from";
 }
 
+// WHAT THE READER THREW AWAY, in the panel where the rows would have been.
+//
+// suggestions_dropped has been in the /earthwork/suggest payload since the
+// route was written and no screen has ever shown it (grep: two hits, both
+// server-side). That mattered most on the page it was invented for: with
+// the ladder gate live, an OCR-only sheet whose reads do not step like
+// contours now yields ZERO rows, and without this the panel would print
+// "We found no contour elevations on this sheet" - which is the one thing
+// the reader knows is false. Say what was found and why it was refused.
+function renderEwDropped() {
+  const box = $("ewDropped");
+  if (!box) return;
+  const n = (state.ew && state.ew.dropped) || 0;
+  const lad = (state.ew && state.ew.ladder) || null;
+  const laddered = lad && lad.applied && lad.verdict && !lad.verdict.laddered;
+  box.hidden = !(n > 0);
+  if (box.hidden) { box.innerHTML = ""; return; }
+  box.innerHTML = `<b>${n} candidate row${n === 1 ? "" : "s"} `
+    + `${n === 1 ? "was" : "were"} read off this sheet and dropped.</b> `
+    + (laddered
+       ? esc(lad.verdict.why) + " Nothing on this page is glyph text, so "
+         + "that shape is the only evidence there is. Click <b>+ Add "
+         + "contour</b> and type an elevation you have read yourself if you "
+         + "disagree."
+       : "They were refused by the legend, white-mask, band or ladder "
+         + "filters. Add any the reader should have kept with <b>+ Add "
+         + "contour</b>.");
+}
+
 function renderEw() {
   const box = $("ewRows");
+  renderEwDropped();
   box.innerHTML = "";
   if (!state.ew || !state.ew.rows.length) {
     // "EMPTY IS NOT AN ANSWER" (the same shape as the elevation reader's
@@ -12302,10 +12336,11 @@ $("ewCalc").onclick = async () => {
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
-    $("ewResult").textContent = e.detail || ("failed (" + r.status + ")");
+    ewRefused(e.detail, r.status);
     return;
   }
   const j = await r.json();
+  $("ewResult").classList.remove("ew-refused");
   state.ew.result = j;
   const off = [];
   if (j.existing_offset_ft) off.push(`existing −${j.existing_offset_ft.toFixed(2)} ft`);
@@ -12348,6 +12383,92 @@ $("ewCalc").onclick = async () => {
   renderItemized();
   if ($("ewMap").checked) await ewFetchMap();
 };
+
+// AN ABSTAIN MUST LEAVE NOTHING BEHIND.
+//
+// The old handler wrote the server's sentence into #ewResult and returned.
+// Everything the PREVIOUS calculation had painted stayed on screen beside
+// it - the per-layer slabs in #ewLayerOut, the basis block, the material
+// balance - and state.ew.result kept the superseded numbers, so if the
+// operator had already pressed "Add to takeoff" those cubic yards were
+// still in state.extraItems and would still price, still export and still
+// print. A refusal that leaves a number on the screen is not an abstain.
+//
+// So: clear the result, clear every panel the result feeds, take the
+// earthwork rows back OUT of the itemised takeoff (saying so), and render
+// the refusal with its evidence - which surface, what it held, what fixes
+// it. `detail` is the object takeoff_engine.earthwork._floor_refusal built
+// (message / code / surface / basis); a plain string still renders, because
+// the other 400s from this route are still sentences.
+function ewRefused(detail, status) {
+  const d = (detail && typeof detail === "object") ? detail : {};
+  const msg = (typeof detail === "string" ? detail : d.message)
+              || ("failed (" + status + ")");
+  const hadAdded = !!(state.ew && state.ew.added);
+  if (state.ew) { state.ew.result = null; state.ew.added = false; }
+  ewClearItems();
+  $("ewLayerOut").innerHTML = "";
+  // AND THE PICTURE ON THE DRAWING, which is where the operator is looking.
+  //
+  // Until this fix the handler cleared every box in the panel and never
+  // touched state.ew.map - and draw() paints state.ew.map.img under the
+  // linework on EVERY repaint, unconditionally, for as long as it is set.
+  // Reproduced on the DEM outline sheet: tick "Show cut/fill map",
+  // Calculate a good volume, reassign a row so one surface loses its
+  // relief, Calculate again - the panel read "No volume published" while a
+  // full-sheet colour depth map and its numbered ramp ("cut −3.4 ft …
+  // +3.4 ft fill") stayed on the sheet. A depth map is a quantity drawn
+  // instead of typed, so that is a number surviving an abstain - the exact
+  // thing this handler exists to stop.
+  //
+  // The TICK STAYS ON. The checkbox is the operator's standing request and
+  // ewCalc refetches the map on the next Calculate that succeeds; unticking
+  // it here would answer a question they did not ask.
+  if (state.ew) state.ew.map = null;
+  const legend = $("ewMapLegend");
+  if (legend) legend.hidden = true;
+  ewMapNote(null, null);   // the map's own note goes with the map
+  renderEwBasis(null, null);
+  renderEwBalance(null);
+  renderEwTake();
+  renderItemized();
+  const box = $("ewResult");
+  box.innerHTML = "";
+  const head = document.createElement("b");
+  head.textContent = "No volume published.";
+  box.appendChild(head);
+  box.appendChild(document.createTextNode(" " + msg));
+  const b = d.basis;
+  if (b && b.existing && b.proposed) {
+    const say = (s) => {
+      const n = s.distinct_elevations;
+      return `<b>${s.name}</b>: ${s.n_contours} contour`
+        + `${s.n_contours === 1 ? "" : "s"} + ${s.n_spots} spot grade`
+        + `${s.n_spots === 1 ? "" : "s"} → <b>${n}</b> distinct elevation`
+        + `${n === 1 ? "" : "s"}`
+        + (s.z_min_ft == null ? ""
+           : ` (${s.z_min_ft}${s.z_max_ft === s.z_min_ft ? "" : "–" + s.z_max_ft} ft)`);
+    };
+    const line = document.createElement("div");
+    line.className = "ew-meta";
+    line.innerHTML = say(b.existing) + "<br>" + say(b.proposed);
+    box.appendChild(line);
+  }
+  if (hadAdded) {
+    const w = document.createElement("div");
+    w.className = "ew-meta";
+    w.textContent = "The earthwork lines from the previous calculation have "
+      + "been removed from the takeoff — they were computed from rows this "
+      + "one refuses.";
+    box.appendChild(w);
+  }
+  box.classList.add("ew-refused");
+  setStatus(msg, "err");
+  // repaint the sheet without the map that was just dropped: clearing
+  // state.ew.map only takes effect on the next draw(), and nothing else
+  // schedules one on this path.
+  draw();
+}
 
 // Whole cubic yards, everywhere a volume is shown or priced. The surface is
 // interpolated between contours 1-5 ft apart; 0.1 CY on it is a lie of
@@ -12456,6 +12577,36 @@ function renderEwTake() {
       + "press this only if you mean to bid these quantities.";
 }
 
+// THE DISJOINT-RANGE CAUTION, IN ONE PLACE, FOR SCREEN AND FOR PAPER.
+//
+// surface_basis.caution used to appear at exactly one site in this file -
+// the on-screen basis block below. ewApproveNotes and ewBasisNote, which
+// build the approve note and the printed report, never saw it. So the one
+// shape the volume floor deliberately declines to REFUSE ("the two surfaces
+// do not overlap in elevation ... check the rows before pricing") was on
+// screen and nowhere on paper, while the comment inside renderEwBasis said
+// in as many words that screen and paper cannot drift apart. An estimator
+// reads the report.
+//
+// Both sites now take their words from here, so they are identical by
+// construction rather than by two authors agreeing.
+//
+// `approve` truncates every note at APPROVE_NOTE_MAX and says nothing when
+// it does, so the TAIL of a disclosure is what would be lost. The server's
+// caution ends with a generic clause the headline already carries; when the
+// pair will not fit, drop that clause WHOLE rather than ship a cut
+// sentence - the same rule ewBasisNote applies to its own second clause.
+// The trim happens here, so a trimmed caution is trimmed on both.
+const EW_CAUTION_HEAD = "Check these rows. ";
+function ewCautionText(j) {
+  const c = (j && j.surface_basis && j.surface_basis.caution) || "";
+  if (!c) return "";
+  if (EW_CAUTION_HEAD.length + c.length <= APPROVE_NOTE_MAX) return c;
+  const cut = c.indexOf(" That is normal on");
+  return cut > 0 ? c.slice(0, cut)
+                 : c.slice(0, APPROVE_NOTE_MAX - EW_CAUTION_HEAD.length);
+}
+
 // What the number rests on, printed beside the number. Every field here is
 // one the response or the request already carried: nothing is inferred.
 function renderEwBasis(j, body) {
@@ -12488,6 +12639,26 @@ function renderEwBasis(j, body) {
   // high, and every word on this panel identical to the native run's).
   // Same count and same grammar as the printed report's ewBasisNote, so
   // screen and paper cannot drift apart.
+  // THE FLOOR'S OTHER HALF, DISCLOSED RATHER THAN REFUSED. A pair of
+  // surfaces whose elevation ranges do not overlap is normal on a raised
+  // pad or a deep excavation and is what a mis-assigned row or a misread
+  // digit also looks like - the engine cannot tell those apart, so it says
+  // so beside the number instead of picking. The words are ewCautionText's,
+  // shared with the printed report, so this line and that one cannot drift.
+  //
+  // How often it fires, re-measured 2026-09-02 over 30 sheets x the five
+  // panel configurations - 75 pair-configurations with rows on both sides:
+  // FOUR are disjoint, all of them Barn C4.4-SE (existing 4536-4539 against
+  // a proposed surface that is one row at 4540, a 1.0 ft gap), and in every
+  // one of those four the volume floor refuses the volume anyway because
+  // that proposed surface holds a single elevation. So no PUBLISHED volume
+  // in this corpus carries the caution - which is a statement about the
+  // corpus, not a claim that the line is dead code.
+  const cautionTxt = ewCautionText(j);
+  if (cautionTxt) {
+    const c = line(`<b>Check these rows.</b> ${esc(cautionTxt)}`);
+    c.className = "ew-basis-ocr";
+  }
   const prov = ewAcceptedSplit();
   if (prov.machine) {
     line(`<b>${prov.machine}</b> of the <b>${prov.total}</b> elevations `
@@ -12649,9 +12820,13 @@ function ewApproveNotes() {
   // the measurement behind the choice travel with the volume. Inferred
   // elevations get their own line only when some were actually accepted.
   const acc = ewAcceptedSplit();
+  const caution = ewCautionText(j);
   return [
     "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
     + "rows) is a contour interpolation, not a measured volume.",
+    // SECOND, not last: of everything on this list this is the only line
+    // that says the number may be wrong, and `approve` keeps six notes.
+    ...(caution ? [EW_CAUTION_HEAD + caution] : []),
     `Surface between the contours: ${ewModelName(j.surface_model)}`
     + ` — ${j.surface_model_source || "default"}.`
     + (j.surface_model_why ? ` ${j.surface_model_why}.` : "")
@@ -12780,21 +12955,92 @@ function renderEwBalance(j) {
       + 'lines say "On site".';
 }
 
+// A FAILED RESPONSE BODY IS NOT ALWAYS JSON.
+//
+// Every error branch on this panel did `await r.json().catch(() => ({}))`,
+// which silently turns an unparseable body into {} and leaves the reader
+// with nothing but the status code. That is exactly what a 500 looks like:
+// FastAPI's unhandled-exception page is `Internal Server Error` in
+// text/plain. Measured 2026-09-02 against /earthwork/map on the DEM outline
+// sheet - the panel could only say "map failed (500)".
+//
+// Read the body ONCE as text, then try to parse it. Returns the route's
+// `detail` (string OR the structured refusal object) when there is one, the
+// raw text when there is not, and null for an empty body.
+async function fetchDetail(r) {
+  let t = "";
+  try { t = await r.text(); } catch (_) { return null; }
+  try {
+    const j = JSON.parse(t);
+    if (j && typeof j === "object" && "detail" in j) return j.detail;
+    return j;
+  } catch (_) { return t.trim().slice(0, 300) || null; }
+}
+
+// The cut/fill map's own refusal, in its own slot beside the toggle.
+//
+// NOT #ewResult. /earthwork/map can refuse a body /earthwork answered 200:
+// a layers-only sheet (the cut/fill floor refuses, but named layer stacks
+// over a strip area still compute) has layer volumes and NO dz grid to
+// paint. Writing the map's message into #ewResult wiped the layers-only
+// explanation - which surface was short, what it held, what the layer
+// slabs below still mean - off the screen and replaced it with a status
+// code. A map that cannot be drawn says so where the map controls are.
+// The one reader of a refusal `detail`. The volume floor answers the SAME
+// object from /earthwork, /earthwork/map and /earthwork/zone, but FastAPI
+// also raises plain-string details elsewhere on those routes, so every
+// caller has to handle both - and a caller that forgot printed
+// "[object Object]" over the operator's only explanation. One function, so
+// a new refusal route cannot invent a third way to read the same field.
+function ewDetailText(detail) {
+  if (typeof detail === "string") return detail;
+  return (detail && typeof detail === "object" && detail.message) || "";
+}
+
+function ewMapNote(detail, status) {
+  const box = $("ewMapNote");
+  if (!box) return;
+  if (detail == null && status == null) { box.hidden = true; box.innerHTML = ""; return; }
+  const d = (detail && typeof detail === "object") ? detail : {};
+  const msg = ewDetailText(detail)
+              || ("the map could not be drawn (" + status + ")");
+  box.innerHTML = "";
+  const head = document.createElement("b");
+  head.textContent = "No cut/fill map.";
+  box.appendChild(head);
+  box.appendChild(document.createTextNode(" " + msg));
+  const s = d.surface;
+  if (s && s.name) {
+    const line = document.createElement("div");
+    line.innerHTML = `<b>${esc(s.name)}</b>: ${s.n_contours} contour`
+      + `${s.n_contours === 1 ? "" : "s"} + ${s.n_spots} spot grade`
+      + `${s.n_spots === 1 ? "" : "s"} → <b>${s.distinct_elevations}</b> `
+      + `distinct elevation${s.distinct_elevations === 1 ? "" : "s"}`;
+    box.appendChild(line);
+  }
+  box.hidden = false;
+}
+
 // cut/fill map: the server paints the dz grid (cut blue, fill yellow,
 // depth -> opacity) and tells us the page-pt box it covers; draw() lays
 // it under the chains. Refetched on every Calculate while the toggle is on.
 async function ewFetchMap() {
   if (!state.ew) return;
+  ewMapNote(null, null);
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/map`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(ewBody()),
   });
   if (!r.ok) {
-    const e = await r.json().catch(() => ({}));
-    $("ewResult").textContent = e.detail || ("map failed (" + r.status + ")");
-    state.ew.map = null; draw();
+    // the refusal goes in the map's own slot, and the volume sentence
+    // beside it is left exactly as the Calculate that produced it wrote it
+    ewMapNote(await fetchDetail(r), r.status);
+    state.ew.map = null;
+    $("ewMapLegend").hidden = true;
+    draw();
     return;
   }
+  ewMapNote(null, null);
   const bbox = (r.headers.get("X-Map-Bbox") || "").split(",").map(Number);
   const refDz = r.headers.get("X-Map-Ref-Dz");
   const blob = await r.blob();
@@ -12816,7 +13062,10 @@ $("ewMap").onchange = async () => {
   // silently un-ticking the box during the 94-204 s read read as a frozen UI
   if (ewNotReady("the cut/fill map")) { $("ewMap").checked = false; return; }
   if ($("ewMap").checked) await ewFetchMap();
-  else { state.ew.map = null; $("ewMapLegend").hidden = true; draw(); }
+  else {
+    state.ew.map = null; $("ewMapLegend").hidden = true;
+    ewMapNote(null, null); draw();
+  }
 };
 
 // ---------- pipe trench calculator ----------
@@ -19632,7 +19881,12 @@ async function gzCompute(z, gen) {
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       if (gen !== state.gen) return;
-      z.err = e.detail || ("failed (" + r.status + ")");
+      // The refusal detail is an OBJECT on the volume floor's paths
+      // (/earthwork, /earthwork/map and now /earthwork/zone all answer the
+      // same shape). Reading it as a string printed "[object Object]" - a
+      // refusal the operator cannot act on is barely better than a wrong
+      // number, and this route's refusal names which surface is flat.
+      z.err = ewDetailText(e.detail) || ("failed (" + r.status + ")");
     } else {
       const j = await r.json();
       if (gen !== state.gen) return;

@@ -150,8 +150,12 @@ ok("error" in r5d and "elev_ft" in r5d["error"],
    "pad without an elevation refused with the missing field named")
 r5e = zone_cut_fill(Surface("empty"), SQ, 1.0,
                     {"mode": "pad", "elev_ft": 100.0})
-ok("error" in r5e and "3 sample points" in r5e["error"],
-   "empty existing surface refused with a reason")
+# 2026-09-02: a surface with NOTHING on it now says so ("no contours and no
+# spot grades assigned") instead of quoting a sample count it could never
+# reach - the zone route answers the same named refusals /earthwork does.
+ok("error" in r5e and r5e.get("error_code") == "surface_empty"
+   and "no contours and no spot grades" in r5e["error"],
+   "empty existing surface refused with a reason that names the absence")
 far = [[1000, 1000], [1100, 1000], [1100, 1100], [1000, 1100]]
 r5f = zone_cut_fill(ex_flat, far, 1.0, {"mode": "pad", "elev_ft": 100.0})
 ok("error" in r5f and "does not reach" in r5f["error"],

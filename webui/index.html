@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=72">
+<link rel="stylesheet" href="style.css?v=73">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -445,6 +445,12 @@
       <div class="ew-hint" id="ewHint">Each row is a contour with the elevation read off the sheet.
         Set which surface it belongs to; fix any elevation the sheet reader got wrong.
         Volumes only compute where both surfaces overlap.</div>
+      <!-- WHAT THE READER THREW AWAY. /earthwork/suggest has reported
+           suggestions_dropped since the route existed and no screen ever
+           rendered it, so a page whose every candidate row was filtered out
+           looked identical to a page that had none. Rendered by
+           renderEwDropped() from suggestions_dropped + ocr_ladder. -->
+      <div class="ew-dropped" id="ewDropped" hidden></div>
       <!-- What this calculator is, stated permanently and not dismissible.
            It is a contour interpolation between two triangulated surfaces:
            three inputs a real earthwork quantity needs are simply not in it,
@@ -558,6 +564,12 @@
         <span id="ewResult" class="ew-result"></span>
         <label class="ew-map-toggle" title="Paint where the dirt moves: cut blue, fill yellow; deeper = stronger"><input type="checkbox" id="ewMap"> Show cut/fill map</label>
         <span id="ewMapLegend" class="ew-map-legend" hidden><span class="eml-bar"></span><span class="eml-txt"></span></span>
+        <!-- The map's OWN refusal, in its own slot. /earthwork/map can
+             refuse when /earthwork answered 200 (a layers-only sheet has
+             layer volumes but no dz grid to paint), and writing that into
+             #ewResult wiped the layer explanation the operator had just
+             been given. Rendered by ewMapNote(). -->
+        <div class="ew-map-note" id="ewMapNote" hidden></div>
       </div>
       <!-- What the number rests on, printed beside the number, from the
            fields the response already carries (existing_contours /
@@ -1057,6 +1069,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=151"></script>
+<script src="app.js?v=152"></script>
 </body>
 </html>

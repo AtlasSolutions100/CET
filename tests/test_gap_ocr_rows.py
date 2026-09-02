@@ -130,13 +130,23 @@ def test_ocr_only_anchor_rule_drops_lone_misread():
     assert 7 not in by, "5388 survived the anchor rule"
     assert sorted(by) == [1, 2, 3, 4, 5, 6], sorted(by)
     assert all(r["how"] == "gap-ocr" for r in rows)
-    # ...and with only 5 values the rule is off (its 6+ floor), so the
-    # misread STAYS: nothing stands in for the native band gate on an
-    # OCR-only sheet - the row is disclosed as gap-ocr and no more
+    # ...and with only 5 values the 25-ft anchor rule is off (its 6+ floor).
+    # UNTIL 2026-09-02 THE MISREAD THEN STAYED - "nothing stands in for the
+    # native band gate on an OCR-only sheet" was this file's own comment,
+    # and it was the hole. The LADDER GATE stands in for it now: 3376-3382
+    # step by 2 three times over, 5388 is 2,006 ft off that ladder (more
+    # than 8x the interval), so it bands out and the four real reads stay.
+    # See takeoff_engine.earthwork.ladder_verdict.
     gap5 = {i: gap[i] for i in (1, 2, 3, 4)}
     gap5[7] = gap[7]
-    rows = suggest_elevations(chains, [], gap_z=gap5)
-    assert 7 in _by(rows) and _by(rows)[7]["z"] == 5388.0
+    diag = {}
+    rows = suggest_elevations(chains, [], gap_z=gap5, diag=diag)
+    assert 7 not in _by(rows), "5388 survived the ladder gate"
+    assert sorted(_by(rows)) == [1, 2, 3, 4], sorted(_by(rows))
+    lv = diag["ocr_ladder"]
+    assert lv["applied"] and lv["dropped"] == 1, lv
+    assert lv["verdict"]["laddered"] and lv["verdict"]["interval_ft"] == 2.0, lv
+    assert lv["verdict"]["n_bands"] == 2, lv
 
 
 def test_no_words_no_gap_is_empty():

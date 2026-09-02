@@ -4639,7 +4639,13 @@ def earthwork_suggest(job_id: str, page: int):
                 {str(k): list(v) for k, v in gap_z.items()}))
         except OSError:
             pass
-    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl)
+    # ew_diag carries what the LADDER GATE did (earthwork._ladder_gate): on a
+    # page with no glyph-backed row it is the only consensus filter that can
+    # run, and what it drops has to be as visible as what it keeps.
+    ew_diag = {}
+    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl,
+                             diag=ew_diag)
+    ladder = ew_diag.get("ocr_ladder") or {"applied": False, "dropped": 0}
     by_id = {c.chain_id: c for c in chains}
     for r in sug:
         w = by_id[r["chain_id"]].width
@@ -4715,7 +4721,10 @@ def earthwork_suggest(job_id: str, page: int):
                              and any(r.get("how") in ("radius", "inline")
                                      for r in top)):
             kept = top
-    dropped = n_before_filters - len(kept)
+    # The ladder gate ran INSIDE suggest_elevations, so its drops are not in
+    # n_before_filters; add them or suggestions_dropped would report 0 on
+    # exactly the page where the only filter that fired was that one.
+    dropped = n_before_filters - len(kept) + int(ladder.get("dropped") or 0)
     sug = kept
     # surface split with the rule disclosed per row (surface + split_by):
     # legend verdict > color screening > width median - the UI keeps its
@@ -4783,6 +4792,13 @@ def earthwork_suggest(job_id: str, page: int):
     sug = sug + infill_rows
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
+            # WHY they were dropped, not just how many. suggestions_dropped
+            # existed since the first version of this route and no screen
+            # ever rendered it, so a page that silently lost every row
+            # looked exactly like a page that had none. ocr_ladder carries
+            # the verdict (interval, repeats, share, bands) so the panel can
+            # print the sentence and the operator can disagree with it.
+            "ocr_ladder": ladder,
             "families_excluded": fam_excluded,
             "split_counts": split_counts,
             # every inferred row is counted here as well as flagged on
@@ -4827,6 +4843,30 @@ def _layer_stack(rows: list) -> tuple[list, float]:
                     "destination": r.get("destination")})
         tot_in += t
     return out, tot_in / 12.0
+
+
+def _ew_refusal_detail(result: dict) -> dict:
+    """The structured 400 body for a cut_fill refusal.
+
+    THE REFUSAL CARRIES ITS EVIDENCE. A bare sentence was all the panel ever
+    got, so an operator told "each surface needs at least one labeled
+    contour" could not see WHICH surface or what it held. The detail is an
+    object: `message` is the same human sentence (a caller that only reads
+    that is unchanged), `code` names the guard, `surface` is the offending
+    side's counts, and `basis` is BOTH sides so the panel can show the
+    comparison. See takeoff_engine.earthwork._floor_refusal.
+
+    It is a FUNCTION so that /earthwork and /earthwork/map cannot answer the
+    same refusal in two different shapes - the map route reached its own
+    refusal by a different door and used to fall off the end of it (below).
+    """
+    detail = {"message": str(result["error"]),
+              "code": result.get("error_code") or "earthwork_refused"}
+    if result.get("surface"):
+        detail["surface"] = result["surface"]
+    if result.get("basis"):
+        detail["basis"] = result["basis"]
+    return detail
 
 
 def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
@@ -4883,6 +4923,20 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       return_grid=return_grid, boundary=body.boundary,
                       surface_model=body.surface_model)
     if "error" in result:
+        # A MAP IS A PICTURE OF THE GRID, so there is no layers-only answer
+        # for it. Until this fix /earthwork/map went on through the unweld
+        # below, got back the layers_only dict, and its caller did
+        # result.pop("grid") on a dict with no "grid" key - KeyError, HTTP
+        # 500, body "Internal Server Error" in text/plain. Measured 2026-09-02
+        # on dem_hurricane_bench_a_pad_2ft_outline p0: existing
+        # [{205, 324.0}], proposed [{214, 826.0}], a 6-in topsoil strip and
+        # strip_area_sf 50000 -> 500 on this branch, 200 image/png on
+        # 4010783, which is a NEW crash on a body the base served. The floor
+        # is right to refuse the volume; the map must say so in the floor's
+        # own words instead of crashing, and the panel needs that detail to
+        # tell the operator which surface was short.
+        if return_grid:
+            raise HTTPException(400, _ew_refusal_detail(result))
         # UNWELD (audit item 10): stripping is pure area x depth and owes
         # nothing to a TIN. A clearing / erosion-control sheet has no
         # proposed contours, so cut_fill legitimately fails - but welding
@@ -4904,9 +4958,11 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                 a += (x0 + x1) * (y0 - y1)
             area0 = abs(a / 2.0) * ft_per_pt * ft_per_pt
         if not ((ex_layers or pr_layers) and area0):
-            raise HTTPException(400, result["error"])
+            raise HTTPException(400, _ew_refusal_detail(result))
         result = {"layers_only": True,
                   "cut_fill_error": str(result["error"]),
+                  "cut_fill_error_code": result.get("error_code"),
+                  "surface_basis": result.get("basis"),
                   "area_source": ("typed strip area" if body.strip_area_sf
                                   else "limit-of-work outline"),
                   "area_sf": None, "net_yd3": None}
@@ -5092,7 +5148,12 @@ def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
                         cell_ft=body.cell_ft or 2.0,
                         strip_in=body.strip_in)
     if "error" in out:
-        raise HTTPException(400, out["error"])
+        # The SAME shape as /earthwork and /earthwork/map. This route was the
+        # third door to the volume floor and the only one still answering a
+        # bare string: measured 2026-09-02, an existing surface of one contour
+        # at 324 ft against a declared pad published 417,664 CY here while
+        # POST /earthwork on the same rows answered 400 surface_no_relief.
+        raise HTTPException(400, _ew_refusal_detail(out))
     # dz map clipped to the zone's grid, same palette as the whole-sheet
     # cut/fill map (cut blue / fill yellow-orange - the client's own
     # convention), base64 so one JSON reply carries numbers + picture.
