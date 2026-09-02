@@ -12393,6 +12393,7 @@ function ewRefused(detail, status) {
   if (state.ew) state.ew.map = null;
   const legend = $("ewMapLegend");
   if (legend) legend.hidden = true;
+  ewMapNote(null, null);   // the map's own note goes with the map
   renderEwBasis(null, null);
   renderEwBalance(null);
   renderEwTake();
@@ -12877,21 +12878,81 @@ function renderEwBalance(j) {
       + 'lines say "On site".';
 }
 
+// A FAILED RESPONSE BODY IS NOT ALWAYS JSON.
+//
+// Every error branch on this panel did `await r.json().catch(() => ({}))`,
+// which silently turns an unparseable body into {} and leaves the reader
+// with nothing but the status code. That is exactly what a 500 looks like:
+// FastAPI's unhandled-exception page is `Internal Server Error` in
+// text/plain. Measured 2026-09-02 against /earthwork/map on the DEM outline
+// sheet - the panel could only say "map failed (500)".
+//
+// Read the body ONCE as text, then try to parse it. Returns the route's
+// `detail` (string OR the structured refusal object) when there is one, the
+// raw text when there is not, and null for an empty body.
+async function fetchDetail(r) {
+  let t = "";
+  try { t = await r.text(); } catch (_) { return null; }
+  try {
+    const j = JSON.parse(t);
+    if (j && typeof j === "object" && "detail" in j) return j.detail;
+    return j;
+  } catch (_) { return t.trim().slice(0, 300) || null; }
+}
+
+// The cut/fill map's own refusal, in its own slot beside the toggle.
+//
+// NOT #ewResult. /earthwork/map can refuse a body /earthwork answered 200:
+// a layers-only sheet (the cut/fill floor refuses, but named layer stacks
+// over a strip area still compute) has layer volumes and NO dz grid to
+// paint. Writing the map's message into #ewResult wiped the layers-only
+// explanation - which surface was short, what it held, what the layer
+// slabs below still mean - off the screen and replaced it with a status
+// code. A map that cannot be drawn says so where the map controls are.
+function ewMapNote(detail, status) {
+  const box = $("ewMapNote");
+  if (!box) return;
+  if (detail == null && status == null) { box.hidden = true; box.innerHTML = ""; return; }
+  const d = (detail && typeof detail === "object") ? detail : {};
+  const msg = (typeof detail === "string" ? detail : d.message)
+              || ("the map could not be drawn (" + status + ")");
+  box.innerHTML = "";
+  const head = document.createElement("b");
+  head.textContent = "No cut/fill map.";
+  box.appendChild(head);
+  box.appendChild(document.createTextNode(" " + msg));
+  const s = d.surface;
+  if (s && s.name) {
+    const line = document.createElement("div");
+    line.innerHTML = `<b>${esc(s.name)}</b>: ${s.n_contours} contour`
+      + `${s.n_contours === 1 ? "" : "s"} + ${s.n_spots} spot grade`
+      + `${s.n_spots === 1 ? "" : "s"} → <b>${s.distinct_elevations}</b> `
+      + `distinct elevation${s.distinct_elevations === 1 ? "" : "s"}`;
+    box.appendChild(line);
+  }
+  box.hidden = false;
+}
+
 // cut/fill map: the server paints the dz grid (cut blue, fill yellow,
 // depth -> opacity) and tells us the page-pt box it covers; draw() lays
 // it under the chains. Refetched on every Calculate while the toggle is on.
 async function ewFetchMap() {
   if (!state.ew) return;
+  ewMapNote(null, null);
   const r = await fetch(`/api/job/${state.job}/page/${state.page}/earthwork/map`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(ewBody()),
   });
   if (!r.ok) {
-    const e = await r.json().catch(() => ({}));
-    $("ewResult").textContent = e.detail || ("map failed (" + r.status + ")");
-    state.ew.map = null; draw();
+    // the refusal goes in the map's own slot, and the volume sentence
+    // beside it is left exactly as the Calculate that produced it wrote it
+    ewMapNote(await fetchDetail(r), r.status);
+    state.ew.map = null;
+    $("ewMapLegend").hidden = true;
+    draw();
     return;
   }
+  ewMapNote(null, null);
   const bbox = (r.headers.get("X-Map-Bbox") || "").split(",").map(Number);
   const refDz = r.headers.get("X-Map-Ref-Dz");
   const blob = await r.blob();
@@ -12913,7 +12974,10 @@ $("ewMap").onchange = async () => {
   // silently un-ticking the box during the 94-204 s read read as a frozen UI
   if (ewNotReady("the cut/fill map")) { $("ewMap").checked = false; return; }
   if ($("ewMap").checked) await ewFetchMap();
-  else { state.ew.map = null; $("ewMapLegend").hidden = true; draw(); }
+  else {
+    state.ew.map = null; $("ewMapLegend").hidden = true;
+    ewMapNote(null, null); draw();
+  }
 };
 
 // ---------- pipe trench calculator ----------

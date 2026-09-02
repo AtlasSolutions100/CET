@@ -4845,6 +4845,30 @@ def _layer_stack(rows: list) -> tuple[list, float]:
     return out, tot_in / 12.0
 
 
+def _ew_refusal_detail(result: dict) -> dict:
+    """The structured 400 body for a cut_fill refusal.
+
+    THE REFUSAL CARRIES ITS EVIDENCE. A bare sentence was all the panel ever
+    got, so an operator told "each surface needs at least one labeled
+    contour" could not see WHICH surface or what it held. The detail is an
+    object: `message` is the same human sentence (a caller that only reads
+    that is unchanged), `code` names the guard, `surface` is the offending
+    side's counts, and `basis` is BOTH sides so the panel can show the
+    comparison. See takeoff_engine.earthwork._floor_refusal.
+
+    It is a FUNCTION so that /earthwork and /earthwork/map cannot answer the
+    same refusal in two different shapes - the map route reached its own
+    refusal by a different door and used to fall off the end of it (below).
+    """
+    detail = {"message": str(result["error"]),
+              "code": result.get("error_code") or "earthwork_refused"}
+    if result.get("surface"):
+        detail["surface"] = result["surface"]
+    if result.get("basis"):
+        detail["basis"] = result["basis"]
+    return detail
+
+
 def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                    return_grid: bool = False) -> dict:
     """Shared by the volumes endpoint and the map endpoint: build both
@@ -4899,6 +4923,20 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                       return_grid=return_grid, boundary=body.boundary,
                       surface_model=body.surface_model)
     if "error" in result:
+        # A MAP IS A PICTURE OF THE GRID, so there is no layers-only answer
+        # for it. Until this fix /earthwork/map went on through the unweld
+        # below, got back the layers_only dict, and its caller did
+        # result.pop("grid") on a dict with no "grid" key - KeyError, HTTP
+        # 500, body "Internal Server Error" in text/plain. Measured 2026-09-02
+        # on dem_hurricane_bench_a_pad_2ft_outline p0: existing
+        # [{205, 324.0}], proposed [{214, 826.0}], a 6-in topsoil strip and
+        # strip_area_sf 50000 -> 500 on this branch, 200 image/png on
+        # 4010783, which is a NEW crash on a body the base served. The floor
+        # is right to refuse the volume; the map must say so in the floor's
+        # own words instead of crashing, and the panel needs that detail to
+        # tell the operator which surface was short.
+        if return_grid:
+            raise HTTPException(400, _ew_refusal_detail(result))
         # UNWELD (audit item 10): stripping is pure area x depth and owes
         # nothing to a TIN. A clearing / erosion-control sheet has no
         # proposed contours, so cut_fill legitimately fails - but welding
@@ -4920,21 +4958,7 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                 a += (x0 + x1) * (y0 - y1)
             area0 = abs(a / 2.0) * ft_per_pt * ft_per_pt
         if not ((ex_layers or pr_layers) and area0):
-            # THE REFUSAL CARRIES ITS EVIDENCE. A bare sentence was all the
-            # panel ever got, so an operator told "each surface needs at
-            # least one labeled contour" could not see WHICH surface or what
-            # it held. The detail is now an object: `message` is the same
-            # human sentence (a caller that only reads that is unchanged),
-            # `code` names the guard, `surface` is the offending side's
-            # counts, and `basis` is BOTH sides so the panel can show the
-            # comparison. See takeoff_engine.earthwork._floor_refusal.
-            detail = {"message": str(result["error"]),
-                      "code": result.get("error_code") or "earthwork_refused"}
-            if result.get("surface"):
-                detail["surface"] = result["surface"]
-            if result.get("basis"):
-                detail["basis"] = result["basis"]
-            raise HTTPException(400, detail)
+            raise HTTPException(400, _ew_refusal_detail(result))
         result = {"layers_only": True,
                   "cut_fill_error": str(result["error"]),
                   "cut_fill_error_code": result.get("error_code"),

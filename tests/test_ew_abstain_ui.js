@@ -130,6 +130,7 @@ function run(detail, opts) {
   const f = new Function(
     "$", "state", "document", "ewClearItems", "renderEwBasis",
     "renderEwBalance", "renderEwTake", "renderItemized", "setStatus", "draw",
+    "ewMapNote",
     (HAS_NEW ? fnSrc("ewRefused") : OLD_HANDLER)
     + "\nreturn ewRefused;");
   const doc = {
@@ -151,7 +152,10 @@ function run(detail, opts) {
     () => calls.push("renderEwTake"),
     () => calls.push("renderItemized"),
     (t, cls) => said.push({ t, cls }),
-    () => calls.push("draw"))(detail, 400);
+    () => calls.push("draw"),
+    // the cut/fill map's own refusal slot (tests/test_ew_map_note.js owns
+    // its content); a refusal must clear it along with the map itself
+    (d, s) => calls.push("ewMapNote:" + JSON.stringify([d, s])))(detail, 400);
   return { els, state, calls, said };
 }
 
@@ -316,6 +320,8 @@ console.log("6. the cut/fill map comes off the drawing with the number");
   eq(r.els.ewMap.checked, true,
     "the map TOGGLE stays ticked - it is the operator's standing request, "
     + "and ewCalc refetches on the next Calculate that succeeds");
+  check(r.calls.includes("ewMapNote:[null,null]"),
+    "and any earlier map refusal note is cleared with it");
 }
 // the same guarantee stated against the source, so a later edit that drops
 // the call is caught even if the harness is rewritten. HAS_NEW guards the
