@@ -562,13 +562,56 @@ def main():
                          "inputs absent) is a FAIL - same as EARTHWORK_REQUIRE=1")
     args = ap.parse_args()
     t0 = time.time()
-    if args.check:
-        # both fingerprints, side by side: the detection one (what a cached
-        # result was made by) and the volume one (what a cubic yard was
-        # made by). They move independently on purpose.
-        from .detect_page import engine_sig
-        print(f"engine_sig {engine_sig()}   earthwork_sig {earthwork_sig()}   "
-              f"earthwork closure: {', '.join(earthwork_sig_files())}")
+    if not args.check:
+        sys.exit(_run_corpus(args, t0))
+
+    # --check: TWO gates, each with its own verdict, and the exit code is
+    # the OR. The earthwork gate runs FIRST and on its own: until
+    # 2026-09-01 it ran after the ten-sheet chain gate, so a chain crash (a
+    # missing corpus sheet, a ProcessPool traceback) ended the run before
+    # the volume verdict existed - a bid-moving earthwork change hid behind
+    # an unrelated path problem. Now a crash in either gate is reported as
+    # that gate's FAIL and the other gate's verdict is still printed.
+    #
+    # Both fingerprints, side by side: the detection one (what a cached
+    # result was made by) and the volume one (what a cubic yard was made
+    # by). They move independently on purpose.
+    from .detect_page import engine_sig
+    print(f"engine_sig {engine_sig()}   earthwork_sig {earthwork_sig()}   "
+          f"earthwork closure: {', '.join(earthwork_sig_files())}")
+    verdicts = {}
+    try:
+        verdicts["earthwork"] = _earthwork_check(require=args.require)
+    except BaseException as e:  # noqa: BLE001 - a crash is a FAIL, not an exit
+        _report_crash("earthwork", e)
+        verdicts["earthwork"] = 1
+    try:
+        verdicts["chain"] = _run_corpus(args, t0)
+    except BaseException as e:  # noqa: BLE001
+        _report_crash("chain", e)
+        verdicts["chain"] = 1
+    print("\n" + "=" * 72)
+    for name in ("earthwork", "chain"):
+        rc = verdicts[name]
+        print(f"VERDICT {name:10s} {'PASS' if rc == 0 else 'FAIL'} (exit {rc})")
+    rc = max(verdicts.values())
+    print(f"VERDICT both       {'PASS' if rc == 0 else 'FAIL'} (exit {rc}) "
+          f"- either gate failing fails the build; wall {time.time()-t0:.0f}s")
+    sys.exit(rc)
+
+
+def _report_crash(gate: str, e: BaseException) -> None:
+    import traceback
+    print(f"\n{gate.upper()} GATE CRASHED - counted as FAIL: "
+          f"{type(e).__name__}: {e}")
+    if not isinstance(e, SystemExit):
+        traceback.print_exc()
+
+
+def _run_corpus(args, t0) -> int:
+    """The chain gate: run the corpus, print the report, and with --check
+    return _check()'s verdict (0 pass, 1 regression). --accept rewrites
+    gate-baseline.json from this run."""
     corpus = CORPUS + CORPUS_BEAUMONT + (CORPUS_FULL_EXTRA if args.full else [])
     # resolve every sheet BEFORE forking: a missing file must say so in one
     # clear line, not as a FileNotFoundError inside a ProcessPool traceback
@@ -729,10 +772,8 @@ def main():
         BASELINE.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"\nbaseline rewritten: {BASELINE}")
     if args.check:
-        rc = _check(summary)
-        # the volume gate runs AFTER the chain gate so its verdict is the
-        # last thing on screen; either one failing fails the build
-        sys.exit(max(rc, _earthwork_check(require=args.require)))
+        return _check(summary)
+    return 0
 
 
 if __name__ == "__main__":
