@@ -276,6 +276,15 @@ class ScaleResult:
     # was excluded as sheet furniture, and which measure was used ("paths"
     # = raw page geometry; "chains" = the caller's own live chains).
     pick: dict = field(default_factory=dict)
+    # get_text() readings refused as join artefacts (ORIGIN_JOIN_ARTEFACT)
+    # whose value nothing intact on the page carries. NOT candidates: a
+    # promoted reading keeps one distinct value (pick "single" means that),
+    # and the UI's "this sheet prints N different scales" is built from
+    # `candidates` - measured 2026-09-02 on sundale p1, the refused 90 sat
+    # in that list beside the true 30 and was offered as a printed scale one
+    # click from 3x. Serialised only when non-empty, so a page with no
+    # refusal is byte-identical to before.
+    refused: list = field(default_factory=list)
 
     @property
     def delta_pct(self) -> float | None:
@@ -336,6 +345,7 @@ class ScaleResult:
                 "agrees": None,
                 "delta_pct": None,
                 "pick": dict(self.pick),
+                **self._refused_dict(),
             }
         d = self.delta_pct
         return {
@@ -347,7 +357,13 @@ class ScaleResult:
             "agrees": self.agrees,
             "delta_pct": None if d is None else round(d, 1),
             "pick": dict(self.pick),
+            **self._refused_dict(),
         }
+
+    def _refused_dict(self) -> dict:
+        if not self.refused:
+            return {}
+        return {"refused": [c.to_dict() for c in self.refused]}
 
 
 def _frac(s: str) -> float:
@@ -1916,8 +1932,11 @@ def read_text_layer(text: str, words: list | None, page=None,
     Such a candidate is not a caption reading at all, so it leaves the
     ranking and the page falls through to the row-assembled text - which
     joins on geometry and reads `1"= 30'` off the same words - or to the
-    bar, or abstains. It stays in the result's candidates stamped
-    ORIGIN_JOIN_ARTEFACT so the refusal is visible, never a silent drop.
+    bar, or abstains. On a promoted result it stays in `refused`, stamped
+    ORIGIN_JOIN_ARTEFACT, so the refusal is visible and never a silent
+    drop - but NOT in `candidates`, which the UI reads as the sheet's
+    printed scales (an abstention, having nothing else, carries the
+    artefact as its only candidate so the suggestions panel can show it).
     """
     if nts is None:
         nts = bool(_NTS.search(text))
@@ -1945,7 +1964,7 @@ def read_text_layer(text: str, words: list | None, page=None,
         extra = [c for c in joins
                  if round(c.ft_per_paper_inch, 4) not in have]
         if extra:
-            res.candidates = list(res.candidates) + extra
+            res.refused = list(res.refused) + extra
         return res
 
     if cands:

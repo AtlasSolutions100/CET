@@ -116,10 +116,16 @@ def test_frozen_words_refuse_the_join():
         # the caption's own reading is on view ...
         assert truth in vals, (name, sorted(vals))
         assert '1"=' in vals[truth].text, (name, vals[truth].text)
-        # ... and the refused join stays visible, stamped with how it formed
-        assert artefact in vals, (name, sorted(vals))
-        assert vals[artefact].origin == ORIGIN_JOIN_ARTEFACT, (
-            name, vals[artefact].origin)
+        # ... and the refused join is NOT a candidate: a promoted reading has
+        # one distinct value, and the UI builds "this sheet prints N
+        # different scales" from this list (the leak measured 2026-09-02)
+        assert artefact not in vals, (name, sorted(vals))
+        assert len(vals) == 1, (name, sorted(vals))
+        # It stays visible in `refused`, stamped with how it formed
+        ref = {round(c.ft_per_paper_inch, 4): c for c in res.refused}
+        assert artefact in ref, (name, sorted(ref))
+        assert ref[artefact].origin == ORIGIN_JOIN_ARTEFACT, (
+            name, ref[artefact].origin)
         # the bar's second opinion is present and backs the truth
         assert res.bar_ft_per_paper_inch is not None, name
         assert abs(res.bar_ft_per_paper_inch - truth) / truth <= 0.025, (
@@ -132,6 +138,10 @@ def test_frozen_words_refuse_the_join():
         assert d and d.get("ft_per_paper_inch") != artefact, (name, d)
         if d.get("text") is not None:
             assert "\n" not in d["text"], (name, d["text"])
+        assert [c["ft_per_paper_inch"] for c in d["candidates"]] == [truth], (
+            name, d["candidates"])
+        assert [c["ft_per_paper_inch"] for c in d["refused"]] == [artefact], (
+            name, d.get("refused"))
 
 
 def test_real_pages_when_present():
@@ -161,8 +171,10 @@ def test_real_pages_when_present():
         assert res.source == "text" and res.pick.get("why") == "single", (
             name, res.source, res.pick)
         assert res.agrees is True, (name, res.bar_ft_per_paper_inch, res.delta_pct)
-        vals = {round(c.ft_per_paper_inch, 4): c for c in res.candidates}
-        assert vals[artefact].origin == ORIGIN_JOIN_ARTEFACT, (name, vals)
+        vals = {round(c.ft_per_paper_inch, 4) for c in res.candidates}
+        assert vals == {truth}, (name, vals)
+        ref = {round(c.ft_per_paper_inch, 4): c for c in res.refused}
+        assert ref[artefact].origin == ORIGIN_JOIN_ARTEFACT, (name, ref)
         ran += 1
     print(f"  ran detect_scale on {ran} of {len(FIXTURES)} real pages")
 
