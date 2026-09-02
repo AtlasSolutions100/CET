@@ -374,36 +374,81 @@ def _basis_pair(existing: "Surface", proposed: "Surface") -> dict:
 # AND OVER. A set whose every adjacent gap differs is not a contour ladder,
 # whatever the digits say. That test needs nothing but the values.
 #
-# LADDER_MIN_REPEATS = 2, measured over every OCR-only page reachable here
-# (a page qualifies only when NO row on it is glyph-backed; three of the
-# corpus's grading sheets are). "repeats" = how many adjacent gaps equal
-# the modal gap:
-#   dem_pad_2ft_outline p0   16 distinct, modal step 2 ft, repeats 9/15,
-#                            share 0.60   -> LADDER (the legitimate case;
-#                            all 17 rows kept, which is the fix that
-#                            recovered them in the first place)
-#   the 3-row OCR fixture    {3380, 3382, 3384}, repeats 2/2, share 1.00
-#                            -> LADDER (tests/test_gap_ocr_rows.py)
-#   Barn C0.00 p0            {464, 535} - 2 distinct, NOT TESTABLE
-#   Plans2 C4 GRADING p0     {145, 435, 700, 4004}, repeats 1/3, share 0.33
-#                            -> NOT a ladder, all 4 rows dropped (a grading
-#                            plan cannot read 145 ft and 4004 ft at once)
-#   the crafted adversary    {324, 710, 826}, repeats 1/2, share 0.50
-#                            -> NOT a ladder, all 3 rows dropped
-# 2 is the smallest number that can demonstrate a repeat at all, and the
-# smallest legitimate population sits exactly on it - stated, not smoothed.
-# The separation this rule earns is 9 and 2 against 1, 1 and 1, and it is
-# `repeats` that earns it, not `share`: the adversary's share is 0.50,
-# higher than a third of the legitimate outline sheet's own gaps.
+# WHAT THE NUMBERS BELOW WERE MEASURED ON, and how the first attempt got it
+# wrong. ladder_verdict runs INSIDE suggest_elevations, over every row the
+# readers produced, BEFORE server.py's `wit` filter and its glyph-first
+# group ranking ever see them. The first version of this comment was written
+# against the values the ROUTE returns, which is the population AFTER those
+# filters - a different set on every page where anything is filtered - and
+# it described Barn C0.00 p0 as "{464, 535}, 2 distinct, NOT TESTABLE, rows
+# kept". Live through /earthwork/suggest that page reports n_values 4,
+# testable true, interval 71 ft, repeats 1/3, laddered FALSE, dropped 6,
+# kept 0: every row dropped, not kept. The numbers here are now read off
+# `ocr_ladder.verdict`, which IS the pre-filter measurement.
+#
+# THE DENOMINATOR. A 30-page sweep (28 sheets through the live open ->
+# detect -> /earthwork/suggest path, plus Oncor engine pages 3 and 4) finds
+# NINE pages where the gate fires - a page qualifies only when NO row on it
+# is glyph-backed (inline/radius). The first count said three.
+#
+# LADDER_MIN_REPEATS = 2. "repeats" = how many adjacent gaps equal the modal
+# gap. Every OCR-only page in that sweep, and the two crafted shapes:
+#
+#   LADDERS (rows kept)
+#     Oncor engine p4          46 distinct, step 1 ft, repeats 42/45,
+#                              share 0.93 -> all 106 rows kept
+#     dem_pad_2ft_outline p0   16 distinct, step 2 ft, repeats  9/15,
+#                              share 0.60 -> all 17 rows kept (this is the
+#                              fix that recovered them in the first place)
+#     Plans2 C2.1 Grading p0   11 distinct, step 1 ft, repeats  8/10,
+#                              share 0.80 -> all 18 rows kept
+#     the 3-row OCR fixture    {3380, 3382, 3384}, repeats 2/2, share 1.00
+#                              -> LADDER. Not a corpus page: it is pinned by
+#                              tests/test_gap_ocr_rows.py, and it is the
+#                              reason 2 rather than 8 is the floor.
+#   NOT LADDERS (every row dropped)
+#     Barn C0.00 p0             4 distinct, step 71 ft, repeats 1/3, 0.33
+#     Barn C2.1 Demo p0         5 distinct, step 52 ft, repeats 1/4, 0.25
+#     Ernies Too C2.1 Demo p0   3 distinct, step  3 ft, repeats 1/2, 0.50
+#     Ernies Too C4 Grading p0  4 distinct, step 265 ft, repeats 1/3, 0.33
+#     Plans2 C4 GRADING p0      4 distinct, step 265 ft, repeats 1/3, 0.33
+#                               ({145, 435, 700, 4004} - a grading plan
+#                               cannot read 145 ft and 4004 ft at once)
+#     remay C1.4 Grading p0     3 distinct, step  1 ft, repeats 1/2, 0.50
+#     the crafted adversary     {324, 710, 826}, repeats 1/2, share 0.50
+#   NOT TESTABLE (rows kept and disclosed - see _ladder_gate)
+#     Home2 Suites C3 Grading   2 distinct {411, 444} -> 9 rows kept
+#
+# The separation `repeats` earns is 42, 9 and 8 against 1, 1, 1, 1, 1, 1 -
+# far wider than the first measurement could see. It is `repeats` that earns
+# it and not `share`: two of the six refused pages (Ernies Too C2.1 Demo and
+# remay C1.4 Grading) measure share exactly 0.50, as does the crafted
+# adversary, and LADDER_MIN_SHARE does not reject any of the three - only
+# their single repeat does.
+#
+# WHY 2 AND NOT 8. On corpus pages alone anything in [2, 8] separates
+# perfectly. 2 is kept because it is the smallest number that can
+# demonstrate a repeat at all, and because the smallest population this
+# codebase asserts must SURVIVE - the 3-value gap-OCR fixture, repeats 2/2 -
+# sits exactly on it. Raising the floor to match the corpus margin would
+# refuse a population whose every gap is the same step, which is the most
+# ladder-shaped thing there is.
 LADDER_MIN_REPEATS = 2
 # ...and the modal step must still account for half the gaps, so a
-# population that repeats one step twice by coincidence among many others
-# is not called a ladder. The legitimate outline sheet measures 0.60.
+# population that repeats one step twice by coincidence among many others is
+# not called a ladder. Measured over the same nine pages: the ladders
+# measure 0.93, 0.80 and 0.60, the non-ladders 0.50, 0.50, 0.50, 0.33, 0.33
+# and 0.25. 0.50 therefore rejects NOTHING that `repeats` does not already
+# reject (the three at exactly 0.50 are not below it) and clears the closest
+# legitimate page, the outline sheet, by 0.10.
 LADDER_MIN_SHARE = 0.5
 # Splitting multiplier. Inside one ladder a gap larger than this is a
-# different population, not a stretch of unlabelled contours. The largest
-# genuine internal gap measured is 12 ft on the outline sheet = 6x its 2 ft
-# interval; 8 leaves a third again above the worst real case.
+# different population, not a stretch of unlabelled contours. Largest
+# internal gap on each of the three laddered corpus pages, in units of that
+# page's own step: dem_pad_2ft_outline 12 ft = 6.0x, Oncor p4 3 ft = 3.0x,
+# Plans2 C2.1 2 ft = 2.0x. All three come back n_bands 1, so no real page
+# here is split at all; 8 leaves a third again above the worst of them, and
+# is what bands a lone 5388 off a 3376-3382 ladder.
 LADDER_BAND_MULT = 8.0
 
 
@@ -415,9 +460,13 @@ def ladder_verdict(values, min_repeats: int = LADDER_MIN_REPEATS,
     Pure: takes numbers, returns a verdict. `laddered` False means the
     population cannot be shown to step and nothing in it should mint a
     surface. `testable` False means it is too small to judge either way,
-    and a caller must NOT read that as a refusal - see suggest_elevations:
-    two distinct values cannot produce a volume anyway, because the floor
-    above needs two on EACH surface, so those rows are kept and disclosed.
+    and a caller must NOT read that as a refusal - see suggest_elevations,
+    which keeps those rows and discloses them rather than inventing a
+    verdict. The one such page in the sweep (Home2 Suites C3 Grading p0, 2
+    distinct values {411, 444}, 9 rows kept) is then refused by the volume
+    floor anyway, on its proposed side - but that is the floor's decision
+    and not this function's, and a 2-value population landing both values
+    on BOTH surfaces would be a legitimate one-step pair the floor passes.
     keep_lo/keep_hi bound the largest band when it IS a ladder.
     """
     v = sorted({round(float(x), 2) for x in values if x is not None})
@@ -1975,9 +2024,18 @@ def suggest_elevations(chains: list, words: list,
 # have been left unguarded had it gone in the route. The route's job is to
 # REPORT the drop (suggestions_dropped, ocr_ladder), which it now does.
 #
-# It runs ONLY when no row is glyph-backed. On Oncor, Stice and all four
-# native DEM sheets there are hundreds of inline/radius rows, so the gate
-# never fires and those row sets are byte-identical to before.
+# IT RUNS ONLY WHEN NO ROW IS GLYPH-BACKED, WHICH IS NOT THE SAME AS "ONLY
+# ON OCR-ONLY SHEETS". This comment used to say the gate "never fires" on a
+# native sheet. That is false, and it matters, because it was doing the work
+# of a safety argument. Measured over a 30-page sweep: Oncor engine page 4
+# is a native sheet whose elevation rows happen to be gap-OCR and inherited
+# with not one inline or radius row, so the gate DOES fire there - it
+# ladders at 1 ft over 42 of 45 gaps (share 0.93) and keeps all 106 rows.
+# Nothing moves, but the guarantee is "it happens to ladder cleanly", not
+# "it cannot reach this page", and those are different promises. The pages
+# where the gate genuinely cannot fire are the ones with inline/radius rows:
+# Oncor p3 (C-04, 20 radius rows), Stice p0, all four native DEM sheets, and
+# every Barn C4.x grading sheet. Their row sets are byte-identical to before.
 def _ladder_gate(rows: list, diag: dict | None) -> list:
     gap = [r for r in rows if r.get("how") == "gap-ocr"]
     native = [r for r in rows if r.get("how") in ("inline", "radius")]
@@ -1992,11 +2050,14 @@ def _ladder_gate(rows: list, diag: dict | None) -> list:
         return rows
     v = ladder_verdict([r["z"] for r in rows])
     if not v["testable"]:
-        # ABSTAIN, DO NOT REFUSE. Two distinct values cannot produce a
-        # volume anyway - cut_fill's floor needs two on EACH surface - so
-        # dropping them would only hide from the operator what the reader
-        # saw. They stay, disclosed as gap-ocr, and the verdict says why no
-        # test was possible.
+        # ABSTAIN, DO NOT REFUSE. Too few values to show a step either way,
+        # and a population this small is the floor's problem, not the
+        # gate's - the one such page in the sweep (Home2 Suites C3 Grading
+        # p0, {411, 444}, 9 rows) is refused by cut_fill on its proposed
+        # side, while 2 values landing on both surfaces would be a
+        # legitimate one-step pair. Dropping them here would only hide from
+        # the operator what the reader saw. They stay, disclosed as gap-ocr,
+        # and the verdict says why no test was possible.
         kept = rows
     elif v["laddered"]:
         kept = [r for r in rows if v["keep_lo"] <= r["z"] <= v["keep_hi"]]

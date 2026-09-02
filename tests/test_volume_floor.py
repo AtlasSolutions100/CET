@@ -332,9 +332,12 @@ ok_rows = _suggest(CH, [], {1: (3376.0, 103.0, 140.0),
 check(len(ok_rows) == 3 and diag2["ocr_ladder"]["dropped"] == 0,
       f"P2: a 2-ft ladder of three reads is untouched (got {len(ok_rows)})")
 
-# A PAGE WITH NATIVE TEXT IS NOT TOUCHED AT ALL. This is what keeps Oncor,
-# Stice and the four native DEM sheets byte-identical: one glyph-derived row
-# anywhere on the page stands the gate down.
+# A PAGE WITH A GLYPH-BACKED ROW IS NOT TOUCHED AT ALL: one inline or radius
+# row anywhere on the page stands the gate down. That - and not "the page has
+# native text" - is what keeps Oncor p3 (C-04), Stice p0, the four native DEM
+# sheets and the Barn C4.x grading sheets byte-identical. Oncor engine p4 is
+# a native sheet with NO glyph-backed elevation row, and the gate does fire
+# there: it ladders at 1 ft over 42 of 45 gaps and keeps all 106 rows.
 diag3 = {}
 words = [(96.0, 136.0, 110.0, 144.0, "324")]
 nat = _suggest(CH, words, {2: (710.0, 103.0, 180.0),
