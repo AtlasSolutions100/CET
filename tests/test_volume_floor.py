@@ -52,6 +52,7 @@ from takeoff_engine.earthwork import (  # noqa: E402
 # which proves only that a symbol is new. Missing helpers degrade to stubs
 # so every behavioural check below still executes and still fails there.
 MIN_DISTINCT_Z = getattr(ew, "MIN_DISTINCT_Z", None)
+MIN_RELIEF_FT = getattr(ew, "MIN_RELIEF_FT", None)
 LADDER_MIN_REPEATS = getattr(ew, "LADDER_MIN_REPEATS", None)
 LADDER_BAND_MULT = getattr(ew, "LADDER_BAND_MULT", None)
 ladder_verdict = getattr(ew, "ladder_verdict",
@@ -165,9 +166,13 @@ check(g.get("fill_yd3", 0) > 0, "...and it still produces a volume")
 check(MIN_DISTINCT_Z == 2, "the floor is 2 distinct elevations, not 3")
 
 # --- ONE contour + THREE spot grades is a legitimate surface -------------
-# Barn C4.1-NW's proposed surface is 1 contour + 1 FF spot and sits exactly
-# on the floor; Barn C3.4 prints 45 spots against 2 labelled contours. A
-# floor that counted contours alone would refuse both.
+# Barn C4.1-NW's proposed surface is 1 contour + 1 FF spot when every
+# RESOLVED spot grade is sent to the proposed side (2 distinct, 3.52 ft of
+# relief); Barn C3.4 prints 45 spots against 2 labelled contours. A floor
+# that counted contours alone would refuse both. (Which surface C4.1-NW's
+# spot lands on is a panel setting, and under the panel's own default tag
+# filter it lands on neither - see the MIN_DISTINCT_Z block in
+# takeoff_engine/earthwork.py for the per-configuration measurement.)
 spotted = _surf("proposed", [(_ring(0, 0), 106.0)],
                 spots=[(60.0, 60.0, 108.0), (80.0, 60.0, 109.0),
                        (60.0, 80.0, 110.0)])
@@ -186,6 +191,44 @@ flat = _surf("proposed", [(_ring(0, 0), 106.0)],
 f2 = cut_fill(good_ex, flat, FT_PER_PT)
 check(f2.get("error_code") == "surface_no_relief",
       "a contour plus spots all at the same elevation is still a plane")
+
+# --- R3: A PLANE THAT COUNTS TO TWO ---------------------------------------
+# "2 distinct elevations" is a COUNT, and a count cannot see the difference
+# between a slope and a plane. Reproduced live 2026-09-02 on the DEM outline
+# sheet: existing=[{205, 324.0}, {220, 324.0001}] with
+# proposed=[{214, 826.0}, {222, 826.0001}] answered HTTP 200 and
+# fill 3,367,118.5 CY - both surfaces "2 distinct", both relief_ft 0.0.
+hair_ex = _surf("existing", [(_ring(0, 0), 324.0), (_ring(0, 0, 120.0), 324.0001)])
+hair_pr = _surf("proposed", [(_ring(20, 20), 826.0),
+                             (_ring(20, 20, 120.0), 826.0001)])
+h = cut_fill(hair_ex, hair_pr, FT_PER_PT)
+check("error" in h,
+      "R3: two elevations 0.0001 ft apart no longer publish a volume")
+check(h.get("error_code") == "surface_no_relief",
+      f"R3: it is the same finding, under the same code "
+      f"(got {h.get('error_code')!r})")
+check("cut_yd3" not in h and "fill_yd3" not in h,
+      "R3: no volume field survives it either")
+check("0.0001" in str(h.get("error", "")),
+      f"R3: the refusal states the MEASURED span, not just the count: "
+      f"{str(h.get('error', ''))[:90]!r}")
+check((h.get("surface") or {}).get("distinct_elevations") == 2,
+      "R3: and admits the count was satisfied - it is relief that failed")
+check((h.get("surface") or {}).get("relief_ft") == 0.0001,
+      f"R3: relief_ft is reported to 4 decimals, not rounded to 0.0 "
+      f"(got {(h.get('surface') or {}).get('relief_ft')!r})")
+check(MIN_RELIEF_FT == 0.01,
+      f"R3: the floor is 0.01 ft - one printed increment on the finest "
+      f"sheet in the corpus (got {MIN_RELIEF_FT!r})")
+
+# ...and 0.01 ft apart - the smallest step any corpus sheet prints, measured
+# on Town Pump #3 C4.00 Grading Map p0 - still computes. The floor is set AT
+# that increment, not above it, so the tightest legitimate pair survives.
+tight_ex = _surf("existing", [(_ring(0, 0), 100.0), (_ring(0, 0, 120.0), 100.01)])
+t = cut_fill(tight_ex, good_pr, FT_PER_PT)
+check("error" not in t,
+      f"R3: two elevations exactly 0.01 ft apart still compute: "
+      f"{t.get('error')}")
 
 # --- the empty and too-few-samples cases name their surface too ----------
 e0 = cut_fill(Surface("existing"), good_pr, FT_PER_PT)

@@ -176,6 +176,59 @@ SURFACE_MODELS = ("auto", "linear", "clamped_ct")
 # rather than smoothed over, and it is why the floor is 2 and not 3.
 MIN_DISTINCT_Z = 2
 
+# ...AND THE COUNT ALONE IS NOT THE TEST. "2 distinct elevations" is a
+# COUNT; what makes a surface terrain rather than a plane is RELIEF, and two
+# values a ten-thousandth of a foot apart satisfy the count while describing
+# the same horizontal plane MIN_DISTINCT_Z exists to refuse. Reproduced live
+# 2026-09-02 on dem_hurricane_bench_a_pad_2ft_outline p0 (:9904, this
+# branch): existing=[{205, 324.0}, {220, 324.0001}] and
+# proposed=[{214, 826.0}, {222, 826.0001}] answered HTTP 200,
+# fill 3,367,118.5 CY over area_sf 181,100 - both surfaces reported
+# distinct_elevations 2 and relief_ft 0.0.
+#
+# MIN_RELIEF_FT = 0.01 ft, and it is the finest thing this corpus can print.
+# Census of every elevation the readers recovered over the 28-sheet sweep
+# below plus the two fixtures - 578 values: 384 carry no decimal, 49 carry
+# one, 145 carry two, NONE carries three. The smallest step between two
+# distinct elevations on any one sheet:
+#   Town Pump #3 C4.00 Grading Map p0   0.01 ft   <- the finest in the corpus
+#   Belle Farms ROAD GRADING 2 of 2 p0  0.02 ft
+#   dem_road_2ft p0                     0.2 ft
+#   Oncor C-04 fixture / Stice p0       0.1 ft
+#   every other sheet                   0.2 .. 2 ft
+# So 0.01 ft is EXACTLY one printed increment on the finest sheet here: two
+# adjacent printed values on Town Pump still pass (0.01 >= 0.01), and a span
+# below it cannot be two different numbers a sheet printed. It can only be
+# one label read twice, a digit misplaced, or a value nothing drew.
+#
+# WHAT IT REFUSES, measured over every surface pair reachable (28 live
+# sheets through /earthwork/suggest + the Oncor C-04 fixture and the Stice
+# p0 recipe, each in all five panel configurations - see MIN_DISTINCT_Z's
+# block): NOTHING REAL. The smallest relief on any surface that passes the
+# count floor is 1.0 ft (Barn C4.3-SW proposed: 3 rows, 2 distinct, in the
+# contours-only, spots-on-proposed and spots-on-existing configurations),
+# then 1.48 ft (Barn C4.4-SE proposed, all-spots-on-proposed), 3.1 ft (Town
+# Pump existing), 3.52 ft (Barn C4.1-NW proposed, all-spots-on-proposed -
+# the "1 contour + 1 FF spot" case), and everything else 4 ft to 230 ft.
+# The floor is 100x below the tightest legitimate surface measured and 100x
+# above the adversary's 0.0001 ft; the only thing it refuses anywhere in the
+# corpus is that adversary shape, in all five configurations.
+#
+# It makes MIN_DISTINCT_Z arithmetically redundant - one elevation has
+# relief 0.0, which is below this - and MIN_DISTINCT_Z is kept anyway, for
+# its SENTENCE: "carries only ONE elevation (324 ft), assign a contour at a
+# different elevation" is something an operator can act on, and "spans only
+# 0 ft" is not. Both refusals carry error_code surface_no_relief, because
+# they are the same finding; `surface.distinct_elevations` and
+# `surface.relief_ft` in the detail say which one fired.
+#
+# WHAT IT DOES NOT ADDRESS, stated because the adversary's number invites
+# it: the 3.37M CY in that reproduction is large because the two surfaces
+# sit 502 ft apart, not because either is flat. Disjoint elevation ranges
+# stay DISCLOSED and never refused (surface_basis.caution, and see the
+# rejected candidates below) - that decision is unchanged.
+MIN_RELIEF_FT = 0.01
+
 # CANDIDATES MEASURED AND REJECTED, so the next session does not re-derive
 # them (same folder, same 15 pairs):
 #  * "the surface's internal elevation gaps must be <= K x the sheet's
@@ -214,7 +267,12 @@ def surface_basis(surf: "Surface") -> dict:
                               else zs[:6] + ["..."] + zs[-6:]),
             "z_min_ft": (zs[0] if zs else None),
             "z_max_ft": (zs[-1] if zs else None),
-            "relief_ft": (round(zs[-1] - zs[0], 3) if len(zs) > 1 else 0.0)}
+            # FOUR decimals, not three. This is the number MIN_RELIEF_FT is
+            # tested against, and rounding it to 3 reported the 0.0001 ft
+            # adversary surface as "relief_ft 0.0" while the count floor
+            # passed it and a volume shipped. `zs` is already rounded to 4,
+            # so nothing here invents precision it did not have.
+            "relief_ft": (round(zs[-1] - zs[0], 4) if len(zs) > 1 else 0.0)}
 
 
 def _plural(n: int, word: str) -> str:
@@ -246,6 +304,23 @@ def _floor_refusal(surf: "Surface", interp_ok: bool):
                          f"volume is published. Assign a contour at a "
                          f"DIFFERENT elevation to {b['name']}, or add spot "
                          f"grades that are not all {z:g} ft.",
+                "error_code": "surface_no_relief", "surface": b}
+    # THE COUNT TEST CANNOT SEE A PLANE THAT COUNTS TO TWO (see
+    # MIN_RELIEF_FT). Same guard, same code - the operator is being told the
+    # same thing, that this surface has no relief - but the sentence has to
+    # name the SPAN, because "you have two elevations" is not the problem.
+    if b["relief_ft"] < MIN_RELIEF_FT:
+        return {"error": f"the {b['name']} surface carries "
+                         f"{_plural(b['distinct_elevations'], 'elevation')} "
+                         f"({b['z_min_ft']:.10g} to "
+                         f"{b['z_max_ft']:.10g} ft) but "
+                         f"they span only {b['relief_ft']:g} ft - less than "
+                         f"the {MIN_RELIEF_FT:g} ft finest increment any "
+                         f"sheet prints, so this is a flat plane whatever "
+                         f"the digits say and no volume is published. Check "
+                         f"those readings against the drawing: two "
+                         f"elevations that close are one label read twice "
+                         f"or a digit misplaced, not a slope.",
                 "error_code": "surface_no_relief", "surface": b}
     return None
 
