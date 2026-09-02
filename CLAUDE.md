@@ -226,6 +226,14 @@ python -m takeoff_engine.cli "<plan.pdf>" --page 0 --out out
 python -m takeoff_engine.batch "<plans-dir>" --out out/batch
 python -m takeoff_engine.sweep ...                 # broad-corpus sweep
 python -m takeoff_engine.milestone_report          # evidence pack -> out/milestone
+
+# BOTH gates, before committing anything that touches detection or volumes.
+# --require makes a truth case whose inputs are missing a FAIL instead of a
+# visible SKIP: on this machine and on the production box every input IS
+# present, so a skip there means something moved, not that a fixture is
+# absent. Set EARTHWORK_REQUIRE=1 in the production environment for the
+# same reason (the subprocess inherits it).
+python -m takeoff_engine.regress --check --require
 ```
 
 Test plans: `../TakeoffPro AI/Plans`, `../TakeoffPro AI/Plans 2`,

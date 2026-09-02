@@ -103,6 +103,7 @@ paths (out/...) against another checkout; default is this repo root.
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -114,6 +115,11 @@ BASELINES = HERE / "baselines"
 MANIFEST = BASELINES / "earthwork_manifest.json"
 
 GATED = ("cut_yd3", "fill_yd3", "net_yd3")      # compared exactly, as floats
+# The widest band a tolerance case may declare, in percent. See
+# _manifest_problems: 15 is the outer edge of the accuracy the product
+# promises an estimator, so a truth case may not drift further than the
+# whole product's error budget and still be called a pass.
+TOLERANCE_PCT_MAX = 15.0
 # PINNED: compared exactly too, as what the engine SAID it used. cell_ft is
 # the cell cut_fill actually gridded at (it widens the cell when the grid
 # would exceed its cap, and reports the one it used - "cell_used" below),
@@ -212,6 +218,30 @@ def _manifest_problems(entry) -> list:
         if not (float(entry.get("tolerance_yd3") or 0.0) > 0.0
                 or float(entry.get("tolerance_pct") or 0.0) > 0.0):
             bad.append("a tolerance entry needs tolerance_yd3 or tolerance_pct > 0")
+        # A band wide enough to swallow a real regression is not a gate.
+        # 15% is the outer edge of the accuracy the product promises an
+        # estimator (5-15%); a truth case allowed to drift further than the
+        # whole product's error budget would pass while the number it
+        # guards became useless. Measured 2026-09-02 (N10): a hand-written
+        # tolerance_pct of 50 was accepted, which on the Stice case is a
+        # +-845,000 CY band. Raising the cap is a decision with a reason in
+        # the commit message, not a number nobody notices.
+        for k, v in (("tolerance_yd3", entry.get("tolerance_yd3")),
+                     ("tolerance_pct", entry.get("tolerance_pct"))):
+            if v is None:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                bad.append(f"{k} {v!r} is not a number")
+                continue
+            if not math.isfinite(f) or f <= 0.0:
+                bad.append(f"{k} must be a positive finite number, got {v!r}")
+            elif k == "tolerance_pct" and f > TOLERANCE_PCT_MAX:
+                bad.append(f"tolerance_pct {f:g} exceeds the {TOLERANCE_PCT_MAX:g}% "
+                           f"cap - a band wider than the product's own accuracy "
+                           f"budget passes anything; widen it in a commit that "
+                           f"says why, or use tolerance_yd3")
     else:
         for k in ("tolerance_yd3", "tolerance_pct"):
             if k in entry:
