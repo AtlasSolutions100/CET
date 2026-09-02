@@ -199,6 +199,15 @@ def _manifest_problems(entry) -> list:
         bad.append(f"baseline {bl!r} is outside tests/baselines/ and the entry "
                    f"carries no baseline_sha256 - an out-of-repo baseline is "
                    f"pinned by a committed hash or it gates nothing")
+    # The pin itself must be a committed file: repo-relative, under
+    # tests/baselines/, no '..'. An absolute path here used to reach
+    # shp.relative_to(REPO) and end the run in a ValueError traceback
+    # instead of a verdict (2026-09-02, N8).
+    sha = entry.get("baseline_sha256")
+    if sha is not None and not _in_baselines_dir(sha):
+        bad.append(f"baseline_sha256 {sha!r} is not a repo-relative path under "
+                   f"tests/baselines/ (absolute, outside the repo, or '..') - "
+                   f"a pin that is not committed pins nothing")
     if kind == "tolerance":
         if not (float(entry.get("tolerance_yd3") or 0.0) > 0.0
                 or float(entry.get("tolerance_pct") or 0.0) > 0.0):
@@ -789,7 +798,7 @@ def main(argv=None) -> int:
                                 f"reason, or restore the baseline")
             print(f"   sha256 {got_sha[:16]}... "
                   f"{'matches' if want_sha == got_sha else 'MISMATCH vs'} "
-                  f"{shp.relative_to(REPO)}")
+                  f"{entry['baseline_sha256']}")
         # -0.5. the INPUTS. Every file the loader read is pinned by sha256 in
         #    the baseline. Until 2026-09-02 nothing was: +1 ft on one row of
         #    the 148 KB one-line Oncor fixture produced 28 FAIL lines, then
