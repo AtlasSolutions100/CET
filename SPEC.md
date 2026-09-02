@@ -751,6 +751,12 @@ passes. `_ocr_zoom` gains the `psm` parameter; the caller passes 6.
 
 ### 7.5 OCR `"single"` promotion requires bar agreement
 
+> **BUILT 2026-09-02, AND NARROWER THAN THIS SECTION ASKED FOR — read this first.** Stage 1c refuses a promotion only when an independent bar CONTRADICTS the caption. Where no bar can be read at all, the reading is KEPT and stamped `pick["corroborated"] = false` rather than abstaining.
+>
+> Why, measured over all 6,482 corpus pages whose text layer reads nothing. The strict rule this section specifies creates 83 abstentions: 6 where a bar contradicts, and 77 where no bar could be read. Five of the 77 were checked against 400-dpi crops and four were CORRECT readings (CO3 Rifle p8 `1 inch = 30 ft.`; Town Pump E1.1 `1/8"=1'-0"`, no bar printed anywhere; RC Ontario p9 and p13). Twenty-four of the 77 are Town Pump architectural sheets that print no bar by convention. So the strict rule costs roughly thirteen correct readings for each wrong one it removes, while refusing only on contradiction removes all six wrong promotions and costs none. An adversary reproduced the 6/77 split independently.
+>
+> THE RESIDUAL IS REAL AND UNFIXED: a wrong caption on a sheet whose bar cannot be read still ships. Hurricane p3 prints `SCALE: 1" = 40'` over a 0/40'/80' bar and still promotes 10.0 — 4x low — disclosed by `corroborated: false` and nothing stronger. CLAUDE.md §5 prefers an abstention to a disclosure, so this trade is the owner's call to confirm, not the engine's to settle. Closing it properly needs the bar read on those pages (stages 3–4), not a stricter rule here.
+
 `scale_detect.py:2100-2102` promotes an OCR `_rank` result as `best`. Live
 wrong picks on dev: RC p10 best = 10 (`1" = 10' WHEN PRINTED AT FULL SIZE`
 on DETAIL 1) where the bar and caption say 20; RC p0 best = 200 from the

@@ -236,7 +236,7 @@ check(!/\.sh-suggest[^{]*\{[^}]*var\(--accent\)/.test(css),
   "and never in the accent colour reserved for a corroborated reading");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=150/.test(html), "app.js cache buster bumped to 150");
+check(/app\.js\?v=151/.test(html), "app.js cache buster bumped to 151");
 check(/style\.css\?v=72/.test(html), "style.css cache buster bumped to 72");
 
 console.log();

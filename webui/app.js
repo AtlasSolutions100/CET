@@ -2274,10 +2274,37 @@ function sugWhere(c) {
 function scaleBarSentence() {
   const sg = state.result && state.result.scale_suggestions;
   const bar = sg && +sg.bar_ft_per_paper_inch;
-  return bar > 0
-    ? `The engine measured a drawn scale bar at ${bar.toFixed(2)} ft per `
-      + `inch but did not match it against these readings.`
-    : `The engine did not find a scale bar on this sheet that it could read.`;
+  if (!(bar > 0))
+    return `The engine did not find a scale bar on this sheet that it could `
+         + `read.`;
+  // THE BAR IS WHY THESE READINGS ARE ON OFFER RATHER THAN IN FORCE.
+  // Until 2026-09-02 a page only abstained when the bar reader had returned
+  // nothing, so "measured a bar but did not match it against these
+  // readings" was true of every page that reached here. The scale stage
+  // 1b/1c work adds a second, opposite way to abstain: the bar WAS read,
+  // independently of the caption's own recogniser, and it CONTRADICTS the
+  // reading - which is the whole reason the reading was not promoted. On
+  // the six corpus pages that take this arm the refused values are 2x to
+  // 40x wrong (RC Ontario p10 offers 10 against a bar of 20; Hurricane p1
+  // offers 1.0 against 40), so telling the operator nothing had been
+  // checked would hide the one fact that should stop the click.
+  const why = (sg && sg.pick && sg.pick.why) || "";
+  if (why === "abstained-ocr-single")
+    return `The engine also measured the drawn scale bar, independently of `
+         + `the caption, at ${bar.toFixed(2)} ft per inch — it CONTRADICTS `
+         + `the reading${(sg.candidates || []).length === 1 ? "" : "s"} `
+         + `below, which is why nothing was set.`;
+  return `The engine measured a drawn scale bar at ${bar.toFixed(2)} ft per `
+       + `inch but did not match it against these readings.`;
+}
+
+// Was a drawn bar actually read and compared on this page? Drives the
+// "nothing has been checked against it" clause, which is false whenever it
+// was (see scaleBarSentence).
+function scaleBarChecked() {
+  const sg = state.result && state.result.scale_suggestions;
+  return !!(sg && +sg.bar_ft_per_paper_inch > 0
+            && sg.pick && sg.pick.why === "abstained-ocr-single");
 }
 
 // The scale object an accepted suggestion produces. It stamps
@@ -2388,11 +2415,18 @@ function renderScaleSuggest(host) {
   // nothing), the checked-against sentence is the button tooltip's voice,
   // and there is no "because" clause at all.
   const one = uniq.length === 1;
+  // The "nothing has been checked against it" clause is FALSE on a page
+  // where the bar was read and contradicted the caption - and that is now a
+  // reachable state (scaleBarSentence). Saying both sentences there told
+  // the operator, on exactly the six pages offering a 2x-to-40x wrong
+  // value, that no evidence existed either way.
+  const checked = scaleBarChecked();
   why.innerHTML = `${list}. ${one ? "It was" : "They were"} read `
     + `by machine off a picture of the caption, and the digits can be `
-    + `misread. ${scaleBarSentence()} Nothing on this sheet has been `
-    + `checked against ${one ? "it" : "them"} — no scale bar, no printed `
-    + `square-foot figure. `
+    + `misread. ${scaleBarSentence()} `
+    + (checked ? "" : `Nothing else on this sheet has been `
+      + `checked against ${one ? "it" : "them"} — no scale bar, no printed `
+      + `square-foot figure. `)
     + (uniq.length === 1
       ? `The same reading may also have MISSED other scales printed on this `
         + `sheet, so being the only one offered does not make it the only one `
