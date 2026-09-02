@@ -591,6 +591,18 @@ def main(argv=None) -> int:
     if not enabled:
         failures.append(f"manifest {manifest_path.name} has zero enabled entries "
                         f"- nothing would be compared")
+    # --require is "this machine holds everything and checks everything".
+    # Until 2026-09-02 an entry parked with enabled:false printed DISABLED
+    # and exit 0 under --require too: oncor_c04_server and stice_p0 parked,
+    # "13 passed", green. A parked case is a SKIPPED case somebody typed,
+    # and the flag that turns SKIPPED into a FAIL turns this into one as
+    # well. A plain run keeps printing DISABLED with exit 0 - parking is
+    # legitimate on a laptop, not on the box that gates a release.
+    if require:
+        for d in disabled:
+            failures.append(f"{d}: enabled:false, and --require / EARTHWORK_REQUIRE "
+                            f"is set: this machine is expected to check every "
+                            f"case, so a parked entry is a FAIL, not DISABLED")
     elif not wanted:
         failures.append(f"no manifest entry matches "
                         f"{args.only or args.accept!r}")
