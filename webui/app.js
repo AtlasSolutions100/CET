@@ -12437,7 +12437,11 @@ function ewRefused(detail, status) {
   const head = document.createElement("b");
   head.textContent = "No volume published.";
   box.appendChild(head);
-  box.appendChild(document.createTextNode(" " + msg));
+  // The engine's sentences start "the existing surface ..." because they are
+  // written to sit mid-sentence in a log line. Here one follows a full stop,
+  // so it opens a sentence and has to look like one. Seen on :8100.
+  box.appendChild(document.createTextNode(
+    " " + (msg ? msg.charAt(0).toUpperCase() + msg.slice(1) : msg)));
   const b = d.basis;
   if (b && b.existing && b.proposed) {
     const say = (s) => {

@@ -85,7 +85,7 @@ check(/checked \?\s*""/.test(block.replace(/\s+/g, " ")),
 check(/Nothing else on this sheet has been/.test(block),
   "while the un-checked page still gets that clause");
 
-check(/app\.js\?v=152/.test(html), "app.js cache buster bumped to 152");
+check(/app\.js\?v=153/.test(html), "app.js cache buster bumped to 153");
 
 console.log();
 if (fails) { console.error(fails + " FAILED"); process.exit(1); }

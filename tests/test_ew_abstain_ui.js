@@ -226,14 +226,17 @@ console.log("3. a plain-string 400 still renders (the route's other errors)");
 // ---------------------------------------------------------------------------
 {
   const r = run("no scale on this page - type one into the scale box");
-  check(/no scale on this page/.test(r.els.ewResult.textContent),
-    "a string detail is shown as-is");
+  // Capitalised: the engine writes these to sit mid-sentence in a log line,
+  // and here one FOLLOWS a full stop, so it opens a sentence (seen on
+  // :8100 2026-09-02: "No volume published. the proposed surface ...").
+  check(/No scale on this page/.test(r.els.ewResult.textContent),
+    "a string detail is shown, opening a sentence after the headline");
   check(/No volume published/.test(r.els.ewResult.textContent),
     "...under the same headline");
 }
 {
   const r = run(undefined);
-  check(/failed \(400\)/.test(r.els.ewResult.textContent),
+  check(/ailed \(400\)/.test(r.els.ewResult.textContent),
     "a body with no detail at all still says something");
 }
 

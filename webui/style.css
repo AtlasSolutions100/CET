@@ -349,7 +349,14 @@ canvas#view.panning { cursor: grabbing; }
 .ew-row .seg button, .ew-spots .seg button { font-size: var(--t-fs-xs); padding: 3px 7px; border-radius: 4px; }
 .ew-row .seg button.on-ex, .ew-spots .seg button.on-ex { background: var(--t-exist-bg); border-color: var(--t-exist); color: var(--t-exist); }
 .ew-row .seg button.on-pr, .ew-spots .seg button.on-pr { background: var(--t-prop-bg); border-color: var(--t-prop); color: var(--t-prop); }
-.ew-actions { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); }
+/* WRAP, or the blocks that are supposed to own a line cannot get one.
+   .ew-map-note and .ew-result.ew-refused both ask for flex-basis:100%,
+   which does nothing in a nowrap row: they stay flex ITEMS between the
+   Calculate button and the map toggle and get squeezed. Measured live on
+   :8100 2026-09-02, the refusal rendered 132 px wide and 615 px tall -
+   about twenty characters a line, down the side of the panel. A refusal
+   the operator cannot read is barely better than no refusal. */
+.ew-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); }
 #ewCalc { background: var(--accent-deep); border-color: var(--accent); color: #fff; font-weight: 600; }
 .ew-result { font-size: var(--t-fs-xs); color: var(--text); }
 .ew-meta { color: var(--dim); font-size: var(--t-fs-xs); }
@@ -1065,7 +1072,9 @@ canvas.ml-swatch { width: 40px; height: 9px; }
    span beside the button) so a refusal and its per-surface counts can
    never be skimmed as a volume. */
 .ew-result.ew-refused {
-  display: block; margin: 6px 0 0; padding: 9px 11px; border-radius: 8px;
+  /* flex-basis with the wrap above = its own full-width line (see
+     .ew-actions); `display:block` alone left it a squeezed flex item. */
+  display: block; flex-basis: 100%; margin: 6px 0 0; padding: 9px 11px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--t-warn) 45%, transparent);
   background: var(--t-warn-bg); color: var(--t-warn);
   font-size: var(--t-fs-sm); line-height: 1.45;
