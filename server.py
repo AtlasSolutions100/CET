@@ -4639,7 +4639,13 @@ def earthwork_suggest(job_id: str, page: int):
                 {str(k): list(v) for k, v in gap_z.items()}))
         except OSError:
             pass
-    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl)
+    # ew_diag carries what the LADDER GATE did (earthwork._ladder_gate): on a
+    # page with no glyph-backed row it is the only consensus filter that can
+    # run, and what it drops has to be as visible as what it keeps.
+    ew_diag = {}
+    sug = suggest_elevations(chains, words, gap_z=gap_z, exclude=excl,
+                             diag=ew_diag)
+    ladder = ew_diag.get("ocr_ladder") or {"applied": False, "dropped": 0}
     by_id = {c.chain_id: c for c in chains}
     for r in sug:
         w = by_id[r["chain_id"]].width
@@ -4715,7 +4721,10 @@ def earthwork_suggest(job_id: str, page: int):
                              and any(r.get("how") in ("radius", "inline")
                                      for r in top)):
             kept = top
-    dropped = n_before_filters - len(kept)
+    # The ladder gate ran INSIDE suggest_elevations, so its drops are not in
+    # n_before_filters; add them or suggestions_dropped would report 0 on
+    # exactly the page where the only filter that fired was that one.
+    dropped = n_before_filters - len(kept) + int(ladder.get("dropped") or 0)
     sug = kept
     # surface split with the rule disclosed per row (surface + split_by):
     # legend verdict > color screening > width median - the UI keeps its
@@ -4783,6 +4792,13 @@ def earthwork_suggest(job_id: str, page: int):
     sug = sug + infill_rows
     return {"suggestions": sug,
             "suggestions_dropped": dropped,
+            # WHY they were dropped, not just how many. suggestions_dropped
+            # existed since the first version of this route and no screen
+            # ever rendered it, so a page that silently lost every row
+            # looked exactly like a page that had none. ocr_ladder carries
+            # the verdict (interval, repeats, share, bands) so the panel can
+            # print the sentence and the operator can disagree with it.
+            "ocr_ladder": ladder,
             "families_excluded": fam_excluded,
             "split_counts": split_counts,
             # every inferred row is counted here as well as flagged on
@@ -4904,9 +4920,25 @@ def _earthwork_run(job_id: str, page: int, body: EarthworkBody,
                 a += (x0 + x1) * (y0 - y1)
             area0 = abs(a / 2.0) * ft_per_pt * ft_per_pt
         if not ((ex_layers or pr_layers) and area0):
-            raise HTTPException(400, result["error"])
+            # THE REFUSAL CARRIES ITS EVIDENCE. A bare sentence was all the
+            # panel ever got, so an operator told "each surface needs at
+            # least one labeled contour" could not see WHICH surface or what
+            # it held. The detail is now an object: `message` is the same
+            # human sentence (a caller that only reads that is unchanged),
+            # `code` names the guard, `surface` is the offending side's
+            # counts, and `basis` is BOTH sides so the panel can show the
+            # comparison. See takeoff_engine.earthwork._floor_refusal.
+            detail = {"message": str(result["error"]),
+                      "code": result.get("error_code") or "earthwork_refused"}
+            if result.get("surface"):
+                detail["surface"] = result["surface"]
+            if result.get("basis"):
+                detail["basis"] = result["basis"]
+            raise HTTPException(400, detail)
         result = {"layers_only": True,
                   "cut_fill_error": str(result["error"]),
+                  "cut_fill_error_code": result.get("error_code"),
+                  "surface_basis": result.get("basis"),
                   "area_source": ("typed strip area" if body.strip_area_sf
                                   else "limit-of-work outline"),
                   "area_sf": None, "net_yd3": None}

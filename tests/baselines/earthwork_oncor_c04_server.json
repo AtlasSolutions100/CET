@@ -1,7 +1,7 @@
 {
  "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04_server'. Written by tests/test_earthwork_regress.py --accept oncor_c04_server; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
  "compare": "recipe",
- "earthwork_sig": "6529135afb3de5cb",
+ "earthwork_sig": "5161c27ee94f11d5",
  "earthwork_sig_files": [
   "../provision_demo.py",
   "../server.py",
@@ -32,7 +32,7 @@
  ],
  "earthwork_file_hashes": {
   "../provision_demo.py": "1a96cc2c0b21f70f",
-  "../server.py": "bbd72870b3a3c00c",
+  "../server.py": "768d9c9719c62fb1",
   "__init__.py": "1c1bd33bace42bb3",
   "areas.py": "0e2584993c6ba702",
   "batch.py": "39bc6cb7960674c3",
@@ -41,7 +41,7 @@
   "classify_page.py": "e6a33f98b598c3dd",
   "cli.py": "f181be4799b0548d",
   "detect_page.py": "700cc29e2d701e6a",
-  "earthwork.py": "9b2eb1c1f7bb2777",
+  "earthwork.py": "123e9a55b8026619",
   "eval_layers.py": "c96529c839e82cc0",
   "extract.py": "21451b366a8fa8f3",
   "ledger.py": "c18f05889d263a67",
@@ -65,7 +65,7 @@
   "extract.py"
  ],
  "accepted": {
-  "tree": "C:\\Users\\kobys\\OneDrive\\Desktop\\past\\P\\Takeoff Automation\\detection-engine",
+  "tree": "C:\\Users\\kobys\\takeoff-floor",
   "date": "2026-09-02",
   "contours": [
    69,
