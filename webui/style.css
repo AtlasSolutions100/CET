@@ -409,6 +409,10 @@ canvas#view.panning { cursor: grabbing; }
   padding: 0 12px 8px; }
 .ew-basis b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ew-basis .unbounded { display: block; margin-top: 3px; color: var(--t-warn); }
+/* machine-read elevations under a volume: the same warn colour the
+   unbounded-region caveat uses, because it is the same class of fact -
+   something about this number needs checking before it is priced. */
+.ew-basis .ew-basis-ocr { display: block; margin-top: 3px; color: var(--t-warn); }
 /* which surface produced the number - stated, never implied */
 .ew-basis .ew-basis-model { display: block; margin-top: 3px;
   color: var(--t-info); }

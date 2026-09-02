@@ -12446,6 +12446,22 @@ function renderEwBasis(j, body) {
      + `contour${pr === 1 ? "" : "s"}`
      + (nPts ? `, plus <b>${nPts}</b> spot grade${nPts === 1 ? "" : "s"} on the ${side} surface` : "")
      + `, sampled on a <b>${j.cell_ft}</b> ft grid over <b>${Number(j.area_sf).toLocaleString()}</b> SF.`);
+  // WHERE THE ELEVATIONS CAME FROM, beside the number they produced. This
+  // block described the geometry and the model and said nothing about the
+  // readings, so a volume built entirely from machine-read digits looked
+  // exactly like one built from the sheet's own text (measured 2026-09-02
+  // on the DEM outline sheet: 17 machine-read rows, cut 44% low, fill 49%
+  // high, and every word on this panel identical to the native run's).
+  // Same count and same grammar as the printed report's ewBasisNote, so
+  // screen and paper cannot drift apart.
+  const prov = ewAcceptedSplit();
+  if (prov.machine) {
+    line(`<b>${prov.machine}</b> of the <b>${prov.total}</b> elevations `
+       + "under this number had their digits read by machine off a picture "
+       + "of the sheet, not from its text — they can disagree with what is "
+       + "printed. Check them against the drawing before pricing.")
+      .className = "ew-basis-ocr";
+  }
   const u = line("That region is <b>not the graded area</b>: it is where the "
     + "two convex hulls overlap — a straight-sided envelope round each set of "
     + "contours — so it cuts across every notch in the real limit of "
@@ -12485,8 +12501,12 @@ function renderEwBasis(j, body) {
 // same table the chip and the panel row read, and every bucket is named.
 function ewAcceptedSplit() {
   const rows = (state.ew && state.ew.rows) || [];
+  // `machine` cuts ACROSS the buckets below (a gap-ocr row is counted in
+  // `printed` and in `machine`): the buckets answer "is a label printed
+  // there", `machine` answers "were the digits recognised rather than
+  // read". Both belong on the report - see ewBasisNote.
   const out = { total: 0, printed: 0, nearby: 0, nearbyTagged: 0,
-                infill: 0, inherited: 0, manual: 0, unknown: 0 };
+                infill: 0, inherited: 0, manual: 0, unknown: 0, machine: 0 };
   for (const r of rows) {
     if (!isFinite(r.z)) continue;
     if (r.surface !== "existing" && r.surface !== "proposed") continue;
@@ -12496,7 +12516,9 @@ function ewAcceptedSplit() {
     if (r.how === "interval-infill" || (r.inferred && !r.how)) {
       out.infill++; continue;
     }
-    const kind = elevProvenance(r.how).kind;
+    const prov = elevProvenance(r.how);
+    if (prov.machine) out.machine++;
+    const kind = prov.kind;
     if (kind === "printed") out.printed++;
     else if (kind === "nearby") {
       out.nearby++;
@@ -12626,7 +12648,13 @@ function ewApproveNotes() {
 // testable against a row set rather than against a fixed string.
 function ewBasisNote(a) {
   const notPrinted = a.infill + a.inherited + a.manual + a.unknown;
-  if (!a.total || (!notPrinted && !a.nearby)) return [];
+  // A machine-read elevation is a caveat on its own, even when every label
+  // IS printed: the digits under this volume came out of a recogniser.
+  // Before 2026-09-02 this function returned [] for such a sheet and the
+  // report said nothing at all (measured on the DEM outline sheet: 17
+  // machine-read rows, note identical to a fully native sheet's).
+  const mach = a.machine || 0;
+  if (!a.total || (!notPrinted && !a.nearby && !mach)) return [];
   const bits = [];
   if (a.infill) bits.push(`${a.infill} counted between contours at the `
     + "sheet's interval");
@@ -12637,6 +12665,15 @@ function ewBasisNote(a) {
   const head = `Of ${a.total} contour elevations accepted here, ` + (notPrinted
     ? `${notPrinted} are printed NOWHERE on the sheet: ${bits.join("; ")}.`
     : "all are printed on the sheet.");
+  // FIRST in the returned sentence, because `approve` truncates the tail:
+  // of everything here this is the clause an estimator must not lose.
+  // Kept short on purpose: with the notPrinted clause behind it the pair
+  // must fit APPROVE_NOTE_MAX, or the mixed sheet - the one that most
+  // needs both - loses the second half.
+  const m = !mach ? "" : `${mach} of the ${a.total} elevations here had `
+    + "their digits read by machine off a picture of the sheet, not from "
+    + "its text, and can disagree with what is printed - check them "
+    + "against the drawing. ";
   const near = !a.nearby ? ""
     : ` Of the ${a.printed + a.nearby} printed, ${a.nearby} are the nearest `
       + "number BESIDE the line, not a label in its break"
@@ -12645,7 +12682,10 @@ function ewBasisNote(a) {
   // `approve` truncates each note at 400 chars (APPROVE_NOTE_MAX) and says
   // nothing when it does, so the TAIL of a disclosure is what would be lost.
   // Drop the secondary clause whole rather than ship a cut sentence.
-  return [(head + near).length <= APPROVE_NOTE_MAX ? head + near : head];
+  const full = m + head + near;
+  return [full.length <= APPROVE_NOTE_MAX ? full
+        : (m + head).length <= APPROVE_NOTE_MAX ? m + head
+        : (m || head).slice(0, APPROVE_NOTE_MAX)];
 }
 
 // The balance panel. Every row states WHICH AREA produced it on the row
@@ -16686,7 +16726,18 @@ const ELEV_PROV = {
   // "EL 545", byte-identical to an `inline` read. The number is what gets
   // read and acted on, so the caveat now rides ON the number in the same
   // grammar the chip already uses for "· inferred" and "· source unknown".
-  "gap-ocr": { kind: "printed", cls: "ocr", tag: "read from a picture",
+  // `kind` answers "is a label printed on that line" - and for gap-ocr it
+  // is: the break holds a number, which is why this is "printed" and not
+  // "inferred". `machine` answers the OTHER question, the one the printed
+  // report and the basis line beside the volume actually ask: were these
+  // DIGITS read out of the sheet's own text, or produced by a recogniser
+  // that can be wrong? Until 2026-09-02 only `kind` existed, so 17
+  // machine-read elevations on the DEM outline sheet were counted as
+  // printed and the report note read word for word like a fully native
+  // sheet's - measured, with the volume it backed 44% low on cut and 49%
+  // high on fill. One axis could not answer both questions (CLAUDE.md s5).
+  "gap-ocr": { kind: "printed", machine: true, cls: "ocr",
+    tag: "read from a picture",
     why: "The sheet DOES print a number in the break in this contour — that "
        + "a label is there is not in doubt. But the drafter drew it as line "
        + "work rather than text, so there is no text to read: the digits "
