@@ -167,6 +167,39 @@ characters exits 1, and no password WITH accounts boots and logs
 Sessions are signed with `session.key` beside the job store, so they survive a
 redeploy. Delete that file to sign everybody out at once.
 
+## Before shipping this build
+
+Two things the box holds today were made by code this build replaces, and a
+deploy does not undo data.
+
+**1. Shared rows over a client's upload.** An unseeded box used to scan its
+own uploads for the demo plans and register a *shared* row (owner None) over
+a client's PDF that happened to wear a demo name. Those rows are still
+served - a staff seed does not displace them, the demo picks the lowest job
+id - and only deleting them repairs it. On the box, dry run first and read
+both sections of the report, then purge:
+
+```bash
+docker compose exec -T app python tools/demo_rows_audit.py --store /data/jobs
+```
+
+```bash
+docker compose exec -T app python tools/demo_rows_audit.py --store /data/jobs --purge && docker compose restart app
+```
+
+Nothing is written without `--purge`, and `--store` is required on purpose.
+If the purge removed a row that was our own seed of the same bytes a client
+uploaded, re-run `seed-demo.sh` afterwards.
+
+**2. Single-password cookies.** Sessions issued before accounts existed carry
+no user and are now refused once `users.json` is present; anyone still on one
+lands on the login page. No action needed, unless you want everybody signed
+out at once: delete `session.key` beside the job store.
+
+`provision_demo.py` no longer rewrites a client's row - it shares only rows
+that are already shared or belong to a staff account, and prints each
+refusal - so re-running it on the box is safe again.
+
 ## Updates
 
 - **push to `main`** -> builds, runs the import check, publishes `:latest`. **Does not touch the box.**

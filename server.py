@@ -434,6 +434,25 @@ if True:
                 return await call_next(request)
 
             ok, user = _read_session(request.cookies.get(SESSION_COOKIE, ""))
+            # AN OWNERLESS SESSION IS NOT SIGNED IN ONCE ACCOUNTS EXIST.
+            # Single-password mode issues cookies whose payload is {"u": null}
+            # - the only signed-in state that mode has. They live seven days,
+            # and session.key survives the switch to accounts, so such a
+            # cookie stays VALID after users.json appears. Everything below
+            # then reads user=None as "single-password mode": _forbidden_job
+            # lets None through every job route and _is_staff reports True.
+            # Demonstrated live on b528e74 with three accounts: /api/me
+            # answered {user: null}, /api/recent listed a client's private
+            # upload, her job opened and her page rendered - a signed-in
+            # nobody who outranked everybody. This is the ONE place the
+            # request's user is derived, so this is where it fails closed:
+            # with accounts on the box, no name means no session, and a
+            # name the box no longer knows (an account deleted while its
+            # 7-day cookie was still out) means no session either; the
+            # caller is treated exactly like one with no cookie at all.
+            _accounts = _users.load()
+            if ok and _accounts and (user is None or user not in _accounts):
+                ok = False
             if not ok:
                 # An API caller wants a status code; a person wants the login
                 # page, and to land back where they were pointed.
@@ -558,8 +577,16 @@ def _who(request: Request):
 
 def _is_staff(request: Request) -> bool:
     """Our own team: sees every document, may delete any of them. True in
-    single-password mode too, where there is nothing to separate."""
-    return bool(request.scope.get("tk_staff")) or _who(request) is None
+    single-password mode too, where there is nothing to separate.
+
+    "No user" only means single-password mode while the box HAS no accounts.
+    The middleware now refuses an ownerless session once accounts exist, so
+    a route should never see user None on a per-user box - but this is the
+    function every staff gate in the file calls, and it must not be the
+    thing that turns a nameless caller into staff if some future path lets
+    one through. Both conditions, or it is not staff."""
+    return bool(request.scope.get("tk_staff")) or (
+        _who(request) is None and not _users.load())
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1268,43 @@ def _demo_scan_refused(p: Path, name: str, jobs_root: Path, owned: set) -> bool:
     return True
 
 
+def _demo_rows_split() -> tuple:
+    """(shared, owned): the resolved, case-folded paths of the owner-less
+    rows and of the owned rows, read under JOBS_LOCK. A path that cannot
+    be resolved is in neither set - it cannot be shown to be anything."""
+    with JOBS_LOCK:
+        raw = [(j.get("path", ""), j.get("owner")) for j in JOBS.values()]
+    shared, owned = set(), set()
+    for path, owner in raw:
+        try:
+            key = os.path.normcase(str(Path(path).resolve()))
+        except (OSError, RuntimeError):
+            continue
+        (shared if owner is None else owned).add(key)
+    return shared, owned
+
+
+def _demo_cache_ok(p: Path, name: str) -> bool:
+    """True while a cached demo source is STILL one we may serve: the path
+    of a SHARED row (how a seeded box has it - a staff upload under
+    JOBS_DIR, or a row from before per-user mode), or an unowned corpus
+    file the scan would accept right now.
+
+    The writers into _DEMO_SRC apply _demo_scan_refused; the cache hit did
+    not. So a path that entered the cache by any other route, or a row
+    whose owner changed underneath it, was served as the demo until the
+    process restarted. Re-checked on every hit: the row read is one lock
+    acquisition and a few path resolves, nothing that walks the disk."""
+    try:
+        key = os.path.normcase(str(p.resolve(strict=True)))
+    except (OSError, RuntimeError):
+        return False
+    shared, owned = _demo_rows_split()
+    if key in shared:
+        return True
+    return not _demo_scan_refused(p, name, JOBS_DIR.resolve(), owned)
+
+
 def _demo_source(name: str):
     """The PDF behind a manifest entry, or None when this box does not have it.
 
@@ -1274,9 +1338,10 @@ def _demo_source(name: str):
     hit = _DEMO_SRC.get(name)
     if hit:
         p = Path(hit)
-        if p.exists():
+        if p.exists() and _demo_cache_ok(p, name):
             return p
-        _DEMO_SRC.pop(name, None)       # the file went away; do not serve it
+        # the file went away, or it is a client's: do not serve it
+        _DEMO_SRC.pop(name, None)
     with JOBS_LOCK:
         rows = sorted((jid, j.get("path", "")) for jid, j in JOBS.items()
                       if j.get("owner") is None)
@@ -1294,15 +1359,7 @@ def _demo_source(name: str):
     _DEMO_SCAN_AT = now
     want = set(DEMO_PLANS) - set(_DEMO_SRC)
     jobs_root = JOBS_DIR.resolve()
-    with JOBS_LOCK:
-        owned_raw = [j.get("path", "") for j in JOBS.values()
-                     if j.get("owner") is not None]
-    owned = set()
-    for raw in owned_raw:
-        try:
-            owned.add(os.path.normcase(str(Path(raw).resolve())))
-        except (OSError, RuntimeError):
-            continue
+    _shared, owned = _demo_rows_split()
     for root in PLAN_ROOTS:
         if not want:
             break
@@ -1425,18 +1482,26 @@ def _demo_job(name: str, src: Path) -> str:
             doc.close()
         except Exception:
             return _register(src, owner=None)["job_id"]
+        # DECIDE under the lock, CALL _register after it. JOBS_LOCK is a
+        # plain Lock, and _register takes it: the old branch called
+        # _register from inside this block when the row had vanished, and
+        # the demo open then deadlocked the web process - every request
+        # after it queued on the lock forever. Reproduced in
+        # tests/test_demo_job_lock.py by popping the row while the PDF is
+        # being re-read.
         with JOBS_LOCK:
             j = JOBS.get(jid)
-            if j is None:
-                return _register(src, owner=None)["job_id"]
-            j["path"] = str(src)
-            j["mtime"] = mtime
-            j["pages"] = n
-            j["sizes"] = sizes
-            j["kinds"] = None
-            j["kinds_progress"] = 0
-            j["status"] = {}
-            _save_registry()
+            if j is not None:
+                j["path"] = str(src)
+                j["mtime"] = mtime
+                j["pages"] = n
+                j["sizes"] = sizes
+                j["kinds"] = None
+                j["kinds_progress"] = 0
+                j["status"] = {}
+                _save_registry()
+        if j is None:
+            return _register(src, owner=None)["job_id"]
         _classify_async(jid, str(src), n)
     return jid
 
@@ -3522,13 +3587,29 @@ def _ledger_structure(job_id: str, page: int, body: "StructureBody",
 
 
 @app.get("/api/ledger/stats")
-def ledger_stats():
+def ledger_stats(request: Request):
     """Training-ledger statistics: totals, per-event-type and per-job
     counts, month files, time range, bytes on disk. This endpoint reads
     the ledger files directly - it sits OUTSIDE the detection/calculation
     pipeline, so the write-only invariant in takeoff_engine/ledger.py
-    holds: no pipeline code path reads the ledger."""
-    return JSONResponse(ledger.stats())
+    holds: no pipeline code path reads the ledger.
+
+    by_job is keyed by job id, and a job id is the one handle that opens a
+    document. It used to list every account's ids to any signed-in user -
+    on a box holding several contractors' bid sets, a directory of the
+    other clients' jobs and how hard each was worked. A non-staff caller
+    now sees only the ids of jobs they own; staff, and single-password
+    mode, see all of them. The aggregate counts carry no id and are left
+    as they were."""
+    out = ledger.stats()
+    if not _is_staff(request):
+        me = _who(request)
+        with JOBS_LOCK:
+            mine = {jid for jid, j in JOBS.items()
+                    if me is not None and j.get("owner") == me}
+        out["by_job"] = {j: n for j, n in out.get("by_job", {}).items()
+                         if j in mine}
+    return JSONResponse(out)
 
 
 # ---------- calculator-input sidecar --------------------------------------
