@@ -114,7 +114,18 @@ BASELINES = HERE / "baselines"
 MANIFEST = BASELINES / "earthwork_manifest.json"
 
 GATED = ("cut_yd3", "fill_yd3", "net_yd3")      # compared exactly, as floats
-NOTED = ("area_sf", "surface_model", "cell_ft")  # printed when they differ
+# PINNED: compared exactly too, as what the engine SAID it used. cell_ft is
+# the cell cut_fill actually gridded at (it widens the cell when the grid
+# would exceed its cap, and reports the one it used - "cell_used" below),
+# surface_model the model it resolved "auto" to. Until 2026-09-02 these were
+# only NOTED, and a server.py that honoured a typed cell_ft only when it
+# equalled the default (cell_ft = body.cell_ft if body.cell_ft == 2.0 else
+# 4.0) passed: the product path pinned only the DEFAULT body, so a typed 1.0
+# coming back as 4.0 moved nothing. Now typed bodies are cases, and the cell
+# and model they come back with are FAIL lines by name.
+PINNED = ("cell_ft", "surface_model")
+PINNED_LABEL = {"cell_ft": "cell_used", "surface_model": "surface_model"}
+NOTED = ("area_sf",)                             # printed when they differ
 # the product path also reports what it resolved the offsets and scale to
 NOTED_SERVER = ("existing_offset_ft", "proposed_offset_ft", "ft_per_paper_inch")
 # EarthworkBody defaults pinned by a "via": "server" baseline - the values a
@@ -203,6 +214,14 @@ def _baseline_problems(base, entry) -> list:
         for k in GATED:
             if not _is_num(c.get(k)):
                 bad.append(f"case {name!r} has no {k} (got {c.get(k)!r})")
+        if kind == "recipe":
+            # a recipe baseline is written by --accept and always carries
+            # these; one that lost them could no longer see a cell or model
+            # swap that happens to leave the volumes alone
+            if not _is_num(c.get("cell_ft")):
+                bad.append(f"case {name!r} has no cell_ft (cell_used) pinned")
+            if not isinstance(c.get("surface_model"), str):
+                bad.append(f"case {name!r} has no surface_model pinned")
     return bad
 
 
@@ -340,10 +359,13 @@ def server_defaults(server) -> dict:
 
 def run_case_server(case, inputs, server, job_id, page):
     """The PRODUCT path: server.earthwork_calc (the POST /earthwork route
-    function) over a job dir holding the fixture's chains, with a body that
-    sets NOTHING the operator would not have typed - no cell_ft, no
-    surface_model - so server.py's own defaults, _layer_stack and _page_scale
-    are what produce the number."""
+    function) over a job dir holding the fixture's chains. A case that names
+    no cell_ft / surface_model sends a body that sets NOTHING the operator
+    would not have typed, so server.py's own defaults, _layer_stack and
+    _page_scale are what produce the number. A case that names them sends
+    them TYPED, and the cell and model the route reports back are pinned:
+    a route that honours a typed value only when it equals the default
+    (measured 2026-09-02: typed 1.0 -> cell_used 4.0) fails here by name."""
     jd = server._job_dir(job_id)
     # The route fails CLOSED on a job dir with no registry row (orphan gate,
     # feat/orphan-fail-closed: `JOBS.get(job_id) or _404()`), exactly as it
@@ -376,7 +398,7 @@ def run_case_server(case, inputs, server, job_id, page):
           "boundary": _boundary_for(case, inputs, np)}
     if case.get("spots"):
         kw["proposed_points"] = inputs["spots"][: int(case["spots"])]
-    for k in ("existing_layers", "proposed_layers"):
+    for k in ("existing_layers", "proposed_layers", "cell_ft", "surface_model"):
         if k in case:
             kw[k] = case[k]
     body = server.EarthworkBody(**kw)
@@ -543,6 +565,7 @@ def main(argv=None) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     n_pass = n_fail = 0
     n_fields = 0          # GATED numbers actually compared; 0 is a FAIL
+    n_pinned = 0          # PINNED cell_used / surface_model compared
     skipped, failures = [], []
 
     # the manifest itself: zero enabled entries is a hollow gate, not a pass
@@ -639,7 +662,7 @@ def main(argv=None) -> int:
             # run: a capped grid that reads as the requested one is the
             # silent-cap trap (CLAUDE.md s5)
             asked = float(case.get("cell_ft", 2.0)) if not via_server \
-                else float(server_defaults(server)["cell_ft"])
+                else float(case.get("cell_ft", server_defaults(server)["cell_ft"]))
             if _is_num(r.get("cell_ft")) and abs(float(r["cell_ft"]) - asked) > 1e-9:
                 print(f"      NOTE cell_ft requested {asked:g}, cut_fill used "
                       f"{r['cell_ft']:g} (grid cap widened the cell; the volume "
@@ -663,7 +686,7 @@ def main(argv=None) -> int:
                 "earthwork_closure": closure,
                 "accepted": {"tree": str(tree), "date": time.strftime("%Y-%m-%d"),
                              "contours": results[next(iter(results))]["_contours"]},
-                "cases": {name: {k: r.get(k) for k in GATED + _noted(entry)}
+                "cases": {name: {k: r.get(k) for k in GATED + PINNED + _noted(entry)}
                           for name, r in results.items()},
             }
             if via_server:
@@ -751,6 +774,7 @@ def main(argv=None) -> int:
         # 3. the volumes, exactly (or within the declared band)
         want_cases = set(base.get("cases") or {})
         got_cases = set(results)
+        case_by_name = {c["name"]: c for c in entry["runs"]}
         for name in sorted(want_cases - got_cases):
             failures.append(f"{cid}/{name}: in baseline but not in the manifest runs")
         for name in sorted(got_cases - want_cases):
@@ -776,6 +800,22 @@ def main(argv=None) -> int:
                 failures.append(f"{cid}/{name}: {k} baseline {_fmt(w)} got {_fmt(g)} "
                                 f"(delta {_fmt(delta)}"
                                 + (f", band +/-{band:.1f}" if band else "") + ")")
+            # what the engine said it used: the cell it gridded at and the
+            # model it resolved to, exact, whenever the baseline pins them
+            for k in PINNED:
+                if k not in want:
+                    continue
+                n_pinned += 1
+                if want.get(k) != got.get(k):
+                    bad.append((k, want.get(k), got.get(k)))
+                    failures.append(f"{cid}/{name}: {PINNED_LABEL[k]} baseline "
+                                    f"{_fmt(want.get(k))} got {_fmt(got.get(k))}"
+                                    + (f" (typed cell_ft {case_by_name[name].get('cell_ft')})"
+                                       if k == "cell_ft" and "cell_ft" in case_by_name.get(name, {})
+                                       else "")
+                                    + (f" (typed surface_model {case_by_name[name].get('surface_model')!r})"
+                                       if k == "surface_model" and "surface_model" in case_by_name.get(name, {})
+                                       else ""))
             for k in _noted(entry):
                 if k in want and want.get(k) != got.get(k):
                     print(f"   NOTE {name}: {k} baseline {_fmt(want.get(k))} "
@@ -807,7 +847,8 @@ def main(argv=None) -> int:
                         "not passed")
     for f in failures:
         print("FAIL " + f)
-    print(f"\nearthwork gate: {n_fields} fields compared; {n_pass} cases passed, "
+    print(f"\nearthwork gate: {n_fields} fields compared (+{n_pinned} pinned "
+          f"cell_used/surface_model); {n_pass} cases passed, "
           f"{n_fail} failed, {len(skipped)} truth case(s) SKIPPED"
           + (f" ({', '.join(skipped)})" if skipped else "")
           + f"; {len(failures)} failure line(s)")
