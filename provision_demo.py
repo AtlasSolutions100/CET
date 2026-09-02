@@ -13,6 +13,10 @@ or from an automation log.
 
 Restart the app afterwards. Ownership lives in registry.json, and the running
 process holds JOBS in memory, so an edit here is not visible until it reloads.
+
+Ownership is only ever rewritten on rows that are already shared or belong
+to a STAFF account. A client's upload keeps its owner whatever it is named;
+each such refusal is printed with the display name and the owner.
 """
 
 from __future__ import annotations
@@ -139,16 +143,41 @@ def main() -> int:
     users.save(store)
 
     # --- ownership -------------------------------------------------------
+    # ONLY OUR OWN ROWS ARE REWRITTEN. A row is ours when it is already
+    # shared (owner None) or belongs to a STAFF account; a row a client
+    # uploaded keeps its owner whatever it is called. This block used to
+    # decide on the display name alone: any row named like a demo card or a
+    # shared prefix became owner None, with no look at who uploaded it.
+    # Demonstrated on a copy of a store holding only alice's "Belle Farms
+    # Structural Plans.pdf": it printed "plan sets shared : 1" and published
+    # her private bid set to every account on the box. The same block also
+    # moved every other row to staff - a client's own upload included, which
+    # took it away from the client. DEPLOY tells staff to re-run this tool
+    # on the box, so it has to be safe against the store as it really is.
     reg_path = jobs_dir / "registry.json"
-    moved = kept = 0
+    moved = kept = left = 0
     if reg_path.exists():
         reg = json.loads(reg_path.read_text())
         owner = STAFF[0].lower()
+        staff_names = {s.lower() for s in STAFF} | {
+            n.lower() for n, rec in store.items() if rec.get("staff")}
+
+        def ours(cur) -> bool:
+            return cur is None or str(cur).strip().lower() in staff_names
+
         for jid, row in reg.items():
             src = Path(row.get("path", "")).name
             # uploads are stored as upload_<hex>_<real name>
             disp = src.split("_", 2)[-1] if src.startswith("upload_") else src
-            if disp in demo_names or disp.startswith(SHARED_PREFIXES):
+            demo = disp in demo_names or disp.startswith(SHARED_PREFIXES)
+            cur = row.get("owner")
+            if not ours(cur):
+                left += 1
+                print(f"  refused: {disp!r} stays with its owner {cur!r} "
+                      f"(job {jid}) - a client's upload is never "
+                      f"{'shared' if demo else 'moved to staff'} by this tool")
+                continue
+            if demo:
                 row["owner"] = None
                 kept += 1
             else:
@@ -194,6 +223,7 @@ def main() -> int:
     print(f"  staff          : {sum(1 for c in creds if c[2])}")
     print(f"plan sets shared : {kept}")
     print(f"plan sets staff-only: {moved}")
+    print(f"plan sets left with their client: {left}")
     print(f"issued password  : {DEFAULT_PASSWORD} (each account must change it)")
     print(f"roster           : {out}")
     print("\nRestart the app so it reloads registry.json:")
