@@ -12374,6 +12374,25 @@ function ewRefused(detail, status) {
   if (state.ew) { state.ew.result = null; state.ew.added = false; }
   ewClearItems();
   $("ewLayerOut").innerHTML = "";
+  // AND THE PICTURE ON THE DRAWING, which is where the operator is looking.
+  //
+  // Until this fix the handler cleared every box in the panel and never
+  // touched state.ew.map - and draw() paints state.ew.map.img under the
+  // linework on EVERY repaint, unconditionally, for as long as it is set.
+  // Reproduced on the DEM outline sheet: tick "Show cut/fill map",
+  // Calculate a good volume, reassign a row so one surface loses its
+  // relief, Calculate again - the panel read "No volume published" while a
+  // full-sheet colour depth map and its numbered ramp ("cut −3.4 ft …
+  // +3.4 ft fill") stayed on the sheet. A depth map is a quantity drawn
+  // instead of typed, so that is a number surviving an abstain - the exact
+  // thing this handler exists to stop.
+  //
+  // The TICK STAYS ON. The checkbox is the operator's standing request and
+  // ewCalc refetches the map on the next Calculate that succeeds; unticking
+  // it here would answer a question they did not ask.
+  if (state.ew) state.ew.map = null;
+  const legend = $("ewMapLegend");
+  if (legend) legend.hidden = true;
   renderEwBasis(null, null);
   renderEwBalance(null);
   renderEwTake();
@@ -12410,6 +12429,10 @@ function ewRefused(detail, status) {
   }
   box.classList.add("ew-refused");
   setStatus(msg, "err");
+  // repaint the sheet without the map that was just dropped: clearing
+  // state.ew.map only takes effect on the next draw(), and nothing else
+  // schedules one on this path.
+  draw();
 }
 
 // Whole cubic yards, everywhere a volume is shown or priced. The surface is

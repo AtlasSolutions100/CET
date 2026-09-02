@@ -50,8 +50,32 @@ function fnSrc(name) {
 }
 
 // ---------------------------------------------------------------------------
-// A DOM small enough to be honest about: the elements ewRefused touches.
+// THE DOM COMES FROM index.html, NOT FROM THE FUNCTION UNDER TEST.
+//
+// This harness used to build exactly two elements - "the elements ewRefused
+// touches" - and `$` answered undefined for every other id. That is a
+// STRUCTURAL blind spot, not a missing assertion: a DOM scoped to what the
+// function does can only ever confirm that it does it, and cannot express
+// the failure of a refusal to touch something. It hid a live defect for
+// exactly that reason (part 6 below): ewRefused cleared every box in the
+// panel and left state.ew.map set, so a full-sheet cut/fill depth map and
+// its numbered ramp stayed painted on the drawing beside "No volume
+// published". Had the harness owned #ewMapLegend, the check would have been
+// writable.
+//
+// So the ids come from webui/index.html - the page the operator loads - and
+// asking for one the page does not have THROWS instead of returning
+// undefined. Narrowing this again would have to be done deliberately, here,
+// against the real page.
 // ---------------------------------------------------------------------------
+const PAGE_IDS = [...HTML.matchAll(/\bid="([A-Za-z0-9_.:-]+)"/g)].map(m => m[1]);
+check(PAGE_IDS.length > 100,
+  "the harness DOM is built from every id in index.html (got "
+  + PAGE_IDS.length + ")");
+for (const id of ["ewResult", "ewLayerOut", "ewMapLegend", "ewMap", "ewDropped"])
+  check(PAGE_IDS.includes(id),
+    "...including #" + id + ", which the earthwork panel owns");
+
 function mkEl(id) {
   const el = {
     id: id, innerHTML: "", _text: "", hidden: false, children: [],
@@ -86,18 +110,26 @@ check(HAS_NEW,
 function run(detail, opts) {
   opts = opts || {};
   const els = {};
-  for (const id of ["ewResult", "ewLayerOut"]) els[id] = mkEl(id);
+  for (const id of PAGE_IDS) els[id] = mkEl(id);
+  // the map legend is `hidden` in index.html until a map is painted; here it
+  // starts SHOWN, because the state under test is "a map was painted and
+  // then the volume was refused"
+  els.ewMapLegend.hidden = false;
+  els.ewMap.checked = true;
   const calls = [];
   const state = {
     ew: { result: { cut_yd3: 17997.6, fill_yd3: 1.0 }, added: !!opts.added,
-          rows: [] },
+          rows: [],
+          // the bitmap draw() paints under the linework, and its ramp
+          map: { img: { width: 240, height: 180 }, bbox: [0, 0, 100, 80],
+                 refDz: 3.4 } },
     extraItems: [{ label: "Site Fill", qty: 17998, unit: "CY" },
                  { label: "Concrete", qty: 12, unit: "CY" }],
   };
   const said = [];
   const f = new Function(
     "$", "state", "document", "ewClearItems", "renderEwBasis",
-    "renderEwBalance", "renderEwTake", "renderItemized", "setStatus",
+    "renderEwBalance", "renderEwTake", "renderItemized", "setStatus", "draw",
     (HAS_NEW ? fnSrc("ewRefused") : OLD_HANDLER)
     + "\nreturn ewRefused;");
   const doc = {
@@ -109,12 +141,17 @@ function run(detail, opts) {
     state.extraItems = state.extraItems.filter(
       it => !/^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Place |Export |Import Structural$)/.test(it.label));
   };
-  f((id) => els[id], state, doc, ewClearItems,
+  const $ = (id) => {
+    if (!(id in els)) throw new Error("no #" + id + " in index.html");
+    return els[id];
+  };
+  f($, state, doc, ewClearItems,
     (j) => calls.push("renderEwBasis:" + JSON.stringify(j)),
     (j) => calls.push("renderEwBalance:" + JSON.stringify(j)),
     () => calls.push("renderEwTake"),
     () => calls.push("renderItemized"),
-    (t, cls) => said.push({ t, cls }))(detail, 400);
+    (t, cls) => said.push({ t, cls }),
+    () => calls.push("draw"))(detail, 400);
   return { els, state, calls, said };
 }
 
@@ -256,6 +293,40 @@ check(/ladder: j\.ocr_ladder \|\| null/.test(SRC),
   check(els.ewDropped.hidden === true,
     "nothing dropped: the block stays out of the way");
 }
+
+// ---------------------------------------------------------------------------
+console.log("6. the cut/fill map comes off the drawing with the number");
+// ---------------------------------------------------------------------------
+// THE DEFECT (live on the DEM outline sheet, e6ac867): ewRefused cleared the
+// result, the layer slabs, the basis block, the balance and the takeoff -
+// and never touched state.ew.map. draw() paints state.ew.map.img under the
+// linework whenever it is set, so the panel said "No volume published" while
+// a full-sheet colour depth map and a ramp reading "cut −3.4 ft … +3.4 ft
+// fill" stayed on the sheet. A depth map is a quantity drawn instead of
+// typed.
+{
+  const r = run(DETAIL);
+  eq(r.state.ew.map, null,
+    "state.ew.map is dropped, so draw() has no depth map left to paint");
+  eq(r.els.ewMapLegend.hidden, true,
+    "the depth ramp legend is hidden with it");
+  check(r.calls.includes("draw"),
+    "and draw() is called, so the sheet repaints without the map "
+    + "(clearing the state alone leaves the last frame on screen)");
+  eq(r.els.ewMap.checked, true,
+    "the map TOGGLE stays ticked - it is the operator's standing request, "
+    + "and ewCalc refetches on the next Calculate that succeeds");
+}
+// the same guarantee stated against the source, so a later edit that drops
+// the call is caught even if the harness is rewritten. HAS_NEW guards the
+// read for the same reason OLD_HANDLER exists: on 4010783 there is no
+// ewRefused to slice, and this file must fail on behaviour, not on a stack
+// trace.
+const REF = HAS_NEW ? fnSrc("ewRefused") : OLD_HANDLER;
+check(/state\.ew\.map = null/.test(REF),
+  "ewRefused clears state.ew.map by name");
+check(/draw\(\);/.test(REF),
+  "ewRefused repaints the canvas");
 
 console.log(fails ? "\n" + fails + " FAILED" : "\nall checks passed");
 process.exit(fails ? 1 : 0);
