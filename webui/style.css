@@ -1058,6 +1058,28 @@ canvas.ml-swatch { width: 40px; height: 9px; }
 }
 .ew-stale b { color: var(--t-text); }
 
+/* THE ABSTAIN, and the rows the reader refused. Both say "the number you
+   expected is not here, and this is why" - the same amber register as
+   .ew-stale, deliberately, because they are the same kind of statement.
+   .ew-refused turns the result into a BLOCK (it is normally an inline
+   span beside the button) so a refusal and its per-surface counts can
+   never be skimmed as a volume. */
+.ew-result.ew-refused {
+  display: block; margin: 6px 0 0; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--t-warn) 45%, transparent);
+  background: var(--t-warn-bg); color: var(--t-warn);
+  font-size: var(--t-fs-sm); line-height: 1.45;
+}
+.ew-result.ew-refused b { color: var(--t-text); }
+.ew-result.ew-refused .ew-meta { margin-top: 5px; display: block; }
+.ew-dropped {
+  margin: 6px 0; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--t-warn) 45%, transparent);
+  background: var(--t-warn-bg); color: var(--t-warn);
+  font-size: var(--t-fs-xs); line-height: 1.45;
+}
+.ew-dropped b { color: var(--t-text); }
+
 /* --- earthwork limit of work -------------------------------------------
    Without one, cut/fill is integrated over the intersection of the two
    surfaces' convex hulls. On a 600-acre sheet that read fill 2.6M CY against

@@ -445,6 +445,12 @@
       <div class="ew-hint" id="ewHint">Each row is a contour with the elevation read off the sheet.
         Set which surface it belongs to; fix any elevation the sheet reader got wrong.
         Volumes only compute where both surfaces overlap.</div>
+      <!-- WHAT THE READER THREW AWAY. /earthwork/suggest has reported
+           suggestions_dropped since the route existed and no screen ever
+           rendered it, so a page whose every candidate row was filtered out
+           looked identical to a page that had none. Rendered by
+           renderEwDropped() from suggestions_dropped + ocr_ladder. -->
+      <div class="ew-dropped" id="ewDropped" hidden></div>
       <!-- What this calculator is, stated permanently and not dismissible.
            It is a contour interpolation between two triangulated surfaces:
            three inputs a real earthwork quantity needs are simply not in it,

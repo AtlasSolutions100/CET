@@ -11392,6 +11392,10 @@ async function ewFetchSuggest(gen) {
       // state.extraItems, so an approve produces no earthwork line at all.
       // Session-only and per detection result, like the rest of this panel.
       added: false,
+      // What the reader DROPPED getting to those rows, and why - see
+      // renderEwDropped. Held on the panel state so a re-render keeps it.
+      dropped: j.suggestions_dropped || 0,
+      ladder: j.ocr_ladder || null,
     };
     // the durable inputs for this page (server sidecar), applied before
     // the panel's first paint; chain-keyed values only where the chain
@@ -12162,8 +12166,38 @@ function ewRowSource(row) {
   return "we did not record where this elevation came from";
 }
 
+// WHAT THE READER THREW AWAY, in the panel where the rows would have been.
+//
+// suggestions_dropped has been in the /earthwork/suggest payload since the
+// route was written and no screen has ever shown it (grep: two hits, both
+// server-side). That mattered most on the page it was invented for: with
+// the ladder gate live, an OCR-only sheet whose reads do not step like
+// contours now yields ZERO rows, and without this the panel would print
+// "We found no contour elevations on this sheet" - which is the one thing
+// the reader knows is false. Say what was found and why it was refused.
+function renderEwDropped() {
+  const box = $("ewDropped");
+  if (!box) return;
+  const n = (state.ew && state.ew.dropped) || 0;
+  const lad = (state.ew && state.ew.ladder) || null;
+  const laddered = lad && lad.applied && lad.verdict && !lad.verdict.laddered;
+  box.hidden = !(n > 0);
+  if (box.hidden) { box.innerHTML = ""; return; }
+  box.innerHTML = `<b>${n} candidate row${n === 1 ? "" : "s"} `
+    + `${n === 1 ? "was" : "were"} read off this sheet and dropped.</b> `
+    + (laddered
+       ? esc(lad.verdict.why) + " Nothing on this page is glyph text, so "
+         + "that shape is the only evidence there is. Click <b>+ Add "
+         + "contour</b> and type an elevation you have read yourself if you "
+         + "disagree."
+       : "They were refused by the legend, white-mask, band or ladder "
+         + "filters. Add any the reader should have kept with <b>+ Add "
+         + "contour</b>.");
+}
+
 function renderEw() {
   const box = $("ewRows");
+  renderEwDropped();
   box.innerHTML = "";
   if (!state.ew || !state.ew.rows.length) {
     // "EMPTY IS NOT AN ANSWER" (the same shape as the elevation reader's
@@ -12268,10 +12302,11 @@ $("ewCalc").onclick = async () => {
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
-    $("ewResult").textContent = e.detail || ("failed (" + r.status + ")");
+    ewRefused(e.detail, r.status);
     return;
   }
   const j = await r.json();
+  $("ewResult").classList.remove("ew-refused");
   state.ew.result = j;
   const off = [];
   if (j.existing_offset_ft) off.push(`existing −${j.existing_offset_ft.toFixed(2)} ft`);
@@ -12314,6 +12349,68 @@ $("ewCalc").onclick = async () => {
   renderItemized();
   if ($("ewMap").checked) await ewFetchMap();
 };
+
+// AN ABSTAIN MUST LEAVE NOTHING BEHIND.
+//
+// The old handler wrote the server's sentence into #ewResult and returned.
+// Everything the PREVIOUS calculation had painted stayed on screen beside
+// it - the per-layer slabs in #ewLayerOut, the basis block, the material
+// balance - and state.ew.result kept the superseded numbers, so if the
+// operator had already pressed "Add to takeoff" those cubic yards were
+// still in state.extraItems and would still price, still export and still
+// print. A refusal that leaves a number on the screen is not an abstain.
+//
+// So: clear the result, clear every panel the result feeds, take the
+// earthwork rows back OUT of the itemised takeoff (saying so), and render
+// the refusal with its evidence - which surface, what it held, what fixes
+// it. `detail` is the object takeoff_engine.earthwork._floor_refusal built
+// (message / code / surface / basis); a plain string still renders, because
+// the other 400s from this route are still sentences.
+function ewRefused(detail, status) {
+  const d = (detail && typeof detail === "object") ? detail : {};
+  const msg = (typeof detail === "string" ? detail : d.message)
+              || ("failed (" + status + ")");
+  const hadAdded = !!(state.ew && state.ew.added);
+  if (state.ew) { state.ew.result = null; state.ew.added = false; }
+  ewClearItems();
+  $("ewLayerOut").innerHTML = "";
+  renderEwBasis(null, null);
+  renderEwBalance(null);
+  renderEwTake();
+  renderItemized();
+  const box = $("ewResult");
+  box.innerHTML = "";
+  const head = document.createElement("b");
+  head.textContent = "No volume published.";
+  box.appendChild(head);
+  box.appendChild(document.createTextNode(" " + msg));
+  const b = d.basis;
+  if (b && b.existing && b.proposed) {
+    const say = (s) => {
+      const n = s.distinct_elevations;
+      return `<b>${s.name}</b>: ${s.n_contours} contour`
+        + `${s.n_contours === 1 ? "" : "s"} + ${s.n_spots} spot grade`
+        + `${s.n_spots === 1 ? "" : "s"} → <b>${n}</b> distinct elevation`
+        + `${n === 1 ? "" : "s"}`
+        + (s.z_min_ft == null ? ""
+           : ` (${s.z_min_ft}${s.z_max_ft === s.z_min_ft ? "" : "–" + s.z_max_ft} ft)`);
+    };
+    const line = document.createElement("div");
+    line.className = "ew-meta";
+    line.innerHTML = say(b.existing) + "<br>" + say(b.proposed);
+    box.appendChild(line);
+  }
+  if (hadAdded) {
+    const w = document.createElement("div");
+    w.className = "ew-meta";
+    w.textContent = "The earthwork lines from the previous calculation have "
+      + "been removed from the takeoff — they were computed from rows this "
+      + "one refuses.";
+    box.appendChild(w);
+  }
+  box.classList.add("ew-refused");
+  setStatus(msg, "err");
+}
 
 // Whole cubic yards, everywhere a volume is shown or priced. The surface is
 // interpolated between contours 1-5 ft apart; 0.1 CY on it is a lie of
@@ -12454,6 +12551,17 @@ function renderEwBasis(j, body) {
   // high, and every word on this panel identical to the native run's).
   // Same count and same grammar as the printed report's ewBasisNote, so
   // screen and paper cannot drift apart.
+  // THE FLOOR'S OTHER HALF, DISCLOSED RATHER THAN REFUSED. A pair of
+  // surfaces whose elevation ranges do not overlap is normal on a raised
+  // pad or a deep excavation and is what a mis-assigned row or a misread
+  // digit also looks like - the engine cannot tell those apart, so it says
+  // so beside the number instead of picking. Every corpus pair measured
+  // (13) overlaps, so this line appears on none of them.
+  const sb = j.surface_basis;
+  if (sb && sb.caution) {
+    const c = line(`<b>Check these rows.</b> ${esc(sb.caution)}`);
+    c.className = "ew-basis-ocr";
+  }
   const prov = ewAcceptedSplit();
   if (prov.machine) {
     line(`<b>${prov.machine}</b> of the <b>${prov.total}</b> elevations `
