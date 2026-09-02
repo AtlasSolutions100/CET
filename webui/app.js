@@ -12543,6 +12543,36 @@ function renderEwTake() {
       + "press this only if you mean to bid these quantities.";
 }
 
+// THE DISJOINT-RANGE CAUTION, IN ONE PLACE, FOR SCREEN AND FOR PAPER.
+//
+// surface_basis.caution used to appear at exactly one site in this file -
+// the on-screen basis block below. ewApproveNotes and ewBasisNote, which
+// build the approve note and the printed report, never saw it. So the one
+// shape the volume floor deliberately declines to REFUSE ("the two surfaces
+// do not overlap in elevation ... check the rows before pricing") was on
+// screen and nowhere on paper, while the comment inside renderEwBasis said
+// in as many words that screen and paper cannot drift apart. An estimator
+// reads the report.
+//
+// Both sites now take their words from here, so they are identical by
+// construction rather than by two authors agreeing.
+//
+// `approve` truncates every note at APPROVE_NOTE_MAX and says nothing when
+// it does, so the TAIL of a disclosure is what would be lost. The server's
+// caution ends with a generic clause the headline already carries; when the
+// pair will not fit, drop that clause WHOLE rather than ship a cut
+// sentence - the same rule ewBasisNote applies to its own second clause.
+// The trim happens here, so a trimmed caution is trimmed on both.
+const EW_CAUTION_HEAD = "Check these rows. ";
+function ewCautionText(j) {
+  const c = (j && j.surface_basis && j.surface_basis.caution) || "";
+  if (!c) return "";
+  if (EW_CAUTION_HEAD.length + c.length <= APPROVE_NOTE_MAX) return c;
+  const cut = c.indexOf(" That is normal on");
+  return cut > 0 ? c.slice(0, cut)
+                 : c.slice(0, APPROVE_NOTE_MAX - EW_CAUTION_HEAD.length);
+}
+
 // What the number rests on, printed beside the number. Every field here is
 // one the response or the request already carried: nothing is inferred.
 function renderEwBasis(j, body) {
@@ -12579,11 +12609,20 @@ function renderEwBasis(j, body) {
   // surfaces whose elevation ranges do not overlap is normal on a raised
   // pad or a deep excavation and is what a mis-assigned row or a misread
   // digit also looks like - the engine cannot tell those apart, so it says
-  // so beside the number instead of picking. Every corpus pair measured
-  // (13) overlaps, so this line appears on none of them.
-  const sb = j.surface_basis;
-  if (sb && sb.caution) {
-    const c = line(`<b>Check these rows.</b> ${esc(sb.caution)}`);
+  // so beside the number instead of picking. The words are ewCautionText's,
+  // shared with the printed report, so this line and that one cannot drift.
+  //
+  // How often it fires, re-measured 2026-09-02 over 30 sheets x the five
+  // panel configurations - 75 pair-configurations with rows on both sides:
+  // FOUR are disjoint, all of them Barn C4.4-SE (existing 4536-4539 against
+  // a proposed surface that is one row at 4540, a 1.0 ft gap), and in every
+  // one of those four the volume floor refuses the volume anyway because
+  // that proposed surface holds a single elevation. So no PUBLISHED volume
+  // in this corpus carries the caution - which is a statement about the
+  // corpus, not a claim that the line is dead code.
+  const cautionTxt = ewCautionText(j);
+  if (cautionTxt) {
+    const c = line(`<b>Check these rows.</b> ${esc(cautionTxt)}`);
     c.className = "ew-basis-ocr";
   }
   const prov = ewAcceptedSplit();
@@ -12747,9 +12786,13 @@ function ewApproveNotes() {
   // the measurement behind the choice travel with the volume. Inferred
   // elevations get their own line only when some were actually accepted.
   const acc = ewAcceptedSplit();
+  const caution = ewCautionText(j);
   return [
     "EARTHWORK (Site Cut / Site Fill / Import Structural / strip and place "
     + "rows) is a contour interpolation, not a measured volume.",
+    // SECOND, not last: of everything on this list this is the only line
+    // that says the number may be wrong, and `approve` keeps six notes.
+    ...(caution ? [EW_CAUTION_HEAD + caution] : []),
     `Surface between the contours: ${ewModelName(j.surface_model)}`
     + ` — ${j.surface_model_source || "default"}.`
     + (j.surface_model_why ? ` ${j.surface_model_why}.` : "")
