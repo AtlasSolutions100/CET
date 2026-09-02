@@ -165,12 +165,31 @@ def main() -> int:
         def ours(cur) -> bool:
             return cur is None or str(cur).strip().lower() in staff_names
 
+        def _rp(row):
+            try:
+                return os.path.normcase(str(Path(row.get("path", "")).resolve()))
+            except OSError:
+                return os.path.normcase(str(row.get("path", "")))
+
+        # A shared (owner None) row over a file that a CLIENT row also
+        # points at is a leak minted before the demo scan was fixed, not
+        # ours to keep sharing: leave it, say so, and point at the tool
+        # that removes it (tools/demo_rows_audit.py, DEPLOY.md).
+        client_paths = {_rp(r) for r in reg.values() if not ours(r.get("owner"))}
+        leaks = 0
+
         for jid, row in reg.items():
             src = Path(row.get("path", "")).name
             # uploads are stored as upload_<hex>_<real name>
             disp = src.split("_", 2)[-1] if src.startswith("upload_") else src
             demo = disp in demo_names or disp.startswith(SHARED_PREFIXES)
             cur = row.get("owner")
+            if cur is None and _rp(row) in client_paths:
+                leaks += 1
+                print(f"  WARNING: shared row {jid} ({disp!r}) sits over a "
+                      f"client's file - left as is; run "
+                      f"tools/demo_rows_audit.py --store <jobs dir> to purge it")
+                continue
             if not ours(cur):
                 left += 1
                 print(f"  refused: {disp!r} stays with its owner {cur!r} "
@@ -224,6 +243,7 @@ def main() -> int:
     print(f"plan sets shared : {kept}")
     print(f"plan sets staff-only: {moved}")
     print(f"plan sets left with their client: {left}")
+    print(f"shared rows over a client's file (audit them): {leaks}")
     print(f"issued password  : {DEFAULT_PASSWORD} (each account must change it)")
     print(f"roster           : {out}")
     print("\nRestart the app so it reloads registry.json:")

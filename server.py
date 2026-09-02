@@ -446,9 +446,12 @@ if True:
             # upload, her job opened and her page rendered - a signed-in
             # nobody who outranked everybody. This is the ONE place the
             # request's user is derived, so this is where it fails closed:
-            # with accounts on the box, no name means no session, and the
+            # with accounts on the box, no name means no session, and a
+            # name the box no longer knows (an account deleted while its
+            # 7-day cookie was still out) means no session either; the
             # caller is treated exactly like one with no cookie at all.
-            if ok and user is None and _users.load():
+            _accounts = _users.load()
+            if ok and _accounts and (user is None or user not in _accounts):
                 ok = False
             if not ok:
                 # An API caller wants a status code; a person wants the login

@@ -70,7 +70,12 @@ def test_1_client_rows_keep_their_owner_staff_rows_are_shared():
                             "0e0e0e0e0e0e"),
         # a row from before per-user mode: shared already, stays shared
         "6a6a6a6a6a6a": row(store, NAME, None, "0f0f0f0f0f0f"),
+        # a LEAK: a shared row minted over alice's own file (same path as
+        # a1) by the pre-fix demo scan. Not ours to keep sharing, not this
+        # tool's to delete: it must be left alone and called out.
+        "7b7b7b7b7b7b": row(store, NAME, None, "0a0a0a0a0a0a"),
     }
+    assert reg["7b7b7b7b7b7b"]["path"] == reg["a1a1a1a1a1a1"]["path"]
     (store / "registry.json").write_text(json.dumps(reg, indent=1))
 
     out = run_tool(store)
@@ -94,6 +99,10 @@ def test_1_client_rows_keep_their_owner_staff_rows_are_shared():
                 if "refused" in ln and repr(disp) in ln and repr(ALICE) in ln]
         assert line, "no refusal printed for %r owned by %r:\n%s" % (
             disp, ALICE, out)
+    assert owners["7b7b7b7b7b7b"] is None, owners
+    assert "WARNING: shared row 7b7b7b7b7b7b" in out, (
+        "the leak row over alice's file was not called out:\n%s" % out)
+    assert "shared rows over a client's file (audit them): 1" in out, out
     assert "plan sets shared : 2" in out, out
     assert "plan sets staff-only: 1" in out, out
     assert "plan sets left with their client: 3" in out, out

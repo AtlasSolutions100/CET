@@ -256,6 +256,28 @@ def test_3_is_staff_needs_a_box_with_no_accounts():
         "single-password mode must still treat the one seat as staff"
 
 
+def test_4_a_deleted_accounts_cookie_is_not_a_sign_in():
+    """A name the box no longer knows is no session either: carol logs
+    in, her account is removed, and her still-valid cookie must meet the
+    same bar as no cookie at all."""
+    server.JOBS.clear()
+    ck = per_user_mode()
+    a_jid = alice_uploads(ck)
+    carol = "carol_synth"
+    store = _users.load()
+    _users.save(dict(store, **{carol: _users.hash_password("lilac-harbor-7732")}))
+    cookie = server._sign_session(carol)
+    assert probe(a_jid, cookie)["me"] == 200, "precondition: carol is signed in"
+    # the account goes away while the cookie is still out
+    _users.save({k: v for k, v in _users.load().items() if k != carol})
+    assert carol not in _users.load()
+    anon = probe(a_jid, None)
+    got = probe(a_jid, cookie)
+    assert got == anon,         "a deleted account's cookie was honoured: %r (anonymous gets %r)" % (got, anon)
+    assert probe(a_jid, ck[ALICE])["open"] == 200
+    assert all(j.get("owner") is not None for j in server.JOBS.values()),         server.JOBS
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
