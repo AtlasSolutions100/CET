@@ -208,6 +208,14 @@ class ScaleCandidate:
     # rather than being handed a bare number.
     origin: str = ""
     at: tuple | None = None
+    # The ground number was read ACROSS A LINE BREAK from its paper term /
+    # relation - `1"=` on one get_text() line, `90'` on the next. Set only
+    # by the get_text() scan (the row-assembled and OCR paths join words on
+    # geometry and emit no line breaks), cleared when the same value is also
+    # read intact anywhere on the page. Not serialised on its own: it is
+    # evidence for `read_text_layer`'s join-artefact test, and a candidate
+    # that test rejects says so through `origin` instead.
+    wrapped: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -415,11 +423,27 @@ def _scan(text: str) -> list[ScaleCandidate]:
         floor = 0.33 if _REL.search(m.group(0)) else 0.5
         if not (floor <= fpi <= (_RATIO_FPI_MAX if ratio else 400)):
             return
+        # Does the ground number sit on a different text line from the
+        # paper term that is supposed to relate to it? get_text() separates
+        # lines with "\n" and every `\s*` above walks across one, so a
+        # caption whose number is its own text object - the AutoCAD scale
+        # block prints `SCALE: 1"=` and the value as separate attributes -
+        # welds to whatever line get_text() emits NEXT. On the Walsh
+        # Engineering grading plans (public-ceqa sundale-road-30366 engine
+        # page index 1, harbison-canyon-21316 index 0) the next line is the
+        # drawn bar's LAST tick label, so `1"=` + `90'` read 90 ft/in where
+        # the sheet prints 1"=30' and its `30'` sits 1.8pt to the right of
+        # the `=` on the same printed row. Measured from paper (or the match
+        # start when a keyword form carries no paper term) to the number.
+        a = m.start("paper") if gd.get("paper") else m.start()
+        wrapped = "\n" in text[a:m.start("feet")]
         key = (round(fpi, 4), near)
         if key in found:
             found[key].count += 1
+            found[key].wrapped = found[key].wrapped and wrapped
         else:
-            found[key] = ScaleCandidate(m.group(0).strip(), fpi, near)
+            found[key] = ScaleCandidate(m.group(0).strip(), fpi, near,
+                                        wrapped=wrapped)
 
     def compound_needs_relation(m: re.Match) -> bool:
         """Reject a feet-and-inches ground term with nothing relating it.
@@ -1448,6 +1472,54 @@ def _ocr_caption_rescue(page, words) -> list:
     return out
 
 
+def _head_window(ws: list, h) -> list:
+    """The words a caption head can own a bar among: within 90pt vertically
+    and 320pt horizontally of the head's centre."""
+    hy = (h[1] + h[3]) / 2
+    hx = (h[0] + h[2]) / 2
+    return [w for w in ws
+            if abs(((w[1] + w[3]) / 2) - hy) < 90
+            and abs(((w[0] + w[2]) / 2) - hx) < 320]
+
+
+def _label_rows(cand: list) -> list:
+    """Numeric tick labels grouped into rows of three or more, each entry
+    (value, centre x, centre y, word)."""
+    labs = []
+    for w in cand:
+        m = _TICK.match(str(w[4]).strip())
+        if m:
+            labs.append((float(m.group(1)),
+                         (w[0] + w[2]) / 2, (w[1] + w[3]) / 2, w))
+    # The labels of one bar share a row. Cluster on the vertical
+    # gap between neighbours rather than fixed buckets: a "0"
+    # glyph box centres ~0.7pt below its "10"/"40" neighbours,
+    # and round(cy / 9) splits them whenever that straddles a
+    # bucket edge (Barn p4/p11).
+    labs.sort(key=lambda t: t[2])
+    rows: list = []
+    for t in labs:
+        if rows and t[2] - rows[-1][-1][2] < 4.5:
+            rows[-1].append(t)
+        else:
+            rows.append([t])
+    return [r for r in rows if len(r) >= 3]
+
+
+def bar_tick_labels(words: list) -> set:
+    """Every value printed as a tick label on a drawn bar's ladder: the
+    numeric labels in rows of three or more inside a caption head's window
+    (the same window and row test graphic_scale_bar reads from). Words
+    only - no geometry - so it is exactly what get_text() had in reach when
+    it emitted the page, which is what the join-artefact test asks."""
+    ws = [w for w in words if str(w[4]).strip()]
+    out: set = set()
+    for h in _bar_heads(ws):
+        for r in _label_rows(_head_window(ws, h)):
+            out |= {round(t[0], 4) for t in r}
+    return out
+
+
 def graphic_scale_bar(words: list, page=None,
                       ocr_retry: bool = False) -> ScaleCandidate | None:
     """Measure a drawn scale bar - the ruler with tick labels.
@@ -1499,30 +1571,7 @@ def graphic_scale_bar(words: list, page=None,
     for h in _bar_heads(ws):
         hy = (h[1] + h[3]) / 2
         hx = (h[0] + h[2]) / 2
-        near = [w for w in ws
-                if abs(((w[1] + w[3]) / 2) - hy) < 90
-                and abs(((w[0] + w[2]) / 2) - hx) < 320]
-
-        def _label_rows(cand):
-            labs = []
-            for w in cand:
-                m = _TICK.match(str(w[4]).strip())
-                if m:
-                    labs.append((float(m.group(1)),
-                                 (w[0] + w[2]) / 2, (w[1] + w[3]) / 2, w))
-            # The labels of one bar share a row. Cluster on the vertical
-            # gap between neighbours rather than fixed buckets: a "0"
-            # glyph box centres ~0.7pt below its "10"/"40" neighbours,
-            # and round(cy / 9) splits them whenever that straddles a
-            # bucket edge (Barn p4/p11).
-            labs.sort(key=lambda t: t[2])
-            rows: list = []
-            for t in labs:
-                if rows and t[2] - rows[-1][-1][2] < 4.5:
-                    rows[-1].append(t)
-                else:
-                    rows.append([t])
-            return [r for r in rows if len(r) >= 3]
+        near = _head_window(ws, h)
         rows = _label_rows(near)
         if not rows and ocr_retry and page is not None:
             # a head with no readable ladder: the labels are small enough
@@ -1827,31 +1876,87 @@ def _corroborate(res: ScaleResult, words: list, page=None) -> ScaleResult:
     return res
 
 
-def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
-                 corroborate: bool = True, linework=None) -> ScaleResult:
-    """Read the sheet's scale. `linework` - the page's already-built chains,
-    when the caller has them - replaces the raw-geometry proxy that ranks
-    several printed scales by what each governs (see _rank); it never
-    changes which captions are found."""
-    text = page.get_text()
+# The origin stamped on a get_text() reading refused as a join artefact:
+# its number was read across a line break from its `1"=` AND is one of the
+# drawn bar's own tick labels (see read_text_layer). Kept in the result so
+# the operator can see what the text layer produced and why it was not used.
+ORIGIN_JOIN_ARTEFACT = "text-linebreak-join"
+
+
+def read_text_layer(text: str, words: list | None, page=None,
+                    linework=None, corroborate: bool = True,
+                    nts: bool | None = None) -> ScaleResult | None:
+    """The text-layer reading: get_text() first, then the same words
+    re-assembled by printed row, then the drawn bar off the tick labels.
+    None when the text layer yields nothing (the caller goes on to OCR).
+
+    Words-level on purpose - `page` is only used for ranking geometry and
+    the bar's tick strokes - so a frozen page can be replayed without the
+    PDF (tests/test_scale_bar_contradiction.py).
+
+    THE JOIN-ARTEFACT RULE (CLAUDE.md section 5, "what you extracted is not
+    what is printed"). get_text() is a reading ORDER, not a printed line:
+    a caption whose number is its own text object welds, across "\n", to
+    whatever get_text() emits next. When that next thing is the drawn bar's
+    tick ladder the weld is `1"=` + the ladder's last label - 90 on a
+    sheet printing 1"=30' (public-ceqa sundale-road-30366 engine page
+    index 1) and 180 on one printing 1"=60' (harbison-canyon-21316 index
+    0): 3x on every length, 9x on every area and volume, delivered as an
+    uncontested "single" that _corroborate could only annotate. Both
+    conditions are structural and both are required:
+
+      * `wrapped`  - the number sits on a different get_text() line from
+                     its paper term (a caption's two sides never wrap; a
+                     block that prints them as separate attributes is
+                     exactly the case that welds); and
+      * the value is one of the bar's tick labels on THIS page's words
+                     (`bar_tick_labels`) - so a caption that merely
+                     happens to wrap keeps reading.
+
+    Such a candidate is not a caption reading at all, so it leaves the
+    ranking and the page falls through to the row-assembled text - which
+    joins on geometry and reads `1"= 30'` off the same words - or to the
+    bar, or abstains. It stays in the result's candidates stamped
+    ORIGIN_JOIN_ARTEFACT so the refusal is visible, never a silent drop.
+    """
+    if nts is None:
+        nts = bool(_NTS.search(text))
     cands = _scan(text)
-    nts = bool(_NTS.search(text))
-    if cands:
+    joins: list[ScaleCandidate] = []
+    if cands and words is not None and any(c.wrapped for c in cands):
         try:
-            from .extract import page_words
-            words = page_words(page)
+            ticks = bar_tick_labels(words)
         except Exception:
-            words = None
+            ticks = set()
+        for c in cands:
+            if c.wrapped and round(c.ft_per_paper_inch, 4) in ticks:
+                c.origin = ORIGIN_JOIN_ARTEFACT
+                joins.append(c)
+        cands = [c for c in cands if c not in joins]
+
+    def with_joins(res: ScaleResult) -> ScaleResult:
+        # A refused join whose value the intact readings ALSO carry adds
+        # nothing but a duplicate: the weld happened to land on the right
+        # number (Bozeman Yards Block 104 engine page index 38 welds
+        # `1" =` to a bar whose ladder prints the sheet's own 10, and the
+        # row-assembled text reads `1" = 10'` regardless). Only a join
+        # that stands for a value nothing else read is worth showing.
+        have = {round(c.ft_per_paper_inch, 4) for c in res.candidates}
+        extra = [c for c in joins
+                 if round(c.ft_per_paper_inch, 4) not in have]
+        if extra:
+            res.candidates = list(res.candidates) + extra
+        return res
+
+    if cands:
         best, pick = _rank(cands, page, words, linework)
         res = ScaleResult(best, cands, nts, "text", pick=pick)
         if corroborate and words is not None:
             res = _corroborate(res, words)
-        return res
-
+        return with_joins(res)
+    if words is None:
+        return None
     try:
-        from .extract import page_words
-
-        words = page_words(page)
         # Same text layer, re-assembled by row. AutoCAD scale-bar blocks keep
         # the ratio's number as its own attribute text, so get_text() emits
         # "1 inch =         ft." and prints the "10" elsewhere; sorting the
@@ -1860,17 +1965,55 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         if cands:
             best, pick = _rank(cands, page, words, linework)
             res = ScaleResult(best, cands, nts, "text", pick=pick)
-            return _corroborate(res, words) if corroborate else res
+            return with_joins(_corroborate(res, words) if corroborate
+                              else res)
 
         # No stated ratio: try the drawn GRAPHIC SCALE bar off the text layer
         # before paying for OCR. Its tick labels ("0", "50'", "100'") are
         # real text on most CAD sheets, and OCR mangles them ("100'" -> "00").
         bar = graphic_scale_bar(words, page)
         if bar:
-            return ScaleResult(bar, [bar], nts, "graphic-bar",
-                               pick={"why": "bar"})
+            return with_joins(ScaleResult(bar, [bar], nts, "graphic-bar",
+                                          pick={"why": "bar"}))
     except Exception:
         pass
+    if joins:
+        # The text layer produced only a join artefact and no row-assembled
+        # caption or readable bar backs a value: abstain with the artefact
+        # on view rather than fall to OCR as if nothing had been read.
+        return ScaleResult(None, joins, nts, "text",
+                           pick={"why": "abstained-join",
+                                 "reason": ("the only text-layer reading "
+                                            "welds a caption to a bar tick "
+                                            "label across a line break"),
+                                 "values": sorted({round(c.ft_per_paper_inch, 4)
+                                                   for c in joins})})
+    return None
+
+
+def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
+                 corroborate: bool = True, linework=None) -> ScaleResult:
+    """Read the sheet's scale. `linework` - the page's already-built chains,
+    when the caller has them - replaces the raw-geometry proxy that ranks
+    several printed scales by what each governs (see _rank); it never
+    changes which captions are found."""
+    text = page.get_text()
+    nts = bool(_NTS.search(text))
+    try:
+        from .extract import page_words
+        words = page_words(page)
+    except Exception:
+        words = None
+    res = read_text_layer(text, words, page, linework, corroborate, nts)
+    if res is not None and res.best is not None:
+        return res
+    # A text-layer ABSTENTION (a join artefact and nothing else) is held,
+    # not returned: OCR still gets its turn on the picture, and the held
+    # abstention is what comes back if OCR reads nothing either - never
+    # the bare "nothing printed" result, which would hide what was read.
+    held = res
+    if held is not None and not ocr_if_needed:
+        return held
 
     if ocr_if_needed:
         try:
@@ -1931,7 +2074,7 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
                 # "" = the sheet printed nothing we recognise;
                 # "ocr-unavailable"/"ocr-error" = the page was never
                 # actually checked (see _ocr_words_loud)
-                return ScaleResult(None, [], n2, ocr_down)
+                return held or ScaleResult(None, [], n2, ocr_down)
             nts = nts or bool(_NTS.search(ocr_text))
             if cands:
                 best, pick = _rank(cands, page, words, linework)
@@ -1943,4 +2086,4 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
         except Exception:
             pass
 
-    return ScaleResult(None, [], nts, "")
+    return held or ScaleResult(None, [], nts, "")
