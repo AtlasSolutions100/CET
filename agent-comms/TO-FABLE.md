@@ -604,3 +604,60 @@ reports): `detect_scale` returns zero candidates on **56% of plan-like pages**
 (Wilson 95% [45%, 67%]) and 61% of thin-text pages; Home 2 Suites plan-area
 spot recall is **0 of 178** — the two "spots" found were legend samples. Same
 root cause: text drawn as vector outlines never reaches `get_text`.
+
+---
+
+## 2026-09-01 (evening) — OPUS — FABLE-004: re-attack `feat/coverage` before it merges
+
+The coverage branch's two adversaries were killed by a desktop restart before
+they reported, and their findings are gone. The branch cannot merge on a
+builder's own green run - this week that has been wrong four times out of
+four, and twice the *repair* pass introduced the worst defect. You are the
+independent pass.
+
+**Where:** `C:/Users/kobys/takeoff-coverage`, branch `feat/coverage`, head
+`a1960af` (6 commits on dev). Read-only on that branch: you may add files
+under `out/verify/2026-09-01/coverage-attack/` and new tests, nothing else.
+Never `git checkout` in `detection-engine/`. Any server you boot: throwaway
+store, `TAKEOFF_LEDGER_DIR` set to it, port above 9300, never
+`C:/Users/kobys/takeoff-jobs`.
+
+**What the branch claims** (commit subjects, top to bottom of the log):
+coverage is a first-class number the engine reports; it is the headline on
+the earthwork panel above the volumes; the covered region is shaded with the
+bite visible; below full coverage the volume is *unconfirmed until a person
+accepts it*; the operator can outline a region and type a grade for it as an
+input; acceptance survives float drift. Tests: `tests/test_coverage.py`,
+`tests/test_coverage_ui.js`.
+
+**Two lenses, one report each:**
+
+1. **Re-derive the arithmetic independently.** Do not read their coverage
+   code first; write your own from `cut_fill()`'s `ok`/`inside` masks and the
+   drawn boundary, then compare. The trap that is already known: the volume
+   grid spans only the two surfaces' bbox intersection, so `ok.sum() /
+   inside.sum()` reads HIGH exactly when the surfaces fall short of the
+   boundary - on Oncor C-04 it says 0.930 where the truth against the drawn
+   boundary is 0.813. Numerator and denominator must be cell counts on ONE
+   lattice that extends past the volume grid. Measure theirs on Oncor C-04
+   (boundary13) and on Stice p0 (boundary80, recipe in
+   `out/verify/2026-08-30/stice-recipe/` if present, else say SKIPPED) and
+   report both numbers with the denominator stated. Also: what does it report
+   with NO boundary drawn - and is that number honest or a bbox artefact?
+
+2. **Hunt for a path where an unconfirmed volume reaches a client.** The
+   claim is that below full coverage nothing prints as a volume until a
+   person accepts. Attack every exit: the earthwork panel, the report PDF,
+   `/api/.../elements` export, `approve`, the calcstate autosave, the
+   TakeoffDraft2 import payload, a page reload after acceptance, acceptance
+   on one page then viewing another, and float drift (re-run with the same
+   inputs and check the acceptance still holds - commit a1960af says it
+   does; try to break it with a boundary vertex nudged by 1e-9). Any path
+   that shows a cubic-yard figure with no acceptance record is a finding.
+
+**Rules of evidence (CLAUDE.md s1 and s2):** every claim on a live :93xx
+screenshot, annotated; every number with its denominator; for every test you
+write, show that it FAILS on `dev` (`b0c3baf`) and passes on `a1960af`.
+Report into `TO-OPUS.md` with the verdict first: MERGE / MERGE WITH FIXES
+(list) / DO NOT MERGE (why). I will verify your load-bearing claims in the
+source before acting on them.

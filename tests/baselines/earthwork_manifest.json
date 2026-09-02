@@ -1,5 +1,5 @@
 {
- "_about": "Every earthwork truth case tests/test_earthwork_regress.py replays. One entry per case; add a DEM-derived truth sheet by adding an entry, not by editing the test. Fields: id; sheet (human name, engine page index AND printed sheet); kind = how the inputs are read (fixture: one committed JSON like earthwork_oncor_c04_inputs.json; seed_flips: the offline-recipe folder layout under out/verify with seed/result/flips/boundary files); via = server runs the entry THROUGH THE PRODUCT (server.earthwork_calc, the POST /earthwork route function, over a throwaway TAKEOFF_JOBS_DIR; needs page = engine page index; runs then take boundary, spots, existing_layers / proposed_layers as [{name, thickness_in}] and scale_ft_per_in = a reviewer-typed scale sidecar, and NEVER cell_ft or surface_model - the server's defaults are the point); source = where the row set and its verification live; baseline = the expectation file, committed under tests/baselines/ ONLY for non-client data - client work keeps it gitignored beside its inputs; runs = the cut_fill configurations (boundary: recipe | shrunk75 | null; surface_model; cell_ft; existing_offset_ft / proposed_offset_ft; spots = N proposed spot points). compare = the comparison kind, DECLARED on every entry and repeated inside its baseline, never inferred from what a file lacks: recipe = EXACT floats, the baseline must carry earthwork_sig and cut_yd3/fill_yd3/net_yd3 on every case and is written only by --accept; tolerance = a TRUTH case whose numbers came from outside the engine (a DEM differencing, a client's own takeoff), the entry must carry tolerance_yd3 and/or tolerance_pct > 0, its baseline is hand-written {\"compare\": \"tolerance\", \"source\": ..., \"cases\": {run-name: {cut_yd3, fill_yd3, net_yd3}}} with all three numbers on every case, and --accept refuses it. enabled = false parks an entry visibly (printed as DISABLED); a manifest with zero enabled entries FAILS, and so does a run that compares zero fields. Gitignored inputs that are absent print SKIPPED and are counted, never silently passed - and with EARTHWORK_REQUIRE=1 / --require (this machine, the production regress) a SKIPPED case FAILS. baseline_sha256 = a COMMITTED sha256sum-style file pinning a gitignored baseline by hash (never by contents); --accept rewrites it, the gate checks it whenever the inputs are present, so a local re-accept is visible in git.",
+ "_about": "Every earthwork truth case tests/test_earthwork_regress.py replays. One entry per case; add a DEM-derived truth sheet by adding an entry, not by editing the test. Fields: id; sheet (human name, engine page index AND printed sheet); kind = how the inputs are read (fixture: one committed JSON like earthwork_oncor_c04_inputs.json; seed_flips: the offline-recipe folder layout under out/verify with seed/result/flips/boundary files); via = server runs the entry THROUGH THE PRODUCT (server.earthwork_calc, the POST /earthwork route function, over a throwaway TAKEOFF_JOBS_DIR; needs page = engine page index; runs then take boundary, spots, existing_layers / proposed_layers as [{name, thickness_in}] and scale_ft_per_in = a reviewer-typed scale sidecar, and cell_ft / surface_model ONLY as a deliberately TYPED body - a run without them pins the server's defaults, a run with them pins that the route honours what was typed: cell_ft and surface_model in every baseline case are compared exactly as cell_used / surface_model); source = where the row set and its verification live; baseline = the expectation file, committed under tests/baselines/ ONLY for non-client data - client work keeps it gitignored beside its inputs; runs = the cut_fill configurations (boundary: recipe | shrunk75 | null; surface_model; cell_ft; existing_offset_ft / proposed_offset_ft; spots = N proposed spot points). compare = the comparison kind, DECLARED on every entry and repeated inside its baseline, never inferred from what a file lacks: recipe = EXACT floats, the baseline must carry earthwork_sig and cut_yd3/fill_yd3/net_yd3 on every case and is written only by --accept; tolerance = a TRUTH case whose numbers came from outside the engine (a DEM differencing, a client's own takeoff), the entry must carry tolerance_yd3 and/or tolerance_pct > 0, its baseline is hand-written {\"compare\": \"tolerance\", \"source\": ..., \"cases\": {run-name: {cut_yd3, fill_yd3, net_yd3}}} with all three numbers on every case, and --accept refuses it. enabled = false parks an entry visibly (printed as DISABLED); a manifest with zero enabled entries FAILS, and so does a run that compares zero fields. Gitignored inputs that are absent print SKIPPED and are counted, never silently passed - and with EARTHWORK_REQUIRE=1 / --require (this machine, the production regress) a SKIPPED case FAILS. baseline_sha256 = a COMMITTED sha256sum-style file pinning a gitignored baseline by hash (never by contents); --accept rewrites it, the gate checks it whenever the inputs are present, so a local re-accept is visible in git.",
  "cases": [
   {
    "id": "oncor_c04",
@@ -35,6 +35,14 @@
      "surface_model": "linear",
      "cell_ft": 2.0,
      "spots": 10
+    },
+    {
+     "name": "boundary13|linear|spots46",
+     "boundary": "recipe",
+     "surface_model": "linear",
+     "cell_ft": 2.0,
+     "spots": 46,
+     "_why": "ALL 46 spot elevations = proposed_points full. The round-one fence stopped at 10 spots, and a cut_fill wrapper that fired only above 10 passed it with fill -15% on this exact call (2026-09-02); a trigger the fence never exercises is a trigger the fence never sees."
     }
    ]
   },
@@ -59,7 +67,14 @@
     },
     {"name": "server|scale40|boundary13", "boundary": "recipe", "scale_ft_per_in": 40},
     {"name": "server|scale20|boundary13", "boundary": "recipe", "scale_ft_per_in": 20},
-    {"name": "server|spots10|boundary13", "boundary": "recipe", "spots": 10}
+    {"name": "server|spots10|boundary13", "boundary": "recipe", "spots": 10},
+    {"name": "server|spots46|boundary13", "boundary": "recipe", "spots": 46,
+     "_why": "the bid call: every Oncor spot, through the product route. Fill here was 8248.2 -> 7011.0 under the ledger.py hook with '23 passed' printed."},
+    {"name": "server|typed-cell1|boundary13", "boundary": "recipe", "cell_ft": 1.0,
+     "_why": "a TYPED body. cell_used is pinned: a route that honoured a typed cell_ft only when it equalled the default (typed 1.0 -> cell_used 4.0, 2026-09-02) passed the defaults-only fence."},
+    {"name": "server|typed-cell4|boundary13", "boundary": "recipe", "cell_ft": 4.0},
+    {"name": "server|typed-linear|boundary13", "boundary": "recipe", "surface_model": "linear"},
+    {"name": "server|typed-clamped_ct|boundary13", "boundary": "recipe", "surface_model": "clamped_ct"}
    ]
   },
   {
