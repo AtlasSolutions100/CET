@@ -512,22 +512,28 @@ def _check(now: dict) -> int:
     return 0
 
 
-def _earthwork_check() -> int:
+def _earthwork_check(require: bool = False) -> int:
     """The volume gate: tests/test_earthwork_regress.py, run as a subprocess
     so its output streams and its exit code is the verdict (0 pass, 1 fail).
-    It replays the certified recipes through earthwork.cut_fill and compares
-    exact floats to committed baselines, and checks earthwork_sig() against
-    the signature each baseline recorded. It has its OWN --accept (per truth
-    case); this file's --accept never touches a volume baseline."""
+    It replays the certified recipes through earthwork.cut_fill AND through
+    server.earthwork_calc and compares exact floats to committed baselines,
+    and checks earthwork_sig() against the signature each baseline recorded.
+    It has its OWN --accept (per truth case); this file's --accept never
+    touches a volume baseline. `require` (--require here, or
+    EARTHWORK_REQUIRE=1 in the environment, which the subprocess inherits)
+    makes a SKIPPED client case a FAIL - set it wherever the client inputs
+    are supposed to be."""
     import subprocess
     test = Path(__file__).parent.parent / "tests" / "test_earthwork_regress.py"
     print("\nEARTHWORK GATE  python "
-          f"{test.relative_to(Path(__file__).parent.parent)}")
+          f"{test.relative_to(Path(__file__).parent.parent)}"
+          + (" --require" if require else ""))
     if not test.is_file():
         print(f"GATE: earthwork test missing at {test} - FAIL")
         return 1
     sys.stdout.flush()
-    return subprocess.call([sys.executable, str(test)])
+    return subprocess.call([sys.executable, str(test)]
+                           + (["--require"] if require else []))
 
 
 def _wmean(pairs):
@@ -551,6 +557,9 @@ def main():
                          "tests/test_earthwork_regress.py --accept)")
     ap.add_argument("--json", metavar="PATH",
                     help="also write the machine-readable summary here")
+    ap.add_argument("--require", action="store_true",
+                    help="with --check: a SKIPPED earthwork truth case (client "
+                         "inputs absent) is a FAIL - same as EARTHWORK_REQUIRE=1")
     args = ap.parse_args()
     t0 = time.time()
     if args.check:
@@ -723,7 +732,7 @@ def main():
         rc = _check(summary)
         # the volume gate runs AFTER the chain gate so its verdict is the
         # last thing on screen; either one failing fails the build
-        sys.exit(max(rc, _earthwork_check()))
+        sys.exit(max(rc, _earthwork_check(require=args.require)))
 
 
 if __name__ == "__main__":

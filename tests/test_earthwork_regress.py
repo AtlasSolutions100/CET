@@ -57,6 +57,16 @@ FAIL, the run prints "N fields compared" and FAILS when N is 0. Client work whos
 out/ (Stice) is REPLAYED ONLY WHEN THOSE INPUTS EXIST LOCALLY, and prints a
 visible SKIPPED line otherwise - a silent pass when the client data is absent
 would make a laptop without the files look greener than the one with them.
+Two more things keep that honest. (1) A gitignored baseline is pinned by a
+COMMITTED sha256 of the file (manifest baseline_sha256 -> tests/baselines/
+earthwork_stice_p0.sha256: the hash, never the contents), checked whenever
+the inputs are present and rewritten by --accept, so a local re-accept after
+a volume change shows up in git as a changed hash with a commit message, or
+fails the gate. (2) EARTHWORK_REQUIRE=1 in the environment, or --require,
+turns SKIPPED into a FAIL with exit 1: set on the machines that hold the
+client inputs (this one, the production regress), so "green by absence" is
+impossible there; a fresh clone without --require still prints SKIPPED and
+is counted, never silently passed.
 
 Dependency-free plain asserts like tests/test_gate.py (needs the repo venv
 for numpy/scipy, same as the engine):
@@ -69,6 +79,9 @@ for numpy/scipy, same as the engine):
                                                               # THIS tree's baselines
     python tests/test_earthwork_regress.py --server-tree PATH # server.py from a
                                                               # different tree again
+    python tests/test_earthwork_regress.py --require          # a SKIPPED truth
+                                                              # case is a FAIL
+                                                              # (= EARTHWORK_REQUIRE=1)
     python tests/test_earthwork_regress.py --manifest PATH    # replay a scratch
                                                               # manifest (attacks on the
                                                               # gate itself); the
@@ -358,6 +371,23 @@ def run_case_server(case, inputs, server, job_id, page):
     return r
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_sha_file(path: Path) -> "str | None":
+    """First 64-hex token of a sha256sum-style file, or None."""
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            tok = line.strip().split()
+            if tok and len(tok[0]) == 64 and all(c in "0123456789abcdef" for c in tok[0]):
+                return tok[0]
+    except OSError:
+        return None
+    return None
+
+
 def _fmt(v):
     return "None" if v is None else (f"{v}" if isinstance(v, (int, float)) else repr(v))
 
@@ -374,12 +404,18 @@ def main(argv=None) -> int:
     ap.add_argument("--server-tree", metavar="PATH",
                     help="import server.py from this checkout (default: --tree)")
     ap.add_argument("--only", metavar="CASE_ID", help="run one truth case")
+    ap.add_argument("--require", action="store_true",
+                    help="a SKIPPED truth case (inputs absent) is a FAIL, exit 1 "
+                         "- same as EARTHWORK_REQUIRE=1 in the environment")
     ap.add_argument("--manifest", metavar="PATH",
                     help="read this manifest instead of the committed one "
                          "(for replaying attacks on the gate; never in CI)")
     args = ap.parse_args(argv)
 
     tree = Path(args.tree).resolve() if args.tree else REPO
+    require = bool(args.require) or (
+        os.environ.get("EARTHWORK_REQUIRE", "").strip().lower()
+        in ("1", "true", "yes"))
     sys.path.insert(0, str(tree))
     import numpy as np  # noqa: E402
     from takeoff_engine import earthwork as ew  # noqa: E402
@@ -470,6 +506,10 @@ def main(argv=None) -> int:
             print(f"SKIPPED {cid}: inputs not present locally ({where}) - "
                   f"{entry.get('skip_note', 'no volumes were checked for this case')}")
             skipped.append(cid)
+            if require:
+                failures.append(f"{cid}: SKIPPED, and --require / EARTHWORK_REQUIRE "
+                                f"is set: this machine is expected to hold the "
+                                f"inputs, so an absent case is a FAIL, not a pass")
             continue
         via_server = entry.get("via") == "server"
         print(f"\n{cid}: {entry['sheet']}\n   inputs {where}"
@@ -529,6 +569,13 @@ def main(argv=None) -> int:
             print(f"   BASELINE WRITTEN {bpath} (earthwork_sig {sig}) - "
                   + ("commit it with the reason" if in_repo else
                      "gitignored: stays beside the client inputs, never committed"))
+            if entry.get("baseline_sha256"):
+                shp = REPO / entry["baseline_sha256"]
+                digest = _sha256(bpath)
+                shp.write_text(f"{digest}  {bpath.name}\n", encoding="utf-8",
+                               newline="\n")
+                print(f"   SHA256 WRITTEN {shp} = {digest} - commit it: this is "
+                      f"how a re-accept of a gitignored baseline shows in git")
             continue
 
         if not bpath.is_file():
@@ -546,6 +593,24 @@ def main(argv=None) -> int:
             continue
         if not isinstance(base, dict):
             base = {}
+        # -1. a gitignored baseline is pinned by a committed hash of its
+        #     bytes. Mismatch = someone re-accepted it locally and did not
+        #     commit the new hash with a reason; absent = never pinned.
+        if entry.get("baseline_sha256"):
+            shp = REPO / entry["baseline_sha256"]
+            want_sha, got_sha = _read_sha_file(shp), _sha256(bpath)
+            if want_sha is None:
+                failures.append(f"{cid}: no committed sha256 for {bpath.name} at "
+                                f"{shp} - run --accept {cid} and commit the hash")
+            elif want_sha != got_sha:
+                failures.append(f"{cid}: {bpath.name} sha256 {got_sha[:16]}... does "
+                                f"not match the committed {want_sha[:16]}... in "
+                                f"{shp.name} - the gitignored baseline was "
+                                f"re-accepted locally; commit the new hash with the "
+                                f"reason, or restore the baseline")
+            print(f"   sha256 {got_sha[:16]}... "
+                  f"{'matches' if want_sha == got_sha else 'MISMATCH vs'} "
+                  f"{shp.relative_to(REPO)}")
         # 0. the baseline's shape, field by field. A recipe baseline that
         #    lost its earthwork_sig, a case dict emptied out, a null where a
         #    volume belongs: each is a named FAIL, never a quieter pass.
