@@ -389,6 +389,22 @@ def run_case_server(case, inputs, server, job_id, page):
     return r
 
 
+def _loaded_from_source(mod, prefix: Path):
+    """True when `mod`'s bytecode cache path lies under `prefix` - i.e. the
+    only .pyc importlib could have consulted for it is under the fresh,
+    empty prefix, so the module was compiled from its source. Otherwise a
+    string saying what was loaded."""
+    cached = getattr(mod, "__cached__", None)
+    if not cached:
+        return f"{mod.__name__} has no __cached__ - cannot prove it came from source"
+    try:
+        Path(cached).resolve().relative_to(prefix.resolve())
+    except ValueError:
+        return (f"{mod.__name__} resolved its bytecode to {cached}, outside the "
+                f"fresh pycache prefix {prefix} - a stale .pyc could be what ran")
+    return True
+
+
 def _gate_regress():
     """takeoff_engine/regress.py from THIS repo - the tree the baselines and
     this test belong to - loaded by file path so that `--tree PATH` cannot
@@ -468,6 +484,18 @@ def main(argv=None) -> int:
     require = bool(args.require) or (
         os.environ.get("EARTHWORK_REQUIRE", "").strip().lower()
         in ("1", "true", "yes"))
+    # SOURCE ONLY, from here on. Before the first import from the tree, point
+    # the bytecode cache at a fresh, empty directory and stop writing one:
+    # importlib resolves every module's .pyc through sys.pycache_prefix at
+    # import time, so nothing under the tree's __pycache__ can be what runs
+    # here. Proved below: each tree module's __cached__ is printed and must
+    # lie under this prefix. (regress._earthwork_check also launches this
+    # file with -B and PYTHONPYCACHEPREFIX; this guard covers a direct run.)
+    import shutil
+    import tempfile
+    pyc_prefix = Path(tempfile.mkdtemp(prefix="earthwork_gate_pyc_"))
+    sys.pycache_prefix = str(pyc_prefix)
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(tree))
     import numpy as np  # noqa: E402
     from takeoff_engine import earthwork as ew  # noqa: E402
@@ -476,6 +504,13 @@ def main(argv=None) -> int:
     if pkg.parent != tree:
         print(f"FAIL: takeoff_engine imported from {pkg}, not {tree}")
         return 1
+    fresh = _loaded_from_source(ew, pyc_prefix)
+    if fresh is not True:
+        print(f"FAIL: {fresh}")
+        return 1
+    print(f"bytecode: source only - sys.pycache_prefix={pyc_prefix} (fresh, "
+          f"empty), dont_write_bytecode={sys.dont_write_bytecode}; "
+          f"earthwork.__cached__ = {ew.__cached__}")
     sig = regress.earthwork_sig(pkg)
     sig_files = regress.earthwork_sig_files(pkg)
     file_hashes = regress.earthwork_file_hashes(pkg)
@@ -489,6 +524,19 @@ def main(argv=None) -> int:
     hooks = regress.earthwork_import_hooks()
     print("import hooks outside the tree (not hashed): "
           + ("; ".join(hooks) if hooks else "none"))
+    # what the SERVER would load. This run computes from source (above);
+    # the server process loads __pycache__, and a pyc rebuilt from a
+    # modified source with the original mtime/size in its header passes
+    # the interpreter's check with every hash unchanged. Recompile and
+    # compare (regress.stale_bytecode); a mismatch is a FAIL by name.
+    stale, audited = regress.stale_bytecode(pkg)
+    n_match = sum(1 for a in audited if a.endswith("matches source"))
+    n_ign = len(audited) - n_match
+    print(f"bytecode audit: {n_match} pyc match their source, {n_ign} ignored "
+          f"by the interpreter, {len(stale)} STALE"
+          + ("".join(f"\n   {a}" for a in audited if not a.endswith("matches source"))))
+    for line in stale:
+        print(f"   FAIL {line}")
 
     data_root = Path(os.environ.get("EARTHWORK_DATA_ROOT") or REPO).resolve()
     manifest_path = Path(args.manifest).resolve() if args.manifest else MANIFEST
@@ -523,8 +571,6 @@ def main(argv=None) -> int:
     server = None
     jobs_tmp = None
     if any(e.get("via") == "server" for e in manifest["cases"]):
-        import shutil
-        import tempfile
         server_tree = (Path(args.server_tree).resolve() if args.server_tree
                        else tree)
         jobs_tmp = Path(tempfile.mkdtemp(prefix="earthwork_gate_jobs_"))
@@ -542,6 +588,10 @@ def main(argv=None) -> int:
         sp = Path(server.__file__).resolve()
         if sp.parent != server_tree or sp.name != "server.py":
             print(f"FAIL: server imported from {sp}, not {server_tree}/server.py")
+            return 1
+        fresh = _loaded_from_source(server, pyc_prefix)
+        if fresh is not True:
+            print(f"FAIL: {fresh}")
             return 1
         if Path(server.JOBS_DIR).resolve() != jobs_tmp.resolve():
             print(f"FAIL: server.JOBS_DIR is {server.JOBS_DIR}, not the throwaway "
@@ -743,7 +793,12 @@ def main(argv=None) -> int:
 
     if jobs_tmp is not None:
         shutil.rmtree(jobs_tmp, ignore_errors=True)
+    shutil.rmtree(pyc_prefix, ignore_errors=True)
+    failures = stale + failures
     if args.accept:
+        if stale:
+            print("REFUSED --accept: stale bytecode above; delete __pycache__ first")
+            return 1
         return 0
     print()
     if n_fields == 0:

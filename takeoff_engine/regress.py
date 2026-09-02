@@ -443,6 +443,89 @@ def earthwork_sig(pkg: "Path | None" = None) -> str:
         h.update(b"|")
     return h.hexdigest()[:16]
 
+def stale_bytecode(pkg: "Path | None" = None) -> tuple:
+    """Bytecode beside the hashed sources that the interpreter WOULD load and
+    that does not match the source: (problems, audited) - a list of FAIL
+    strings and a list of what was checked.
+
+    The hole (fresh adversary, 2026-09-02, N7): earthwork.py's bytes left
+    alone, __pycache__/earthwork.cpython-312.pyc rebuilt from a modified
+    source with its header stamped with the original mtime and size. The
+    interpreter's timestamp check passes, the pyc is what runs, every
+    content hash is unchanged. The gate itself no longer loads any pyc from
+    the tree (tests/test_earthwork_regress.py sets sys.pycache_prefix to a
+    fresh temp dir and dont_write_bytecode before the first tree import,
+    and _earthwork_check launches it with -B and PYTHONPYCACHEPREFIX), so
+    its numbers come from source - which is exactly why THIS audit exists:
+    the gate computing an honest number from source says nothing about the
+    server process, which loads whatever __pycache__ holds. So every hashed
+    .py is recompiled here and compared, as a code object, to each pyc the
+    interpreter would accept for it. A mismatch is a FAIL that names the
+    pyc; delete __pycache__ and re-run.
+
+    "Would load" is decided the way importlib decides it (PEP 3147 / PEP
+    552): a timestamp pyc only when its header mtime and size equal the
+    source's; an unchecked hash-based pyc always; a checked hash-based pyc
+    when its source hash matches. A pyc the interpreter would reject (older
+    magic, superseded timestamp) is listed as ignored, never as a failure -
+    an edit that has not been run yet leaves one of those behind.
+    """
+    import importlib.util
+    import marshal
+    import struct
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    tag = sys.implementation.cache_tag
+    problems, audited = [], []
+    for rel in earthwork_sig_files(pkg):
+        src = (pkg / rel)
+        if src.suffix != ".py":
+            continue
+        cache = src.parent / "__pycache__"
+        if not cache.is_dir():
+            continue
+        source = src.read_bytes()
+        st = src.stat()
+        for pyc in sorted(cache.glob(f"{src.stem}.{tag}*.pyc")):
+            name = f"{rel.rsplit('/', 1)[0] + '/' if '/' in rel else ''}" \
+                   f"__pycache__/{pyc.name}"
+            data = pyc.read_bytes()
+            if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
+                audited.append(f"{name}: ignored (other interpreter's magic)")
+                continue
+            flags = struct.unpack("<I", data[4:8])[0]
+            if flags & 1:                      # hash-based (PEP 552)
+                if flags & 2 and data[8:16] != importlib.util.source_hash(source):
+                    audited.append(f"{name}: ignored (checked hash differs)")
+                    continue
+                why = "unchecked hash-based" if not flags & 2 else "hash matches"
+            else:                              # timestamp-based
+                mtime, size = struct.unpack("<II", data[8:16])
+                if mtime != int(st.st_mtime) & 0xFFFFFFFF \
+                        or size != st.st_size & 0xFFFFFFFF:
+                    audited.append(f"{name}: ignored (superseded: header "
+                                   f"mtime/size differ from the source)")
+                    continue
+                why = "header mtime/size match the source"
+            opt = 2 if ".opt-2." in pyc.name else 1 if ".opt-1." in pyc.name else 0
+            try:
+                have = marshal.loads(data[16:])
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"stale bytecode: {name} is unreadable ({e}) "
+                                f"but the interpreter would load it ({why})")
+                continue
+            want = compile(source, str(src), "exec", dont_inherit=True,
+                           optimize=opt)
+            if have != want:
+                problems.append(
+                    f"stale bytecode: {name} does not match {rel} recompiled "
+                    f"from source, and the interpreter would load it ({why}) - "
+                    f"the server process runs THIS, not the hashed source; "
+                    f"delete {cache} and re-run")
+            else:
+                audited.append(f"{name}: matches source")
+    return problems, audited
+
+
 # Tolerance on a class-accuracy fraction. Detection is deterministic (accept
 # loops are order-pinned), so this is not for run-to-run noise - it is for
 # float formatting drift across library versions.
@@ -583,17 +666,32 @@ def _earthwork_check(require: bool = False) -> int:
     EARTHWORK_REQUIRE=1 in the environment, which the subprocess inherits)
     makes a SKIPPED client case a FAIL - set it wherever the client inputs
     are supposed to be."""
+    import shutil
     import subprocess
+    import tempfile
     test = Path(__file__).parent.parent / "tests" / "test_earthwork_regress.py"
-    print("\nEARTHWORK GATE  python "
+    # -B and a FRESH pycache prefix: the child never reads a .pyc from the
+    # tree and never writes one, so a stale pyc beside earthwork.py (bytes
+    # unchanged, bytecode rebuilt from a modified source with the original
+    # mtime/size in its header - the N7 attack) cannot be what computes
+    # the volumes. The test guards itself the same way for a direct run;
+    # this is the launcher's half. stale_bytecode() then audits what the
+    # SERVER would load, which this does not change.
+    prefix = tempfile.mkdtemp(prefix="earthwork_gate_pyc_")
+    env = dict(os.environ, PYTHONPYCACHEPREFIX=prefix)
+    print("\nEARTHWORK GATE  python -B "
           f"{test.relative_to(Path(__file__).parent.parent)}"
-          + (" --require" if require else ""))
+          + (" --require" if require else "")
+          + f"   (PYTHONPYCACHEPREFIX={prefix})")
     if not test.is_file():
         print(f"GATE: earthwork test missing at {test} - FAIL")
         return 1
     sys.stdout.flush()
-    return subprocess.call([sys.executable, str(test)]
-                           + (["--require"] if require else []))
+    try:
+        return subprocess.call([sys.executable, "-B", str(test)]
+                               + (["--require"] if require else []), env=env)
+    finally:
+        shutil.rmtree(prefix, ignore_errors=True)
 
 
 def _wmean(pairs):

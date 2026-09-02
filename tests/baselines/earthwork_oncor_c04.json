@@ -1,7 +1,7 @@
 {
  "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04'. Written by tests/test_earthwork_regress.py --accept oncor_c04; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
  "compare": "recipe",
- "earthwork_sig": "8a55d799ab814494",
+ "earthwork_sig": "3c8d0d68d779dc56",
  "earthwork_sig_files": [
   "../provision_demo.py",
   "../server.py",
@@ -51,7 +51,7 @@
   "overlay.py": "f01eca73ee7d9dea",
   "profile.py": "2ca071ad143e501b",
   "raster.py": "97f80fabb32ed6c9",
-  "regress.py": "a614cf91b3c56204",
+  "regress.py": "c057278c1b1a12fd",
   "scale_detect.py": "e67a2c3a3ae81802",
   "sweep.py": "7f995d17c54ba7be",
   "text_detect.py": "c081d795fc6ef3da",
