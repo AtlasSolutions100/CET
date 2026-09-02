@@ -1,5 +1,18 @@
 # SPEC — outline-text reader (branch `feat/outline-reader`, base dev @ 998bf35)
 
+> **Judge's pass (2026-09-02, verdict on 0f6b0ce: buildable, severity serious).**
+> Revised in place, one commit. What changed, by the judge's problem list:
+> 1. **§6.2 / §7.4 / §7.5 — bar corroboration must be independent of the caption's source.** A ladder read by the same lane (same cluster ids, or Lane B at all) corroborates nothing; the psm-6 pixel zoom is *forced* when the caption is non-native, and a lane-supplied ladder no longer suppresses it (the `if not rows` skip at :1592).
+> 2. **§5.4 — mark attachment rewritten.** Promotion needs inter-glyph-gap placement, a local tiny-path density test and decimal-place consistency; the page-level "> 5,000 tiny paths → always ambiguous" cut is removed because by the analyzer's own count it sat below RC Ontario p0/p7, H2S C3/C2, Loves Lane, C8.0, GAOA and C2.1 (S-tiny).
+> 3. **§4.3 step 5 / §4.4 — a Lane A digit cluster is promotable only after an independent reader confirms its label** (gap-OCR pixel reads, or native-covered occurrences); the document-consistency check counts only witnesses that do not come from the same clusters.
+> 4. **§6.2 suggest_elevations — outline-inline vs gap-OCR disagreement emits neither as a value** (`how="conflict"`); the `how == "inline"` branch and the `> 0.5` write threshold at earthwork.py:1429-1470 are named as the reason a 0.25 row would otherwise win silently.
+> 5. **§3.1 / §5.3a — Lane B gets a per-page Tesseract call budget** (S-tess: 72–85 ms per call, 3–6 min per page unbudgeted), numeric-first ordering, one dpi for alphabetic crops, and a cache `page_words(page)` hits without editing call sites. Call-site census re-measured: **19** builders (the draft said 16 and listed 14).
+> 6. **§7.3 site 1 — `read_text_layer` gets a merged text that preserves `get_text()` newlines.** Feeding `_row_text(page_lines(page))` sets `wrapped = False` everywhere (scale_detect.py:455) and disables the join-artefact refusal that fixed sundale 90→30 and harbison 180→60 at 998bf35. The ":2093 row rescan" citation was wrong (a comment); the rescan is inside `read_text_layer` at :1985.
+> 7. **§3.3 — `'?'` pseudo-words change chain geometry** (`_bridge_text` takes words of len ≤ 6, `_demote_text_chains` len ≤ 24); stated as a measured change with its own stage-2 report (§10.13) and a ≥ 3-glyph floor, not "consumers tolerate them".
+> 8. **§2.1 / §4.1 — the L4 glyph filter is transcribed in full** (H_MIN 1.0, dashed paths excluded, w ≤ 6 h, filled needs ≥ 2 items); sub-1-pt paths are marks, not glyphs — the draft said the opposite while quoting counts made with the floor.
+> 9. **§7.5 / §10.15 — the population of OCR-`single` picks cannot be read from the survey** (records carry `{best, candidates}`, no `source`; re-checked).
+> 10. §8.1 gate, §9 stage tests and §10.12–10.18 updated to match.
+
 Status: design phase, no engine code changed. Every number below is either
 quoted from one of the five understand-phase lenses (`out_understand.json`,
 scratch input, not committed — cited as **L1..L5**), taken from the tree at
@@ -19,6 +32,9 @@ Lens key:
 Scratch measurements this document adds:
 - **S-survey** `scratchpad/survey_calc.py` over `C:\Users\kobys\takeoff-fable2\out\outline_survey_final.json` (6,966 pages, survey of 2026-09-01 02:58)
 - **S-dem** `scratchpad/dem_census.py` over the DEM outline PDF
+- **S-tess** `scratchpad/judge_tess_time.py` (the judge's script, re-run here): one DEM outline glyph crop, 10 `image_to_string` calls each — 600 dpi psm 7 **81 ms**, psm 8 **72 ms**; 900 dpi psm 7 **85 ms**, psm 8 **76 ms** per call (the judge measured 71–73 ms)
+- **S-census** `grep -n "page_words(\|page_lines("` over the tree at 998bf35: 19 builder sites (§3.1)
+- **S-tiny** `corpus-character/results.json` key `tiny_marks_on_page` (the L4 analyzer's own count of paths < 1 pt tall), per page (§5.4 rule 4)
 
 What the reader is for: the owner's target is that estimators auto-calculate
 within 5–15% and fix the rest by hand. Today outline text makes
@@ -90,8 +106,8 @@ signal names below are that file's keys). All signals are computed from
 
 | signal | definition | measured spread |
 |---|---|---|
-| `stroked_glyphs` | `'s'` paths, line width ≤ 1.6 pt, bbox ≤ 40 pt; segments whose 0.3-pt-padded end-point boxes touch are one glyph | RC Ontario p0 10,455; stroked pages 13/28, mixed 6/28 |
-| `filled_glyphs` | `'f'`/`'fs'` paths, non-white fill, 1–40 pt tall | H2S C3 1,016 filled words vs 23 stroked |
+| `stroked_glyphs` | `'s'` paths with `width ≤ 1.6` (STROKE_W_MAX), segment rect ≤ 40 pt (SEG_MAX) and **no dash array**; segments whose 0.3-pt-padded rects touch (GLYPH_JOIN) are one glyph; kept when 1.0 ≤ h ≤ 40 (H_MIN/H_MAX) and w ≤ 6 h in display space (`analyze.py:39-42, 185-200`) | RC Ontario p0 10,455; stroked pages 13/28, mixed 6/28 |
+| `filled_glyphs` | `'f'`/`'fs'` paths, non-white fill, 1.0 ≤ h ≤ 40, 0.05 h ≤ w ≤ 6 h, ≥ 2 items (`analyze.py:180`) | H2S C3 1,016 filled words vs 23 stroked |
 | stroked:filled word ratio | words built from each glyph kind | stroked ≥3× filled → "stroked"; filled ≥3× stroked → "filled"; else "mixed" (L4 NOTES convention) |
 | `filled_axis_aligned_edge_frac` + dominant edge length | share of `'l'` items in filled glyph paths that are horizontal/vertical; mode of their length | **staircase**: H2S 73% with 238,749 of 366,373 items at exactly 0.24 pt (=1/300 in); Town Pump E1.1 75%, 141,317 at 0.24 pt; GAOA L-01 61%, 110,290 at 0.12 pt (=1/600 in). Stroked pages 20–46%. DEM outline sheet 23% with 8,626 `'c'` items (S-dem) |
 | `filled_fragments_per_glyph_p50` | filled paths per printed glyph | staircase 2 (outer + counters as separate even-odd paths, L1 finding 6); TrueType 1 |
@@ -148,14 +164,24 @@ def page_lines(page) -> list:   # signature unchanged
     return page_text(page).lines
 ```
 
-`page_words` and `page_lines` keep their signatures; every one of the 16
-call sites that build the tuple (L1 finding 0: detect_page.py:242/302,
-server.py:2325-2326, 3257, 5046, 5152, batch.py:74, cli.py:32,
-eval_layers.py:233/296, milestone_report.py:32, profile.py:449,
-regress.py:115, sweep.py:57) therefore receives outline words without
-editing. `cache` is a per-job dict so a page is read once for chaining,
-legend, spots and scale (server.py builds the tuple four separate times on
-the suggest/spots/legend routes).
+`page_words` and `page_lines` keep their signatures; every one of the **19**
+builder sites at 998bf35 (S-census: detect_page.py:242; server.py:2325/2326
+(spots route), :3257 (legend), :4451/4457 (suggest), :5046 (callouts),
+:5152 (mark schedule), :5251 (symbol count); batch.py:74; cli.py:32;
+eval_layers.py:233/296; milestone_report.py:32; profile.py:449;
+regress.py:115; sweep.py:57; scale_detect.py:849/2023) therefore receives
+outline words without editing. (The first draft said 16 and listed 14;
+detect_page.py:302 is a gate, not a builder.)
+
+**Cache — a key the call sites hit without editing.** The `cache` kwarg
+above is unreachable from `page_words(page)`, so it cannot be the
+mechanism. `page_text` memoises on `(page.parent.name or id(page.parent),
+page.number, page.rotation)` in a module-level LRU of 64 `TextLayer`s
+(a reopened document gets a new identity; the LRU bound is the eviction).
+A suggest job on the server today builds the tuple four times (:4451/4457,
+scale's :2023, chain's detect_page.py:242) and would run Lane B four times
+without it. Measurement for stage 2: `TextLayer` computations per
+`/earthwork/suggest` job on the DEM outline sheet, **4 → 1**.
 
 ### 3.2 Tuple shape — byte-compatible
 
@@ -200,6 +226,25 @@ window were not read (§6.2). Mark-ambiguous strings are a special case:
 the pseudo-word carries the alternatives in `evidence["candidates"]`
 (e.g. `["89.38", "8938"]`) and text `'?'`.
 
+**Pseudo-words change chain geometry; that is a measured change, not a
+free pass.** `_bridge_text` (chain.py:3230) takes every word with
+`0 < len(text) <= 6` as a bridge anchor and `_demote_text_chains`
+(chain.py:1739) every word box with `len <= 24`; a `'?'` qualifies for
+both, so "no regex matches `'?'`" only covers the regex-consuming readers.
+On an outline page the effect is the intended one — a `'?'` box over a
+stroked-glyph cluster is exactly the box `_demote_text_chains` needs to
+demote exploded text, and raster.py:509 relies on the same thing — but it
+means stage 2 (no recognition) already moves chain counts on every
+stroked page of the fast corpus, and a `'?'` over a *single* stray stroke
+would bridge two unrelated dashed chains across 90 pt. Rules: (1) a
+pseudo-word is emitted only for clusters of **≥ 3 glyphs** (singletons and
+pairs are not text evidence; Hurricane p2 has 7,984 singleton glyphs, L4);
+(2) §8.4 rule 2 (gate-baseline unchanged) holds on real-text pages, where
+the provider is a no-op; on outline pages stage 2 reports the chains /
+precision / truth-class delta from `'?'` boxes alone, before any
+recognition (§10.13), and that delta is accepted or refused on its own
+evidence rather than assumed harmless.
+
 ### 3.4 Coordinate space — the trap
 
 `get_drawings()` is **raw, unrotated**; the words tuple and `get_pixmap()`
@@ -238,18 +283,25 @@ width, which is why this lane reads vectors, not pixels.
 
 ### 4.1 Glyph assembly
 
-1. Candidates: `'s'` paths, width ≤ 1.6 pt, mapped bbox ≤ 40 pt on both
-   axes. Exclude paths whose layer is a known linework layer when layers
-   exist (`has_layers`, detect_page.py:243 — layered pages skip OCR today
-   for the same reason).
+1. Candidates: the L4 analyzer's filter, transcribed in full because every
+   count in §2 was made with it (`analyze.py:39-42, 185-200`): `'s'` paths
+   with `width ≤ 1.6` pt, segment rect ≤ 40 pt on both axes, and **no dash
+   array** (a dashed path is linework whatever its size); after joining, a
+   glyph is kept when `1.0 ≤ h ≤ 40` pt and `w ≤ 6 h` in display space.
+   Sub-1-pt paths are therefore *not* glyphs — they are the marks of §5.4,
+   attached to words after assembly. (The first draft said "shorter glyphs
+   are kept", which contradicts the counts it quotes.) Exclude paths whose
+   layer is a known linework layer when layers exist (`has_layers`,
+   detect_page.py:243 — layered pages skip OCR today for the same reason).
 2. Segments whose end-point boxes, padded 0.3 pt, touch → one glyph
    (union-find over a cKDTree with query radius = pad; the union order is
    sorted, as chain.py:1830 does, so the result is deterministic).
 3. Height per glyph = mapped box height. Per-document **height modes** are
    the peaks of the histogram of glyph heights across all pages of the
    document (RC: 4,911 at exactly 7.2 pt, next bin 136). A glyph is
-   *normal* if within ±10% of a mode; shorter glyphs are kept (`.`, `-`,
-   `'`, lone `I` crossbars) and flagged `short`; taller ones (>1.5× the
+   *normal* if within ±10% of a mode; glyphs between 1 pt and the smallest
+   mode (`-`, `'`, lone `I` crossbars) are kept and flagged `short`; paths
+   under 1 pt are marks (§5.4), not glyphs; taller ones (>1.5× the
    largest mode) are not text (Bozeman `NORTH` is a double-contour bold
    outline, L4 finding 7 — a different class, left unread).
 
@@ -293,6 +345,21 @@ repeats hundreds of times on a sheet and thousands across a document
 4. **Confidence is per cluster**, not per glyph: `conf = agreement ×
    f(n)`, and every word inherits the minimum conf of its glyphs plus the
    list of cluster ids in `evidence`.
+5. **A digit cluster is promotable only once an independent reader
+   confirms its label.** Exemplar OCR at two dpis is the same recogniser
+   on the same strokes (§4.4 check 1). A cluster's label is *confirmed*
+   when either (a) ≥ K words containing the cluster are read by
+   `gap_label_elevations` (earthwork.py:1677 — pixel psm 7/8 with the
+   digit whitelist at :1615; 30/30 on the DEM sheet, L3) and every such
+   read agrees with the label at that character position (K = 3,
+   **UNMEASURED**, §10.16), or (b) the cluster's glyphs occur under a
+   native word box somewhere in the document
+   (`words_coinciding_with_real_text`: RC p0 17 of 1,802 — rare, L4) and
+   the native character agrees. Until confirmed, `conf` is capped at 0.79
+   (below the §6.2 value threshold) and `evidence["label_confirmed_by"]`
+   is `None`, so every digit string built from an unconfirmed cluster
+   reaches consumers as a candidate. Alphabetic clusters (legend labels,
+   headings) are exempt: their consumers rank and never promote.
 
 ### 4.4 What a wrong label looks like, and how it is caught
 
@@ -302,18 +369,31 @@ with high agreement if the exemplars mislead Tesseract the same way
 (L5 finding 4: 8→0 and 8→2 confusions are a function of render dpi and
 window, reproduced at 600 dpi). Catches, in order of strength:
 
-1. **Two-render agreement per cluster**: exemplars OCR'd at 600 and 900
-   dpi must agree; disagreement → cluster conf 0 → `'?'`.
+1. **Two-render agreement per cluster** (600 vs 900 dpi psm-10
+   exemplars): disagreement → cluster conf 0 → `'?'`. This catches
+   dpi-dependent confusions (L5: 8→0 at 600 dpi and not at 150/300) and
+   nothing else — it is the *same recogniser on the same strokes*, so a
+   font-stable mislabel passes it. It is a filter, not a confirmation.
 2. **Topology for digits**: a stroked `8` closes two loops, `0` one,
    `3`/`5`/`2` none. Count closed loops in the cluster's normalised
    polylines; a label whose loop count contradicts its glyph refutes the
-   label. **UNMEASURED** on stroked fonts (§10.3).
-3. **Document consistency**: on a sheet whose contour interval is known
-   (`_interval_infill`, earthwork.py) or whose level set is witnessed by
-   ≥6 values, a cluster label that pushes >25% of its digit-string words
-   out of the level set is refuted (the existing 25-ft anchor / 100-ft band
-   rules at earthwork.py:1399-1425 are the consumer-side version).
-4. **Never a single source for a value**: §6.
+   label. **UNMEASURED** on stroked fonts (§10.3); not relied on until it
+   is.
+3. **Document consistency, with independent witnesses only**: a cluster
+   label that pushes > 25% of the digit-string words containing it out of
+   the sheet's level set is refuted — but the level set must be witnessed
+   by ≥ 6 values that do **not** contain the cluster (gap-OCR reads,
+   native values, or Lane A words built only from *confirmed* clusters).
+   On an outline-only page every Lane A witness comes from the same
+   clusters: `3→5` turns 3380..3400 into 5580..5600 with the contour
+   interval intact and passes a same-source test, which is what the first
+   draft's version of this check was. The 25-ft anchor / 100-ft band
+   rules at earthwork.py:1399-1425 are the consumer-side version and have
+   the same blind spot when fed only Lane A values.
+4. **Confirmation by an independent reader** (§4.3 step 5) is the only
+   catch that *promotes*; 1–3 only refuse. A label nothing refutes and
+   nothing confirms stays a candidate.
+5. **Never a single source for a value**: §6.
 
 ---
 
@@ -366,6 +446,36 @@ per-label crops with psm 7 read 25/30 at 300 dpi versus 21/30 full page;
 its 2 residual wrongs (`.3480`, `3388.507`) were line stubs inside the crop
 margin, which a glyph-only render does not contain.
 
+### 5.3a Runtime budget — Lane B is Tesseract-bound
+
+Measured (S-tess): one `image_to_string` call on a 600- or 900-dpi word
+crop costs **72–85 ms** whatever the psm — the cost is per call, not per
+pixel. Home 2 Suites C3 p0 has 966 plan-area word clusters (L4): psm 7 at
+two dpis alone is ~1,930 calls ≈ 2.5 min, and with psm 8 fallbacks and the
+digit-whitelist second pass 2,500–4,500 calls ≈ **3–6 min per page**,
+against the existing ~5 s detect path (L3 numbers[10]) and
+`gap_label_elevations`' own cap of `_OCR_BUDGET = 1400` calls
+(earthwork.py:1571, ~1.7–2 min worst case). Unbudgeted, and built four
+times per suggest job (§3.1), the lane is unusable. Rules:
+
+1. **Per-page call budget** `LANE_B_CALL_BUDGET = 400` (~30–35 s;
+   **UNMEASURED**, §10.14), counted in Tesseract calls like `_OCR_BUDGET`.
+   Clusters the budget does not reach are emitted as `'?'` with
+   `reason = "budget"`, and `coverage["budget_exhausted"]` carries the
+   count so "N of M read" stays honest.
+2. **Numeric-first ordering**: (i) the bar-ladder window (`_bar_heads`
+   region, ≤ 12 crops), (ii) plan-area clusters that are digit-shaped
+   (2–7 components, each of width 0.35–0.8 h, no ascender/descender
+   variance — a geometric test, free), (iii) title/legend-area alphabetic
+   clusters, (iv) the rest. Spots, contour labels and the bar are what
+   the owner's 5–15% depends on; legend words have a ranker.
+3. **Second dpi only where it buys a value**: the 900-dpi read runs only
+   on crops whose 600-dpi string is ≥ 70% digits or that lie in the bar
+   window; alphabetic crops get one read and are candidates (their
+   consumers rank). This halves the alphabetic cost and keeps the two-dpi
+   rule exactly where §6.2 needs it.
+4. **One build per job**: the §3.1 cache.
+
 ### 5.4 Sub-1-pt mark attachment — `'89.38'` vs `'8938'`
 
 Decimal points, periods, commas and i-dots are < 1 pt paths and **every**
@@ -374,21 +484,49 @@ L4 numbers[14]: GCHC `4108.`, Loves Lane `.02 FG`, H2S `89.38 EOA` read as
 `89 38`, Wells Built `48"O.C.`, GAOA `GRASS SEED,`, C2.1 `utilities`). A
 spot elevation with its point dropped is 100× wrong. Rule:
 
-1. Any path < 1 pt tall within 0.5 h of a word box, whose centre lies in
-   the baseline band `[baseline − 0.15 h, baseline + 0.15 h]` (period,
-   comma, decimal) or above the x-height (i-dot), is attached to the word
-   and **rendered with it** in §5.1 so the OCR sees it.
-2. If the OCR string contains a `.` where an attached mark sits → value.
-3. If a mark is attached but the string has no `.`, or the string has a
-   `.` with no attached mark, or the mark's x lies between two digits
-   ambiguously (staircase rendering can fuse it to a neighbour) → the word
-   is emitted as `'?'` with `evidence["candidates"] = ["89.38", "8938"]`
-   and `evidence["mark_at"]`, **never promoted**. `read_spot_grades` and
-   `suggest_elevations` then see no token; the UI offers both.
-4. On pages with > 5,000 tiny paths (Hurricane p10 22,809; TP landscape
-   70,428 — dotted hatch), attachment is *always* ambiguous (rule 3).
-   Threshold **UNMEASURED**; the count is contaminated exactly there
-   (1,444 of 1,466 Hurricane p10 words have an adjacent tiny path, L4).
+1. **Attach** any path < 1 pt tall within 0.5 h of a word box whose
+   centre lies in the baseline band `[baseline − 0.15 h, baseline + 0.15
+   h]` (period, comma, decimal) or above the x-height (i-dot), and render
+   it with the word in §5.1 so the OCR sees it. Attachment alone proves
+   nothing: H2S C3 has 5,160 fill-only 0.5–0.7 × 1.0 pt stipple dots (L1
+   finding 6), and a stipple or dotted-hatch dot under the gap between
+   `4` and `8` renders with `3480`, reads `34.80` at both dpis with high
+   confidence and no `'?'` nearby, passes `_SPOT_VALUE`
+   (`^\d{1,4}(\.\d{1,2})?$`, earthwork.py:2431) and turns a 3,480 ft
+   spot into a ~46 ft datum error after resolution. `.3480` / `3480.`
+   are caught by the anchored regexes; `34.80` is not.
+2. **Promote** to a value only when all of:
+   - (a) *placement*: the mark's x lies in an inter-glyph gap — between
+     two adjacent component boxes of the word, not inside one — and that
+     gap is 0.2–0.45 h wide, a period advance (Arial's is ≈ 0.28 em;
+     **UNMEASURED** on staircase fonts, §10.17). A mark under a glyph box
+     or in a gap of ordinary width is a stray;
+   - (b) *local density*: no second, unattached tiny path within 3 h of
+     the word box. A stipple field, dotted hatch or a leader's dots trip
+     this; an isolated decimal point does not;
+   - (c) *both dpi reads* contain `.` at the same character index;
+   - (d) *decimal-place consistency*: the value's decimal count equals
+     the mode across the sheet's other promoted numeric words (spots are
+     printed to one precision per sheet); with fewer than 5 such words the
+     value is a candidate.
+3. Otherwise — mark attached but no `.`, `.` with no mark, or any of
+   (a)–(d) unmet — the word is emitted as `'?'` with
+   `evidence["candidates"] = ["89.38", "8938"]` and `evidence["mark_at"]`,
+   **never promoted**. `read_spot_grades` and `suggest_elevations` then
+   see no token; the UI offers both.
+4. **No page-level tiny-path cut.** The first draft made attachment
+   always-ambiguous on pages with > 5,000 tiny paths. By the analyzer's
+   own count (S-tiny, `tiny_marks_on_page`) that line sits *below* RC
+   Ontario p0 **5,581** and p7 **5,390**, H2S C3 6,074 and C2 5,782, Loves
+   Lane C4.0 8,322, C8.0 8,775, GAOA L-01 8,955 and C2.1 17,991 — it made
+   `633.60` (§8.2, §10.8) and every decimal on the flagship stroked family
+   permanently unpromotable, pre-answering §10.12 at 100%, and it did not
+   separate those pages from the hatch pages it was written for
+   (Hurricane p10 22,809; Malta Cg1.01 29,911; TP landscape 70,428).
+   Rule 2(b) measures locally what the page count tried to measure
+   globally (1,444 of 1,466 Hurricane p10 words have an adjacent tiny
+   path, L4 — on that page 2(b) fails almost everywhere, which is the
+   right answer there); §10.12 measures how many words pass it per family.
 
 ---
 
@@ -430,13 +568,44 @@ the OCR path at :2100-2102 does the same for OCR (`ScaleResult(best, cands,
 nts, "ocr", pick)`), and only the caption rescue abstains (:2072-2095,
 `why="abstained-ocr"`). `_corroborate` (:1870) is additive and never changes
 `best`. **Change:** a `best` whose winning candidate's words are all
-`source != "text"` is promoted only when the tick-measured bar
-(`graphic_scale_bar(words, page, ocr_retry=True)`) agrees within
-`BAR_AGREE_PCT` (2.0, :1867); otherwise `best=None`, `candidates` kept,
-`pick={"why": "abstained-outline", "coverage": …}`. The same rule applies
-to today's OCR `"single"` (§7.5). Refused readings go in
-`pick["values_refused"]` so C.3.5's 40 and 10 are visible beside 300
-(L5 implication 4).
+`source != "text"` is promoted only when a bar reading **independent of the
+caption's source** agrees within `BAR_AGREE_PCT` (2.0, :1867); otherwise
+`best=None`, `candidates` kept, `pick={"why": "abstained-outline",
+"coverage": …}`. The same rule applies to today's OCR `"single"` (§7.5).
+Refused readings go in `pick["values_refused"]` so C.3.5's 40 and 10 are
+visible beside 300 (L5 implication 4).
+
+*Independence, stated exactly* — the judge's construction, which the first
+draft's rule promoted: Lane A mislabels the `2` cluster as `4` (one
+cluster, every occurrence, 5/5 at both dpis — L5's 8→0 is dpi-dependent;
+a font-stable confusion is not). The caption `1"=20'` reads 40; the ladder
+`0 20 40 80` reads `0 40 80 160`; tick spacing 36/36/72 pt stays
+consistent with the labels because the rate guard (`pred = v0 + (x −
+x0)(v1 − v0)/(x1 − x0)`, :1680-1690) derives the rate from the same
+labels; bar = 40 ft/in agrees with the caption within 2%; best promoted
+2× wrong, 4× on area. Worse, `graphic_scale_bar` zooms only when `not
+rows` (:1592), so a consistent wrong ladder from the lane suppresses the
+one independent read. Rules:
+
+1. A corroborating bar row is independent of a caption only if its
+   labels come from (i) native text (`source == "text"`), or (ii) the
+   psm-6 pixel zoom `_ocr_zoom(page, window, psm=6)` (§7.4), or (iii)
+   drawn tick geometry (`_page_ticks`) plus one endpoint label from
+   (i)/(ii). Rows built from outline words that share **any** cluster id
+   with the caption's words (`evidence["cluster_ids"]`), or from Lane B
+   words at all when the caption is Lane B (same recogniser on the same
+   render), corroborate nothing. `graphic_scale_bar` gains
+   `independent_of: set[cluster_id] | "lane-B" | None`, and `_corroborate`
+   records `bar_source` on the result.
+2. Whenever the caption's words are non-native, the psm-6 zoom on the bar
+   window is **forced** regardless of whether lane rows exist — this
+   replaces `if not rows` for that case (§7.4). A lane ladder may still be
+   *shown* in `candidates`, never *counted* as agreement.
+3. The DEM outline sheet's gate (§8.1: `agrees True`) is met by (iii): its
+   tick strokes are drawn and the zoomed `0 20 40 80` supplies the
+   endpoints. Which of (i)–(iii) each of the 17 L5 bar pages needs is
+   §10.18 — that count, not "7 of 17", is the yield stage 1b/1c can claim
+   under this rule.
 
 **`read_spot_grades` (earthwork.py:2566).** Reads `w[4]` only; pass A over
 `lines`, pass B over `words`; datum consensus needs two contour labels in
@@ -450,10 +619,30 @@ count so the UI can show "3 of ~130 read" honestly (sundale record).
 **`suggest_elevations` (earthwork.py:1256).** Regex at :1281 over `w[4]`;
 source ranking in the `dist` slot (inline perp < gap-ocr 0.5 < radius).
 **Change:** an outline inline token ranks *between* a native inline token
-and gap-ocr (dist slot 0.25) so a native glyph still outranks it and a
-raster re-read of the same break never displaces it; mark-ambiguous
-tokens are not `cands`; rows gain `source`/`conf`; `how="inline-outline"`.
-The early return at :1286 is fixed in §7.1 regardless.
+and gap-ocr (dist slot 0.25, `how="inline-outline"`) so a native glyph
+still outranks it — but the gap-OCR merge at earthwork.py:1429-1470 must
+learn the new kind, because as written it lets a wrong outline read win
+silently: the gap-ocr write requires `seen[cid][0] > 0.5` (0.25 is not),
+and the disagreement branch is `elif how.get(cid) == "inline"`, so a row
+at 0.25 with `how="inline-outline"` is never compared and gap-ocr is never
+written. L2 measured a crop read of `3388.50` as `5388.50`; if Lane B
+agreed with itself at two dpis, that value would displace gap-OCR's
+correct 3388.50 with no disclosure. The reasoning inside that branch
+("native glyphs are exact; a raster re-read cannot beat them") does not
+transfer: an outline read *is* a raster re-read. Rules:
+
+- outline-inline and gap-ocr present for the same chain and **agreeing**
+  (|Δ| ≤ 0.01): keep inline-outline at 0.25 with
+  `evidence["corroborated_by"] = "gap-ocr"`;
+- present and **disagreeing**: emit **neither** as a value; the row goes
+  to `candidates` with `how="conflict"` and both values, and the chain is
+  counted in `datum_info["conflicts"]`;
+- gap-ocr **absent**: inline-outline stays a row at 0.25 only if the word
+  is a *value* under §6.2 (Lane A: confirmed cluster; Lane B: two-dpi
+  agreement, no mark ambiguity); otherwise it is a candidate.
+
+Mark-ambiguous tokens are never `cands`; rows gain `source`/`conf`. The
+early return at :1286 is fixed in §7.1 regardless.
 
 **`read_legend` / `_assign_label` (legend_detect.py:69-84).** Explicit
 ranking already: an unusable label never wins. **Change:** `_is_usable_label`
@@ -463,7 +652,12 @@ outline words automatically.
 **`graphic_scale_bar` (scale_detect.py:1539).** Consumes label rows; an
 outline-read tick ladder (`0 20 40 80` on the DEM sheet, unread today,
 L3 finding 3) feeds the existing ≥3-label / tick-snap / rate guards
-unchanged. Bar labels are digits ≤ 3 chars — Lane A/B's easiest case.
+unchanged **as a candidate ladder** — it can supply a `graphic-bar`
+reading when no caption exists, but it never corroborates a caption from
+the same lane (rule 1 above), and its presence no longer skips the pixel
+zoom (§7.4). Bar labels are digits ≤ 3 chars — Lane A/B's easiest case,
+and also the case where a font-stable cluster mislabel is invisible to
+the rate guard.
 
 ---
 
@@ -511,7 +705,7 @@ layer (or be declared exempt). L1 counted seven; the list at 998bf35:
 
 | # | site | today | change |
 |---|---|---|---|
-| 1 | `scale_detect.py:2019-2020` (L1: 1670/1672) `text = page.get_text()`, `_NTS.search(text)` | first `_scan` and NTS on raw text; the row rescan at :2093 uses `_row_text(words)` | `read_text_layer` gets `_row_text(page_lines(page))` as `text`; NTS over the merged rows |
+| 1 | `scale_detect.py:2019-2020` (L1: 1670/1672) `text = page.get_text()`, `_NTS.search(text)` | first `_scan` and NTS on raw text; the row rescan `_scan(_row_text(words))` is inside `read_text_layer` at :1985 (the first draft cited :2093, which is a comment) | `read_text_layer` gets **`merged_text = page.get_text() + "\n" + "\n".join(outline rows)`** — one line per outline row, native text untouched; `_NTS` over the same string. **Not** `_row_text(page_lines(page))`: `_scan` decides `wrapped = "\n" in text[a:m.start("feet")]` (:455) and `read_text_layer` (:1945-1953) refuses a caption only when it is wrapped *and* its value is a bar tick label — the join-artefact rule that fixed sundale 90→30 and harbison 180→60 at 998bf35. `_row_text` returns one `' '.join` string with `\|` separators and no newline, so feeding it as `text` sets `wrapped = False` everywhere and re-opens both. An outline caption whose number sits on its own row gets the same protection native text has. Test: `detect_scale(...).to_dict()` on sundale p1 and harbison p0 (`tests/baselines/sundale-road-30366_p1.json` pattern) byte-identical after site 1. |
 | 2 | `classify_page.py:207` `text_chars` | the wrong quantity | keep, add `plan_text_coverage` (§7.2) |
 | 3 | `detect_page.py:244` chaining-OCR gate | `text_chars < 1500` | `plan_text_coverage < 0.5` |
 | 4 | `detect_page.py:303` legend-OCR gate | same | same |
@@ -549,8 +743,11 @@ The retry gate at :1592 is `if not rows and ocr_retry`: on RC p3 the 150-dpi
 pass returns a 3-label row `10 0 4` (printed 0 10 20 40; 20→0, 40→4), which
 satisfies "rows exist", so the zoom never runs and the corrupt row then
 fails the rate check → None (L5 numbers[9]; same shape on p0). **Fix:** run
-the zoom when the 150-dpi rows exist but every one is refused by the
-guards, and prefer the zoomed ladder when it passes.
+the zoom when (a) the 150-dpi rows exist but every one is refused by the
+guards, or (b) every row is built from non-native words (`source !=
+"text"`) — a lane-supplied ladder must not suppress the independent pixel
+read (§6.2 independence rule 2) — and prefer the zoomed ladder when it
+passes. `_ocr_zoom` gains the `psm` parameter; the caller passes 6.
 
 ### 7.5 OCR `"single"` promotion requires bar agreement
 
@@ -564,6 +761,12 @@ return `ScaleResult(None, cands, nts, "ocr", pick={"why":
 "abstained-ocr-single", …})` — the shape the rescue already uses at
 :2085-2091. `tests/test_scale_ocr_rescue.py` and
 `tests/test_scale_bar_contradiction.py` are the existing fixtures to extend.
+The bar that agrees must be independent of the OCR caption's source
+(§6.2 rule 1 — for a psm-11 caption that means native ladder labels, the
+psm-6 zoom, or tick geometry with a zoomed endpoint). How many pages this
+turns into abstentions is **UNMEASURED**: the survey records carry `{best,
+candidates}` per page and no `source` (re-checked), so the population of
+OCR-`single` picks cannot be read from it (§10.15).
 
 ### 7.6 Legend-family exclusion must be visible (fence, not fix)
 
@@ -599,7 +802,7 @@ Counts that must hold, with today's values (L3):
 | spots FG 3401.60 at the 4 pad corners | 4 | 0 served (reader has no non-native source) | 4/4, legend_excluded 1 | **4/4**, 0 wrong |
 | contour rows (chain-level truths = control's inline pairings) | 35 | 0 served (17 read and discarded at :1286) | 52 rows = 35 inline + 17 radius | stage 1: ≥ 17/35 all correct; lanes: **35/35**, 0 wrong |
 | gap-OCR chains with legend exclusion lifted | 30 | 30/30 in level set, 29/29 agree | 33, one 8→9 misread | unchanged |
-| scale | 40 ft/in, bar ticks 0/20/40/80 | best 40.0 `source=ocr`, 2 candidates, **bar None, agrees None** | `source=text`, bar 40.0, agrees True | **best 40.0 with `bar_ft_per_paper_inch` 40.0 and `agrees True`** (the bar's outline tick labels read) |
+| scale | 40 ft/in, bar ticks 0/20/40/80 | best 40.0 `source=ocr`, 2 candidates, **bar None, agrees None** | `source=text`, bar 40.0, agrees True | **best 40.0 with `bar_ft_per_paper_inch` 40.0 and `agrees True`**, the bar read by drawn ticks + zoomed endpoints (§6.2 rule 1 iii), `bar_source != "outline-B"` |
 | legend rows | 9 | 9/9 via OCR | 26 entries for 13 rows (doubled) | 9/9, no duplicates |
 | inline labels rendered | 98 (79 existing + 19 proposed) | whole-page Tesseract 1/98 at 150 and 300 dpi | — | coverage: 98/98 *boxed* (as words or `'?'`) |
 | cut / fill / net (exact raster truth) | 3256.7 / 3157.3 / −99.4 CY | not computable (0 rows) | — | a `compare: "tolerance"` entry in the earthwork manifest (§8.4), tolerance_pct 15 (the owner's band) |
@@ -700,17 +903,34 @@ exactly:
 |---|---|---|---|---|
 | **0** | Frozen fixtures: `page_words` + `get_drawings` census + truth for the DEM outline sheet, DEM control, H2S C3 p0, RC p0/p7, Hurricane p2/p6 as `tests/baselines/outline_*.json` (the pattern of `tests/baselines/sundale-road-30366_p1.json`); the per-family table harness | runs green with 0 outline words | none — measurement only | — |
 | **1a** | §7.1 `:1286` gate | DEM outline suggest rows 0 → ≥ 17, all in level set; CEQA pizzuto/york rows > 0 | 17/17 correct rows recovered on the DEM sheet (L3) | rows still 0, or any control row changes |
-| **1b** | §7.4 psm 6 bar zoom + retry-on-refusal | RC p5/6/7/8/10, Hurricane p2/p6 return tick-measured bars; RC p3 20 ft/in | 7 of 17 measured pages (L5) | fewer than 7, or a new bar reading on a control page that disagrees with its caption |
-| **1c** | §7.5 OCR-single needs bar agreement; `values_refused` | RC p10 → abstained with [10] and bar 20; C.3.5 → candidates [300], refused [40, 10], bar 40.0 | removes the two live 2×/7.5× promotions (L5) | any real-text control page loses its `best` |
-| **1d** | §7.2 `plan_text_coverage` gate + §7.3 sites 1, 6, 7 | H2S C3 p0 gets chaining/legend OCR; sheet-count of pages whose gates flip reported for the 529 thin pages | H2S: 2915 chars, 0 plan text, gates False today (L1) | a layered or real-text page starts OCR'ing (report the count, per CLAUDE.md "say what you skipped") |
-| **2** | Provider skeleton: classification, glyph clustering, `'?'` pseudo-words, coverage dict, `w[8:]`, abstention plumbing in the four consumers — **no recognition yet** | DEM outline: 98/98 labels + 4 spots + bar ladder *boxed*; underlay pages abstain; §8.4 rule 1 holds | scale "single" picks on outline pages become `abstained-outline` with coverage shown; count on the 529 thin pages | control sheets emit any outline word |
-| **3** | Lane B (filled) with marks | DEM outline 4/4 spots, 35/35 rows, bar ticks read → agrees True; H2S C3 `89.38 EOA`, TP E1.1 `22`, GAOA `GRASS SEED,` | H2S spot recall 0/178 → target ≥ 83/178 (the brief's Tesseract-300 figure as the floor to beat) | any confident-wrong promotion on the DEM sheet (0 allowed) |
-| **4** | Lane A (stroked) | the 10 stroked truth words; RC p0/p7 caption + bar ladder; per-family table | 68% of corpus word clusters; RC Ontario 14/14 pages from 0 candidates | cluster labelling disagreement > 20% on RC (§10.2) |
+| **1b** | §7.4 psm 6 bar zoom (`_ocr_zoom(..., psm=6)`) + zoom on refused rows + zoom forced when every row is non-native | RC p5/6/7/8/10, Hurricane p2/p6 return tick-measured bars; RC p3 20 ft/in; sundale p1 / harbison p0 unchanged | 7 of 17 measured pages (L5) — re-counted under the independence rule in §10.18 | fewer than 7, or a new bar reading on a control page that disagrees with its caption |
+| **1c** | §7.5 OCR-single needs **independent** bar agreement (§6.2 rule 1); `values_refused`; `bar_source` | RC p10 → abstained with [10] and bar 20; C.3.5 → candidates [300], refused [40, 10], bar 40.0 | removes the two live 2×/7.5× promotions (L5) | any real-text control page loses its `best` |
+| **1d** | §7.2 `plan_text_coverage` gate + §7.3 sites 1 (newline-preserving merged text), 6, 7 | H2S C3 p0 gets chaining/legend OCR; sheet-count of pages whose gates flip reported for the 529 thin pages; sundale p1 / harbison p0 `detect_scale` byte-identical | H2S: 2915 chars, 0 plan text, gates False today (L1) | a layered or real-text page starts OCR'ing (report the count, per CLAUDE.md "say what you skipped"); sundale or harbison regains its welded 90 / 180 |
+| **2** | Provider skeleton: classification, glyph clustering, `'?'` pseudo-words (≥ 3-glyph clusters only), coverage dict, `w[8:]`, the §3.1 cache, abstention plumbing in the four consumers — **no recognition yet** | DEM outline: 98/98 labels + 4 spots + bar ladder *boxed*; underlay pages abstain; §8.4 rule 1 holds; `TextLayer` builds per suggest job 4 → 1; chain delta from `'?'` boxes reported per page class (§10.13) | scale "single" picks on outline pages become `abstained-outline` with coverage shown; count on the 529 thin pages | control sheets emit any outline word, or any chain delta on a real-text page |
+| **3** | Lane B (filled) with marks, under `LANE_B_CALL_BUDGET` (§5.3a) and §5.4 rules 2(a)–(d) | DEM outline 4/4 spots, 35/35 rows, bar ticks read → agrees True via tick geometry + zoomed endpoints; H2S C3 `89.38 EOA`, TP E1.1 `22`, GAOA `GRASS SEED,`; H2S C3 p0 wall time reported at budget 400 and unbounded (§10.14) | H2S spot recall 0/178 → target ≥ 83/178 (the brief's Tesseract-300 figure as the floor to beat) | any confident-wrong promotion on the DEM sheet (0 allowed); > 60 s per page on H2S C3 p0 at budget 400; a stipple-adjacent `3480` promoted as `34.80` |
+| **4** | Lane A (stroked), digit clusters confirmed by gap-OCR before any promotion (§4.3 step 5) | the 10 stroked truth words; RC p0/p7 caption + bar ladder (bar via native/zoomed labels, not the lane's own ladder); per-family table; `633.60` promoted, not merely offered | 68% of corpus word clusters; RC Ontario 14/14 pages from 0 candidates | cluster labelling disagreement > 20% on RC (§10.2); any digit cluster confirmed to a wrong label (§10.16) |
 | **5** | Consumer surfacing: candidates in the spot/row/scale UI, `datum_info["ambiguous"]`, coverage chip | UI tests in the `tests/test_*.js` style | operators see "N of M read" instead of a green chip | — |
 | **6** | §7.6 legend-family fence | DEM outline 30 chains reach gap-OCR (label regions 240) | 17 → 30 chains (L3) | control's 52 rows change |
 
 Stage order is by measured yield per line of code: 1a is one condition and
-recovers 17 rows; 1b is one keyword argument and recovers 7 bar readings.
+recovers 17 rows; 1b is one keyword argument plus a retry condition and
+recovers up to 7 bar readings.
+
+**The three numbers stage 1 (1a–1d, no lane) is expected to move:**
+
+1. DEM outline sheet `/earthwork/suggest` rows: **0 → ≥ 17** (17/17 correct
+   gap-OCR reads served today as 0 rows, L3) — §7.1.
+2. Tick-measured graphic-bar readings on the 17 L5 bar pages: **0 → 7**
+   under psm 11 → psm 6 with the retry-on-refusal (RC p5/6/7/8/10,
+   Hurricane p2/p6; RC p3 becomes 20 ft/in) — §7.4; §10.18 re-counts under
+   independence.
+3. Live wrong scale promotions on dev: **2 → 0** (RC p10 best 10 where the
+   sheet says 20; Hurricane C.3.5 best 300 where the bar says 40) — both
+   become abstentions with `values_refused` — §7.5.
+
+What stage 1 does *not* move: the 296/529 plan-like pages with no `best`
+(S-survey) — that is the lanes' number (stages 3–4), and stage 1 is
+allowed to raise the abstention count on those pages, never to lower it.
 
 ---
 
@@ -752,7 +972,42 @@ recovers 17 rows; 1b is one keyword argument and recovers 7 bar readings.
 11. **Rotated labels in Lane B.** The DEM sheet's 98 labels are rotated
     along contours; measure how many the CC + row-axis deskew boxes and
     reads, versus the chain-guided gap reader's 30/30.
-12. **Mark-attachment ambiguity rate.** On RC p7 (377 of 948 plan words
-    with an adjacent tiny path) and GCHC (117/183): how many attachments
-    are unambiguous under §5.4 rules 1–2, i.e. how many spot values the
-    reader can *promote* rather than offer.
+12. **Mark-attachment promotion rate per family.** On RC p7 (377 of 948
+    plan words with an adjacent tiny path), GCHC (117/183) and H2S C3 p0
+    (5,160 stipple dots): how many attached marks pass §5.4 rule 2(a)
+    placement and 2(b) density, i.e. how many spot values the reader can
+    *promote* rather than offer. If RC p7 comes out near 0% the 3 h
+    density radius is wrong, not the family.
+13. **Chain delta from `'?'` boxes alone.** Stage 2 emits pseudo-words
+    with no recognition; run `regress` on the fast corpus with and without
+    them and report chains / precision / truth-class per page class
+    (§3.3). Real-text pages must show zero delta; an outline page's delta
+    is accepted only with the before/after chain overlay on a live :8100
+    screenshot.
+14. **Lane B call budget.** Time Lane B on H2S C3 p0 (966 clusters)
+    unbounded and at `LANE_B_CALL_BUDGET = 400`; report calls, seconds,
+    clusters read, and which of the 178 spots fall outside the
+    numeric-first order. The budget is right when spot recall at 400 is
+    within 5 points of unbounded recall (S-tess: 72–85 ms per call, so
+    unbounded is 3–6 min).
+15. **How many pages does §7.5 turn into abstentions?** The survey
+    (`outline_survey_final.json`) records `{best, candidates}` and no
+    `source`; re-run `detect_scale` on the 529 thin pages recording
+    `source` and `pick["why"]`, count pages whose `best` is an OCR single
+    today, and for each whether an independent bar (§6.2 rule 1) agrees.
+16. **Cluster confirmation K.** On RC p7, for each digit cluster count the
+    gap-OCR reads of words containing it that agree at that character
+    position; report the distribution and pick K as the smallest value at
+    which no cluster on RC p0/p7 is confirmed to a wrong label (`633.60`,
+    the bar ladder `0 5 10 20` and `CENTER` as truth).
+17. **Period advance and decimal-place mode.** Measure the inter-glyph gap
+    around printed decimal points on the 6 mark-bearing truth crops (L4
+    numbers[14]) and the decimal-count distribution of spot values per
+    sheet (H2S C3, RC p7, GCHC); the 0.2–0.45 h window and the "≥ 5 words"
+    floor of §5.4 rule 2 are set from them.
+18. **Independence in practice.** On the 17 L5 bar pages and the DEM
+    sheet: how many bars have a native ladder, how many need the forced
+    psm-6 zoom, and how many are read by tick geometry plus one endpoint
+    (§6.2 rule 1 iii). The count reaching `agrees True` under the
+    independence rule is the real stage-1b/1c yield; "7 of 17" was
+    measured without it.
