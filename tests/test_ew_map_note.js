@@ -139,7 +139,11 @@ async function main() {
       createTextNode(t) { return { textContent: t, children: [] }; },
     };
     const note = fnSrc("ewMapNote");
-    const src = (fnSrc("fetchDetail") || "") + "\n" + (note || "") + "\n"
+    // ewMapNote reads the detail through ewDetailText (the one reader,
+    // shared with the zone route), so the harness supplies it too; it is
+    // absent on the older trees, where the note read the field inline.
+    const src = (fnSrc("ewDetailText") || "") + "\n"
+      + (fnSrc("fetchDetail") || "") + "\n" + (note || "") + "\n"
       + fnSrc("ewFetchMap") + "\nreturn ewFetchMap;";
     // e6ac867 has no ewMapNote and no fetchDetail; the stub keeps the
     // failure on BEHAVIOUR - the old branch simply never calls either.

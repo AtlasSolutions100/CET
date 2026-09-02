@@ -5148,7 +5148,12 @@ def earthwork_zone(job_id: str, page: int, body: GradingZoneBody):
                         cell_ft=body.cell_ft or 2.0,
                         strip_in=body.strip_in)
     if "error" in out:
-        raise HTTPException(400, out["error"])
+        # The SAME shape as /earthwork and /earthwork/map. This route was the
+        # third door to the volume floor and the only one still answering a
+        # bare string: measured 2026-09-02, an existing surface of one contour
+        # at 324 ft against a declared pad published 417,664 CY here while
+        # POST /earthwork on the same rows answered 400 surface_no_relief.
+        raise HTTPException(400, _ew_refusal_detail(out))
     # dz map clipped to the zone's grid, same palette as the whole-sheet
     # cut/fill map (cut blue / fill yellow-orange - the client's own
     # convention), base64 so one JSON reply carries numbers + picture.

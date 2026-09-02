@@ -1205,11 +1205,53 @@ def zone_cut_fill(existing: Surface, polygon, ft_per_pt: float,
     if mode not in ("pad", "plane", "balance", "strip_only"):
         return {"error": f"unknown design mode {mode!r} - expected pad, "
                          "plane, balance or strip_only"}
+    # THE FLOOR, ON THE EXISTING SURFACE (see _floor_refusal for the
+    # /earthwork one). Until 2026-09-02 this route's only entry test was "3
+    # sample points", so the very rows /earthwork refuses published a volume
+    # here: measured on the DEM outline sheet, an existing surface of ONE
+    # contour at 324 ft against a declared pad at 826 ft returned 417,664 CY
+    # of fill through /earthwork/zone while POST /earthwork on the same job,
+    # page and chain answered 400 surface_no_relief. A guard that lives on
+    # one route and not on its sibling is not a guard - it is a detour, and
+    # this one had the priced takeoff and the drawing on the far side of it.
+    #
+    # THE TEST IS NOT THE SAME ONE, and the difference is the point. In
+    # cut_fill BOTH surfaces are read off the sheet, so a surface carrying
+    # one elevation means one label was read and everything off that line is
+    # invention. Here the design is DECLARED by the operator, and the
+    # question about the existing side is only whether the engine MEASURED
+    # the ground or invented it. Five spot grades that all read 100.0 ft are
+    # a positive statement that the ground is level - ordinary on a paved
+    # lot or a pad being re-graded, and tests/test_grading_zone.py's plane
+    # cases are exactly that. ONE label is silence beyond its own line.
+    # So the count that matters here is INDEPENDENT LABELS, not distinct
+    # elevations: a no-relief refusal on this route would refuse real work.
     fe, _pe = existing.interpolator()
+    _b = surface_basis(existing)
+    if not existing.contours and not existing.points:
+        return {"error": "the existing surface has no contours and no spot "
+                         "grades assigned - there is nothing to interpolate",
+                "error_code": "surface_empty",
+                "surface": _b, "basis": {"existing": _b}}
     if fe is None:
         return {"error": "the existing surface needs at least 3 sample "
                          "points - assign labelled contours and/or spot "
-                         "grades to EXISTING first"}
+                         "grades to EXISTING first",
+                "error_code": "surface_too_few_samples",
+                "surface": _b, "basis": {"existing": _b}}
+    if _b["n_contours"] + _b["n_spots"] < 2:
+        return {"error": f"the existing surface rests on a SINGLE label "
+                         f"({_plural(_b['n_contours'], 'contour')}, "
+                         f"{_plural(_b['n_spots'], 'spot grade')} at "
+                         f"{_b['z_min_ft']:g} ft). Every foot of ground away "
+                         f"from it is a level plane this tool invented, and "
+                         f"the design is differenced against that invention, "
+                         f"so no volume is published. Assign a second "
+                         f"labelled contour or spot grade to EXISTING - it "
+                         f"may read the same elevation, but it has to be "
+                         f"read.",
+                "error_code": "surface_one_label",
+                "surface": _b, "basis": {"existing": _b}}
 
     cell_ft = float(cell_ft or 2.0)
     if cell_ft <= 0:

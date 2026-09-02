@@ -12952,12 +12952,23 @@ async function fetchDetail(r) {
 // explanation - which surface was short, what it held, what the layer
 // slabs below still mean - off the screen and replaced it with a status
 // code. A map that cannot be drawn says so where the map controls are.
+// The one reader of a refusal `detail`. The volume floor answers the SAME
+// object from /earthwork, /earthwork/map and /earthwork/zone, but FastAPI
+// also raises plain-string details elsewhere on those routes, so every
+// caller has to handle both - and a caller that forgot printed
+// "[object Object]" over the operator's only explanation. One function, so
+// a new refusal route cannot invent a third way to read the same field.
+function ewDetailText(detail) {
+  if (typeof detail === "string") return detail;
+  return (detail && typeof detail === "object" && detail.message) || "";
+}
+
 function ewMapNote(detail, status) {
   const box = $("ewMapNote");
   if (!box) return;
   if (detail == null && status == null) { box.hidden = true; box.innerHTML = ""; return; }
   const d = (detail && typeof detail === "object") ? detail : {};
-  const msg = (typeof detail === "string" ? detail : d.message)
+  const msg = ewDetailText(detail)
               || ("the map could not be drawn (" + status + ")");
   box.innerHTML = "";
   const head = document.createElement("b");
@@ -19836,7 +19847,12 @@ async function gzCompute(z, gen) {
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       if (gen !== state.gen) return;
-      z.err = e.detail || ("failed (" + r.status + ")");
+      // The refusal detail is an OBJECT on the volume floor's paths
+      // (/earthwork, /earthwork/map and now /earthwork/zone all answer the
+      // same shape). Reading it as a string printed "[object Object]" - a
+      // refusal the operator cannot act on is barely better than a wrong
+      // number, and this route's refusal names which surface is flat.
+      z.err = ewDetailText(e.detail) || ("failed (" + r.status + ")");
     } else {
       const j = await r.json();
       if (gen !== state.gen) return;
