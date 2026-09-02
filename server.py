@@ -3584,13 +3584,29 @@ def _ledger_structure(job_id: str, page: int, body: "StructureBody",
 
 
 @app.get("/api/ledger/stats")
-def ledger_stats():
+def ledger_stats(request: Request):
     """Training-ledger statistics: totals, per-event-type and per-job
     counts, month files, time range, bytes on disk. This endpoint reads
     the ledger files directly - it sits OUTSIDE the detection/calculation
     pipeline, so the write-only invariant in takeoff_engine/ledger.py
-    holds: no pipeline code path reads the ledger."""
-    return JSONResponse(ledger.stats())
+    holds: no pipeline code path reads the ledger.
+
+    by_job is keyed by job id, and a job id is the one handle that opens a
+    document. It used to list every account's ids to any signed-in user -
+    on a box holding several contractors' bid sets, a directory of the
+    other clients' jobs and how hard each was worked. A non-staff caller
+    now sees only the ids of jobs they own; staff, and single-password
+    mode, see all of them. The aggregate counts carry no id and are left
+    as they were."""
+    out = ledger.stats()
+    if not _is_staff(request):
+        me = _who(request)
+        with JOBS_LOCK:
+            mine = {jid for jid, j in JOBS.items()
+                    if me is not None and j.get("owner") == me}
+        out["by_job"] = {j: n for j, n in out.get("by_job", {}).items()
+                         if j in mine}
+    return JSONResponse(out)
 
 
 # ---------- calculator-input sidecar --------------------------------------
