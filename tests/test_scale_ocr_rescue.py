@@ -15,23 +15,38 @@ skipped (with a message, not silently) when either is missing. These
 assertions pin the MEASURED 2026-09-01 behaviour on the three
 vector-outline earthwork ground-truth sheets:
 
-  * Hurricane C.3.1 p2 -> NO best, candidate 40.0 ft/in, source "ocr",
-    why "abstained-ocr". A rescued caption NEVER becomes best - measured
-    the night this was built, promotion was confidently wrong twice by
-    two different mechanisms (Thielen's eaten unit mark; Hurricane
-    C.3.5 where only the KEY MAP's 1"=300' survived OCR while the
-    sheet's HORIZ 40'/VERT 10' did not - "single" by sampling bias,
-    7.5x wrong)
   * Bryce Gurr p2 -> NO best, BOTH printed values (20.0 main, 5.0
     blowup) as candidates, why "abstained-ocr"
-  * Hurricane C.3.5 p6 (the sampling-bias sheet) -> NO best
   * a healthy text-layer sheet (Home 2 Suites) is untouched: the rescue
     only runs when every existing path found nothing
 
-RC Ontario p7/p8 (1"=10') stays unread - its caption OCRs as garbage in
-every window/psm tried and its bar shows only the 0 and 20 endpoint
-labels, which graphic_scale_bar's guards refuse. Diagnosed, not fixed;
-asserting nothing about it here.
+MOVED BY STAGE 1b (SPEC 7.4, psm 6 in the bar zoom + the zoom running on
+refused / non-native rows). Two of the sheets this file used to pin as
+"no best" now read their DRAWN BAR, off tick geometry, before the rescue
+is ever reached - which is the outcome the rescue's own docstring named
+as its follow-up ("upgrading a candidate to best on independent
+bar-geometry agreement"). Read off 400-dpi crops of the sheets
+themselves, 2026-09-02:
+
+  * Hurricane C.3.1 p2 prints a bar `0 40' 80'` over `SCALE: 1" = 40'`.
+    Was: no best, rescued candidate 40.0, why "abstained-ocr".
+    Now: best 40.0167 ft/in, source "graphic-bar", bar_source
+    "psm6-zoom-ticks" - the same 40, measured off the drafter's ticks.
+  * Hurricane C.3.5 p6 (the sampling-bias sheet) prints `0 40' 80'`
+    over `HORIZ. SCALE: 1" = 40'` / `VERT. SCALE: 1" = 10'`.
+    Was: no best, the KEY MAP's 1"=300' the only candidate.
+    Now: best 40.0166 off the horizontal bar. The 7.5x key-map reading
+    is not promoted and no longer needs to be - an independent reading
+    of the horizontal bar exists.
+
+The INVARIANT the file exists to protect is unchanged and is now
+asserted on every sheet it reads: a candidate stamped
+`ocr-caption-window` is never `best`.
+
+RC Ontario p7/p8 (1"=10') USED to stay unread - its caption OCRs as
+garbage in every window/psm tried and psm 11 shredded its `0 5 10 20`
+ladder into `2`/`99`/`9`/`6`/`4`. Under psm 6 the ladder reads whole and
+both pages return 10.0 off ticks; tests/test_scale_bar_psm6.py pins that.
 """
 
 import sys
@@ -108,11 +123,21 @@ def corpus_tests(root: Path):
         finally:
             doc.close()
 
+    def never_rescued_best(r, who):
+        """The invariant: an OCR-rescued caption is never the reading."""
+        assert not (r.best is not None
+                    and getattr(r.best, "origin", "") == "ocr-caption-window"), (
+            f"{who}: a rescued caption became best ({r.best})")
+
+    # C.3.1 p2: the drawn bar now reads (stage 1b), and it reads the same
+    # 40 the rescue used to offer as a candidate. Printed: `0 40' 80'`
+    # over `SCALE: 1" = 40'`.
     r = read("TakeoffPro AI/Plans 2/2026.02.13_Civil Design_HURRICANE STORAGE UNITS.pdf", 2)
-    vals = sorted(round(c.ft_per_paper_inch, 2) for c in r.candidates)
-    assert r.best is None, f"a rescued caption must never be best, got {r.best}"
-    assert vals == [40.0], f"hurricane candidates: {vals}"
-    assert r.source == "ocr" and r.pick.get("why") == "abstained-ocr", (r.source, r.pick)
+    never_rescued_best(r, "C.3.1 p2")
+    assert r.best is not None, "C.3.1 p2 lost its bar reading"
+    assert abs(r.best.ft_per_paper_inch - 40.0) / 40.0 <= 0.02, r.best.text
+    assert r.source == "graphic-bar", r.source
+    assert r.pick.get("bar_source") == "psm6-zoom-ticks", r.pick
 
     r = read("TakeoffPro AI/Plans 2/Approved Construction Set_2-17-26 (2).pdf", 2)
     vals = sorted(round(c.ft_per_paper_inch, 2) for c in r.candidates)
@@ -120,11 +145,18 @@ def corpus_tests(root: Path):
     assert vals == [5.0, 20.0], f"bryce candidates: {vals}"
     assert r.pick.get("why") == "abstained-ocr", r.pick
 
+    never_rescued_best(r, "bryce p2")
+
     # the sampling-bias sheet: STORM PROFILE III prints HORIZ 40'/VERT 10'
-    # plus a KEY MAP 1"=300'; only the key map survives OCR. Whatever the
-    # candidates, there must be NO best.
+    # plus a KEY MAP 1"=300'; only the key map survives OCR. The key map
+    # must never be the reading - and since stage 1b the horizontal bar
+    # gives an independent one, so the page reads 40 instead of nothing.
     r = read("TakeoffPro AI/Plans 2/2026.02.13_Civil Design_HURRICANE STORAGE UNITS.pdf", 6)
-    assert r.best is None, f"C.3.5 must not pick (key-map bias), got {r.best}"
+    never_rescued_best(r, "C.3.5 p6")
+    got = None if r.best is None else round(r.best.ft_per_paper_inch, 2)
+    assert got is not None and abs(got - 40.0) / 40.0 <= 0.02, (
+        f"C.3.5 must read its HORIZ bar, never the key map's 300, got {got}")
+    assert r.source == "graphic-bar", r.source
 
     r = read("TakeoffPro AI/Plans 2/Home_2_Suites_Cedar_City_-_Division_31_-_Earthwork_Civil_2026-03-06 (1)/C3-Grading-Plan-Rev.0.pdf", 0)
     assert r.best is not None and abs(r.best.ft_per_paper_inch - 20.0) < 1e-6
@@ -144,4 +176,6 @@ if __name__ == "__main__":
         print("SKIP corpus tests: Tesseract not installed")
     else:
         corpus_tests(root)
-        print("corpus tests: 4 sheets passed (hurricane abstain-w-candidate, bryce abstain, C.3.5 no pick, h2s untouched)")
+        print("corpus tests: 4 sheets passed (C.3.1 reads its bar, bryce "
+              "abstains, C.3.5 reads its HORIZ bar not the key map, h2s "
+              "untouched; no rescued caption is ever best)")

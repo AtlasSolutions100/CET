@@ -86,9 +86,23 @@ def detect_glyphs(ink: np.ndarray, dpi_scale: float = 1.0):
     return glyph_mask, row_boxes
 
 
-def ocr_words(img: np.ndarray, px_to_pt: float, min_conf: int = 40) -> list:
+def ocr_words(img: np.ndarray, px_to_pt: float, min_conf: int = 40,
+              psm: int = 11) -> list:
     """Tesseract words as (x0, y0, x1, y1, text) tuples in pt coordinates.
-    img: RGB uint8. Downscales very large renders for speed."""
+    img: RGB uint8. Downscales very large renders for speed.
+
+    `psm` is Tesseract's page-segmentation mode and DEFAULTS TO 11 - sparse
+    text, no layout assumption - which is what every existing caller here
+    has always used and still gets byte-for-byte. It is a parameter because
+    a graphic scale bar's tick ladder is not sparse text: it is one printed
+    LINE of digits, and psm 11 shreds it. Measured on RC Ontario page index
+    7 (bar 144.0 pt, ticks 5/5/10 ft, printed `0 5 10 20`): psm 11 returns
+    `2`, `99`, `9`, `6`, `4`, `4` - one- and two-label rows the >=3-label
+    guard refuses; psm 6 ("a single uniform block of text") returns
+    `0 5 10 20` at conf 78/64/64/97, centred on the ticks. Only
+    `scale_detect.graphic_scale_bar`'s zoom passes 6; the caption-window
+    rescue stays at 11 on purpose (SPEC 7.4: psm 6 also reads the caption
+    under the bar and would feed `_scan` new candidates ungated)."""
     import pytesseract
 
     scale = 1.0
@@ -96,7 +110,7 @@ def ocr_words(img: np.ndarray, px_to_pt: float, min_conf: int = 40) -> list:
         scale = 6500 / max(img.shape[:2])
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     data = pytesseract.image_to_data(
-        img, config="--psm 11", output_type=pytesseract.Output.DICT
+        img, config=f"--psm {int(psm)}", output_type=pytesseract.Output.DICT
     )
     words = []
     f = px_to_pt / scale

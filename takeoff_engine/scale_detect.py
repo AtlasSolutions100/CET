@@ -216,6 +216,15 @@ class ScaleCandidate:
     # evidence for `read_text_layer`'s join-artefact test, and a candidate
     # that test rejects says so through `origin` instead.
     wrapped: bool = False
+    # For a `graphic_scale_bar` reading only: WHICH RECOGNISER read the tick
+    # ladder, and whether the span was measured on drawn ticks - one of
+    # native / native-ticks / psm6-zoom / psm6-zoom-ticks / ocr / ocr-ticks.
+    # A bar corroborates a caption only when the two were read by DIFFERENT
+    # recognisers (SPEC 6.2 rule 1), and this is how the caller can tell.
+    # NOT serialised by to_dict: it is evidence about a second opinion, and
+    # a promoted result carries it in `pick["bar_source"]` instead, so a
+    # page that already reads a scale serialises byte-identically.
+    bar_source: str = ""
 
     def to_dict(self) -> dict:
         d = {
@@ -1363,13 +1372,17 @@ def _ocr_words_loud(img, px_to_pt: float, min_conf: int = 35) -> tuple:
         return [], "ocr-unavailable"
 
 
-def _ocr_zoom(page, region, min_conf: int = 35) -> list:
+def _ocr_zoom(page, region, min_conf: int = 35, psm: int = 11) -> list:
     """Re-OCR one small region at high dpi; words in page display coords.
 
     The 150-dpi full-page pass reads GCHC's small bar labels only
     partially ('2' alone on North Stairs Demo); a 600-dpi render of just
     the caption window reads the full '2 0 2 4' row. Cost is bounded by
     the region size and only paid when a caption head was already found.
+
+    `psm` defaults to 11 so the caption-window rescue is unchanged;
+    `graphic_scale_bar` passes 6, because a tick ladder is one printed line
+    of digits rather than sparse text (see `text_detect.ocr_words`).
     """
     try:
         from .text_detect import ocr_words
@@ -1382,7 +1395,7 @@ def _ocr_zoom(page, region, min_conf: int = 35) -> list:
                               clip=rc, colorspace="rgb")
         img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
             pix.height, pix.width, 3)
-        ws = ocr_words(img, px_to_pt=72.0 / dpi, min_conf=min_conf)
+        ws = ocr_words(img, px_to_pt=72.0 / dpi, min_conf=min_conf, psm=psm)
         return [(x0 + rc.x0, y0 + rc.y0, x1 + rc.x0, y1 + rc.y0, t)
                 for x0, y0, x1, y1, t in ws]
     except Exception:
@@ -1537,7 +1550,8 @@ def bar_tick_labels(words: list) -> set:
 
 
 def graphic_scale_bar(words: list, page=None,
-                      ocr_retry: bool = False) -> ScaleCandidate | None:
+                      ocr_retry: bool = False,
+                      words_source: str = "text") -> ScaleCandidate | None:
     """Measure a drawn scale bar - the ruler with tick labels.
 
     Some sheets state no ratio anywhere; they print a bar labelled 0 / 50' /
@@ -1581,23 +1595,41 @@ def graphic_scale_bar(words: list, page=None,
     refused. Every label on the row must then agree with the measured
     rate (a misread label like RC Ontario's '20'->'0' otherwise ships a
     5x error), or the row is refused.
+
+    WHERE THE LABELS CAME FROM is recorded on the returned candidate as
+    `bar_source`, because a bar only corroborates a caption when the two
+    were read by DIFFERENT recognisers (SPEC 6.2 rule 1). `words_source`
+    says what the caller handed in - "text" for `page_words()` glyphs,
+    "ocr" for the 150-dpi psm-11 page pass - and the ladder actually used
+    is stamped one of:
+      native / native-ticks       label boxes from the PDF's own text
+      psm6-zoom / psm6-zoom-ticks label boxes from `_ocr_zoom(..., psm=6)`
+      ocr / ocr-ticks             label boxes from the caller's own OCR
+    A `*-ticks` reading measured its span on drawn tick geometry; the
+    plain form spanned label centres (no page, so no ticks to snap to).
+    An `ocr*` bar therefore corroborates nothing on a page whose caption
+    is itself psm-11 OCR - same recogniser, same render, one mistake.
+
+    THE ZOOM RUNS on three conditions, not one. It used to run only when
+    `not rows`, which let a corrupt ladder suppress the independent pixel
+    read: on RC Ontario page index 3 the 150-dpi pass returns `10 0 4`
+    (printed 0 10 20 40 - the 20 read as 0 and the 40 as 4), that
+    satisfies "rows exist", the zoom is skipped and the corrupt row then
+    fails the rate check, so the page returns nothing where the sheet
+    draws a bar. It now runs when (a) no row was found, (b) rows were
+    found and every one was refused by the guards, or (c) the rows are
+    built from non-native words at all (`words_source != "text"`) - and a
+    ladder that passes from the zoom is PREFERRED over one that passes
+    from the caller's words, because it is the independent read.
     """
     ws = [w for w in words if str(w[4]).strip()]
     ticks = None
-    for h in _bar_heads(ws):
-        hy = (h[1] + h[3]) / 2
-        hx = (h[0] + h[2]) / 2
-        near = _head_window(ws, h)
-        rows = _label_rows(near)
-        if not rows and ocr_retry and page is not None:
-            # a head with no readable ladder: the labels are small enough
-            # that 150-dpi OCR dropped them - re-read just this window
-            zoom = _ocr_zoom(page, (hx - 330, hy - 95, hx + 330, hy + 95))
-            if zoom:
-                near = [w for w in zoom if str(w[4]).strip()]
-                rows = _label_rows(near)
-        if not rows:
-            continue
+
+    def _measure(rows, near, source):
+        """One head's label rows, through every guard. Returns the reading
+        or None when the guards refuse all of them; `source` is where the
+        rows' label boxes came from (see the docstring's bar_source list)."""
+        nonlocal ticks
         if ticks is None:
             ticks = _page_ticks(page) if page is not None else []
         # Every row's label box and the drawn band its labels sit on.
@@ -1725,7 +1757,32 @@ def graphic_scale_bar(words: list, page=None,
                 text=f'graphic bar {v0:g}-{v1:g} ft over {dpt:.1f}pt '
                      f'(1" = {ft_per_inch:g}\', {how})',
                 ft_per_paper_inch=ft_per_inch,
-                near_scale_keyword=True)
+                near_scale_keyword=True,
+                bar_source=source + ("-ticks" if how == "ticks" else ""))
+        return None
+
+    for h in _bar_heads(ws):
+        hy = (h[1] + h[3]) / 2
+        hx = (h[0] + h[2]) / 2
+        near = _head_window(ws, h)
+        rows = _label_rows(near)
+        own = "native" if words_source == "text" else "ocr"
+        cand = _measure(rows, near, own) if rows else None
+        # The pixel zoom runs on (a) no rows, (b) rows that every guard
+        # refused, or (c) rows that are not native text - the caller's own
+        # recogniser cannot be the second opinion on its own reading. Its
+        # ladder wins when it passes: it is the independent one.
+        if page is not None and ocr_retry and (
+                cand is None or words_source != "text"):
+            zoom = _ocr_zoom(page, (hx - 330, hy - 95, hx + 330, hy + 95),
+                             psm=6)
+            zws = [w for w in zoom if str(w[4]).strip()]
+            zrows = _label_rows(zws) if zws else []
+            zcand = _measure(zrows, zws, "psm6-zoom") if zrows else None
+            if zcand is not None:
+                return zcand
+        if cand is not None:
+            return cand
     return None
 
 
@@ -2058,9 +2115,12 @@ def detect_scale(page: pymupdf.Page, ocr_if_needed: bool = True,
             # feat/choose edits them; whichever lands second deletes them.
             if not cands:
                 n2 = nts or bool(_NTS.search(ocr_text))
-                bar = graphic_scale_bar(words, page, ocr_retry=True)
+                bar = graphic_scale_bar(words, page, ocr_retry=True,
+                                        words_source="ocr")
                 if bar:
-                    return ScaleResult(bar, [bar], n2, "graphic-bar")
+                    return ScaleResult(
+                        bar, [bar], n2, "graphic-bar",
+                        pick={"why": "bar", "bar_source": bar.bar_source})
                 # Caption-window rescue, strictly additive: it runs only
                 # on pages every path above found NOTHING on, so no page
                 # that reads today can change its reading.
