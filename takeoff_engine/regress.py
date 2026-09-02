@@ -571,6 +571,26 @@ def _check(now: dict) -> int:
               f"this run is {now.get('corpus')!r}. Compare like with like.")
         return 1
     fails, notes = [], []
+    # THE FINGERPRINT, exactly as the earthwork gate treats earthwork_sig.
+    # Until 2026-09-02 (N9) gate-baseline.json recorded no engine_sig and
+    # nothing compared it, so a detection-code change that happened to
+    # move no count on these ten sheets - an __init__.py patch aimed at a
+    # sheet outside the corpus - moved engine_sig and PASSED. Ten sheets
+    # are a sample of the corpus, not the corpus; the signature is the
+    # only thing here that sees the whole code. A move is a FAIL until
+    # --accept records the new one in a commit that says why, and a
+    # baseline that never recorded one is unpinned, which is the same FAIL.
+    # (A `now` with no engine_sig is a hand-built summary, tests/test_gate.py;
+    # _run_corpus always carries one.)
+    if "engine_sig" in now:
+        if not base.get("engine_sig"):
+            fails.append(f"engine_sig: baseline records none (unpinned) - now "
+                         f"{now['engine_sig']}; re-baseline with --accept")
+        elif base["engine_sig"] != now["engine_sig"]:
+            fails.append(f"engine_sig moved: baseline {base['engine_sig']} now "
+                         f"{now['engine_sig']} - the detection code changed; if "
+                         f"every count below is unchanged, say so and re-baseline "
+                         f"with --accept")
     bs, ns = base["sheets"], now["sheets"]
     for name in sorted(set(bs) | set(ns)):
         if name not in ns:
@@ -892,8 +912,11 @@ def _run_corpus(args, t0) -> int:
 
 
     # ---- the verdict ----------------------------------------------------
+    from .detect_page import engine_sig
     summary = {
         "corpus": "full" if args.full else "fast",
+        # the code these counts were made by (see _check)
+        "engine_sig": engine_sig(),
         "sheets": {
             r["sheet"]: {
                 "chains": r["chains"],
