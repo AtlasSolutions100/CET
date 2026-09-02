@@ -616,6 +616,22 @@ def main(argv=None) -> int:
     hooks = regress.earthwork_import_hooks()
     print("import hooks outside the tree (not hashed): "
           + ("; ".join(hooks) if hooks else "none"))
+    # ... and under --require, printing is not enough. Measured 2026-09-02
+    # (adversary, round two): a sitecustomize.py on PYTHONPATH installing a
+    # sys.meta_path finder that wraps takeoff_engine.earthwork.cut_fill took
+    # 15% off fill through the product route while this gate exited 0 with
+    # "25 cases passed, 0 failed" - the hook was named on the line above and
+    # nobody had to look. Every file in the tree is hashed; a hook outside it
+    # can replace any of them at import time, so while one exists the
+    # signature covers nothing and the pass means nothing. --require is the
+    # mode both this machine and the production box run, and on neither does
+    # a legitimate hook exist: PYTHONPATH included, because that is the
+    # directory the exploit's sitecustomize was found on.
+    hook_failures = ([f"import hook outside the tree, and --require / "
+                      f"EARTHWORK_REQUIRE is set: {h} - it can replace any "
+                      f"hashed file at import time, so the signature below "
+                      f"pins nothing; remove it or run without --require"
+                      for h in hooks] if require else [])
     # what the SERVER would load. This run computes from source (above);
     # the server process loads __pycache__, and a pyc rebuilt from a
     # modified source with the original mtime/size in its header passes
@@ -636,7 +652,7 @@ def main(argv=None) -> int:
     n_pass = n_fail = 0
     n_fields = 0          # GATED numbers actually compared; 0 is a FAIL
     n_pinned = 0          # PINNED cell_used / surface_model compared
-    skipped, failures = [], []
+    skipped, failures = [], list(hook_failures)
 
     # the manifest itself: zero enabled entries is a hollow gate, not a pass
     entries = manifest.get("cases")
