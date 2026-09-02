@@ -165,7 +165,15 @@ _ENGINE_FILES = ("extract.py", "chain.py", "scale_detect.py",
                  # missing from this list until 2026-08-22, which meant the
                  # routing fix for Thielen A0.0 would have read back out of
                  # the cache as the old raster result.
-                 "classify_page.py")
+                 "classify_page.py",
+                 # __init__.py runs on EVERY import of this package and no
+                 # import statement names it, so a patch there moves every
+                 # detection on every sheet without touching a listed file.
+                 # Demonstrated 2026-09-01 (adversarial review, F6): a
+                 # build_chains wrapper appended there changed counts on all
+                 # ten gate sheets with engine_sig unchanged. Same hole, same
+                 # fix as regress._EARTHWORK_ROOTS.
+                 "__init__.py")
 
 
 _SIG_CACHE: str = ""
