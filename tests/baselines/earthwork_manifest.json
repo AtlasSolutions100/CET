@@ -1,5 +1,5 @@
 {
- "_about": "Every earthwork truth case tests/test_earthwork_regress.py replays. One entry per case; add a DEM-derived truth sheet by adding an entry, not by editing the test. Fields: id; sheet (human name, engine page index AND printed sheet); kind = how the inputs are read (fixture: one committed JSON like earthwork_oncor_c04_inputs.json; seed_flips: the offline-recipe folder layout under out/verify with seed/result/flips/boundary files); source = where the row set and its verification live; baseline = the expectation file, committed under tests/baselines/ ONLY for non-client data - client work keeps it gitignored beside its inputs; runs = the cut_fill configurations (boundary: recipe | shrunk75 | null; surface_model; cell_ft; existing_offset_ft / proposed_offset_ft; spots = N proposed spot points). Comparison is EXACT floats unless the entry carries tolerance_yd3 and/or tolerance_pct - that marks a TRUTH case whose baseline numbers came from outside the engine (a DEM differencing, a client's own takeoff): its baseline is hand-written {\"cases\": {run-name: {cut_yd3, fill_yd3, net_yd3}}} with a \"source\" line, may omit keys it has no truth for, and omits earthwork_sig. Gitignored inputs that are absent print SKIPPED and are counted, never silently passed.",
+ "_about": "Every earthwork truth case tests/test_earthwork_regress.py replays. One entry per case; add a DEM-derived truth sheet by adding an entry, not by editing the test. Fields: id; sheet (human name, engine page index AND printed sheet); kind = how the inputs are read (fixture: one committed JSON like earthwork_oncor_c04_inputs.json; seed_flips: the offline-recipe folder layout under out/verify with seed/result/flips/boundary files); via = server runs the entry THROUGH THE PRODUCT (server.earthwork_calc, the POST /earthwork route function, over a throwaway TAKEOFF_JOBS_DIR; needs page = engine page index; runs then take boundary, spots, existing_layers / proposed_layers as [{name, thickness_in}] and scale_ft_per_in = a reviewer-typed scale sidecar, and NEVER cell_ft or surface_model - the server's defaults are the point); source = where the row set and its verification live; baseline = the expectation file, committed under tests/baselines/ ONLY for non-client data - client work keeps it gitignored beside its inputs; runs = the cut_fill configurations (boundary: recipe | shrunk75 | null; surface_model; cell_ft; existing_offset_ft / proposed_offset_ft; spots = N proposed spot points). Comparison is EXACT floats unless the entry carries tolerance_yd3 and/or tolerance_pct - that marks a TRUTH case whose baseline numbers came from outside the engine (a DEM differencing, a client's own takeoff): its baseline is hand-written {\"cases\": {run-name: {cut_yd3, fill_yd3, net_yd3}}} with a \"source\" line, may omit keys it has no truth for, and omits earthwork_sig. Gitignored inputs that are absent print SKIPPED and are counted, never silently passed.",
  "cases": [
   {
    "id": "oncor_c04",
@@ -35,6 +35,29 @@
      "cell_ft": 2.0,
      "spots": 10
     }
+   ]
+  },
+  {
+   "id": "oncor_c04_server",
+   "sheet": "Oncor Cloudcrest Substation Civils - 20251212, printed C-04 = engine page index 3, THROUGH THE PRODUCT: server.earthwork_calc (POST /api/job/{id}/page/3/earthwork) over a throwaway job store",
+   "kind": "fixture",
+   "via": "server",
+   "page": 3,
+   "inputs": "tests/baselines/earthwork_oncor_c04_inputs.json",
+   "source": "same row set and chains as oncor_c04; the fixture's 30 ft/in is written as the page's engine scale, a scale_ft_per_in run writes the reviewer sidecar p3_scale.json on top of it. Bodies carry NO cell_ft and NO surface_model: EarthworkBody's defaults are what get pinned, and they are recorded in the baseline (server_defaults).",
+   "baseline": "tests/baselines/earthwork_oncor_c04_server.json",
+   "runs": [
+    {"name": "server|defaults|boundary13", "boundary": "recipe"},
+    {"name": "server|defaults|no-boundary", "boundary": null},
+    {
+     "name": "server|layers6in-9in|boundary13",
+     "boundary": "recipe",
+     "existing_layers": [{"name": "topsoil strip", "thickness_in": 6}],
+     "proposed_layers": [{"name": "base course", "thickness_in": 9}]
+    },
+    {"name": "server|scale40|boundary13", "boundary": "recipe", "scale_ft_per_in": 40},
+    {"name": "server|scale20|boundary13", "boundary": "recipe", "scale_ft_per_in": 20},
+    {"name": "server|spots10|boundary13", "boundary": "recipe", "spots": 10}
    ]
   },
   {

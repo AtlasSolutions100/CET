@@ -19,6 +19,29 @@ of earthwork.py's import closure (takeoff_engine.regress.earthwork_sig) - so a
 code change that happens not to move these particular volumes still surfaces
 as "re-baseline or explain" instead of passing silently.
 
+THE PRODUCT PATH IS INSIDE THE FENCE TOO. Until 2026-09-01 this file
+hand-copied server._earthwork_run's build step and called cut_fill directly,
+so the values a bid actually uses - EarthworkBody's defaults (cell_ft,
+surface_model), _layer_stack's inches-to-feet, _page_scale's choice between
+the engine's reading and a reviewer's typed scale - were outside it: swapping
+the defaults to 4 ft / clamped_ct (-29% cut on Oncor) moved nothing. A
+manifest entry with "via": "server" now imports server.py from the tree
+under test, writes the fixture's chains as p<N>_result.json into a throwaway
+TAKEOFF_JOBS_DIR (ledger under TAKEOFF_LEDGER_DIR), and calls the POST
+/earthwork route function (server.earthwork_calc -> _earthwork_run) with a
+body that carries NO cell_ft and NO surface_model, so whatever server.py
+defaults to is what gets pinned. Layer rows in inches and a reviewer scale
+sidecar exercise the offset and page-scale arithmetic. The server defaults
+themselves are recorded in the baseline and a change there is a FAIL that
+names the field.
+
+What the product path still does NOT cover: the HTTP layer (pydantic
+validation of the JSON body, auth, the route decorator), what webui/app.js
+puts in that body (which rows, which spot points, how the boundary is drawn),
+the /earthwork/map and /earthwork/zone routes, the elevation readers
+(/earthwork/suggest), scale DETECTION (the 30 ft/in here is the fixture's,
+not read from the sheet), the ledger content, and the approve/export path.
+
 Truth cases are listed in tests/baselines/earthwork_manifest.json, one entry
 each, so the DEM-derived truth sheets a parallel pipeline is producing can be
 added without editing this file. Client work whose inputs are gitignored under
@@ -32,8 +55,11 @@ for numpy/scipy, same as the engine):
     python tests/test_earthwork_regress.py                    # the gate
     python tests/test_earthwork_regress.py --accept oncor_c04 # rewrite ONE baseline
     python tests/test_earthwork_regress.py --tree PATH        # another checkout's
-                                                              # takeoff_engine against
+                                                              # takeoff_engine AND
+                                                              # server.py against
                                                               # THIS tree's baselines
+    python tests/test_earthwork_regress.py --server-tree PATH # server.py from a
+                                                              # different tree again
 
 Environment: EARTHWORK_DATA_ROOT resolves the manifest's gitignored input
 paths (out/...) against another checkout; default is this repo root.
@@ -53,6 +79,14 @@ MANIFEST = BASELINES / "earthwork_manifest.json"
 
 GATED = ("cut_yd3", "fill_yd3", "net_yd3")      # compared exactly, as floats
 NOTED = ("area_sf", "surface_model", "cell_ft")  # printed when they differ
+# the product path also reports what it resolved the offsets and scale to
+NOTED_SERVER = ("existing_offset_ft", "proposed_offset_ft", "ft_per_paper_inch")
+# EarthworkBody defaults pinned by a "via": "server" baseline - the values a
+# bid uses when the operator types nothing. Scalars only; the list fields
+# default to empty and the fixture supplies them.
+SERVER_DEFAULT_FIELDS = ("cell_ft", "surface_model", "strip_area_sf",
+                        "cut_reuse_pct", "export_factor", "import_factor",
+                        "boundary")
 
 
 def _within(want, got, entry) -> bool:
@@ -190,6 +224,58 @@ def run_case(case, inputs, np, ew):
     return r
 
 
+def _noted(entry):
+    return NOTED + (NOTED_SERVER if entry.get("via") == "server" else ())
+
+
+def server_defaults(server) -> dict:
+    """The scalar defaults of server.EarthworkBody, as the route sees them."""
+    d = server.EarthworkBody().model_dump()
+    return {k: d.get(k) for k in SERVER_DEFAULT_FIELDS}
+
+
+def run_case_server(case, inputs, server, job_id, page):
+    """The PRODUCT path: server.earthwork_calc (the POST /earthwork route
+    function) over a job dir holding the fixture's chains, with a body that
+    sets NOTHING the operator would not have typed - no cell_ft, no
+    surface_model - so server.py's own defaults, _layer_stack and _page_scale
+    are what produce the number."""
+    jd = server._job_dir(job_id)
+    ft_in = inputs["ft_per_pt"] * 72.0
+    res = {"chains": [{"chain_id": cid, "points": pts}
+                      for cid, pts in inputs["chains"].items()],
+           "scale": {"ft_per_paper_inch": ft_in, "text": f"1\" = {ft_in:g}'",
+                     "source": "fixture"}}
+    (jd / f"p{page}_result.json").write_text(json.dumps(res), encoding="utf-8")
+    # a reviewer-typed scale is a sidecar beside the result (_page_scale reads
+    # it; the engine's own reading above stays what it was)
+    pick = jd / f"p{page}_scale.json"
+    if case.get("scale_ft_per_in") is not None:
+        v = float(case["scale_ft_per_in"])
+        pick.write_text(json.dumps({"ft_per_paper_inch": v, "text": f"1\" = {v:g}'",
+                                    "set_by": "reviewer",
+                                    "set_at": "2026-09-01T00:00:00"}),
+                        encoding="utf-8")
+    else:
+        pick.unlink(missing_ok=True)
+    import numpy as np
+    kw = {"existing": inputs["existing_rows"], "proposed": inputs["proposed_rows"],
+          "boundary": _boundary_for(case, inputs, np)}
+    if case.get("spots"):
+        kw["proposed_points"] = inputs["spots"][: int(case["spots"])]
+    for k in ("existing_layers", "proposed_layers"):
+        if k in case:
+            kw[k] = case[k]
+    body = server.EarthworkBody(**kw)
+    t0 = time.time()
+    resp = server.earthwork_calc(job_id, page, body)
+    r = json.loads(bytes(resp.body))
+    r = {k: v for k, v in r.items() if k not in ("grid", "layers", "balance")}
+    r["_seconds"] = round(time.time() - t0, 1)
+    r["_contours"] = [r.get("existing_contours"), r.get("proposed_contours")]
+    return r
+
+
 def _fmt(v):
     return "None" if v is None else (f"{v}" if isinstance(v, (int, float)) else repr(v))
 
@@ -200,8 +286,11 @@ def main(argv=None) -> int:
                     help="rewrite ONE truth case's baseline from this run; "
                          "commit it with a message that says why the numbers moved")
     ap.add_argument("--tree", metavar="PATH",
-                    help="import takeoff_engine from this checkout instead of "
-                         "the one this file lives in (baselines stay THIS tree's)")
+                    help="import takeoff_engine AND server.py from this checkout "
+                         "instead of the one this file lives in (baselines stay "
+                         "THIS tree's)")
+    ap.add_argument("--server-tree", metavar="PATH",
+                    help="import server.py from this checkout (default: --tree)")
     ap.add_argument("--only", metavar="CASE_ID", help="run one truth case")
     args = ap.parse_args(argv)
 
@@ -228,6 +317,39 @@ def main(argv=None) -> int:
     n_pass = n_fail = 0
     skipped, failures = [], []
 
+    # the product path: server.py from the tree under test, over a throwaway
+    # job store so nothing this run writes (results, scale sidecars, ledger
+    # events) lands anywhere a demo or a bid reads from
+    server = None
+    jobs_tmp = None
+    if any(e.get("via") == "server" for e in manifest["cases"]):
+        import shutil
+        import tempfile
+        server_tree = (Path(args.server_tree).resolve() if args.server_tree
+                       else tree)
+        jobs_tmp = Path(tempfile.mkdtemp(prefix="earthwork_gate_jobs_"))
+        os.environ["TAKEOFF_JOBS_DIR"] = str(jobs_tmp)
+        os.environ["TAKEOFF_LEDGER_DIR"] = str(jobs_tmp / "ledger")
+        if str(server_tree) != str(tree):
+            sys.path.insert(0, str(server_tree))
+        try:
+            import server  # noqa: E402
+        except RuntimeError as e:
+            # server.py mounts webui/ at import; a scratch copy of server.py
+            # needs that directory beside it (an empty one is enough)
+            print(f"FAIL: import server from {server_tree}: {e}")
+            return 1
+        sp = Path(server.__file__).resolve()
+        if sp.parent != server_tree or sp.name != "server.py":
+            print(f"FAIL: server imported from {sp}, not {server_tree}/server.py")
+            return 1
+        if Path(server.JOBS_DIR).resolve() != jobs_tmp.resolve():
+            print(f"FAIL: server.JOBS_DIR is {server.JOBS_DIR}, not the throwaway "
+                  f"store {jobs_tmp}")
+            return 1
+        print(f"server {sp}  jobs/ledger {jobs_tmp}  "
+              f"EarthworkBody defaults {server_defaults(server)}")
+
     for entry in manifest["cases"]:
         cid = entry["id"]
         if args.only and cid != args.only:
@@ -240,10 +362,17 @@ def main(argv=None) -> int:
                   f"{entry.get('skip_note', 'no volumes were checked for this case')}")
             skipped.append(cid)
             continue
-        print(f"\n{cid}: {entry['sheet']}\n   inputs {where}")
+        via_server = entry.get("via") == "server"
+        print(f"\n{cid}: {entry['sheet']}\n   inputs {where}"
+              + (f"\n   via server.earthwork_calc, page {entry.get('page')}"
+                 if via_server else ""))
         results = {}
         for case in entry["runs"]:
-            r = run_case(case, inputs, np, ew)
+            if via_server:
+                r = run_case_server(case, inputs, server, f"ewgate-{cid}",
+                                    int(entry["page"]))
+            else:
+                r = run_case(case, inputs, np, ew)
             results[case["name"]] = r
             print(f"   {case['name']:26s} cut {_fmt(r.get('cut_yd3')):>10} "
                   f"fill {_fmt(r.get('fill_yd3')):>10} net {_fmt(r.get('net_yd3')):>10} "
@@ -261,9 +390,11 @@ def main(argv=None) -> int:
                 "earthwork_sig_files": sig_files,
                 "accepted": {"tree": str(tree), "date": time.strftime("%Y-%m-%d"),
                              "contours": results[next(iter(results))]["_contours"]},
-                "cases": {name: {k: r.get(k) for k in GATED + NOTED}
+                "cases": {name: {k: r.get(k) for k in GATED + _noted(entry)}
                           for name, r in results.items()},
             }
+            if via_server:
+                out["server_defaults"] = server_defaults(server)
             bpath.parent.mkdir(parents=True, exist_ok=True)
             bpath.write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8",
                              newline="\n")
@@ -293,7 +424,19 @@ def main(argv=None) -> int:
                 f"(closure {sig_files}) - the volume code changed; re-baseline "
                 f"with --accept {cid} and say why, or explain why the volumes "
                 f"must not move")
-        # 2. the volumes, exactly
+        # 2. the product's defaults: what the route uses when the body says
+        #    nothing. A cell or model swap there moves a bid and, until
+        #    2026-09-01, no test; the numbers below would catch cell/model,
+        #    this catches the rest (balance factors, strip area, boundary)
+        if via_server:
+            want_d, got_d = base.get("server_defaults") or {}, server_defaults(server)
+            for k in SERVER_DEFAULT_FIELDS:
+                if want_d.get(k, "<absent>") != got_d.get(k):
+                    failures.append(f"{cid}: server default {k} baseline "
+                                    f"{_fmt(want_d.get(k, '<absent>'))} now "
+                                    f"{_fmt(got_d.get(k))} - EarthworkBody changed; "
+                                    f"re-baseline with --accept {cid} and say why")
+        # 3. the volumes, exactly
         want_cases = set(base["cases"])
         got_cases = set(results)
         for name in sorted(want_cases - got_cases):
@@ -308,7 +451,7 @@ def main(argv=None) -> int:
                 delta = None if (w is None or g is None) else round(g - w, 3)
                 failures.append(f"{cid}/{name}: {k} baseline {_fmt(w)} got {_fmt(g)} "
                                 f"(delta {_fmt(delta)})")
-            for k in NOTED:
+            for k in _noted(entry):
                 if want.get(k) != got.get(k):
                     print(f"   NOTE {name}: {k} baseline {_fmt(want.get(k))} "
                           f"now {_fmt(got.get(k))}")
@@ -319,6 +462,8 @@ def main(argv=None) -> int:
         print(f"   baseline {bpath.name} sig {base.get('earthwork_sig')} "
               f"{'OK' if base.get('earthwork_sig') == sig else 'MOVED'}")
 
+    if jobs_tmp is not None:
+        shutil.rmtree(jobs_tmp, ignore_errors=True)
     if args.accept:
         return 0
     print()
