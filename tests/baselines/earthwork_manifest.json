@@ -35,6 +35,14 @@
      "surface_model": "linear",
      "cell_ft": 2.0,
      "spots": 10
+    },
+    {
+     "name": "boundary13|linear|spots46",
+     "boundary": "recipe",
+     "surface_model": "linear",
+     "cell_ft": 2.0,
+     "spots": 46,
+     "_why": "ALL 46 spot elevations = proposed_points full. The round-one fence stopped at 10 spots, and a cut_fill wrapper that fired only above 10 passed it with fill -15% on this exact call (2026-09-02); a trigger the fence never exercises is a trigger the fence never sees."
     }
    ]
   },
@@ -59,7 +67,9 @@
     },
     {"name": "server|scale40|boundary13", "boundary": "recipe", "scale_ft_per_in": 40},
     {"name": "server|scale20|boundary13", "boundary": "recipe", "scale_ft_per_in": 20},
-    {"name": "server|spots10|boundary13", "boundary": "recipe", "spots": 10}
+    {"name": "server|spots10|boundary13", "boundary": "recipe", "spots": 10},
+    {"name": "server|spots46|boundary13", "boundary": "recipe", "spots": 46,
+     "_why": "the bid call: every Oncor spot, through the product route. Fill here was 8248.2 -> 7011.0 under the ledger.py hook with '23 passed' printed."}
    ]
   },
   {

@@ -241,30 +241,48 @@ BASELINE = Path(__file__).parent.parent / "gate-baseline.json"
 # engine_sig's hashed inputs: adding a function there would move engine_sig
 # for a change that touches no detection - exactly what the split forbids.
 #
-# The hashed set is the IMPORT CLOSURE of earthwork.py (plus any
-# surface*.py that lands beside it), walked over the package's own import
-# graph with ast, never a hand-kept list - the list is how earthwork.py went
-# missing from engine_sig in the first place. On dev at b0c3baf it is
-# earthwork.py -> chain.py (_sample_polyline resamples every contour before
-# it enters the TIN) -> extract.py (StrokeUnit). chain.py and extract.py are
-# therefore in BOTH closures, and a change to either moves both signatures;
-# that is correct, since it can move both a chain count and a volume, and
-# the two gates then each say what they saw.
+# WHAT IS HASHED (round two, 2026-09-02). Round one hashed the IMPORT
+# CLOSURE of earthwork.py - the files an ast walk over the package's own
+# import graph reaches from earthwork.py, __init__.py and surface*.py. That
+# is the wrong set, and the fresh adversary showed why with numbers: a
+# 12-line hook appended to takeoff_engine/ledger.py (imported by server.py
+# at module level, reached by no import from earthwork.py) replaced
+# earthwork.cut_fill with a wrapper that scales fill by 0.85 whenever the
+# proposed surface carries more than ten spots. The gate printed "23 passed",
+# both signatures unchanged; the bid call with all 46 Oncor spots came back
+# fill 8248.2 -> 7011.0 (-15%). The same hook appended to regress.py - this
+# file - also passed. An import-closure walk can never see a monkeypatch
+# from a module the walk does not reach, and EVERYTHING importable in the
+# server process can patch the engine.
 #
-# takeoff_engine/__init__.py is a ROOT, not a discovered dependency: it runs
-# on every `import takeoff_engine.anything` and no import statement names
-# it, so an ast walk over the graph can never reach it. Demonstrated
-# 2026-09-01 (adversarial review, F1): a wrapper appended there that adds
-# 1 ft of proposed offset whenever cell_ft == 3.0 moved Oncor C-04
-# boundary13|linear from cut 2006.8 / fill 7979.1 to 3793.0 / 6680.1 CY
-# with "12 cases passed" and both signatures unchanged. The same reasoning
-# covers the other files Python executes without an import naming them -
-# conftest.py, sitecustomize.py, usercustomize.py, a *.pth in the package -
-# which are hashed whenever they exist (_EARTHWORK_HOOK_FILES) and listed
-# in the closure under their package-relative path so a baseline records
-# that they were absent. Site-packages .pth files and a user-site
-# customize module live OUTSIDE the repo and cannot be pinned by a content
-# hash; earthwork_import_hooks() reports them so the test can print them.
+# So the hashed set is now every *.py under takeoff_engine/ (this file
+# included), plus the repo-root .py files the server process executes:
+# server.py, and provision_demo.py (the provisioning entry point, which
+# imports takeoff_engine.users). server.py's own imports were read on
+# 2026-09-02: it imports takeoff_engine.* only (branding, ledger, chain,
+# classify_page, detect_page, extract, marks, scale_detect at module level;
+# users, earthwork, marks lazily) and third-party packages - no other
+# repo-root module - so _EARTHWORK_ROOT_FILES is those two. The
+# executed-on-import files that no import statement names (conftest.py,
+# sitecustomize.py, usercustomize.py, *.pth beside the package or at the
+# repo root) are hashed whenever they exist, as before.
+#
+# YES, this means an unrelated edit to scale_detect.py, or to a docstring
+# in ledger.py, moves earthwork_sig and forces a re-accept of every recipe
+# baseline. That is the point. A re-accept whose numbers are identical is
+# ONE VISIBLE COMMIT that says "the volume code's process changed, the
+# volumes did not, here is the proof"; an invisible volume change is a
+# wrong bid. The cost is a commit; the alternative is a fence with a hole
+# whose size nobody knows.
+#
+# The import-closure walk is kept as earthwork_closure(): it is printed
+# beside the signature as the explanation of which files matter MOST - the
+# ones whose bytes shape every cubic yard - and it no longer decides what
+# is hashed.
+#
+# Site-packages .pth files and a user-site customize module live OUTSIDE
+# the repo and cannot be pinned by a content hash; earthwork_import_hooks()
+# reports them so the test can print them.
 # ---------------------------------------------------------------------------
 _EARTHWORK_ROOTS = ("__init__.py", "earthwork.py", "surface*.py")
 # Executed-on-import files that no import statement names, relative to the
@@ -274,6 +292,10 @@ _EARTHWORK_HOOK_FILES = (
     "../conftest.py", "../sitecustomize.py", "../usercustomize.py",
     "../tests/conftest.py", "../*.pth",
 )
+# Repo-root .py files the server process executes. Read off server.py's and
+# provision_demo.py's import statements on 2026-09-02 (see the block above);
+# re-read them when a new entry point appears beside server.py.
+_EARTHWORK_ROOT_FILES = ("../server.py", "../provision_demo.py")
 
 
 def earthwork_import_hooks() -> list:
@@ -340,23 +362,32 @@ def _package_imports(path: Path, pkg: Path) -> set:
     return found
 
 
-def earthwork_sig_files(pkg: "Path | None" = None) -> list:
-    """The exact closure earthwork_sig() hashes, package-relative, sorted.
-
-    Roots are _EARTHWORK_ROOTS; the walk follows every intra-package import
-    transitively. A missing root (no surface*.py yet) is simply absent.
-    """
-    pkg = Path(pkg) if pkg else Path(__file__).parent
-    todo = []
-    for pat in _EARTHWORK_ROOTS:
-        todo += [q.name for q in sorted(pkg.glob(pat)) if q.is_file()]
+def _hook_files(pkg: Path) -> list:
+    """The executed-on-import files that exist right now, package-relative."""
+    out = []
     for pat in _EARTHWORK_HOOK_FILES:
         # pathlib.glob does not walk '..' segments: split the directory off
         # the name and keep the '../' prefix in the recorded relative path
         sub, _, name = pat.rpartition("/")
         base = pkg / sub if sub else pkg
-        todo += [f"{sub}/{q.name}" if sub else q.name
-                 for q in sorted(base.glob(name)) if q.is_file()]
+        out += [f"{sub}/{q.name}" if sub else q.name
+                for q in sorted(base.glob(name)) if q.is_file()]
+    return out
+
+
+def earthwork_closure(pkg: "Path | None" = None) -> list:
+    """The IMPORT CLOSURE of the volume code, package-relative, sorted: what
+    an ast walk reaches from _EARTHWORK_ROOTS over the package's own import
+    graph, plus the hook files that exist. This is the EXPLANATION printed
+    beside the signature - the files whose bytes shape every cubic yard
+    directly - and since 2026-09-02 it is NOT what earthwork_sig() hashes
+    (see the block above: a walk cannot see a monkeypatch from a module it
+    never reaches). earthwork_sig_files() is the hashed set."""
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    todo = []
+    for pat in _EARTHWORK_ROOTS:
+        todo += [q.name for q in sorted(pkg.glob(pat)) if q.is_file()]
+    todo += _hook_files(pkg)
     seen = []
     while todo:
         rel = todo.pop(0)
@@ -369,11 +400,40 @@ def earthwork_sig_files(pkg: "Path | None" = None) -> list:
     return sorted(seen)
 
 
+def earthwork_sig_files(pkg: "Path | None" = None) -> list:
+    """The exact set earthwork_sig() hashes, package-relative, sorted: every
+    *.py under the package (subpackages included, __pycache__ never), the
+    repo-root files in _EARTHWORK_ROOT_FILES that exist, and the hook files
+    in _EARTHWORK_HOOK_FILES that exist. Nothing here is discovered by
+    walking imports - see the block above for the 15% that taught that."""
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    files = [str(q.relative_to(pkg)).replace("\\", "/")
+             for q in sorted(pkg.rglob("*.py"))
+             if q.is_file() and "__pycache__" not in q.parts]
+    files += [rel for rel in _EARTHWORK_ROOT_FILES if (pkg / rel).is_file()]
+    files += _hook_files(pkg)
+    return sorted(set(files))
+
+
+def earthwork_file_hashes(pkg: "Path | None" = None) -> dict:
+    """sha1[:16] of each file in earthwork_sig_files(), by relative path -
+    recorded in a baseline so a moved signature can NAME the file that
+    moved it instead of printing two opaque hashes."""
+    pkg = Path(pkg) if pkg else Path(__file__).parent
+    return {rel: hashlib.sha1((pkg / rel).read_bytes()).hexdigest()[:16]
+            for rel in earthwork_sig_files(pkg)}
+
+
 def earthwork_sig(pkg: "Path | None" = None) -> str:
     """Content hash (sha1[:16], like engine_sig) over earthwork_sig_files().
 
     Bytes, not mtimes, for the reason engine_sig's docstring gives: a fresh
-    checkout or image rebuild must not move it, a real edit must.
+    checkout or image rebuild must not move it, a real edit must. And it is
+    the WHOLE package plus the server entry points, not an import closure:
+    an unrelated edit to scale_detect.py moves this and forces a re-accept
+    with identical numbers - one visible commit - because the alternative,
+    a module outside the closure patching cut_fill at import time, is an
+    invisible volume change and a wrong bid (measured: -15% fill).
     """
     pkg = Path(pkg) if pkg else Path(__file__).parent
     h = hashlib.sha1()
@@ -577,8 +637,11 @@ def main():
     # result was made by) and the volume one (what a cubic yard was made
     # by). They move independently on purpose.
     from .detect_page import engine_sig
-    print(f"engine_sig {engine_sig()}   earthwork_sig {earthwork_sig()}   "
-          f"earthwork closure: {', '.join(earthwork_sig_files())}")
+    print(f"engine_sig {engine_sig()}   earthwork_sig {earthwork_sig()}")
+    print(f"   earthwork_sig hashes {len(earthwork_sig_files())} files: "
+          f"{', '.join(earthwork_sig_files())}")
+    print(f"   volume import closure (the ones that matter most): "
+          f"{', '.join(earthwork_closure())}")
     verdicts = {}
     try:
         verdicts["earthwork"] = _earthwork_check(require=args.require)
