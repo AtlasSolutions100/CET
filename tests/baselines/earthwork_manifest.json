@@ -27,6 +27,7 @@
      "proposed_offset_ft": 0.75
     },
     {"name": "no-boundary|linear|cell1", "boundary": null, "surface_model": "linear", "cell_ft": 1.0},
+    {"name": "no-boundary|linear|cell3", "boundary": null, "surface_model": "linear", "cell_ft": 3.0},
     {
      "name": "boundary13|linear|spots",
      "boundary": "recipe",

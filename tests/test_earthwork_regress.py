@@ -217,6 +217,11 @@ def main(argv=None) -> int:
     sig = regress.earthwork_sig(pkg)
     sig_files = regress.earthwork_sig_files(pkg)
     print(f"earthwork_sig {sig}  closure {sig_files}  tree {tree}")
+    # what else runs on import and is NOT in the hash because it is not in
+    # the tree - printed, never hidden (regress.earthwork_import_hooks)
+    hooks = regress.earthwork_import_hooks()
+    print("import hooks outside the tree (not hashed): "
+          + ("; ".join(hooks) if hooks else "none"))
 
     data_root = Path(os.environ.get("EARTHWORK_DATA_ROOT") or REPO).resolve()
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))

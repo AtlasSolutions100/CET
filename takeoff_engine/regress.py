@@ -250,8 +250,60 @@ BASELINE = Path(__file__).parent.parent / "gate-baseline.json"
 # therefore in BOTH closures, and a change to either moves both signatures;
 # that is correct, since it can move both a chain count and a volume, and
 # the two gates then each say what they saw.
+#
+# takeoff_engine/__init__.py is a ROOT, not a discovered dependency: it runs
+# on every `import takeoff_engine.anything` and no import statement names
+# it, so an ast walk over the graph can never reach it. Demonstrated
+# 2026-09-01 (adversarial review, F1): a wrapper appended there that adds
+# 1 ft of proposed offset whenever cell_ft == 3.0 moved Oncor C-04
+# boundary13|linear from cut 2006.8 / fill 7979.1 to 3793.0 / 6680.1 CY
+# with "12 cases passed" and both signatures unchanged. The same reasoning
+# covers the other files Python executes without an import naming them -
+# conftest.py, sitecustomize.py, usercustomize.py, a *.pth in the package -
+# which are hashed whenever they exist (_EARTHWORK_HOOK_FILES) and listed
+# in the closure under their package-relative path so a baseline records
+# that they were absent. Site-packages .pth files and a user-site
+# customize module live OUTSIDE the repo and cannot be pinned by a content
+# hash; earthwork_import_hooks() reports them so the test can print them.
 # ---------------------------------------------------------------------------
-_EARTHWORK_ROOTS = ("earthwork.py", "surface*.py")
+_EARTHWORK_ROOTS = ("__init__.py", "earthwork.py", "surface*.py")
+# Executed-on-import files that no import statement names, relative to the
+# package directory. Hashed when present; a baseline lists exactly which.
+_EARTHWORK_HOOK_FILES = (
+    "conftest.py", "sitecustomize.py", "usercustomize.py", "*.pth",
+    "../conftest.py", "../sitecustomize.py", "../usercustomize.py",
+    "../tests/conftest.py", "../*.pth",
+)
+
+
+def earthwork_import_hooks() -> list:
+    """What runs on `import takeoff_engine` from OUTSIDE the repo, so it can
+    be reported beside the signature rather than pretended away: every .pth
+    in a site directory (each is executed at interpreter start), a loaded
+    sitecustomize / usercustomize, PYTHONPATH. None of it is hashed - it is
+    not in the tree - which is exactly why it is printed."""
+    import site
+    out = []
+    dirs = []
+    try:
+        dirs += list(site.getsitepackages())
+    except AttributeError:
+        pass
+    try:
+        if site.ENABLE_USER_SITE:
+            dirs.append(site.getusersitepackages())
+    except AttributeError:
+        pass
+    for d in dirs:
+        for p in sorted(Path(d).glob("*.pth")) if Path(d).is_dir() else []:
+            out.append(f"pth {p}")
+    for m in ("sitecustomize", "usercustomize"):
+        mod = sys.modules.get(m)
+        if mod is not None:
+            out.append(f"{m} {getattr(mod, '__file__', '?')}")
+    if os.environ.get("PYTHONPATH"):
+        out.append(f"PYTHONPATH={os.environ['PYTHONPATH']}")
+    return out
 
 
 def _package_imports(path: Path, pkg: Path) -> set:
@@ -298,6 +350,13 @@ def earthwork_sig_files(pkg: "Path | None" = None) -> list:
     todo = []
     for pat in _EARTHWORK_ROOTS:
         todo += [q.name for q in sorted(pkg.glob(pat)) if q.is_file()]
+    for pat in _EARTHWORK_HOOK_FILES:
+        # pathlib.glob does not walk '..' segments: split the directory off
+        # the name and keep the '../' prefix in the recorded relative path
+        sub, _, name = pat.rpartition("/")
+        base = pkg / sub if sub else pkg
+        todo += [f"{sub}/{q.name}" if sub else q.name
+                 for q in sorted(base.glob(name)) if q.is_file()]
     seen = []
     while todo:
         rel = todo.pop(0)

@@ -1,7 +1,8 @@
 {
  "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04'. Written by tests/test_earthwork_regress.py --accept oncor_c04; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
- "earthwork_sig": "ad72e892d8a23f46",
+ "earthwork_sig": "2dd8a829e97957d4",
  "earthwork_sig_files": [
+  "__init__.py",
   "chain.py",
   "earthwork.py",
   "extract.py"
@@ -102,6 +103,14 @@
    "area_sf": 83767.0,
    "surface_model": "linear",
    "cell_ft": 1.0
+  },
+  "no-boundary|linear|cell3": {
+   "cut_yd3": 2008.4,
+   "fill_yd3": 7998.5,
+   "net_yd3": 5990.1,
+   "area_sf": 83781.0,
+   "surface_model": "linear",
+   "cell_ft": 3.0
   },
   "boundary13|linear|spots": {
    "cut_yd3": 2039.5,
