@@ -752,8 +752,19 @@ def reopen_job(job_id: str):
     if not src.exists():
         raise HTTPException(410, "that plan set is no longer on this server")
     if not sizes:
-        # registry rows predate sizes, or classification never finished
-        return _register(src)
+        # registry rows predate sizes, or classification never finished.
+        # THE ROW'S OWNER TRAVELS WITH IT. _register's default owner is
+        # None, and None is the SHARED marker: every signed-in account may
+        # list, open, render and detect an owner-less row. Until 2026-09-01
+        # this call passed no owner, so one reopen of a client's un-sized
+        # row - by the client, or by staff on their behalf - minted a
+        # second row for the SAME PDF with owner None and the document was
+        # on every other client's landing page. _register never rewrites
+        # an existing row's owner (its reuse key includes the owner, and
+        # reuse repairs mtime only), so passing the owner through is the
+        # whole fix; a genuinely shared row (owner None) stays shared.
+        # tests/test_reopen_owner.py pins both.
+        return _register(src, owner=j.get("owner"))
     return {"job_id": job_id, "pages": pages, "kinds": kinds,
             "sizes": sizes, "name": _display_name(src)}
 
