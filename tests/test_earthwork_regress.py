@@ -44,7 +44,16 @@ not read from the sheet), the ledger content, and the approve/export path.
 
 Truth cases are listed in tests/baselines/earthwork_manifest.json, one entry
 each, so the DEM-derived truth sheets a parallel pipeline is producing can be
-added without editing this file. Client work whose inputs are gitignored under
+added without editing this file. Every entry and every baseline DECLARES its
+comparison kind ("compare": "recipe" | "tolerance") and the two must agree:
+a recipe baseline must carry earthwork_sig and cut/fill/net on every case, a
+tolerance entry must carry tolerance_yd3 or tolerance_pct and its baseline
+all three values. Nothing is inferred from what a file LACKS - until
+2026-09-01 the kind was read off the absence of tolerance keys, and deleting
+the earthwork_sig key, emptying the per-case dicts, or writing a manifest
+with zero cases all printed "N cases passed" with zero numbers compared. Now
+a missing required field is a FAIL, a manifest with zero enabled entries is a
+FAIL, the run prints "N fields compared" and FAILS when N is 0. Client work whose inputs are gitignored under
 out/ (Stice) is REPLAYED ONLY WHEN THOSE INPUTS EXIST LOCALLY, and prints a
 visible SKIPPED line otherwise - a silent pass when the client data is absent
 would make a laptop without the files look greener than the one with them.
@@ -60,6 +69,11 @@ for numpy/scipy, same as the engine):
                                                               # THIS tree's baselines
     python tests/test_earthwork_regress.py --server-tree PATH # server.py from a
                                                               # different tree again
+    python tests/test_earthwork_regress.py --manifest PATH    # replay a scratch
+                                                              # manifest (attacks on the
+                                                              # gate itself); the
+                                                              # gate uses the
+                                                              # committed one
 
 Environment: EARTHWORK_DATA_ROOT resolves the manifest's gitignored input
 paths (out/...) against another checkout; default is this repo root.
@@ -89,17 +103,85 @@ SERVER_DEFAULT_FIELDS = ("cell_ft", "surface_model", "strip_area_sf",
                         "boundary")
 
 
-def _within(want, got, entry) -> bool:
-    """Exact float equality for a replay baseline. A manifest entry that
-    carries tolerance_yd3 and/or tolerance_pct is a TRUTH case - a number
-    that came from outside the engine (a DEM differencing, a client's own
-    takeoff) - and passes within the wider of the two bands."""
-    if want is None or got is None:
-        return want == got
+COMPARE_KINDS = ("recipe", "tolerance")
+
+
+def _is_num(v) -> bool:
+    """A real number. bool is an int in Python and None is not a number:
+    `0.0` IS a value here (a sheet with no cut has cut 0.0) and must count."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _tolerance(entry) -> float:
+    """The band a "tolerance" entry allows, in yd3 for a given baseline value;
+    0.0 for a "recipe" entry (exact floats, always)."""
+    if entry["compare"] != "tolerance":
+        return 0.0
     tol = float(entry.get("tolerance_yd3") or 0.0)
-    if entry.get("tolerance_pct"):
+    return tol
+
+
+def _within(want, got, entry) -> bool:
+    """Exact float equality for a "recipe" entry. A "tolerance" entry is a
+    TRUTH case - a number that came from outside the engine (a DEM
+    differencing, a client's own takeoff) - and passes within the wider of
+    tolerance_yd3 and tolerance_pct of the baseline value."""
+    if not (_is_num(want) and _is_num(got)):
+        return False
+    tol = _tolerance(entry)
+    if entry["compare"] == "tolerance" and entry.get("tolerance_pct"):
         tol = max(tol, abs(float(want)) * float(entry["tolerance_pct"]) / 100.0)
     return want == got if tol == 0.0 else abs(float(got) - float(want)) <= tol
+
+
+def _manifest_problems(entry) -> list:
+    """Why this manifest entry cannot be trusted to gate anything."""
+    bad = []
+    kind = entry.get("compare")
+    if kind not in COMPARE_KINDS:
+        bad.append(f"compare is {kind!r}; must be one of {COMPARE_KINDS}")
+        return bad
+    if not isinstance(entry.get("runs"), list) or not entry["runs"]:
+        bad.append("runs is empty - nothing would be computed")
+    if kind == "tolerance":
+        if not (float(entry.get("tolerance_yd3") or 0.0) > 0.0
+                or float(entry.get("tolerance_pct") or 0.0) > 0.0):
+            bad.append("a tolerance entry needs tolerance_yd3 or tolerance_pct > 0")
+    else:
+        for k in ("tolerance_yd3", "tolerance_pct"):
+            if k in entry:
+                bad.append(f"a recipe entry must not carry {k} (it would "
+                           f"loosen an exact comparison)")
+    return bad
+
+
+def _baseline_problems(base, entry) -> list:
+    """Why this baseline file cannot be trusted: every required field, by
+    name. A recipe baseline needs earthwork_sig and cut/fill/net on every
+    case; a tolerance baseline needs the three values. An empty cases dict,
+    an empty case, a null where a number belongs - each is a line here."""
+    bad = []
+    kind = entry["compare"]
+    if base.get("compare") != kind:
+        bad.append(f"baseline declares compare {base.get('compare')!r}, "
+                   f"manifest says {kind!r}")
+    if kind == "recipe":
+        sig = base.get("earthwork_sig")
+        if not (isinstance(sig, str) and len(sig) == 16):
+            bad.append(f"recipe baseline has no earthwork_sig (got {sig!r}) - "
+                       f"a code change could not be seen")
+    cases = base.get("cases")
+    if not isinstance(cases, dict) or not cases:
+        bad.append("baseline has no cases - nothing to compare")
+        return bad
+    for name, c in cases.items():
+        if not isinstance(c, dict) or not c:
+            bad.append(f"case {name!r} is empty - no volume to compare")
+            continue
+        for k in GATED:
+            if not _is_num(c.get(k)):
+                bad.append(f"case {name!r} has no {k} (got {c.get(k)!r})")
+    return bad
 
 
 def _resolve(rel: str, data_root: Path) -> Path:
@@ -292,6 +374,9 @@ def main(argv=None) -> int:
     ap.add_argument("--server-tree", metavar="PATH",
                     help="import server.py from this checkout (default: --tree)")
     ap.add_argument("--only", metavar="CASE_ID", help="run one truth case")
+    ap.add_argument("--manifest", metavar="PATH",
+                    help="read this manifest instead of the committed one "
+                         "(for replaying attacks on the gate; never in CI)")
     args = ap.parse_args(argv)
 
     tree = Path(args.tree).resolve() if args.tree else REPO
@@ -313,9 +398,31 @@ def main(argv=None) -> int:
           + ("; ".join(hooks) if hooks else "none"))
 
     data_root = Path(os.environ.get("EARTHWORK_DATA_ROOT") or REPO).resolve()
-    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    manifest_path = Path(args.manifest).resolve() if args.manifest else MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     n_pass = n_fail = 0
+    n_fields = 0          # GATED numbers actually compared; 0 is a FAIL
     skipped, failures = [], []
+
+    # the manifest itself: zero enabled entries is a hollow gate, not a pass
+    entries = manifest.get("cases")
+    if not isinstance(entries, list):
+        entries = []
+    disabled = [e.get("id") for e in entries if e.get("enabled") is False]
+    enabled = [e for e in entries if e.get("enabled") is not False]
+    wanted = [e for e in enabled
+              if not (args.only and e.get("id") != args.only)
+              and not (args.accept and e.get("id") != args.accept)]
+    print(f"manifest {manifest_path}: {len(enabled)} enabled entr"
+          f"{'y' if len(enabled) == 1 else 'ies'}, {len(wanted)} selected"
+          + (f", DISABLED: {', '.join(map(str, disabled))}" if disabled else ""))
+    if not enabled:
+        failures.append(f"manifest {manifest_path.name} has zero enabled entries "
+                        f"- nothing would be compared")
+    elif not wanted:
+        failures.append(f"no manifest entry matches "
+                        f"{args.only or args.accept!r}")
+    manifest["cases"] = wanted
 
     # the product path: server.py from the tree under test, over a throwaway
     # job store so nothing this run writes (results, scale sidecars, ledger
@@ -352,9 +459,11 @@ def main(argv=None) -> int:
 
     for entry in manifest["cases"]:
         cid = entry["id"]
-        if args.only and cid != args.only:
-            continue
-        if args.accept and cid != args.accept:
+        probs = _manifest_problems(entry)
+        if probs:
+            for line in probs:
+                failures.append(f"{cid}: manifest entry: {line}")
+            print(f"\n{cid}: FAIL manifest entry - " + "; ".join(probs))
             continue
         inputs, where = LOADERS[entry["kind"]](entry, data_root)
         if inputs is None:
@@ -378,14 +487,29 @@ def main(argv=None) -> int:
                   f"fill {_fmt(r.get('fill_yd3')):>10} net {_fmt(r.get('net_yd3')):>10} "
                   f"area {_fmt(r.get('area_sf')):>11} {r.get('surface_model')} "
                   f"{r['_seconds']}s" + (f"  ERROR {r['error']}" if "error" in r else ""))
+            # cut_fill widens the cell (x1.5 per step) when the grid would
+            # exceed 4M cells and reports the cell it USED. Say so, every
+            # run: a capped grid that reads as the requested one is the
+            # silent-cap trap (CLAUDE.md s5)
+            asked = float(case.get("cell_ft", 2.0)) if not via_server \
+                else float(server_defaults(server)["cell_ft"])
+            if _is_num(r.get("cell_ft")) and abs(float(r["cell_ft"]) - asked) > 1e-9:
+                print(f"      NOTE cell_ft requested {asked:g}, cut_fill used "
+                      f"{r['cell_ft']:g} (grid cap widened the cell; the volume "
+                      f"above is at {r['cell_ft']:g} ft)")
 
         bpath = _resolve(entry["baseline"], data_root)
         if args.accept:
+            if entry["compare"] != "recipe":
+                print(f"   REFUSED --accept {cid}: a tolerance baseline's numbers "
+                      f"come from outside the engine and are written by hand")
+                return 1
             out = {
                 "_about": (f"EXACT cut_fill outputs for manifest case '{cid}'. "
                            f"Written by tests/test_earthwork_regress.py --accept {cid}; "
                            f"a test run never writes here. Change it only in a commit "
                            f"that says which code change moved which number and why."),
+                "compare": "recipe",
                 "earthwork_sig": sig,
                 "earthwork_sig_files": sig_files,
                 "accepted": {"tree": str(tree), "date": time.strftime("%Y-%m-%d"),
@@ -413,10 +537,25 @@ def main(argv=None) -> int:
             print("   FAIL no baseline")
             n_fail += 1
             continue
-        base = json.loads(bpath.read_text(encoding="utf-8"))
+        try:
+            base = json.loads(bpath.read_text(encoding="utf-8"))
+        except ValueError as e:
+            failures.append(f"{cid}: baseline {bpath.name} is not JSON: {e}")
+            print("   FAIL baseline unreadable")
+            n_fail += 1
+            continue
+        if not isinstance(base, dict):
+            base = {}
+        # 0. the baseline's shape, field by field. A recipe baseline that
+        #    lost its earthwork_sig, a case dict emptied out, a null where a
+        #    volume belongs: each is a named FAIL, never a quieter pass.
+        probs = _baseline_problems(base, entry)
+        for line in probs:
+            failures.append(f"{cid}: baseline {bpath.name}: {line}")
         # 1. the code fingerprint: a change in the hashed closure with no
-        #    volume change must still surface. A truth baseline that records
-        #    no signature (its numbers did not come from this code) skips it.
+        #    volume change must still surface. Required on a recipe baseline
+        #    (checked above); compared on a tolerance one only if it chose
+        #    to record it.
         if "earthwork_sig" in base and base.get("earthwork_sig") != sig:
             failures.append(
                 f"{cid}: earthwork_sig moved: baseline {base.get('earthwork_sig')} "
@@ -436,8 +575,8 @@ def main(argv=None) -> int:
                                     f"{_fmt(want_d.get(k, '<absent>'))} now "
                                     f"{_fmt(got_d.get(k))} - EarthworkBody changed; "
                                     f"re-baseline with --accept {cid} and say why")
-        # 3. the volumes, exactly
-        want_cases = set(base["cases"])
+        # 3. the volumes, exactly (or within the declared band)
+        want_cases = set(base.get("cases") or {})
         got_cases = set(results)
         for name in sorted(want_cases - got_cases):
             failures.append(f"{cid}/{name}: in baseline but not in the manifest runs")
@@ -445,32 +584,53 @@ def main(argv=None) -> int:
             failures.append(f"{cid}/{name}: run but has no baseline entry")
         for name in sorted(want_cases & got_cases):
             want, got = base["cases"][name], results[name]
-            bad = [(k, want.get(k), got.get(k)) for k in GATED
-                   if k in want and not _within(want.get(k), got.get(k), entry)]
+            if not isinstance(want, dict):
+                want = {}
+            bad, compared = [], 0
+            for k in GATED:
+                w, g = want.get(k), got.get(k)
+                if not _is_num(w):
+                    continue        # already a FAIL line from _baseline_problems
+                compared += 1
+                if not _within(w, g, entry):
+                    bad.append((k, w, g))
+            n_fields += compared
             for k, w, g in bad:
-                delta = None if (w is None or g is None) else round(g - w, 3)
+                delta = round(g - w, 3) if (_is_num(w) and _is_num(g)) else None
+                band = _tolerance(entry)
+                if entry["compare"] == "tolerance" and entry.get("tolerance_pct"):
+                    band = max(band, abs(float(w)) * float(entry["tolerance_pct"]) / 100.0)
                 failures.append(f"{cid}/{name}: {k} baseline {_fmt(w)} got {_fmt(g)} "
-                                f"(delta {_fmt(delta)})")
+                                f"(delta {_fmt(delta)}"
+                                + (f", band +/-{band:.1f}" if band else "") + ")")
             for k in _noted(entry):
-                if want.get(k) != got.get(k):
+                if k in want and want.get(k) != got.get(k):
                     print(f"   NOTE {name}: {k} baseline {_fmt(want.get(k))} "
                           f"now {_fmt(got.get(k))}")
-            if bad:
+            if bad or compared < len(GATED):
                 n_fail += 1
             else:
                 n_pass += 1
-        print(f"   baseline {bpath.name} sig {base.get('earthwork_sig')} "
-              f"{'OK' if base.get('earthwork_sig') == sig else 'MOVED'}")
+        if probs:
+            n_fail += max(0, len(want_cases - got_cases))
+        print(f"   baseline {bpath.name} compare {base.get('compare')!r} "
+              f"sig {base.get('earthwork_sig')} "
+              f"{'OK' if base.get('earthwork_sig') == sig else 'MOVED'}"
+              + (f"  {len(probs)} shape problem(s)" if probs else ""))
 
     if jobs_tmp is not None:
         shutil.rmtree(jobs_tmp, ignore_errors=True)
     if args.accept:
         return 0
     print()
+    if n_fields == 0:
+        failures.append("0 fields compared - no cut/fill/net number was checked "
+                        "against a baseline; a gate that compares nothing has "
+                        "not passed")
     for f in failures:
         print("FAIL " + f)
-    print(f"\nearthwork gate: {n_pass} cases passed, {n_fail} failed, "
-          f"{len(skipped)} truth case(s) SKIPPED"
+    print(f"\nearthwork gate: {n_fields} fields compared; {n_pass} cases passed, "
+          f"{n_fail} failed, {len(skipped)} truth case(s) SKIPPED"
           + (f" ({', '.join(skipped)})" if skipped else "")
           + f"; {len(failures)} failure line(s)")
     return 1 if failures else 0

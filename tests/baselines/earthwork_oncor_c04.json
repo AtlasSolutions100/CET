@@ -1,5 +1,6 @@
 {
  "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04'. Written by tests/test_earthwork_regress.py --accept oncor_c04; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
+ "compare": "recipe",
  "earthwork_sig": "2dd8a829e97957d4",
  "earthwork_sig_files": [
   "__init__.py",
@@ -9,7 +10,7 @@
  ],
  "accepted": {
   "tree": "C:\\Users\\kobys\\takeoff-ewgate",
-  "date": "2026-09-01",
+  "date": "2026-09-02",
   "contours": [
    69,
    34
