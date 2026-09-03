@@ -3257,8 +3257,18 @@ def approve(job_id: str, page: int, body: ApproveBody):
         "by_chain": {str(k): v for k, v in sorted(_chain_col_used.items())},
     }
     # verbatim onto the report (report_pdf prints them under the scale
-    # lines); capped so no caller can paper over the table with prose
-    export["notes"] = [str(x).strip()[:400] for x in body.notes[:6]
+    # lines); capped so no caller can paper over the table with prose.
+    #
+    # SEVEN, NOT SIX, since 2026-09-02. The earthwork block now carries a
+    # SEVENTH fact the report has to state - how much of the sheet's contour
+    # linework is behind the volume (webui/app.js ewCoverageNote): on Oncor
+    # C-04 that is 41 of 368 contour lines, with 218 of them carrying no
+    # elevation at all. Six slots meant adding it silently dropped whichever
+    # caveat sat last, which is the failure mode the cap exists to prevent,
+    # not an instance of it. The cap still bounds prose - each note is
+    # capped at 400 characters as well - and webui/app.js APPROVE_NOTES_MAX
+    # mirrors this number; approveNotesDropped() discloses any trim.
+    export["notes"] = [str(x).strip()[:400] for x in body.notes[:7]
                        if str(x).strip()]
     if _wz:
         # Disclosure travels with the record (CLAUDE.md: a mask states what
@@ -4671,8 +4681,9 @@ def earthwork_suggest(job_id: str, page: int):
     #     paper (C-04 sids 44-48 seeded 10 junk rows the same way).
     # Excluded chains also leave the label-matching pool entirely, so the
     # labels they used to steal reach the real contours (earthwork.py).
-    from takeoff_engine.earthwork import (_chain_white, family_verdicts,
-                                          split_rows_surface)
+    from takeoff_engine.earthwork import (_chain_white, contour_coverage,
+                                          contour_interval, family_verdicts,
+                                          is_printed_how, split_rows_surface)
     verdicts = family_verdicts(res.get("styles") or [])
     excl = set()
     fam_excluded = []
@@ -4902,7 +4913,32 @@ def earthwork_suggest(job_id: str, page: int):
                         "width": (ch.width if ch else None), "dist": None})
             infill_rows.append(row)
     sug = sug + infill_rows
+    # ---- WHAT THIS SHEET'S CONTOUR LINEWORK ADDS UP TO --------------------
+    #
+    # Every fact below was already computed above and thrown away: the rows
+    # know their `how`, the exclusions know their chain counts, and nothing
+    # stated a DENOMINATOR. So a sheet whose reader elevated 150 of 368
+    # contour lines was byte-identical on screen to one that elevated all of
+    # them (measured 2026-09-02 by grep on 512f474: `spot_z_missing` exists
+    # for spot grades, no contour denominator exists anywhere). The
+    # arithmetic is takeoff_engine.earthwork.contour_coverage - pure, and
+    # frozen in tests/test_ew_coverage.py against a recorded row set.
+    coverage = contour_coverage(res.get("chains") or [], sug,
+                                verdicts=verdicts, excluded=excl)
+    # THE SHEET'S OWN CONTOUR INTERVAL, read off the labels the engine
+    # believes are printed (inline / radius / gap-ocr - never an inferred
+    # value, which was itself produced by assuming an interval). The review
+    # surface uses it to rank rows: on Oncor C-04 the interval is 1.0 ft and
+    # 18 of the 20 `radius` rows carry a FRACTIONAL elevation (551.2 BW,
+    # 557.4 TW, 583.5 ME...) - printed numbers that cannot be contour
+    # elevations at this sheet's own step, and 10 of them carry a
+    # legend-keyed spot tag saying as much. Shipped as evidence, never as a
+    # correction: nothing here changes a z or a surface.
+    coverage["interval"] = contour_interval(
+        [float(r["z"]) for r in sug
+         if is_printed_how(r.get("how")) and r.get("z") is not None])
     return {"suggestions": sug,
+            "contour_coverage": coverage,
             "suggestions_dropped": dropped,
             # WHY they were dropped, not just how many. suggestions_dropped
             # existed since the first version of this route and no screen

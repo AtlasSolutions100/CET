@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=76">
+<link rel="stylesheet" href="style.css?v=77">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -520,8 +520,22 @@
           <button id="ewBoundClear" class="mini" hidden title="Go back to the whole overlap of the two surfaces">clear</button>
         </div>
       </div>
+      <!-- HOW MUCH OF THIS SHEET'S CONTOUR LINEWORK IS BEHIND THE NUMBER.
+           Nothing in the app stated a contour DENOMINATOR before
+           2026-09-02, so a sheet whose reader elevated 150 of 368 contour
+           lines looked exactly like one that elevated all of them.
+           Rendered by renderEwCoverage() from /earthwork/suggest's
+           contour_coverage; the sentence itself comes from ewCoverageText,
+           shared with the basis block beside the number and with the
+           printed report so the three cannot drift. -->
+      <div class="ew-coverage" id="ewCoverage" hidden></div>
       <div class="ew-rows-head"><span>Contours <span class="card-n" id="ewRowsCount"></span></span>
         <button id="ewAddRow" class="mini" title="Sheet prints no elevation on a contour? Click the line yourself and type the value (from the overview sheet)">+ Add contour</button></div>
+      <!-- THE REVIEW SURFACE. One chip per class of evidence, each with its
+           own count, so an operator can go straight to the rows nobody
+           printed and the rows a machine transcribed instead of reading 150
+           rows in elevation order. Rendered by renderEwFilters(). -->
+      <div class="ew-filters" id="ewFilters" hidden></div>
       <div id="ewRows" class="ew-rows"></div>
       <div id="ewSpots" class="ew-spots" hidden></div>
       <div id="ewLayers" class="ew-layers">
@@ -1147,6 +1161,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=156"></script>
+<script src="app.js?v=158"></script>
 </body>
 </html>

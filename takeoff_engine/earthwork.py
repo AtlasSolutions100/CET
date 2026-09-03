@@ -3419,3 +3419,285 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         datum_info["legend_excluded"] = n_legend
         datum_info["z_missing"] = sum(1 for g in out if g["z"] is None)
     return out
+
+
+# --- COVERAGE: how much of this sheet's contour linework carries a height --
+#
+# THE HOLE THIS FILLS. Every fact needed to answer "how many of this sheet's
+# contours have an elevation" was already on the wire - the suggestion rows
+# carry `how` per row, the route reports n_chains per excluded family - and
+# nothing added them up. Measured by grep on 512f474: `spot_z_missing`
+# exists for SPOT grades and no field anywhere states a contour denominator.
+# So a sheet where the reader elevated 150 of 368 contour lines rendered
+# byte-identically to one where it elevated all of them, and the operator's
+# only route to the difference was counting linework by eye.
+#
+# WHAT IS COUNTED, and why each exclusion is the route's own.
+#
+# The DENOMINATOR is this sheet's contour linework: chains that
+#   - could be a contour at all (`_is_plan_chain`: not an annotation glyph,
+#     not on a profile/section/title-block layer);
+#   - the suggest route did not exclude (a family the legend named as
+#     something other than a contour, and near-white mask ink);
+#   - sit in a family the engine has a reason to call a contour: either the
+#     sheet's own legend named that family a contour row, or the family
+#     produced at least one elevation. A family with neither is NOT
+#     silently added to the denominator (it would make every sheet look
+#     hopeless) and NOT silently dropped either - it is reported as
+#     `unclassed`, because CLAUDE.md s5's rule is that a cap must be said
+#     out loud. Measured 2026-09-02: Barn civil p2 has 351 chains in
+#     contour families and 1,000 more in families with no contour evidence
+#     at all; reporting "351" with no mention of the 1,000 would be a
+#     coverage claim over a third of the sheet's linework.
+#
+# AND NEITHER IS ANYTHING ELSE. Until 2026-09-03 that promise held for the
+# LAST filter only: the three above it (`_is_plan_chain`, near-white ink,
+# the route's exclusion list) dropped their chains with a bare `continue`
+# and no record, and on the DEM outline sheet that hid 22 chains carrying
+# 51% of the page. `set_aside` now names every one of them by the reason it
+# was set aside, with count and footage, and `plan_chains`/`plan_len_pt`
+# give the wider denominator those classes belong to; `page_chains` /
+# `page_len_pt` are the total the parts must add up to. The rule this
+# enforces is that a coverage number may UNDERSTATE and may never overstate
+# - so where a class cannot be judged, it is named in the statement rather
+# than left out of the arithmetic.
+#
+# The NUMERATOR is the chains that carry a suggestion row, split by the
+# `how` that produced it, so "carries an elevation" can never be read as
+# "carries a printed elevation". Measured on Oncor C-04 (engine page index
+# 3 = printed sheet C-04, job e183a0d44d89): 368 contour chains, 150 with a
+# row - 0 inline, 20 radius, 69 gap-ocr, 26 inherited, 35 interval-infill.
+#
+# LENGTH AS WELL AS COUNT, and length is the honest one. C-04's 150 elevated
+# chains are 40.8% of the contour chains but 59.0% of the contour footage:
+# the reader lands labels on the long through-going contours and misses the
+# fragments. A count-only statement understates the coverage; a length-only
+# one hides how many separate lines a reviewer has to look at. Both ship.
+#
+# PURE. No PDF, no numpy, no I/O: plain dicts in, plain dict out, so the
+# arithmetic can be frozen against a recorded row set
+# (tests/test_ew_coverage.py) rather than re-measured off a sheet.
+COVERAGE_HOWS = ("inline", "radius", "gap-ocr", "inherited",
+                 "interval-infill", "unknown")
+
+
+class _CovChain:
+    """Attribute view over a stored chain dict, so this function and the
+    route agree on `_is_plan_chain` / `_chain_white` by CALLING them rather
+    than by two authors writing the same test twice."""
+
+    __slots__ = ("chain_id", "style_id", "length", "klass", "layer", "color")
+
+    def __init__(self, d):
+        self.chain_id = d.get("chain_id")
+        self.style_id = d.get("style_id")
+        self.length = d.get("length_pt") or 0.0
+        self.klass = d.get("class") or ""
+        self.layer = d.get("layer") or ""
+        self.color = d.get("color")
+
+
+def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
+    """How much of this sheet's contour linework carries an elevation.
+
+    chains:   [{chain_id, style_id, length_pt, class, layer, color}] - the
+              stored detect result's chains, as dicts.
+    rows:     the /earthwork/suggest suggestion rows, [{chain_id, how, z}].
+    verdicts: family_verdicts() output, {style_id: {"role", "label"}}.
+    excluded: chain ids the route took out of the seeding pool.
+
+    Returns a dict of counts and paper-point lengths - never a percentage:
+    the caller renders the share, so the numerator and the denominator are
+    always both on screen (CLAUDE.md s2).
+    """
+    verdicts = verdicts or {}
+    excl = {int(c) for c in (excluded or ())}
+    chs = [_CovChain(c) for c in (chains or [])]
+    by_id = {int(c.chain_id): c for c in chs if c.chain_id is not None}
+
+    rows = [r for r in (rows or []) if r is not None]
+    seeded, by_how = {}, {h: 0 for h in COVERAGE_HOWS}
+    for r in rows:
+        cid = r.get("chain_id")
+        if cid is None:
+            continue
+        cid = int(cid)
+        how = r.get("how") or "unknown"
+        if how not in by_how:
+            how = "unknown"
+        seeded[cid] = how
+
+    # The legend's own verdict, and the families that produced a row. A
+    # noncontour verdict only DISQUALIFIES when the same legend read also
+    # found a contour family somewhere - the route's rule, for the reason
+    # its comment gives (Stice: a legend that named the contours "PROPOSED
+    # LOT LINE" would otherwise delete 634 verified rows).
+    legend_fam = {int(sid) for sid, v in verdicts.items()
+                  if v.get("role") in ("existing", "proposed", "contour")}
+    noncontour = {int(sid) for sid, v in verdicts.items()
+                  if v.get("role") == "noncontour"}
+    legend_saw_contours = bool(legend_fam)
+    row_fam = {by_id[cid].style_id for cid in seeded if cid in by_id}
+    fam = legend_fam | {int(s) for s in row_fam if s is not None}
+
+    n = ln = cov_n = cov_len = 0
+    un_n = un_len = 0
+    counted = set()
+    fam_len: dict = {}
+    unelevated = []
+    elevated = []
+    # EVERY CHAIN LANDS IN EXACTLY ONE BUCKET, AND EVERY BUCKET IS REPORTED.
+    #
+    # Until 2026-09-03 the four filters above the `else: unclassed`
+    # accumulator each did a bare `continue`, so only the chains that
+    # survived ALL of them could be reported as unclassed - and the comment
+    # said the opposite in as many words ("NOT silently dropped either").
+    # Measured on the DEM pad_2ft_outline sheet: 22 chains carrying
+    # 33,301.7 pt - 51% of everything the engine assembled on that page -
+    # were in neither count and in no reported class. 16 of them are the
+    # family the OCR'd legend called "GRADING NOTES", grey 0.4 pt, the
+    # same ink as the family it called EXISTING CONTOUR. On screen that
+    # became "57 contour lines, 21 carry an elevation (58% of that contour
+    # footage)" when the elevated share of the sheet's whole plan linework
+    # is 33.5%: a coverage number that OVERSTATES by 24 points on the one
+    # sheet where the reader is weakest, which is the direction CLAUDE.md
+    # s5 forbids.
+    #
+    # The bucket order below is the filter order above, unchanged, so the
+    # DENOMINATOR is the same set of chains it always was - this adds
+    # names and counts, it moves nothing into or out of `contour_chains`.
+    #
+    # WHAT COUNTS AS "PLAN LINEWORK", and why `not_plan` is not in it.
+    # `plan_len_pt` is the honest wider denominator: the contour families,
+    # the linework in no contour family, the families an exclusion removed,
+    # and near-white mask ink - every stroke that could be a contour and
+    # is not proven otherwise. It does NOT include `not_plan`, which is
+    # what `_is_plan_chain` rejects: chains the chainer classed
+    # `annotation` (a traced glyph) or that sit on a profile / title-block
+    # layer. On the outline sheet those six chains are 15,926.1 pt and two
+    # of them are the sheet BORDER at 7,776 pt each; folding a drawing
+    # frame into a contour denominator would misstate in the other
+    # direction and make the disclosure unreadable. So they are counted,
+    # named and kept OUT of the share - the caller prints their count, and
+    # a reader who disagrees can add them back from the numbers on screen.
+    sa_n: dict = {"legend_noncontour": 0, "excluded_other": 0, "white": 0,
+                  "unclassed": 0, "not_plan": 0, "no_chain_id": 0}
+    sa_len: dict = {k: 0.0 for k in sa_n}
+    sa_labels: dict = {}
+
+    def _aside(kind, c):
+        sa_n[kind] += 1
+        sa_len[kind] += c.length
+
+    for c in chs:
+        cid = int(c.chain_id) if c.chain_id is not None else None
+        if cid is None:
+            _aside("no_chain_id", c)
+            continue
+        if not _is_plan_chain(c):
+            _aside("not_plan", c)
+            continue
+        if _chain_white(c):
+            _aside("white", c)
+            continue
+        if cid in excl or (legend_saw_contours and c.style_id in noncontour):
+            v = verdicts.get(c.style_id) or verdicts.get(str(c.style_id)) or {}
+            if v.get("role") == "noncontour":
+                _aside("legend_noncontour", c)
+                lab = v.get("label")
+                if lab:
+                    sa_labels.setdefault("legend_noncontour", set()).add(lab)
+            else:
+                _aside("excluded_other", c)
+            continue
+        if c.style_id is not None and int(c.style_id) in fam:
+            n += 1
+            ln += c.length
+            fam_len[int(c.style_id)] = fam_len.get(int(c.style_id), 0.0) \
+                + c.length
+            if cid in seeded:
+                cov_n += 1
+                cov_len += c.length
+                counted.add(cid)
+                elevated.append({"chain_id": cid,
+                                 "style_id": int(c.style_id),
+                                 "length_pt": round(c.length, 1)})
+            else:
+                unelevated.append({"chain_id": cid,
+                                   "style_id": int(c.style_id),
+                                   "length_pt": round(c.length, 1)})
+        else:
+            un_n += 1
+            un_len += c.length
+            _aside("unclassed", c)
+    # by_how describes the NUMERATOR - the contour chains this coverage
+    # statement claims are elevated - not every row the route returned. A
+    # row on a chain outside the denominator (an annotation glyph the
+    # reader elevated, a chain the exclusions removed) is counted in
+    # rows_outside instead, so with_elev and the row count reconcile
+    # rather than quietly disagreeing.
+    for cid, how in seeded.items():
+        if cid in counted:
+            by_how[how] += 1
+    # Longest first: a reviewer given 218 unlabelled lines should meet the
+    # ones that carry the most ground first.
+    unelevated.sort(key=lambda u: (-u["length_pt"], u["chain_id"]))
+    # THE OTHER HALF OF THE DENOMINATOR, BY NAME. `unelevated` alone lets a
+    # caller list the lines that hold no height; it does NOT let one say
+    # how many of this sheet's contour lines carry an elevation RIGHT NOW,
+    # because the elevated half is a bare count and the operator can delete
+    # a row after the count was taken. Measured 2026-09-03 on the DEM 1 ft
+    # sheet: delete twenty rows with the panel's own x and the served
+    # counts still read 144/101/43 while the live list holds 81 - and the
+    # twenty deleted contours appear in no list at all, so the review
+    # surface this feature exists for cannot show them again. Naming both
+    # halves makes `contour_chains` restatable from the live rows by
+    # anything holding this dict, and the sum of the two lists IS
+    # `contour_chains` by construction.
+    elevated.sort(key=lambda u: (-u["length_pt"], u["chain_id"]))
+    return {
+        "contour_chains": n,
+        "contour_len_pt": round(ln, 1),
+        "with_elev": cov_n,
+        "with_elev_len_pt": round(cov_len, 1),
+        "no_elev": n - cov_n,
+        "no_elev_len_pt": round(ln - cov_len, 1),
+        "by_how": by_how,
+        # rows whose chain is not in the contour denominator at all (a row
+        # on an excluded or non-plan chain). Reported so with_elev and
+        # len(rows) can be reconciled instead of quietly disagreeing.
+        "rows": len(seeded),
+        "rows_outside": len(seeded) - len(counted),
+        "unclassed_chains": un_n,
+        "unclassed_len_pt": round(un_len, 1),
+        # EVERYTHING THE CONTOUR COUNT DOES NOT HOLD, by the reason it does
+        # not hold it. The four filters above the family test used to drop
+        # their chains with no record at all; each is named here with its
+        # count, its footage and - for a legend exclusion - the legend's own
+        # words, so a reader can see what was set aside and decide whether
+        # to believe it. `unclassed` repeats unclassed_chains on purpose:
+        # this dict is the complete partition and it must add up on its own.
+        "set_aside": {k: {"n": sa_n[k], "len_pt": round(sa_len[k], 1),
+                          **({"labels": sorted(sa_labels[k])}
+                             if k in sa_labels else {})}
+                      for k in sa_n},
+        # The wider denominator the caller can stand behind: every stroke
+        # that COULD be a contour - the families, the unclassed, the
+        # exclusions, the near-white mask ink - and not the annotation and
+        # title-block geometry `_is_plan_chain` rejects (see above).
+        "plan_chains": n + sa_n["unclassed"] + sa_n["legend_noncontour"]
+                         + sa_n["excluded_other"] + sa_n["white"],
+        "plan_len_pt": round(ln + sa_len["unclassed"]
+                             + sa_len["legend_noncontour"]
+                             + sa_len["excluded_other"] + sa_len["white"], 1),
+        # ...and the whole page, so the parts can be checked against a total
+        # nothing was taken out of.
+        "page_chains": len(chs),
+        "page_len_pt": round(sum(c.length for c in chs), 1),
+        "families": sorted(int(s) for s in fam),
+        # the denominator, named line by line and in two halves that sum to
+        # contour_chains: the caller can restate the coverage from its own
+        # live row set instead of trusting a count taken once (see above).
+        "elevated": elevated,
+        "unelevated": unelevated,
+    }

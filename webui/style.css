@@ -3264,3 +3264,69 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
   margin-top: 12px; }
 .lg-note { font-size: var(--t-fs-xs); color: var(--t-text-dim, var(--dim)); }
 .lg-note.err { color: var(--t-stop); }
+/* ---- the contour coverage statement, above the rows --------------------
+   How much of this sheet's contour linework is behind the volume. It is a
+   permanent statement of fact, not a warning: neutral ink, no dismiss. */
+.ew-coverage { margin: 0 12px 6px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--t-r-sm, 4px);
+  background: var(--t-info-bg); font-size: var(--t-fs-xs);
+  line-height: var(--t-lh-tight); }
+.ew-coverage .ew-cov-head { font-weight: 600; color: var(--t-text);
+  margin-bottom: 3px; }
+.ew-coverage .ew-cov-line { color: var(--t-text); margin-top: 2px; }
+.ew-coverage .ew-cov-iv { color: var(--dim); margin-top: 4px; }
+.ew-basis .ew-basis-cov { display: block; margin-top: 3px;
+  color: var(--t-info); }
+
+/* ---- the review filter chips ------------------------------------------
+   One chip per class of evidence, each carrying its own count. The colour
+   says how far the number is from the sheet's own text: stop = a number
+   that cannot be a contour elevation on this sheet, warn = printed but
+   maybe not this line's / transcribed by machine, info = inferred, dim =
+   no elevation at all, ok = read out of the sheet's text. */
+.ew-filters { display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 0 12px 6px; }
+.ew-chip { font-size: var(--t-fs-xs); padding: 2px 7px;
+  border: 1px solid var(--line); border-radius: var(--t-r-pill);
+  background: transparent; color: var(--dim); cursor: pointer; }
+.ew-chip:hover { border-color: var(--t-text); color: var(--t-text); }
+.ew-chip.on { background: var(--t-text); color: var(--t-stage);
+  border-color: var(--t-text); font-weight: 600; }
+.ew-chip.c-offinterval { color: var(--t-stop); border-color: var(--t-stop); }
+.ew-chip.c-nearby, .ew-chip.c-machine { color: var(--t-warn);
+  border-color: var(--t-warn); }
+.ew-chip.c-inferred { color: var(--t-info); border-color: var(--t-info); }
+.ew-chip.c-read { color: var(--t-ok); border-color: var(--t-ok); }
+.ew-chip.on.coffinterval { background: var(--t-stop);
+  color: var(--t-stop-ink); }
+.ew-chip.on.cnearby, .ew-chip.on.cmachine { background: var(--t-warn);
+  color: var(--t-warn-ink); }
+.ew-chip.on.cread { background: var(--t-ok); color: var(--t-ok-ink); }
+
+/* THE HYPHEN. app.js builds these as "c-" + key and "k-" + cls
+   (webui/app.js ~12622 and ~12740, and .ew-row.rc-offinterval below
+   already had it). Every rule in this block was written without one,
+   so NONE of them matched: measured live 2026-09-03, every chip
+   rendered the same grey and every row badge the same info-blue, and
+   the whole stop/warn/ok signal this vocabulary declares reached the
+   screen as text only. */
+/* the class badge on the row itself - same vocabulary as the chips */
+.ew-cls { display: inline-block; margin-right: 4px; padding: 0 5px;
+  border-radius: var(--t-r-pill); font-size: var(--t-fs-xs);
+  font-weight: 600; background: var(--t-info); color: var(--t-stage);
+  /* the row shares ~200 px with an input, three buttons and a sentence:
+     the badge stays on one line or the pill outgrows its own background */
+  white-space: nowrap; }
+.ew-cls.k-offinterval { background: var(--t-stop); color: var(--t-stop-ink); }
+.ew-cls.k-nearby, .ew-cls.k-machine { background: var(--t-warn);
+  color: var(--t-warn-ink); }
+.ew-cls.k-read { background: var(--t-ok); color: var(--t-ok-ink); }
+.ew-cls.k-none, .ew-cls.k-typed, .ew-cls.k-unknown { background: transparent;
+  color: var(--dim); border: 1px solid var(--line); font-weight: 400; }
+.ew-row.rc-offinterval { background: var(--t-stop-bg); }
+.ew-row.ew-stub { opacity: .85; }
+.ew-more { display: block; width: calc(100% - 24px); margin: 6px 12px;
+  padding: 4px 8px; font-size: var(--t-fs-xs); text-align: left;
+  border: 1px dashed var(--line); border-radius: var(--t-r-sm, 4px);
+  background: transparent; color: var(--dim); cursor: pointer; }
+.ew-more:hover { color: var(--t-text); border-color: var(--t-text); }

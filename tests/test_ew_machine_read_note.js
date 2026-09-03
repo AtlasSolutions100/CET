@@ -107,8 +107,12 @@ check(mixed.indexOf("read by machine") < mixed.indexOf("printed NOWHERE"),
   "with the machine clause FIRST, because the tail is what truncation cuts");
 
 // ---- the panel beside the number says the same thing --------------------
+// 4000 until 2026-09-03: renderEwBasis gained the comment explaining why it
+// remembers what it was painted from (R1 - a row edit has to repaint it),
+// which pushed the machine-read line past the old window and turned this
+// check red without any behaviour moving. Sized off the whole function now.
 const at = js.indexOf('const box = $("ewBasis");');
-const basis = js.slice(at, at + 4000);
+const basis = js.slice(at, at + 7000);
 check(/ewAcceptedSplit\(\)/.test(basis),
   "the basis block beside the volume reads the same split");
 check(/read by machine/.test(basis),
@@ -117,8 +121,8 @@ check(/ew-basis-ocr/.test(basis), "in its own styled line");
 check(/\.ew-basis \.ew-basis-ocr/.test(css), "which style.css styles");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=156/.test(html), "app.js cache buster bumped to 156");
-check(/style\.css\?v=76/.test(html), "style.css cache buster bumped to 76");
+check(/app\.js\?v=158/.test(html), "app.js cache buster bumped to 158");
+check(/style\.css\?v=77/.test(html), "style.css cache buster bumped to 77");
 
 console.log();
 if (fails) { console.error(fails + " FAILED"); process.exit(1); }

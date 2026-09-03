@@ -82,10 +82,19 @@ eq(rawHits, 1, "`.caution` is read at exactly one site in app.js now");
 console.log("2. the same words reach the report");
 // ---------------------------------------------------------------------------
 const APPROVE_NOTE_MAX = 400;
-const APPROVE_NOTES_MAX = 6;
+// 6 until 2026-09-02: the earthwork block gained a seventh note (the contour
+// coverage statement - how much of this sheet's linework is behind the
+// volume), and server.py approve() moved to body.notes[:7] with it rather
+// than letting the new note push the last caveat off the report.
+const APPROVE_NOTES_MAX = 7;
+// ewCovNow is the LIVE coverage dict (2026-09-03, R1): the report note used
+// to be built from state.ew.cov, the route's own count taken once, and said
+// 101 elevated on a sheet whose list held 81 after the operator deleted
+// twenty rows. Stubbed here the way the other collaborators are - what this
+// file pins is that ONE function writes the words, not what they count.
 const mk = (extra) => new Function(
   "state", "APPROVE_NOTE_MAX", "APPROVE_NOTES_MAX", "ewModelName",
-  "ewAcceptedSplit", "ewBasisNote",
+  "ewAcceptedSplit", "ewBasisNote", "ewCoverageNote", "ewCovNow",
   (fnSrc("ewCautionText") || "function ewCautionText() { return ''; }")
   + "\n" + (SRC.match(/^const EW_CAUTION_HEAD = .*$/m) || [""])[0]
   + "\n" + (fnSrc("ewApproveNotes") || "function ewApproveNotes() { return []; }")
@@ -95,7 +104,11 @@ const mk = (extra) => new Function(
   (m) => String(m),
   () => ({ total: 21, printed: 17, nearby: 0, nearbyTagged: 0, infill: 4,
            inherited: 0, manual: 0, unknown: 0, machine: 17 }),
-  () => ["a machine-read note"]);
+  () => ["a machine-read note"],
+  // the coverage note the same report now carries
+  () => ["CONTOUR COVERAGE. The engine found 368 contour lines. 150 carry an "
+       + "elevation; 218 carry none at all."],
+  () => ({ contour_chains: 368, with_elev: 150, no_elev: 218 }));
 
 {
   const api = mk(RESULT);
