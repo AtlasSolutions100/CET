@@ -154,7 +154,7 @@ check(/for \(const c of uniq\)/.test(rs)
   "and still shows every reading, unranked");
 
 // ---- the cache buster moved, or nobody sees any of this ----------------
-check(/app\.js\?v=155/.test(html), "app.js cache buster bumped to 155");
+check(/app\.js\?v=156/.test(html), "app.js cache buster bumped to 156");
 
 console.log();
 if (fails) { console.error(fails + " FAILED"); process.exit(1); }

@@ -12471,6 +12471,68 @@ function ewCoverageLive(cov, rows, denom) {
 // EVERY SENTENCE STATES WHAT IS NOT COVERED, not only what is - counts on
 // both sides, never a bare percentage (CLAUDE.md s2).
 function ewPlural(n, one, many) { return n === 1 ? one : many; }
+// Paper points with thousands separators. Not toLocaleString: the number is
+// pinned in a test and a machine's locale must not decide whether it reads
+// 49,824 or 49 824.
+function ewPt(n) {
+  return Math.round(n || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// ---- WHAT THE CONTOUR COUNT DOES NOT HOLD, class by class ----------------
+//
+// THE DEFECT (review finding R2, 2026-09-03). contour_coverage's four
+// filters each dropped their chains with no record, so the denominator
+// silently lost whole classes of linework and the sentence claimed a share
+// of a set it had quietly shrunk. Measured on the DEM outline sheet: 22
+// chains carrying 33,301.7 pt - 51% of the page, 16 of them a grey 0.4 pt
+// family the OCR'd legend called "GRADING NOTES" beside the identical
+// family it called EXISTING CONTOUR - were in neither count and in no
+// reported class. The panel read "57 contour lines, 21 carry an elevation
+// (58% of that contour footage)" where the elevated share of the sheet's
+// whole plan linework is 33.5%.
+//
+// THE CHOICE, AND THE ARGUMENT. Two ways out: state a narrower denominator
+// the sentence can stand behind, or count and name what was dropped. The
+// first cannot work here - a share of "the contour family" is exactly the
+// number that is wrong, because the family is what the legend read
+// decided, and on this sheet the legend read is the failure. So: name
+// every class, and print BOTH shares with the wider one labelled as the
+// FLOOR. The truth is between them and the reader can see why.
+//
+// `not_plan` is named but kept out of the wider denominator, for the
+// reason earthwork.contour_coverage's comment gives: two of those six
+// chains are the sheet BORDER, and a drawing frame in a contour
+// denominator misstates in the other direction. Its count is printed so
+// anyone who disagrees can add it back from the numbers on screen.
+function ewSetAside(cov) {
+  const sa = (cov && cov.set_aside) || null;
+  const out = [];
+  const add = (n, len, desc) => {
+    if (n > 0) out.push({ n: n, len: len || 0, desc: desc });
+  };
+  if (!sa) {
+    // an older payload names only the unclassed half - say that half
+    add(cov.unclassed_chains || 0, cov.unclassed_len_pt || 0,
+        "in no contour family at all");
+    return out;
+  }
+  // the legend's own words for those families. family_verdicts tags every
+  // label " (legend)" to say where it came from; inside a sentence that
+  // already says "this sheet's legend named", the tag is noise.
+  const L = ((sa.legend_noncontour && sa.legend_noncontour.labels) || [])
+    .map(s => String(s).replace(/\s*\(legend\)\s*$/, ""));
+  add((sa.legend_noncontour || {}).n, (sa.legend_noncontour || {}).len_pt,
+      "in " + ewPlural((sa.legend_noncontour || {}).n, "a family", "families")
+      + " this sheet's legend named something other than a contour"
+      + (L.length ? " (" + L.join(", ") + ")" : ""));
+  add((sa.excluded_other || {}).n, (sa.excluded_other || {}).len_pt,
+      "taken out of the seeding pool before the count");
+  add((sa.white || {}).n, (sa.white || {}).len_pt,
+      "drawn in near-white ink, invisible on paper");
+  add((sa.unclassed || {}).n, (sa.unclassed || {}).len_pt,
+      "in no contour family at all");
+  return out;
+}
 
 function ewCoverageText(cov, acc) {
   if (!cov || !(cov.contour_chains > 0)) return [];
@@ -12491,20 +12553,53 @@ function ewCoverageText(cov, acc) {
     + (pct === null ? "" : " (" + pct + "% of that contour footage)")
     + "; " + none + " carry none at all"
     + (none ? " and hold no height in any surface." : "."));
+  // THE FLOOR, in the same breath as the share it is the floor of. The
+  // percentage above is over the contour families only; this one is over
+  // every stroke of plan linework the engine found on the sheet, and it is
+  // the number that cannot overstate, and both are printed with the
+  // set-aside count that explains the gap between them - the truth is
+  // somewhere in between and the reader can see why (see ewSetAside).
+  const aside = ewSetAside(cov);
+  const K = aside.reduce((t, x) => t + x.n, 0);
+  const P = cov.plan_chains || (N + K);
+  const T = cov.plan_len_pt
+    || (cov.contour_len_pt + aside.reduce((t, x) => t + x.len, 0));
+  const floor = T > 0 ? Math.round(100 * cov.with_elev_len_pt / T) : null;
+  if (K > 0 && floor !== null && pct !== null)
+    out.push("Of all " + P + " lines of plan linework here (" + ewPt(T)
+      + " pt) the elevated share is " + floor + "% - the floor, since " + K
+      + " " + ewPlural(K, "line sits", "lines sit")
+      + " outside the contour count.");
   if (acc && acc.total !== undefined) {
     const A = acc.total;
     out.push(A + " of the " + N + " " + ewPlural(A, "is", "are")
       + " assigned to a surface and behind this volume. The other "
       + (N - A) + " " + ewPlural(N - A, "is", "are") + " not in it.");
   }
-  if (cov.unclassed_chains > 0)
-    out.push("A further " + cov.unclassed_chains + " "
-      + ewPlural(cov.unclassed_chains, "line", "lines")
-      + " of plan linework on this sheet "
-      + ewPlural(cov.unclassed_chains, "sits", "sit")
-      + " in no contour family - if any of "
-      + ewPlural(cov.unclassed_chains, "it", "them")
-      + " is a contour it is in neither count.");
+  // ...and WHICH lines those are, by the reason each was set aside, so the
+  // parts add up on screen and a reader can check the arithmetic: the
+  // contour count plus these is the plan-linework count in the sentence
+  // above.
+  if (K > 0)
+    out.push((K === 1
+              ? "That one line is "
+              : "The " + K + " outside that count: ")
+      + aside.map(x => (K === 1 ? "" : x.n + " ") + x.desc).join(", ")
+      + ". If " + (K === 1 ? "it is" : "any of them is")
+      + " a contour it is in neither count.");
+  // The annotation and title-block geometry, named and deliberately NOT in
+  // the plan-linework denominator (ewSetAside's comment argues why). Two of
+  // the outline sheet's six are the drawing frame.
+  {
+    const np = (cov.set_aside && cov.set_aside.not_plan) || null;
+    if (np && np.n > 0)
+      out.push(np.n + " further " + ewPlural(np.n, "line", "lines") + " ("
+        + ewPt(np.len_pt) + " pt) " + ewPlural(np.n, "is", "are")
+        + " annotation or title-block geometry - traced text, leaders, the "
+        + "sheet border - which cannot be a contour, so "
+        + ewPlural(np.n, "it is", "they are") + " in none of the counts "
+        + "above.");
+  }
   // ...and the rows that are in the list but NOT in that count, so the
   // "All" chip above the list reconciles with the sentence rather than
   // reading one larger for no stated reason.

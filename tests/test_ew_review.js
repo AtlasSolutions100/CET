@@ -205,9 +205,24 @@ check(T.ewOnInterval(560, 5) && !T.ewOnInterval(562, 5),
 // ---------------------------------------------------------------------------
 console.log("\n3. the coverage statement: what is NOT covered, in numbers");
 // ---------------------------------------------------------------------------
+// C-04's own numbers, with the set-aside classes the coverage dict has
+// carried since 2026-09-03 (R2): the four filters above the family test
+// used to drop their chains with no record at all, so the sentence claimed
+// a share of a set it had quietly shrunk. 75 unclassed, and the sheet's
+// legend excluded 4 families - the wider denominator is 368 + 75 + 12.
 const C04 = { contour_chains: 368, with_elev: 150, no_elev: 218,
               contour_len_pt: 139582.7, with_elev_len_pt: 82309.6,
-              unclassed_chains: 75 };
+              unclassed_chains: 75, unclassed_len_pt: 21430.0,
+              set_aside: {
+                legend_noncontour: { n: 12, len_pt: 9100.0,
+                  labels: ["PROPERTY LINE (legend)"] },
+                excluded_other: { n: 0, len_pt: 0 },
+                white: { n: 0, len_pt: 0 },
+                unclassed: { n: 75, len_pt: 21430.0 },
+                not_plan: { n: 3, len_pt: 8000.0 },
+                no_chain_id: { n: 0, len_pt: 0 } },
+              plan_chains: 455, plan_len_pt: 170112.7,
+              page_chains: 458, page_len_pt: 178112.7 };
 {
   const s = T.ewCoverageText(C04, null).join(" ");
   check(/368 contour lines/.test(s), "the denominator is stated");
@@ -217,17 +232,30 @@ const C04 = { contour_chains: 368, with_elev: 150, no_elev: 218,
   check(/59% of that contour footage/.test(s),
     "coverage by FOOTAGE too: C-04 is 41% of the lines and 59% of the "
     + "length, and a count-only statement understates it");
-  check(/75 lines of plan linework/.test(s) && /neither count/.test(s),
-    "the cap on the denominator is said out loud - linework in no contour "
-    + "family is in neither number");
-  check(!/^\s*\d+%/.test(s) && /\d+ of/.test(T.ewCoverageText(C04, { total: 41 })[1]),
+  // R2: and the SECOND share, over every stroke that could be a contour,
+  // labelled as the floor. 82,309.6 / 170,112.7 = 48%.
+  check(/Of all 455 lines of plan linework here \(170,113 pt\)/.test(s)
+     && /elevated share is 48% - the floor/.test(s),
+    "...and the wider share, which cannot overstate, said as the floor");
+  check(/The 87 outside that count/.test(s)
+     && /12 in families this sheet's legend named something other than a contour \(PROPERTY LINE\)/.test(s)
+     && /75 in no contour family at all/.test(s)
+     && /neither count/.test(s),
+    "the cap on the denominator is said out loud, class by class, and "
+    + "368 + 87 = the 455 the share above is over");
+  check(/3 further lines \(8,000 pt\) are annotation or title-block geometry/
+    .test(s),
+    "...and the class deliberately left OUT of that denominator is named "
+    + "with its count, so a reader who disagrees can add it back");
+  check(!/^\s*\d+%/.test(s)
+     && /\d+ of/.test(T.ewCoverageText(C04, { total: 41 })[2]),
     "no percentage travels without its two counts");
 }
 {
   const s = T.ewCoverageText(C04, { total: 41 });
   check(/41 of the 368 are assigned to a surface and behind this volume/
-    .test(s[1]), "beside a volume it says how many contours are under it");
-  check(/The other 327 are not in it/.test(s[1]),
+    .test(s[2]), "beside a volume it says how many contours are under it");
+  check(/The other 327 are not in it/.test(s[2]),
     "...and how many of the sheet's contours are not");
 }
 // A sheet with no contour linework says nothing rather than dividing by zero.
@@ -250,8 +278,9 @@ eq(T.ewCoverageText(null, null).length, 0, "and neither does a missing read");
     contour_len_pt: 100, with_elev_len_pt: 100, unclassed_chains: 1 },
     null).join(" ");
   check(/1 contour line\./.test(s), "one line is a line, not lines");
-  check(/1 line of plan linework on this sheet sits in no contour family/
-    .test(s), "...and it sits, it does not sit-plural");
+  check(/That one line is in no contour family at all\./.test(s)
+     && /If it is a contour it is in neither count\./.test(s),
+    "...and one line set aside reads as one line, not as “The 1”");
 }
 
 // ---------------------------------------------------------------------------
@@ -264,10 +293,23 @@ console.log("\n4. the same words on paper, inside the note cap");
     "headed, so a reader of the PDF who never saw the panel knows what it is");
   check(note[0].length <= 400,
     "inside server.py approve()'s per-note cap  (len " + note[0].length + ")");
-  // The words are the panel's, not a second author's.
-  for (const s of T.ewCoverageText(C04, { total: 41 }))
-    check(note[0].includes(s) || note[0].length >= 400 - 5,
-      "the report repeats the panel's sentence verbatim: " + s.slice(0, 40));
+  // The words are the panel's, not a second author's: the note is the head
+  // plus the panel's first k sentences, verbatim and in order, for some k.
+  // (Checked as an exact prefix rather than sentence by sentence - the cap
+  // drops the tail WHOLE, and "includes" would pass a note that had
+  // reordered or reworded the sentences it kept.)
+  {
+    const parts = T.ewCoverageText(C04, { total: 41 });
+    let k = -1;
+    for (let i = parts.length; i >= 1; i--)
+      if (note[0] === T.EW_COVERAGE_HEAD + parts.slice(0, i).join(" ")) {
+        k = i; break;
+      }
+    check(k > 0, "the report is the panel's first " + k + " sentences "
+      + "verbatim, of " + parts.length + " - no second author");
+    check(k >= 2, "...and the FLOOR sentence, the one that cannot overstate, "
+      + "is inside the cap rather than dropped off the tail");
+  }
   // A tail that will not fit is dropped WHOLE, never cut mid-sentence.
   const tight = T.ewCoverageNote(C04, { total: 41 }, 200)[0];
   check(tight.length <= 200, "a tighter cap still fits  (len "

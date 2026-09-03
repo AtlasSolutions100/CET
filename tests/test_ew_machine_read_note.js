@@ -121,7 +121,7 @@ check(/ew-basis-ocr/.test(basis), "in its own styled line");
 check(/\.ew-basis \.ew-basis-ocr/.test(css), "which style.css styles");
 
 // ---- the cache buster moved, or nobody sees any of this -----------------
-check(/app\.js\?v=155/.test(html), "app.js cache buster bumped to 155");
+check(/app\.js\?v=156/.test(html), "app.js cache buster bumped to 156");
 check(/style\.css\?v=74/.test(html), "style.css cache buster bumped to 74");
 
 console.log();
