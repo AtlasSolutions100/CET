@@ -75,7 +75,13 @@ check(/still ours/.test(read.why),
   "...it says which half is still ours");
 check(/weld/.test(read.why),
   "...and names the mechanism: two contour levels welded into one line");
-check(/3 of its 9 known-wrong rows/.test(read.why)
+// TEN, not nine. `python -m tools.dem_truth.verify_rows` on pad_1ft at
+// tolerance_ft 0.4 reports 'rows 101 z-ok 91 wrong 10' - chains 429, 430,
+// 449, 452, 541, 568, 527, 473, 339 and 85. Nine is the count of wrong
+// rows the engine READ; the tenth (chain 85) is interval-infill, which
+// the sentence does not exclude. The 3 in this class and the 6 in
+// 'printed nearby' both reproduce; only the denominator was off by one.
+check(/3 of its 10 known-wrong rows/.test(read.why)
    && /1\.0 ft/.test(read.why),
   "...with the measurement, not an adjective: 3 of the 9 known-wrong rows "
   + "on the 1 ft test sheet, each welded across 1.0 ft");

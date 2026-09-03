@@ -12340,7 +12340,7 @@ const EW_REVIEW = {
        + "prints in a break in this contour. WHICH contour they belong to "
        + "is still ours: two contour levels can end up welded into one "
        + "line, and then one of the two printed elevations is the one you "
-       + "see here. Measured on our 1 ft test sheet, 3 of its 9 known-wrong "
+       + "see here. Measured on our 1 ft test sheet, 3 of its 10 known-wrong "
        + "rows are in this class, each welded across 1.0 ft - and nothing "
        + "on this surface can point them out, so a sweep of this class is "
        + "a read of the drawing, not of the badge." },
