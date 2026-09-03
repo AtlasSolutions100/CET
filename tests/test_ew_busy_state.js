@@ -346,12 +346,20 @@ console.log("3b. ONE suggest in flight per page, across BOTH features");
   let fetches = 0;
   let release;
   const gate = new Promise(res => { release = res; });
-  const st = { gen: 4, job: "J", page: 3, suggestReq: null };
+  const st = { gen: 4, job: "J", page: 3, suggestReq: null, selected: null };
   const body = { suggestions: [{ chain_id: 1, z: 10, how: "radius", dist: 1 }] };
+  // suggestOnce now also owns the read's DEADLINE and its elapsed clock
+  // (see ELEV_READ_CEILING_MS in app.js). Neither is what this suite is
+  // about, so they are stubbed - the timeout itself is pinned in
+  // tests/test_elev_read_progress.js.
   const scope = {
     state: st,
     fetch: async () => { fetches++; await gate;
                          return { ok: true, json: async () => body }; },
+    ELEV_READ_CEILING_MS: 12 * 60 * 1000,
+    fmtElapsed: (ms) => String(ms),
+    elevTickStart: () => {}, elevTickStop: () => {},
+    renderSelElev: () => {}, chainById: () => null,
   };
   const names = Object.keys(scope);
   const suggestOnce = new Function(...names, onceSrc + "\nreturn suggestOnce;")
@@ -382,9 +390,14 @@ console.log("3b. ONE suggest in flight per page, across BOTH features");
   }).then(() => {
     // a REJECTED request must not be parked either
     let n = 0;
-    const st2 = { gen: 1, job: "J", page: 0, suggestReq: null };
-    const bad = new Function("state", "fetch", onceSrc + "\nreturn suggestOnce;")
-      (st2, async () => { n++; return { ok: false, status: 500 }; });
+    const st2 = { gen: 1, job: "J", page: 0, suggestReq: null, selected: null };
+    const badNames = ["state", "fetch", "ELEV_READ_CEILING_MS", "fmtElapsed",
+                      "elevTickStart", "elevTickStop", "renderSelElev",
+                      "chainById"];
+    const bad = new Function(...badNames, onceSrc + "\nreturn suggestOnce;")
+      (st2, async () => { n++; return { ok: false, status: 500 }; },
+       12 * 60 * 1000, (ms) => String(ms), () => {}, () => {}, () => {},
+       () => null);
     return bad().then(() => { fails++; console.error("  FAIL: a 500 should reject"); },
       () => {
         check(st2.suggestReq === null, "a FAILED request is not parked either");

@@ -826,6 +826,24 @@
   </aside>
   <section id="stage">
     <canvas id="view"></canvas>
+    <!-- THE SELECTED LINE'S ELEVATION, IN A PLACE OF ITS OWN.
+         It used to be a chip on the floating selection pill
+         (.canvas-status), which is bottom-CENTRED, re-centres on every
+         selection, grows a second row whenever the hover readout shares
+         it, and splits its width with four other controls. Measured live
+         on Oncor Cloudcrest engine page index 3 = printed C-04: across 14
+         contours the chip's left edge moved 920.4 -> 1023.0 px and the
+         whole row jumped 38 px upward the moment any style row was
+         hovered. Nothing was ever clipped - the number simply never sat
+         still, which is what a client clicking contour after contour
+         reported as "I'm not seeing it anywhere obvious".
+         This box is anchored to one corner of the sheet area, so its
+         position is a CONSTANT at every window width and browser zoom:
+         nothing shares its line, so nothing can push it, shrink it or
+         move it, and it is rendered for every selected line - including
+         the ones with no elevation, which used to render nothing at all
+         and were indistinguishable from a read that had not finished. -->
+    <div id="selElev" class="sel-elev" hidden></div>
     <div id="miniLegend" class="mini-legend" hidden>
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>

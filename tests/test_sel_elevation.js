@@ -81,6 +81,7 @@ const path = require("path");
 const ROOT = path.join(__dirname, "..");
 const SRC = fs.readFileSync(path.join(ROOT, "webui", "app.js"), "utf8");
 const CSS = fs.readFileSync(path.join(ROOT, "webui", "style.css"), "utf8");
+const HTML = fs.readFileSync(path.join(ROOT, "webui", "index.html"), "utf8");
 
 let fails = 0;
 const check = (ok, msg) => {
@@ -116,6 +117,14 @@ const PROV_SRC = (function () {
 })();
 const elevProvenance = new Function(PROV_SRC + "\nreturn elevProvenance;")();
 
+// The anchored readout, lifted the same way. On a build that does not have
+// it this compiles to a no-op, so the suites below report WHICH half of the
+// contract is missing instead of dying inside fnSrc.
+const SELELEV_SRC = SRC.indexOf("\nfunction renderSelElev(") >= 0
+  ? fnSrc("fmtElapsed") + "\n" + fnSrc("elevReadElapsed") + "\n"
+    + fnSrc("renderSelElev")
+  : "function renderSelElev() {}";
+
 // --- the smallest DOM updateSelBar can run against -------------------------
 function elem(tag) {
   return {
@@ -133,14 +142,14 @@ function byClass(node, cls) {
   return node.children.filter(c => (c.className || "").split(" ").indexOf(cls) >= 0);
 }
 
-function renderBar(opts) {
+function renderAll(opts) {
   const els = {};
   // aiBtn is in this list because updateSelBar gates it on state.result, the
   // same way it gates drawBtn - see the comment there and suite A of
   // tests/test_page_reset.js
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn",
                     "drawBtn", "removeBtn", "selInfo",
-                    "aiBtn"]) els[id] = elem("div");
+                    "aiBtn", "selElev"]) els[id] = elem("div");
   const state = {
     result: { styles: [{ style_id: 7, suggested_label: "dash1 d18.0 g51.7" }] },
     chainLabels: new Map(), labels: new Map(),
@@ -165,12 +174,23 @@ function renderBar(opts) {
     revealStyleRow: () => {},
     chainColorInfo: () => ({ src: "engine", css: "#888" }),
     colorSrcLabel: () => "x", colorPopForChain: () => {},
+    ELEV_FAIL: "could not read this sheet's elevations \u2014 retry",
   };
   const names = Object.keys(scope);
+  // renderSelElev is compiled INTO the same scope, exactly as it lives in
+  // app.js. This suite is about WHICH ELEMENT each half writes into, so
+  // neither half may be stubbed out.
   new Function(...names,
-    PROV_SRC + "\n" + fnSrc("updateSelBar") + "\nreturn updateSelBar;")
-    (...names.map(n => scope[n]))(ch);
-  return els.selInfo;
+    PROV_SRC + "\n" + SELELEV_SRC + "\n" + fnSrc("updateSelBar")
+    + "\nreturn updateSelBar;")
+    (...names.map(n => scope[n]))(opts.noChain ? null : ch);
+  return { info: els.selInfo, elev: els.selElev };
+}
+const renderBar = (opts) => renderAll(opts).info;
+// The number itself, wherever it now lives - the suites below are about what
+// it SAYS; suite 1 is the one about where it is.
+function chipEl(opts) {
+  return byClass(renderAll(opts).elev, "sel-el")[0];
 }
 // The shape ensureElev actually stores. Two rules in one helper: the state
 // is a status + a map, never a sentinel, and the map's value is an object,
@@ -183,93 +203,168 @@ const ELEV = (z, how, src, dist, tag) => ({
 });
 
 // ---------------------------------------------------------------------------
-console.log("1. the elevation is a chip, not the tail of the shrinkable string");
+console.log("1. the elevation is not on the selection pill at all");
 // ---------------------------------------------------------------------------
+// THE MECHANISM, not the symptom. Nothing was ever clipped: measured live on
+// Oncor Cloudcrest engine page index 3 = printed C-04, the chip rendered
+// 166/166 px visible in all 24 of {1280,1366,1440,1920} px x {100,110,125}%
+// zoom, panel open and closed, with a 24-character family name - down to a
+// 1024 px CSS viewport where .sel-txt was squeezed to 29.8 px. It could not
+// be the clipped child either: #selInfo overflows to the RIGHT and the chip
+// was its SECOND child, so "in list" and the colour swatch were the two
+// things behind the ellipsis.
+//
+// What it did was MOVE. .canvas-status is bottom-anchored, CENTRED
+// (left:50% + translateX(-50%)) and flex-wrap:wrap, and the pill's width
+// changes with the description, the provenance wording and which of its five
+// children exist. Over 14 contours at 1536 px the chip's left edge ranged
+// 920.4 -> 1023.0 px; hovering any style row put #ghostInfo in the same
+// wrapping row and lifted the chip 785.4 -> 747.4 px ("it just moved ... now
+// it's on the bottom"). So the fix is not more room on that bar - it is a
+// place of its own, and that is what is pinned here.
 {
-  // `inline` on purpose: this suite is about WHICH CHILD CLIPS, so its
-  // fixture is the one provenance that adds nothing to the number. gap-ocr
-  // carries "· read from a picture" since 2026-09-01 (suite 5c).
-  const info = renderBar({ elev: ELEV(545, "inline") });
-  const txt = byClass(info, "sel-txt")[0];
-  const chip = byClass(info, "sel-el")[0];
+  const r = renderAll({ elev: ELEV(545, "inline") });
+  const txt = byClass(r.info, "sel-txt")[0];
 
   check(!!txt, "the pill still has its .sel-txt sentence");
-  check(!!chip, "the pill has a dedicated .sel-el chip");
-  eq(chip && chip.textContent, "EL 545", "the chip carries the elevation");
+  eq(byClass(r.info, "sel-el").length, 0,
+    "THE FIX: no elevation chip is appended to the selection pill - it "
+    + "cannot be moved by a sibling that is not there");
+  check(r.info._text.indexOf("EL ") < 0,
+    "...and no part of the pill carries 'EL '");
   check(txt.textContent.indexOf("EL") < 0,
-    "the elevation is NOT inside .sel-txt - THE REPORTED BUG: that span is "
-    + "the only child that can shrink, so its tail is what the ellipsis eats");
-  check(txt.textContent.indexOf("278 LF") >= 0 && txt.textContent.indexOf("62 points") >= 0,
+    "the elevation is NOT inside .sel-txt either - that span is the only "
+    + "child that can shrink, so its tail is what an ellipsis eats");
+  check(txt.textContent.indexOf("278 LF") >= 0
+        && txt.textContent.indexOf("62 points") >= 0,
     "the rest of the sentence is unchanged");
-  check(info._text.indexOf("EL 545") >= 0,
-    "and the pill as a whole still reads out the elevation");
-  // the chip must be a SIBLING of the shrinkable span, never nested in it
-  check(byClass(info, "sel-el").length === 1 && txt.children.length === 0,
-    "the chip is a sibling of .sel-txt, not a child of it");
+
+  const chip = byClass(r.elev, "sel-el")[0];
+  check(!!chip, "the elevation is rendered into #selElev instead");
+  eq(chip && chip.textContent, "EL 545", "...and that box carries the number");
+  eq(r.elev.hidden, false, "...and the box is shown");
+  const cap = byClass(r.elev, "se-cap")[0];
+  check(!!cap && /elevation/i.test(cap.textContent),
+    "a constant caption names it, so there is one place to learn to look");
+}
+{
+  // nothing selected: the box goes away with the pill, one writer for both
+  const r = renderAll({ elev: ELEV(545, "inline"), noChain: true });
+  eq(r.elev.hidden, true, "no selection, no readout");
+  eq(r.info.textContent, "", "...and no pill either");
 }
 
 // ---------------------------------------------------------------------------
-console.log("2. no elevation, no chip (not an empty box)");
+console.log("2. no number is a SENTENCE, never a blank");
 // ---------------------------------------------------------------------------
-// The four states of state.elev, each of which must render NO chip when it
-// has no elevation for this line - and none of which may be confused for
-// another (F2: loading, answered-and-empty and failed are three things).
-for (const [name, ev] of [
-  ["a line the sheet never labelled",
-   { status: "ready",
-     byChain: new Map([[999, { z: 12, how: "radius" }]]) }],
-  ["answered, and the sheet labels no contours at all",
-   { status: "ready", byChain: new Map() }],
-  ["still loading", { status: "loading", byChain: null }],
-  ["never asked", { status: "idle", byChain: null }],
-  ["the read FAILED", { status: "failed", byChain: null }],
-]) {
-  const info = renderBar({ elev: ev });
-  eq(byClass(info, "sel-el").length, 0, name + ": no chip is appended");
+// THE OTHER HALF OF THE REPORT: "some of these you click and it says the
+// height and some it doesn't". On C-04 that is literally true - 439 of 589
+// chains, and 110 of the 218 in a contour family, have no elevation - and
+// the old code rendered NOTHING for them. So "this line has none", "the read
+// is still running" (217.2 s cold on that sheet) and "the read failed" were
+// one and the same blank, and the operator could only read it as "the number
+// is hiding somewhere".
+{
+  const CASES = [
+    ["a line the sheet never labelled",
+     { status: "ready", byChain: new Map([[999, { z: 12, how: "radius" }]]) },
+     /none printed for this line/i],
+    ["answered, and the sheet labels no contours at all",
+     { status: "ready", byChain: new Map() }, /none printed for this line/i],
+    ["still loading", { status: "loading", byChain: null }, /reading/i],
+    ["never asked", { status: "idle", byChain: null }, /not read yet/i],
+    ["the read FAILED", { status: "failed", byChain: null }, /failed/i],
+  ];
+  const said = [];
+  for (const [name, ev, want] of CASES) {
+    const r = renderAll({ elev: ev });
+    eq(byClass(r.elev, "sel-el").length, 0, name + ": no number is claimed");
+    const note = byClass(r.elev, "se-none")[0];
+    check(!!note, name + ": ...but the box still says something");
+    check(!!note && want.test(note.textContent),
+      name + ": and it says which state this is  (got "
+      + JSON.stringify(note && note.textContent) + ")");
+    check(!!note && note.title && note.title.length > 40,
+      name + ": with the long form on hover");
+    if (note) said.push(note.textContent);
+    eq(byClass(r.info, "sel-el").length, 0, name + ": still nothing on the pill");
+  }
+  // loading / failed / none / not-asked are FOUR facts. Two of them reading
+  // the same is the bug this suite exists to stop coming back.
+  eq(new Set(said).size, 4,
+    "the five states produce four distinct sentences (the two `ready` arms "
+    + "are one fact) - THE FIXED DEFECT: they were all the empty string");
 }
 {
-  // ...and the pill must not throw itself apart on any of them
-  const rest = renderBar({ elev: { status: "failed", byChain: null } });
-  check(byClass(rest, "sel-txt").length === 1,
-    "a failed read still renders the rest of the pill");
-}
-{
-  // z present but null - the server does emit null z on spot grades, and a
-  // "EL null" chip would be worse than none
-  const info = renderBar({ elev: ELEV(null, "radius") });
-  eq(byClass(info, "sel-el").length, 0, "a null elevation renders no chip");
+  // z present but null - the server does emit null z on spot grades, and an
+  // "EL null" readout would be worse than the sentence
+  const r = renderAll({ elev: ELEV(null, "radius") });
+  eq(byClass(r.elev, "sel-el").length, 0, "a null elevation claims no number");
+  eq(byClass(r.elev, "se-none").length, 1, "...and says so instead");
 }
 {
   // 0 is a real elevation. It is falsy; the guard must be a null/undefined
-  // test, not truthiness (CLAUDE.md §5: "0.0 is not None").
-  const info = renderBar({ elev: ELEV(0, "inline") });
-  const chip = byClass(info, "sel-el")[0];
+  // test, not truthiness (CLAUDE.md 5: "0.0 is not None").
+  const chip = chipEl({ elev: ELEV(0, "inline") });
   check(!!chip, "elevation 0 still renders - falsy is not missing");
   eq(chip && chip.textContent, "EL 0", "...and reads EL 0");
 }
 
 // ---------------------------------------------------------------------------
-console.log("3. the chip cannot be ellipsized; .sel-txt still can");
+console.log("3. the readout's position cannot depend on anything else");
 // ---------------------------------------------------------------------------
-const selEl = (CSS.match(/\n\.sel-el \{[^}]*\}/) || [""])[0];
-check(/flex:\s*none/.test(selEl), ".sel-el is flex:none, so flexbox cannot shrink it");
-check(/white-space:\s*nowrap/.test(selEl), ".sel-el never wraps");
-check(!/text-overflow/.test(selEl), ".sel-el has no ellipsis of its own");
-const selTxt = (CSS.match(/\n\.sel-txt \{[^}]*\}/) || [""])[0];
-check(/text-overflow:\s*ellipsis/.test(selTxt),
-  ".sel-txt keeps its ellipsis - the point is WHICH child gives way, not that none does");
-check(/#selInfo \.fam-sel \{[^}]*max-width:\s*130px/.test(CSS),
-  "the family select is narrowed on the selection pill, giving the sentence room back");
-check(/\.fam-sel \{[^}]*max-width:\s*180px/.test(CSS),
-  "...and the multi-bar's own family select is untouched at 180px");
+// The geometry, pinned as the rule that produced it. A box whose offsets are
+// two constants against a corner has a position that is a constant; a flex
+// child of a centred, wrapping row does not.
 {
-  const cs = (CSS.match(/\n\.canvas-status \{[^}]*\}/) || [""])[0];
-  const m = cs.match(/max-width:\s*(\d+)%/);
-  check(!!m && +m[1] > 70,
-    "the pill container is wider than the 70% that starved it  (now " + (m && m[1]) + "%)");
-  check(/flex-wrap:\s*wrap/.test(cs),
-    "and it wraps, so a Ctrl+click multi-bar sharing the row cannot squeeze "
-    + ".sel-txt to zero width");
+  check(/id="selElev"/.test(HTML), "#selElev exists in the markup");
+  // it is a child of the sheet area, NOT of the pill row that wraps
+  const stage = HTML.slice(HTML.indexOf('<section id="stage">'));
+  const status = stage.indexOf('class="canvas-status"');
+  const elev = stage.indexOf('id="selElev"');
+  check(elev >= 0 && (status < 0 || elev < status),
+    "#selElev is a sibling of .canvas-status, never inside it");
+
+  const rule = (CSS.match(/\n\.sel-elev \{[^}]*\}/) || [""])[0];
+  check(/position:\s*absolute/.test(rule), ".sel-elev is positioned");
+  check(/[;{\s]top:\s*\d+px/.test(rule) && /[;{\s]right:\s*\d+px/.test(rule),
+    "...against a CORNER, in constant px - so its position is the same at "
+    + "every window width and every browser zoom");
+  check(!/left:\s*50%/.test(rule) && !/translateX/.test(rule),
+    "...and NOT centred - centring is what made it move when the pill's "
+    + "width changed (920.4 -> 1023.0 px over 14 contours)");
+  check(!/flex-wrap:\s*wrap/.test(rule),
+    "...and it does not share a wrapping row with anything");
+  check(/[;{\s]width:\s*\d+px/.test(rule),
+    "...and its WIDTH is a constant too - right-anchored but shrink-to-fit, "
+    + "its left edge still moved 1288.9 -> 1389.0 px over the same 14 "
+    + "contours, because the provenance wording changes length");
+  check(/align-items:\s*flex-start/.test(rule),
+    "...with the content left-aligned inside it, so the digits start on one "
+    + "pixel rather than ending on one");
+  check(/max-width/.test(rule),
+    "it is capped at the sheet area, so a long provenance sentence wraps "
+    + "inside it instead of pushing anything off screen");
+  const zi = (rule.match(/z-index:\s*(\d+)/) || [])[1];
+  const csZ = ((CSS.match(/\n\.canvas-status \{[^}]*\}/) || [""])[0]
+               .match(/z-index:\s*(\d+)/) || [])[1];
+  check(zi && csZ && +zi >= +csZ,
+    "it sits at or above the pill in the stack, so nothing on the sheet "
+    + "overlay covers it  (got " + zi + " vs " + csZ + ")");
+  // and the number itself still cannot be squeezed or ellipsized
+  const selEl = (CSS.match(/\n\.sel-el \{[^}]*\}/) || [""])[0];
+  check(/flex:\s*none/.test(selEl), ".sel-el is flex:none");
+  check(!/text-overflow/.test(selEl), ".sel-el has no ellipsis of its own");
+  const selTxt = (CSS.match(/\n\.sel-txt \{[^}]*\}/) || [""])[0];
+  check(/text-overflow:\s*ellipsis/.test(selTxt),
+    ".sel-txt keeps its ellipsis - the pill's own sentence may still clip, "
+    + "and the number is no longer on that bar to clip with it");
+  // the source must not quietly grow the chip back onto the pill
+  const bar = fnSrc("updateSelBar");
+  check(!/"sel-el"/.test(bar) && !/'sel-el'/.test(bar),
+    "updateSelBar builds no .sel-el of its own - THE FIXED DEFECT");
+  check(/renderSelElev\(/.test(bar),
+    "...it delegates the elevation to the anchored readout");
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +395,7 @@ const NOT_PRINTED = ["inherited", "interval-infill"];
 for (const how of PRINTED) {
   const p = elevProvenance(how);
   eq(p.kind, "printed", how + " is a label the sheet actually prints");
-  const chip = byClass(renderBar({ elev: ELEV(545, how) }), "sel-el")[0];
+  const chip = chipEl({ elev: ELEV(545, how) });
   check(!/inferred|unknown/.test(chip.className),
     how + ": and carries no inferred/unknown class");
   check(chip.textContent.indexOf("EL 545") === 0,
@@ -308,7 +403,7 @@ for (const how of PRINTED) {
 }
 {
   // ONLY A TEXT-LAYER READ GETS A BARE NUMBER.
-  const chip = byClass(renderBar({ elev: ELEV(545, "inline") }), "sel-el")[0];
+  const chip = chipEl({ elev: ELEV(545, "inline") });
   eq(chip.textContent, "EL 545",
     "inline: nothing is added - the number IS the sheet's own text");
   eq(chip.className, "sel-el", "inline: and the chip is unadorned");
@@ -339,8 +434,8 @@ console.log("5c. an OCR'd elevation does not look like a printed one");
 // Until 2026-09-01 both rendered a bare "EL 545" with a solid border and the
 // whole caveat lived in a tooltip. The caveat now travels ON the number.
 {
-  const ocr = byClass(renderBar({ elev: ELEV(545, "gap-ocr") }), "sel-el")[0];
-  const inl = byClass(renderBar({ elev: ELEV(545, "inline") }), "sel-el")[0];
+  const ocr = chipEl({ elev: ELEV(545, "gap-ocr") });
+  const inl = chipEl({ elev: ELEV(545, "inline") });
   check(ocr.textContent !== inl.textContent,
     "THE FIXED DEFECT: an OCR'd elevation no longer renders byte-identical "
     + "to one read from the text layer");
@@ -386,7 +481,7 @@ console.log("5c. an OCR'd elevation does not look like a printed one");
 for (const how of NOT_PRINTED) {
   const p = elevProvenance(how);
   eq(p.kind, "inferred", how + " is NOT printed anywhere on the sheet");
-  const chip = byClass(renderBar({ elev: ELEV(580, how) }), "sel-el")[0];
+  const chip = chipEl({ elev: ELEV(580, how) });
   check(chip && /inferred/.test(chip.textContent),
     how + ": the word is in the CHIP TEXT, where the number is - not only "
     + "in a tooltip nobody opens");
@@ -420,21 +515,21 @@ for (const how of NOT_PRINTED) {
   // tests/test_ew_suggest.py); the fixtures below are the two sentences it
   // can really produce, and what is pinned here is that the UI carries the
   // difference through instead of flattening it.
-  const backed = byClass(renderBar({
+  const backed = chipEl({
     elev: ELEV(580, "interval-infill",
       "counted between labelled 579 (line 140) and labelled 583 (line 282) "
       + "at the sheet's 1 ft contour interval - not a printed label, "
       + "confirm against the sheet"),
-  }), "sel-el")[0];
+  });
   check(/line 140/.test(backed.title) && /line 282/.test(backed.title),
     "the server's src sentence rides along in the tooltip");
-  const unbacked = byClass(renderBar({
+  const unbacked = chipEl({
     elev: ELEV(580, "interval-infill",
       "counted between 579 (line 140, itself unlabelled) and 583 "
       + "(line 282, itself unlabelled) at the sheet's 1 ft contour "
       + "interval - NEITHER end carries a printed label, confirm against "
       + "the sheet"),
-  }), "sel-el")[0];
+  });
   check(/itself unlabelled/.test(unbacked.title)
         && /NEITHER end/.test(unbacked.title),
     "an anchor that carries no printed label says so, through the UI");
@@ -489,8 +584,8 @@ for (const how of NOT_PRINTED) {
      + "end carries a printed label, confirm against the sheet"],
   ];
   for (const [name, src] of SRC) {
-    const chip = byClass(renderBar({
-      elev: ELEV(580, "interval-infill", src) }), "sel-el")[0];
+    const chip = chipEl({
+      elev: ELEV(580, "interval-infill", src) });
     const t = chip.title;
     check(t.indexOf(src) >= 0, name + ": the server's sentence rides through");
     const serverDenies = /itself unlabelled|NEITHER end|no printed label/i.test(t);
@@ -514,8 +609,7 @@ for (const how of NOT_PRINTED) {
   const p = elevProvenance("radius");
   eq(p.kind, "nearby",
     "radius is neither a label read nor an inference - its own third kind");
-  const chip = byClass(renderBar({ elev: ELEV(551.2, "radius", "", 2.7) }),
-                       "sel-el")[0];
+  const chip = chipEl({ elev: ELEV(551.2, "radius", "", 2.7) });
   eq(chip.textContent, "EL 551.2 \u00b7 label 2.7 pt away",
     "the distance is in the CHIP TEXT - THE FIXED DEFECT: it used to read a "
     + "bare 'EL 551.2', solid-bordered, with the caveat in a tooltip");
@@ -525,8 +619,8 @@ for (const how of NOT_PRINTED) {
     "it does not overclaim either: the number IS printed somewhere");
 
   // THE SHEET'S OWN TAG, whenever the matched token carries one.
-  const tagged = byClass(renderBar({
-    elev: ELEV(551.2, "radius", "", 2.7, "BW") }), "sel-el")[0];
+  const tagged = chipEl({
+    elev: ELEV(551.2, "radius", "", 2.7, "BW") });
   eq(tagged.textContent, "EL 551.2 \u00b7 \u201cBW\u201d label 2.7 pt away",
     "a tagged number shows the sheet's own tag ON the number");
   check(/BW/.test(tagged.title) && /legend/i.test(tagged.title),
@@ -539,8 +633,7 @@ for (const how of NOT_PRINTED) {
   check(!/^Read off a label/.test(chip.title),
     "...and never says the sheet printed it FOR THIS LINE");
 
-  const far = byClass(renderBar({ elev: ELEV(551.2, "radius", "", null) }),
-                      "sel-el")[0];
+  const far = chipEl({ elev: ELEV(551.2, "radius", "", null) });
   check(!/pt from this line/.test(far.title),
     "with no distance recorded it invents none");
   eq(far.textContent, "EL 551.2 \u00b7 label nearby, not in the break",
@@ -555,7 +648,7 @@ for (const how of NOT_PRINTED) {
     ["a bare number, the pre-fix shape",
      { status: "ready", byChain: new Map([[192, 545]]) }],
   ]) {
-    const chip = byClass(renderBar({ elev: map }), "sel-el")[0];
+    const chip = chipEl({ elev: map });
     check(!!chip, name + ": the number is still shown");
     eq(chip.textContent, "EL 545 · source unknown",
       name + ": ...and the chip says it does not know where it came from");
@@ -607,6 +700,7 @@ function ensureScope(opts) {
     },
     setStatus: (t, cls) => said.push({ t, cls }),
     ELEV_FAIL: "could not read this sheet's elevations — retry",
+    EW_SUGGEST_TIMEOUT: "no answer in 12 minutes — press EARTHWORK to retry",
     updateSelBar: () => {},
     chainById: () => null,
   };
@@ -684,3 +778,44 @@ runEnsure(null).then(st => {
   console.error("  FAIL: ensureElev suite threw " + (e && e.stack || e));
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// (This block is SYNCHRONOUS and sits after the async ensureElev suite on
+// purpose: it runs first, so its failures are already in `fails` when that
+// suite's .then() prints the summary and sets the exit code. Do not wrap it
+// in a promise without moving the summary.)
+// THE READOUT MAY NOT CONTRADICT WHAT IS LOADED (2026-09-03, blocking).
+// renderSelElev takes the reading as an argument. Three callers had only the
+// chain, passed none, and the no-number branch printed "none printed for
+// this line" over a contour whose elevation was in byChain the whole time -
+// measured on Oncor C-04 chain 102: "EL 558.5 · “BW” label 10.6 pt away"
+// became "none printed for this line" the moment Tools > Earthwork started a
+// second suggest flight, permanently, with state.elev.status "ready".
+// A false denial is worse than the blank it replaced.
+{
+  const src = fs.readFileSync(path.join(__dirname, "..", "webui", "app.js"),
+                              "utf8");
+  const chainOnly = [...src.matchAll(/renderSelElev\(chainById\([^)]*\)\)/g)];
+  check(chainOnly.length === 0,
+    "no caller passes renderSelElev a chain with no reading (found "
+    + chainOnly.length + ")");
+  check(/function repaintSelElev\(ch\)/.test(src),
+    "the chain-only callers go through repaintSelElev");
+  const w = src.slice(src.indexOf("function repaintSelElev(ch)"),
+                      src.indexOf("function renderSelElev(ch"));
+  check(/state\.elev\.byChain instanceof Map/.test(w)
+        && /\.get\(ch\.chain_id\)/.test(w),
+    "and it re-derives the reading from byChain, the one place that has it");
+  check(/elevProvenance\(/.test(w),
+    "and its provenance with it, so the wording cannot drift from the number");
+  // the box sits ON the drawing: it must not eat clicks meant for a line
+  const css = fs.readFileSync(path.join(__dirname, "..", "webui", "style.css"),
+                              "utf8");
+  const box = css.slice(css.indexOf(".sel-elev {"), css.indexOf(".sel-elev[hidden]"));
+  check(/pointer-events:\s*none/.test(box),
+    "the readout container lets clicks through to the sheet under it");
+  check(/\.sel-elev \.sel-el \{[^}]*pointer-events:\s*auto/.test(
+          css.replace(/\s+/g, " ").replace(/\.sel-elev \.sel-el \{/g, "\n.sel-elev .sel-el {"))
+        || /\.sel-elev \.sel-el[^{]*\{[\s\S]{0,200}?pointer-events:\s*auto/.test(css),
+    "while the text itself still takes a hover, for the provenance tooltip");
+}

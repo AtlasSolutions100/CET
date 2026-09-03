@@ -4517,6 +4517,42 @@ class EarthworkBody(BaseModel):
     boundary: list[list[float]] | None = None
 
 
+# ONE ELEVATION READ PER PAGE AT A TIME.
+#
+# gap_label_elevations IS the cost of the route below - measured 217.2 s
+# cold on Oncor Cloudcrest engine page index 3 = printed C-04 against 1.4 s
+# warm - and the only thing that ever made a second request cheap was the
+# FINISHED file on disk. Nothing stopped two requests OCRing the same page
+# at once, and two is the normal case, not an edge:
+#
+#   * two people on one job. Measured 2026-09-02, two clients 3 s apart on
+#     a cold C-04: 220.0 s and 219.3 s. Two full OCR passes, one answer.
+#   * ONE person who reloads, which is what a client did on the 2026-09-02
+#     screen share when the panel appeared to hang. The browser's abort
+#     does NOT stop the work - this is a `def`, so it runs to completion on
+#     the threadpool - but the reloaded page reads the cache as absent and
+#     starts its own pass. Reloading at t=60 s therefore does not shorten
+#     the wait, it moves the finish from t=220 to t=280 and doubles the
+#     load in between.
+#
+# With the lock the second caller waits for the first and then reads its
+# cache, so a page is read once however many people are looking at it.
+# A waiter holds a threadpool thread (anyio's default limiter is 40), which
+# is why this guards the OCR and not the whole route: everything else here
+# is milliseconds.
+_ELEVGAP_LOCKS: dict[tuple[str, int], threading.Lock] = {}
+_ELEVGAP_GUARD = threading.Lock()
+
+
+def _elevgap_lock(job_id: str, page: int) -> threading.Lock:
+    key = (job_id, page)
+    with _ELEVGAP_GUARD:
+        lk = _ELEVGAP_LOCKS.get(key)
+        if lk is None:
+            lk = _ELEVGAP_LOCKS[key] = threading.Lock()
+        return lk
+
+
 @app.get("/api/job/{job_id}/page/{page}/earthwork/suggest")
 def earthwork_suggest(job_id: str, page: int):
     """Auto-pair elevation labels with the contours they sit on - a
@@ -4616,29 +4652,39 @@ def earthwork_suggest(job_id: str, page: int):
     # or split-break labels; keeping the old filename would read that stale
     # result back forever. Orphaned v1 files are harmless.
     gcache = _job_dir(job_id) / f"p{page}_elevgaps2.json"
-    gap_z = None
-    if gcache.exists():
-        try:
-            gap_z = {int(k): tuple(v)
-                     for k, v in json.loads(gcache.read_text()).items()}
-        except Exception:
-            gap_z = None
-    if gap_z is None:
-        import numpy as _np3
 
-        from takeoff_engine.earthwork import gap_label_elevations
-        doc2 = pymupdf.open(job["path"])
-        pix = doc2[page].get_pixmap(dpi=150)
-        img = _np3.frombuffer(pix.samples, _np3.uint8).reshape(
-            pix.height, pix.width, pix.n)[:, :, :3].copy()
-        doc2.close()
-        gap_z = gap_label_elevations(chains, img, 150.0 / 72.0,
-                                     exclude=excl)
+    def _read_gcache():
+        if not gcache.exists():
+            return None
         try:
-            gcache.write_text(json.dumps(
-                {str(k): list(v) for k, v in gap_z.items()}))
-        except OSError:
-            pass
+            return {int(k): tuple(v)
+                    for k, v in json.loads(gcache.read_text()).items()}
+        except Exception:
+            return None
+
+    gap_z = _read_gcache()
+    if gap_z is None:
+        # SINGLE FLIGHT (see _elevgap_lock). The second look is taken INSIDE
+        # the lock: whoever waited here was waiting for exactly this file,
+        # and re-reading it is the difference between one 217 s pass and N.
+        with _elevgap_lock(job_id, page):
+            gap_z = _read_gcache()
+            if gap_z is None:
+                import numpy as _np3
+
+                from takeoff_engine.earthwork import gap_label_elevations
+                doc2 = pymupdf.open(job["path"])
+                pix = doc2[page].get_pixmap(dpi=150)
+                img = _np3.frombuffer(pix.samples, _np3.uint8).reshape(
+                    pix.height, pix.width, pix.n)[:, :, :3].copy()
+                doc2.close()
+                gap_z = gap_label_elevations(chains, img, 150.0 / 72.0,
+                                             exclude=excl)
+                try:
+                    gcache.write_text(json.dumps(
+                        {str(k): list(v) for k, v in gap_z.items()}))
+                except OSError:
+                    pass
     # ew_diag carries what the LADDER GATE did (earthwork._ladder_gate): on a
     # page with no glyph-backed row it is the only consensus filter that can
     # run, and what it drops has to be as visible as what it keeps.

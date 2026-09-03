@@ -11082,8 +11082,31 @@ function syncCardCounts() {
 // If that budget moves, or the read is warmed at Detect time, RE-MEASURE
 // and change this string - nothing else in the UI quotes a wait.
 const EW_SUGGEST_WAIT = "the first read of a page takes a minute or more";
-const EW_SUGGEST_BUSY = "reading this sheet's elevation labels — " + EW_SUGGEST_WAIT;
+const EW_SUGGEST_HEAD = "reading this sheet's elevation labels";
+const EW_SUGGEST_BUSY = EW_SUGGEST_HEAD + " — " + EW_SUGGEST_WAIT;
 const EW_SUGGEST_FAIL = "could not read this sheet's elevations — press EARTHWORK to try again";
+// A READ THAT NEVER ANSWERS IS A FAILURE, AND IT HAS TO SAY SO.
+//
+// Reported on the same screen share: the panel sat on the busy line "for
+// minutes" and the client asked "Is it not working? Is it dead? Is it
+// hung?" - there was no way to tell, because the sentence never changed and
+// nothing was ever going to change it. Every failure path here needs the
+// request to SETTLE, and a fetch with no deadline can decline to. So there
+// is a deadline, and past it the read is reported as failed rather than
+// left claiming to work.
+//
+// TWELVE MINUTES is deliberately far above any measured real read - 217.2 s
+// cold on Oncor Cloudcrest engine page index 3 = printed C-04, 94 s on
+// Belle Farms Upper Parcel ROAD GRADING 1 of 2 p0, 1.4 s warm - so it fires
+// on a dead socket, not on a slow sheet.
+//
+// The retry really is quick, and the sentence says so because it is true:
+// this is a sync endpoint, so the server thread keeps reading after the
+// browser gives up and writes p<N>_elevgaps2.json when it finishes.
+const ELEV_READ_CEILING_MS = 12 * 60 * 1000;
+const EW_SUGGEST_TIMEOUT = "the elevation read got no answer in 12 minutes "
+  + "— press EARTHWORK to try again; the server keeps reading in the "
+  + "background and caches the result, so the retry is usually quick";
 // ...and the one failure that is NOT retryable. The endpoint answers
 // 404 {"detail":"run detect first"} on a page that has never been detected,
 // and pressing EARTHWORK again can never change that.
@@ -11105,12 +11128,79 @@ function ewFailMsg() {
   const f = state.ewFailed;
   if (!f) return "";
   if (f.status === 404 || !state.result) return EW_NEED_DETECT;
+  // ...and the failure that looks like no failure at all: nothing came
+  // back. Retryable, like a dropped connection, but it needs its own words
+  // - "could not read" describes a read that answered badly, and the
+  // operator watching a frozen panel is asking a different question.
+  if (f.timeout) return EW_SUGGEST_TIMEOUT;
   return EW_SUGGEST_FAIL;
 }
 // The fifth state: rows are loaded, but they were read off a DIFFERENT sheet
 // (see ewIsThisPage). Never "not ready yet" - ready, and about the wrong
 // drawing, which is worse.
 const EW_SUGGEST_STALE = "these earthwork rows were read off another sheet";
+
+// ---- WHAT THE READ CAN HONESTLY REPORT ------------------------------------
+//
+// It cannot report a percentage. /earthwork/suggest OCRs the whole page in
+// one pytesseract loop inside takeoff_engine.earthwork.gap_label_elevations
+// and sends nothing until it is done, so any bar or fraction here would be
+// invented. What is genuinely known on this side is two things: WHAT stage
+// is running, and HOW LONG it has been running. Both are reported; nothing
+// else is.
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + "s";
+  return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+}
+// ms the read in flight has been running, or null when none is.
+function elevReadElapsed() {
+  const req = state.suggestReq;
+  return req && req.t0 ? Date.now() - req.t0 : null;
+}
+// The busy sentence, with the clock in it. Same words as EW_SUGGEST_BUSY
+// when nothing is in flight yet, so the existing callers read the same.
+function elevBusyLine() {
+  const ms = elevReadElapsed();
+  if (ms === null) return EW_SUGGEST_BUSY;
+  return EW_SUGGEST_HEAD + " — " + fmtElapsed(ms) + " so far; "
+    + EW_SUGGEST_WAIT;
+}
+
+// ONE TICK, THREE SURFACES, AND IT ONLY REWRITES WHAT IT OWNS.
+//
+// The elevation readout is ours outright. The panel's busy line and the
+// status bar are shared, so each is rewritten only while it is still
+// showing THIS sentence - otherwise a tick a second would stamp on
+// "removed 12 lines" or whatever the operator did next.
+let _elevTicker = null;
+function elevTickStart() {
+  if (_elevTicker === null && typeof setInterval === "function")
+    _elevTicker = setInterval(elevTickPaint, 1000);
+}
+function elevTickStop() {
+  if (_elevTicker !== null) { clearInterval(_elevTicker); _elevTicker = null; }
+}
+function elevTickPaint() {
+  if (elevReadElapsed() === null) { elevTickStop(); return; }
+  const line = elevBusyLine();
+  const eb = $("ewBusy");
+  if (eb && !eb.hidden && eb.textContent.indexOf(EW_SUGGEST_HEAD) === 0)
+    ewBusyPut(line + "\u2026");
+  const rows = $("ewRows");
+  if (rows) {
+    const hint = rows.querySelector(".ew-hint");
+    if (hint && hint.textContent.indexOf("reading elevation labels") === 0)
+      hint.textContent = "reading elevation labels\u2026 "
+        + fmtElapsed(elevReadElapsed());
+  }
+  const sb = $("status");
+  if (sb && sb.textContent.indexOf(EW_SUGGEST_HEAD) === 0)
+    setStatus(line, "busy");
+  if (state.selected !== null && typeof chainById === "function")
+    repaintSelElev(chainById(state.selected));
+}
+
 
 // THE FIFTH STATE. state.ew can be non-null and still be the WRONG SHEET's:
 // it is stamped with the job and page it was read from, and this is the one
@@ -11296,8 +11386,26 @@ function suggestOnce() {
   const key = gen + "|" + job + "|" + page;
   const cur = state.suggestReq;
   if (cur && cur.key === key) return cur.promise;
+  // THE DEADLINE. Without it the promise can simply never settle, and every
+  // failure surface downstream is reached by a rejection - so a socket that
+  // goes quiet leaves the panel claiming to be working, forever. See
+  // ELEV_READ_CEILING_MS.
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), ELEV_READ_CEILING_MS) : null;
   const promise = (async () => {
-    const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
+    let r;
+    try {
+      r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`,
+                      ctl ? { signal: ctl.signal } : undefined);
+    } catch (e) {
+      if (ctl && ctl.signal.aborted) {
+        const err = new Error("no answer in " + fmtElapsed(ELEV_READ_CEILING_MS));
+        err.status = 0;
+        err.timeout = true;
+        throw err;
+      }
+      throw e;
+    }
     if (!r.ok) {
       // KEEP THE SERVER'S REASON. Throwing the body away is what left the
       // UI unable to tell "this page was never detected" (404, permanent)
@@ -11312,11 +11420,20 @@ function suggestOnce() {
     return await r.json();
   })();
   const done = () => {
+    if (timer !== null) clearTimeout(timer);
     if (state.suggestReq && state.suggestReq.promise === promise)
       state.suggestReq = null;
+    // repaint every surface once the clock has stopped, so none is left
+    // holding the last tick's elapsed time
+    elevTickStop();
+    if (state.selected !== null) repaintSelElev(chainById(state.selected));
   };
   promise.then(done, done);
-  state.suggestReq = { key, promise };
+  // t0 rides ON the request record, not in a field of its own: when the
+  // record goes - settled, or dropped by elevReset on a page switch - the
+  // clock goes with it, and no orphaned flight can leave a stale one behind.
+  state.suggestReq = { key, promise, t0: Date.now() };
+  elevTickStart();
   return promise;
 }
 
@@ -11357,7 +11474,8 @@ async function ewFetchSuggest(gen) {
   } catch (err) {
     if (gen === state.gen)
       state.ewFailed = { status: (err && err.status) || 0,
-                         detail: (err && err.detail) || "" };
+                         detail: (err && err.detail) || "",
+                         timeout: !!(err && err.timeout) };
     return false;
   }
   {
@@ -17162,7 +17280,22 @@ async function ensureElev() {
   } catch (err) {
     if (stale()) return;          // elevReset() already owns this page
     state.elev = { status: "failed", byChain: null };
-    setStatus(ELEV_FAIL, "err");
+    // A read that never answered says so in its own words - the operator
+    // watching a frozen panel is asking "is it dead?", not "did it fail?"
+    setStatus(err && err.timeout ? EW_SUGGEST_TIMEOUT : ELEV_FAIL, "err");
+    // AND THE READOUT HAS TO HEAR ABOUT IT. suggestOnce's own settle handler
+    // repaints first, while this status is still `loading`, so without this
+    // line the box was left saying "reading this sheet's labels…" over a
+    // read that had already given up - measured live at T+720 s on the
+    // 12-minute deadline, every other surface correct and this one frozen.
+    //
+    // renderSelElev, NOT updateSelBar. updateSelBar re-asks out of the
+    // `failed` state - that is the operator's retry, and it is deliberate -
+    // so calling it from this catch is a retry loop that re-fires the read
+    // as fast as it can fail. Reproduced live on a dropped connection: the
+    // panel showed its failure sentence while state.elev sat on `loading`
+    // forever, one request per cycle. Only the readout is repainted here.
+    if (state.selected !== null) repaintSelElev(chainById(state.selected));
     return;
   }
   if (stale()) return;
@@ -17171,6 +17304,119 @@ async function ensureElev() {
                         dist: s.dist, tag: s.label_tag || null }])) };
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
+// THE ELEVATION READOUT — one number, one place, every time.
+//
+// REPORTED (screen share, 2026-09-02): "some of these you click and it says
+// the height and some it doesn't … I'm not seeing it anywhere obvious", and
+// then, when it finally appeared, "the elevation popped up on your thing.
+// It just moved … now it's on the bottom. So sometimes it hides."
+//
+// WHAT IT ACTUALLY WAS — measured live on Oncor Cloudcrest engine page
+// index 3 = printed C-04, 589 chains, 150 elevations:
+//
+//   NOT overflow. The chip was rendered at 100% of its width in all 24 of
+//   1280/1366/1440/1920 px x 100/110/125% zoom, with a 24-character family
+//   name, panel open and closed - down to a 1024 px CSS viewport, where
+//   .sel-txt was squeezed to 29.8 px and the chip still measured 166/166 px
+//   visible. Structurally it could not be the clipped one either: #selInfo
+//   overflows to the RIGHT and the chip was its second child, so the two
+//   things behind the ellipsis were "in list" and the colour swatch.
+//   NOT z-order: elementFromPoint at the chip's centre returned the chip.
+//
+//   IT MOVED, and half the time IT WAS NEVER BUILT.
+//   * Over 14 contours at 1536 px the chip's left edge ranged 920.4 ->
+//     1023.0 px, because the pill is CENTRED and its width changes with the
+//     description, the provenance wording and which controls are present.
+//   * Hovering any style row shows #ghostInfo in the same wrapping row:
+//     .canvas-status went 29.2 -> 75.2 px tall and the chip jumped 785.4 ->
+//     747.4 px. That is "it just moved … now it's on the bottom".
+//   * 439 of 589 chains - 110 of the 218 in a contour family - have no
+//     elevation at all, and the old code rendered NOTHING for them. Absence
+//     was silent, so "no elevation for this line" looked identical to "the
+//     read has not finished" and to "the chip is hiding somewhere".
+//   * And for the first 217.2 s after Detect on that sheet (measured, cold
+//     /earthwork/suggest) NO line has one, because the single read is still
+//     running. Every contour clicked in that window rendered nothing.
+//
+// SO: its own box, anchored to a corner of the sheet area, nothing else on
+// its line, a constant caption, and a sentence for every state - including
+// the two that used to render nothing. Its top/right are constants, so no
+// sibling's width, no window width and no zoom can move it.
+// THE READOUT MAY NOT CONTRADICT WHAT IS LOADED. renderSelElev takes the
+// reading as an argument, and three callers had only the chain, so they
+// passed none and the no-number branch printed "none printed for this
+// line" OVER a contour whose elevation was in byChain the whole time.
+// Measured live 2026-09-03 on Oncor C-04 chain 102: the box read "EL 558.5
+// · “BW” label 10.6 pt away", then pressing Tools > Earthwork with the same
+// line still selected turned it into "none printed for this line",
+// permanently, while state.elev.status was "ready" and byChain still held
+// 558.5. A false denial is worse than the blank it replaced (CLAUDE.md s5).
+// So the chain-only callers go through here and the reading is re-derived
+// from the one place that has it.
+function repaintSelElev(ch) {
+  if (!ch) return renderSelElev(null);
+  const ev = (state.elev && state.elev.byChain instanceof Map)
+    ? state.elev.byChain.get(ch.chain_id) : undefined;
+  renderSelElev(ch, ev, elevProvenance(ev && ev.how));
+}
+
+function renderSelElev(ch, ev, prov) {
+  const box = $("selElev");
+  if (!box) return;
+  box.textContent = "";
+  if (!ch || !state.result) { box.hidden = true; return; }
+  box.hidden = false;
+  const cap = document.createElement("span");
+  cap.className = "se-cap";
+  cap.textContent = "elevation";
+  box.appendChild(cap);
+  const z = (ev && typeof ev === "object") ? ev.z : ev;
+  if (z !== undefined && z !== null) {
+    // THE PROVENANCE TRAVELS WITH THE NUMBER, NOT IN A TOOLTIP.
+    // An elevation the sheet does NOT print is marked in the text itself -
+    // the same word, and the same reason, as the earthwork panel's per-row
+    // "inferred" badge. On C-04 that is 61 of 150. The tooltip carries the
+    // long form and, for an infilled row, the server's own sentence naming
+    // the two contours it was counted between.
+    const elc = document.createElement("span");
+    elc.className = "sel-el" + (prov && prov.cls ? " " + prov.cls : "");
+    const mark = elevChipTag(prov, ev);
+    elc.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
+    elc.title = (prov ? prov.why : "") + elevProvenanceDetail(ev);
+    box.appendChild(elc);
+    return;
+  }
+  // NO NUMBER IS A STATE, NOT A BLANK. Which of the four it is decides
+  // whether the operator should wait, retry, or accept that this line has
+  // none - and rendering nothing answered none of those three questions.
+  const st = state.elev || {};
+  // A READ IS RUNNING whenever there is a request in flight, even one the
+  // EARTHWORK panel started - this readout must not say "not read yet" over
+  // a read the operator is already waiting on.
+  const ms = elevReadElapsed();
+  const busy = st.status === "loading" || ms !== null;
+  const note = document.createElement("span");
+  note.className = "se-none";
+  note.textContent =
+      busy ? "reading this sheet's labels…"
+             + (ms === null ? "" : " " + fmtElapsed(ms))
+    : st.status === "failed"  ? "read failed — click the line again to retry"
+    : st.status === "ready"   ? "none printed for this line"
+    :                           "not read yet";
+  note.title =
+      busy
+        ? "The sheet's elevation labels are being read. The first read of a "
+          + "page is slow (measured 217 s on Oncor C-04); every read after "
+          + "it on the same page is about a second."
+    : st.status === "failed" ? ELEV_FAIL
+    : st.status === "ready"
+        ? "The read finished and paired no elevation with this line — "
+          + "either the sheet prints none for it, or it is not a contour. "
+          + "It is not a line that is still loading."
+    : "No elevation read has been asked for on this sheet yet.";
+  box.appendChild(note);
+}
+
 function updateSelBar(ch) {
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
@@ -17190,7 +17436,7 @@ function updateSelBar(ch) {
   // seeded - shows it. Same reveal, one writer.
   $("aiBtn").hidden = !state.result;
   $("removeBtn").disabled = !ch;
-  if (!ch) { $("selInfo").textContent = ""; return; }
+  if (!ch) { $("selInfo").textContent = ""; renderSelElev(null); return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
   const label = state.chainLabels.get(ch.chain_id) ||
     state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
@@ -17227,36 +17473,12 @@ function updateSelBar(ch) {
   // back; the elevation is not left to that (see the chip below).
   txt.title = txt.textContent;
   info.appendChild(txt);
-  // THE ELEVATION IS A CHIP, NOT THE TAIL OF THE SENTENCE.
-  // It used to be the last token inside .sel-txt, which is the one child of
-  // this pill that can shrink (overflow:hidden; text-overflow:ellipsis).
-  // Three flex:none controls landed on the same pill on 2026-08-30/31 - the
-  // family select, "in list" and the colour swatch, 248.9 px between them -
-  // and .canvas-status caps at a fraction of the canvas column, so on a
-  // 1097 px window .sel-txt was squeezed to 95 px for a 299 px string and
-  // " · EL 545" was the first thing behind the ellipsis. Measured on Oncor
-  // Cloudcrest engine page index 3 = printed C-04, contour chain 192, whose
-  // sheet prints 545 in the break of that dashed contour: clipped at 1097,
-  // 1280 and 1370 px, visible only from ~1400 px up. A flex:none child
-  // cannot be ellipsized, so the number is now width-proof.
-  // Nothing renders when the line has no elevation (a non-contour, or a
-  // contour the sheet never labelled) - no empty box.
-  // THE PROVENANCE TRAVELS WITH THE NUMBER, NOT IN A TOOLTIP.
-  // The number is what gets read and acted on, so an elevation the sheet
-  // does NOT print is marked in the chip text itself - the same word, and
-  // the same reason, as the earthwork panel's per-row "inferred" badge. On
-  // C-04 that is 61 of 150 (see ELEV_PROV for the measurement). The tooltip
-  // carries the long form and, for an infilled row, the server's own
-  // sentence naming the two contours it was counted between and saying
-  // which of those two, if either, the sheet actually labels.
-  if (z !== undefined && z !== null) {
-    const elc = document.createElement("span");
-    elc.className = "sel-el" + (prov.cls ? " " + prov.cls : "");
-    const mark = elevChipTag(prov, ev);
-    elc.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
-    elc.title = prov.why + elevProvenanceDetail(ev);
-    info.appendChild(elc);
-  }
+  // THE ELEVATION DOES NOT LIVE ON THIS PILL. See renderSelElev(): it is
+  // the number the operator acts on, and on this bar its screen position
+  // was a function of how long the description happened to be, of which of
+  // the pill's five children were present, and of whether the hover readout
+  // was sharing the row. It has a corner of the sheet area to itself now.
+  renderSelElev(ch, ev, prov);
   // family switcher, right on the bar: the SAME mutation the Reclassify
   // tool ends in (reclassCore), without the pick-click trip across the
   // canvas. Listed by footage so the family you want is near the top.
