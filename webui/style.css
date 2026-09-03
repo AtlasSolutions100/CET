@@ -3003,17 +3003,24 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .ew-chip:hover { border-color: var(--t-text); color: var(--t-text); }
 .ew-chip.on { background: var(--t-text); color: var(--t-stage);
   border-color: var(--t-text); font-weight: 600; }
-.ew-chip.coffinterval { color: var(--t-stop); border-color: var(--t-stop); }
-.ew-chip.cnearby, .ew-chip.cmachine { color: var(--t-warn);
+.ew-chip.c-offinterval { color: var(--t-stop); border-color: var(--t-stop); }
+.ew-chip.c-nearby, .ew-chip.c-machine { color: var(--t-warn);
   border-color: var(--t-warn); }
-.ew-chip.cinferred { color: var(--t-info); border-color: var(--t-info); }
-.ew-chip.cread { color: var(--t-ok); border-color: var(--t-ok); }
+.ew-chip.c-inferred { color: var(--t-info); border-color: var(--t-info); }
+.ew-chip.c-read { color: var(--t-ok); border-color: var(--t-ok); }
 .ew-chip.on.coffinterval { background: var(--t-stop);
   color: var(--t-stop-ink); }
 .ew-chip.on.cnearby, .ew-chip.on.cmachine { background: var(--t-warn);
   color: var(--t-warn-ink); }
 .ew-chip.on.cread { background: var(--t-ok); color: var(--t-ok-ink); }
 
+/* THE HYPHEN. app.js builds these as "c-" + key and "k-" + cls
+   (webui/app.js ~12622 and ~12740, and .ew-row.rc-offinterval below
+   already had it). Every rule in this block was written without one,
+   so NONE of them matched: measured live 2026-09-03, every chip
+   rendered the same grey and every row badge the same info-blue, and
+   the whole stop/warn/ok signal this vocabulary declares reached the
+   screen as text only. */
 /* the class badge on the row itself - same vocabulary as the chips */
 .ew-cls { display: inline-block; margin-right: 4px; padding: 0 5px;
   border-radius: var(--t-r-pill); font-size: var(--t-fs-xs);
@@ -3021,11 +3028,11 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
   /* the row shares ~200 px with an input, three buttons and a sentence:
      the badge stays on one line or the pill outgrows its own background */
   white-space: nowrap; }
-.ew-cls.koffinterval { background: var(--t-stop); color: var(--t-stop-ink); }
-.ew-cls.knearby, .ew-cls.kmachine { background: var(--t-warn);
+.ew-cls.k-offinterval { background: var(--t-stop); color: var(--t-stop-ink); }
+.ew-cls.k-nearby, .ew-cls.k-machine { background: var(--t-warn);
   color: var(--t-warn-ink); }
-.ew-cls.kread { background: var(--t-ok); color: var(--t-ok-ink); }
-.ew-cls.knone, .ew-cls.ktyped, .ew-cls.kunknown { background: transparent;
+.ew-cls.k-read { background: var(--t-ok); color: var(--t-ok-ink); }
+.ew-cls.k-none, .ew-cls.k-typed, .ew-cls.k-unknown { background: transparent;
   color: var(--dim); border: 1px solid var(--line); font-weight: 400; }
 .ew-row.rc-offinterval { background: var(--t-stop-bg); }
 .ew-row.ew-stub { opacity: .85; }

@@ -14,7 +14,9 @@
 //    text (how="inline"). The fifth of those is not in the brief's list and
 //    the measurement forced it: on Oncor C-04, 18 of the 20 `radius` rows
 //    carry a fractional elevation on a sheet whose contours step by 1 ft, and
-//    10 of those carry a legend-keyed spot tag (BW/TW/ME/EW). Folding
+//    8 of those 18 carry a legend-keyed spot tag (4 BW, 2 EW, 1 TW, 1 ME;
+//    10 is the tag count over all 20 radius rows - the earlier "10 of those"
+//    did not reproduce, re-measured 2026-09-03). Folding
 //    `radius` into "printed" is what let 551.2 BW pass as a contour.
 //
 // B. THE OFF-INTERVAL RANK, with both guards. A number that is not a step on
@@ -313,10 +315,29 @@ check(/\["ewRowsCount", "#ewRows \.ew-row",\s*\n\s*\(\) => \(state\.ew && state\
   + "'23 of 368' and never reports the smaller number as the total");
 check(/and " \+ view\.hidden \+ " more in this group/.test(js),
   "the row cap discloses itself and offers the rest");
-// Styling exists for every class the chips and badges can wear.
+// Styling exists for every class the chips and badges can wear, AND THE
+// SELECTOR MATCHES WHAT app.js EMITS. The first version of this check asked
+// only whether a rule existed and spelled the class its own way, so it
+// passed against a stylesheet whose every rule was dead: app.js builds
+// "c-" + key and "k-" + cls (hyphen), style.css declared ".coffinterval"
+// (none). Measured live 2026-09-03 - every chip the same grey, every badge
+// the same info-blue, the whole stop/warn/ok vocabulary reaching the screen
+// as text only. So build the class the SAME WAY the source does and look
+// for THAT.
+const CHIP_CLS = (key) => "c-" + key.replace(/[^a-z]/g, "");
+const BADGE_CLS = (cls) => "k-" + cls.replace(/[^a-z]/g, "");
+check(/" c-" \+ key\.replace\(\/\[\^a-z\]\/g, ""\)/.test(js),
+  "the chip class is still built as \"c-\" + key, the shape this check "
+  + "mirrors (if that changes, change it here too)");
 for (const k of ["offinterval", "nearby", "machine", "inferred", "read"])
-  check(css.includes(".ew-chip.c" + k) || css.includes(".ew-cls.k" + k),
-    "the '" + k + "' class is styled, not an unpainted div");
+  check(css.includes(".ew-chip." + CHIP_CLS(k))
+        || css.includes(".ew-cls." + BADGE_CLS(k)),
+    "the '" + k + "' class is styled under the selector app.js actually "
+    + "emits (" + CHIP_CLS(k) + " / " + BADGE_CLS(k) + ")");
+for (const k of ["none", "typed", "unknown"])
+  check(css.includes(".ew-cls." + BADGE_CLS(k)),
+    "and the '" + k + "' badge too - it is the dim outline that says no "
+    + "elevation was read");
 check(/\.ew-coverage \{/.test(css), "the coverage block is styled");
 check(/\.ew-cls \{[^}]*white-space: nowrap/.test(css),
   "...and the row badge cannot wrap out of its own pill");

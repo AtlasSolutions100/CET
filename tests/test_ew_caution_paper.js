@@ -101,7 +101,7 @@ const mk = (extra) => new Function(
            inherited: 0, manual: 0, unknown: 0, machine: 17 }),
   () => ["a machine-read note"],
   // the coverage note the same report now carries
-  () => ["CONTOUR COVERAGE. This sheet draws 368 contour lines. 150 carry an "
+  () => ["CONTOUR COVERAGE. The engine found 368 contour lines. 150 carry an "
        + "elevation; 218 carry none at all."]);
 
 {

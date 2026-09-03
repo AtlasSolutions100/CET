@@ -12216,7 +12216,10 @@ const EW_DIST_INHERITED = 999;   // earthwork.py suggest_elevations pass 2
 // adjacent labelled elevations, and 18 of the 20 `radius` rows carry a
 // FRACTIONAL elevation - 551.2, 554.3, 557.2, 557.4, 557.6, 558.5, 558.8,
 // 566.8, 567.8, 569.9, 570.9, 582.5, 583.5, 583.6, 583.9, 584.4, 584.7,
-// 585.9. Ten of those carry a legend-keyed spot tag (BW bottom of wall, TW
+// 585.9. EIGHT of those eighteen carry a legend-keyed spot tag (4 BW, 2 EW,
+// 1 TW, 1 ME) - ten is the tag count over all twenty radius rows, and the
+// earlier note here said ten of the eighteen, which does not reproduce
+// (re-measured off the live suggest response 2026-09-03). BW bottom of wall, TW
 // top of wall, ME match existing, EW end of wall) which the sheet's own
 // legend defines as spot annotations, not contour labels. A number that is
 // not on the sheet's own step cannot be one of its contour elevations, so
@@ -12408,7 +12411,15 @@ function ewCoverageText(cov, acc) {
   const out = [];
   const pct = cov.contour_len_pt > 0
     ? Math.round(100 * cov.with_elev_len_pt / cov.contour_len_pt) : null;
-  out.push("This sheet draws " + N + " contour "
+  // "THE ENGINE FOUND", not "this sheet draws". N is a count of chains the
+  // engine ASSEMBLED, and it is not the number of contour lines on the
+  // paper: measured 2026-09-03 against two independent counts of the
+  // DEM-truth sheets' own rendering, the engine finds 144 where the sheet
+  // draws 92-97 (pad_1ft), 73 vs ~48, 36 vs ~22, 68 vs ~43 - a line the
+  // engine broke in two is two chains. Stating it as a fact about the
+  // drawing is CLAUDE.md s5's fourth shape, and it is a number an operator
+  // will quote.
+  out.push("The engine found " + N + " contour "
     + ewPlural(N, "line", "lines") + ". " + M + " carry an elevation"
     + (pct === null ? "" : " (" + pct + "% of that contour footage)")
     + "; " + none + " carry none at all"
