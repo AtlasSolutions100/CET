@@ -12301,10 +12301,49 @@ const EW_REVIEW = {
   typed: { rank: 6, chip: "Typed by you", badge: "typed",
     short: "typed in by you",
     why: "You typed this elevation. Nothing here second-guesses it." },
+  // THE DIGITS ARE THE SHEET'S; THE PAIRING IS STILL OURS.
+  //
+  // This tooltip used to end "real text in the PDF, not a reading of ours",
+  // which promises more than the provenance can deliver (review finding R3,
+  // 2026-09-03). Reading a label out of a break says nothing about WHICH
+  // line the break belongs to, and the chainer can weld two contour levels
+  // into one chain - at which point one of the two printed elevations wins
+  // and the class still reads "from the sheet".
+  //
+  // MEASURED on the DEM 1 ft sheet (144 contour lines, 101 rows, 9 known
+  // wrong against the DEM): THREE of the nine are in this class - chains
+  // 429, 430 and 339 - and all three are welded, their true elevation
+  // spanning exactly 1.0 ft along one chain. Off-interval catches none of
+  // them, because every wrong value is a whole number on a 1 ft sheet.
+  //
+  // AND NO SIGNAL FOUND THEM. Three were measured over this sheet's rows
+  // before choosing to hedge rather than rank (98 of the 101 carry enough
+  // vertices for the geometry test; all 101 for the other two):
+  //   * SELF-APPROACH (a weld leaves a hairpin: the minimum distance
+  //     between two points more than 25% of the arc apart). The three rank
+  //     17th, 25th and 96th of 98 - no separation at any threshold.
+  //   * TWO PRINTED ELEVATIONS NEAR ONE CHAIN, 1 ft or more apart. At a
+  //     16 pt radius it flags 33 of the 101 rows and catches 1 of the 3;
+  //     at 30 pt it catches all 3 and flags 92 of the 101. There is no
+  //     radius that is a rank rather than a coin toss.
+  //   * LENGTH ("a chain long enough to span more than one interval").
+  //     Two of the three are SHORTER than this sheet's median contour
+  //     chain (290.5 and 396.5 pt against 550.8); the weld is short here,
+  //     not long.
+  // So the class keeps its rank - promoting 66 rows to catch 3 would bury
+  // the 25 the sweep actually needs - and the words stop over-claiming.
+  // Dropping all three moves no volume (+22.40% / -22.41% either way), so
+  // this is ranking honesty, not accuracy.
   read: { rank: 7, chip: "Read from the sheet", badge: "from the sheet",
     short: "label printed in this line's own break",
-    why: "Read out of the label this sheet prints in the break in this "
-       + "contour - real text in the PDF, not a reading of ours." },
+    why: "The digits are the sheet's own text, read out of the label it "
+       + "prints in a break in this contour. WHICH contour they belong to "
+       + "is still ours: two contour levels can end up welded into one "
+       + "line, and then one of the two printed elevations is the one you "
+       + "see here. Measured on our 1 ft test sheet, 3 of its 9 known-wrong "
+       + "rows are in this class, each welded across 1.0 ft - and nothing "
+       + "on this surface can point them out, so a sweep of this class is "
+       + "a read of the drawing, not of the badge." },
 };
 const EW_REVIEW_ORDER = ["off-interval", "nearby", "machine", "inferred",
                          "unknown", "none", "typed", "read"];
