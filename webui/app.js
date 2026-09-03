@@ -14906,14 +14906,109 @@ $("approveBtn").onclick = async () => {
 };
 
 // ---------- legend sheet vocabulary ----------
+// The TYPED-PATH / search-this-document route. Ends in legendApply, the same
+// tail the drop route uses, so the two cannot report a legend differently.
 async function loadLegendVocab(path) {
-  const r = await fetch(`/api/job/${state.job}/legend-sheet`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path || null }),
-  });
-  if (!r.ok) return setStatus("could not read a legend sheet", "err");
+  const whose = path ? path.split(/[\\/]/).pop() : "this document";
+  legendMsg(`reading ${whose}…`);
+  let r;
+  try {
+    r = await fetch(`/api/job/${state.job}/legend-sheet`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path || null }),
+    });
+  } catch (e) { return legendMsg("could not reach the server", "err"); }
+  if (!r.ok) {
+    let why = "could not read a legend sheet (" + r.status + ")";
+    try { const j = await r.json(); if (j && j.detail) why = j.detail; } catch (e) { /* not json */ }
+    return legendMsg(why, "err");
+  }
+  legendApply(await r.json(), whose);
+}
+// LEGEND-DROP ================================================================
+// THE LEGEND SHEET, AS A DROP TARGET.
+//
+// From the 2026-09-02 screen share. This control was a prompt() reading
+// "Legend sheet PDF path (blank = search this document):" and the owner's
+// business partner could not work out what to put in it - "what do I put here
+// to actually tell it it's this page?". Three things were wrong with it and
+// all three are the same thing: a browser prompt cannot take a FILE.
+//
+//   * A filesystem path is a thing only the owner, sitting at his own laptop,
+//     can supply. On the hosted box the server refuses paths outright
+//     (_client_pdf, HOSTED), so for every other person there was no way in.
+//   * The prompt did not say what a legend sheet IS, what reading one does,
+//     or - crucially - that it changes no quantity.
+//   * Blank meant "search this document", which is a real and useful action
+//     hidden inside an empty text field.
+//
+// All three are now on screen: a drop zone, a file picker behind it, the typed
+// path kept for the owner, and "Search this document instead" as its own
+// button. Nothing here applies a label - the vocabulary only fills the
+// suggestion list on the style rows, which is what it always did.
+function legendModalOpen() {
+  if (!state.job) return setStatus("open a plan first", "err");
+  $("lgPathIn").value = $("legendPath").value || "";
+  legendMsg("");
+  $("legendModal").hidden = false;
+  $("lgDrop").focus();
+}
+function legendModalClose() {
+  $("legendModal").hidden = true;
+  $("lgDrop").classList.remove("over");
+}
+function legendMsg(txt, cls) {
+  const el = $("lgMsg");
+  el.textContent = txt || "";
+  el.className = "lg-note" + (cls ? " " + cls : "");
+}
+
+// The one place a dropped or picked FILE becomes a vocabulary. Multipart to
+// /legend-sheet-upload, which runs the same scan the typed path does
+// (_legend_names in server.py) so the two routes can never read a legend
+// differently.
+async function legendReadFile(file) {
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name || "") && file.type !== "application/pdf")
+    return legendMsg(`“${file.name}” is not a PDF — a legend sheet has to be a PDF`, "err");
+  legendMsg(`reading ${file.name}…`);
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  let r;
+  try {
+    r = await fetch(url(`/api/job/${state.job}/legend-sheet-upload`),
+                    { method: "POST", body: fd });
+  } catch (e) {
+    return legendMsg("could not reach the server", "err");
+  }
+  if (!r.ok) {
+    let why = "could not read that PDF (" + r.status + ")";
+    try { const j = await r.json(); if (j && j.detail) why = j.detail; } catch (e) { /* not json */ }
+    return legendMsg(why, "err");
+  }
   const j = await r.json();
-  state.legendNames = j.names || [];
+  legendApply(j, file.name);
+}
+
+// Shared tail: the names land in the datalist and the operator is told what
+// happened, in the modal AND in the status bar, because the modal closes.
+function legendApply(j, whose) {
+  const names = j.names || [];
+  // A READ THAT FOUND NOTHING REPLACES NOTHING. The old code assigned
+  // `j.names || []` unconditionally, so a second read that came back empty -
+  // "Search this document instead" on a plan sheet that carries no legend,
+  // which is most of them - silently emptied the vocabulary the operator had
+  // just loaded from a legend PDF, and the label boxes lost their suggestions
+  // with no message saying so. Reproduced live on C3.0-Site-Plan-Rev.1 after
+  // dropping C1.1-LEGEND-&-NOTES: 26 names, then 0.
+  if (!names.length) {
+    return legendMsg(`no legend rows found in ${whose}`
+      + (state.legendNames.length
+          ? ` — the ${state.legendNames.length} names you already loaded are `
+            + `still there. Is that the sheet with the legend block on it?`
+          : ` — is that the sheet with the legend block on it?`), "err");
+  }
+  state.legendNames = names;
   const dl = $("legendVocab");
   dl.innerHTML = "";
   for (const n of state.legendNames) {
@@ -14922,17 +15017,58 @@ async function loadLegendVocab(path) {
     dl.appendChild(o);
   }
   renderStyles();
-  setStatus(state.legendNames.length
-    ? `${state.legendNames.length} names from the legend sheet — pick them in any label box`
-    : "no legend sheet found in this document");
+  legendModalClose();
+  setStatus(`${state.legendNames.length} names from ${whose} — pick them in any `
+    + `label box. Nothing was labelled and no quantity changed.`);
 }
-$("legendBtn").onclick = () => {
-  const p = prompt("Legend sheet PDF path (blank = search this document):",
-                   $("legendPath").value || "");
-  if (p === null) return;
-  $("legendPath").value = p;
-  loadLegendVocab(p.trim());
+
+$("legendBtn").onclick = legendModalOpen;
+$("lgClose").onclick = legendModalClose;
+$("lgFile").onchange = () => {
+  const f = $("lgFile").files && $("lgFile").files[0];
+  $("lgFile").value = "";           // so the same file can be picked twice
+  legendReadFile(f);
 };
+$("lgDrop").onclick = () => $("lgFile").click();
+$("lgDrop").onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("lgFile").click(); }
+};
+// dragover MUST be prevented or the browser navigates to the dropped file
+for (const ev of ["dragenter", "dragover"])
+  $("lgDrop").addEventListener(ev, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    $("lgDrop").classList.add("over");
+  });
+for (const ev of ["dragleave", "dragend"])
+  $("lgDrop").addEventListener(ev, () => $("lgDrop").classList.remove("over"));
+$("lgDrop").addEventListener("drop", (e) => {
+  e.preventDefault(); e.stopPropagation();
+  $("lgDrop").classList.remove("over");
+  const fs = (e.dataTransfer && e.dataTransfer.files) || [];
+  if (!fs.length) return legendMsg("nothing was dropped", "err");
+  if (fs.length > 1)
+    legendMsg(`${fs.length} files dropped — reading the first`);
+  legendReadFile(fs[0]);
+});
+// the typed path, kept: the owner drives this box himself and a path is the
+// fastest thing he can give it
+$("lgPathGo").onclick = () => {
+  const p = $("lgPathIn").value.trim();
+  if (!p) return legendMsg("type a path, or drop a PDF above", "err");
+  $("legendPath").value = p;
+  loadLegendVocab(p);
+};
+$("lgPathIn").onkeydown = (e) => { if (e.key === "Enter") $("lgPathGo").click(); };
+// blank used to mean this, hidden inside an empty text field
+$("lgSearch").onclick = () => { $("legendPath").value = ""; loadLegendVocab(""); };
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("legendModal").hidden) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    legendModalClose();
+  }
+}, true);
+// LEGEND-DROP-END ============================================================
 
 // ---------- theme ----------
 // ONE store, TWO controls. `core-theme` in localStorage is the value; the

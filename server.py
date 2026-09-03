@@ -3291,25 +3291,31 @@ def approve(job_id: str, page: int, body: ApproveBody):
                          "override_warnings": ov_warn})
 
 
+# A legend sheet is one page of drafting, not a plan set. 64 MB is well past
+# any real one and still refuses a mis-dropped 500 MB scan before it is read.
+LEGEND_UPLOAD_MAX = 64 * 1024 * 1024
+
+
 class LegendSheetBody(BaseModel):
     # optional: a separate legend PDF. Packages are often split one sheet
     # per file, so the legend may not be a page of the plan being reviewed.
     path: str | None = None
 
 
-@app.post("/api/job/{job_id}/legend-sheet")
-def legend_sheet(job_id: str, body: LegendSheetBody):
+def _legend_names(src: Path) -> dict:
     """Read a dedicated legend sheet ("C1.1 LEGEND & NOTES") and return the
     trade names it defines, as a vocabulary for the reviewer to pick from.
 
     Deliberately NOT applied automatically: see legend_detect for why
-    matching these to styles by geometry produces confident wrong labels."""
+    matching these to styles by geometry produces confident wrong labels.
+
+    Lifted out of the endpoint on 2026-09-02 so the TYPED-PATH route and the
+    new DRAG-AND-DROP one read a legend the same way. Two copies of this scan
+    is exactly how the drop route would end up finding a different vocabulary
+    than the path route on the same PDF.
+    """
     from takeoff_engine.legend_detect import read_legend_sheet
 
-    job = JOBS.get(job_id) or _404()
-    src = _client_pdf(body.path) if body.path else Path(job["path"])
-    if not src.exists():
-        raise HTTPException(404, "not found")
     doc = pymupdf.open(src)
     best: list = []
     scanned = []
@@ -3348,8 +3354,58 @@ def legend_sheet(job_id: str, body: LegendSheetBody):
             continue
         seen.add(n.upper())
         names.append(n)
-    return JSONResponse({"source": str(src), "pages_scanned": scanned,
-                         "names": names, "count": len(names)})
+    return {"source": str(src), "pages_scanned": scanned,
+            "names": names, "count": len(names)}
+
+
+@app.post("/api/job/{job_id}/legend-sheet")
+def legend_sheet(job_id: str, body: LegendSheetBody):
+    """The typed-path route, kept verbatim for the owner's own use: a path on
+    this machine, or blank to search the plan being reviewed."""
+    job = JOBS.get(job_id) or _404()
+    src = _client_pdf(body.path) if body.path else Path(job["path"])
+    if not src.exists():
+        raise HTTPException(404, "not found")
+    return JSONResponse(_legend_names(src))
+
+
+@app.post("/api/job/{job_id}/legend-sheet-upload")
+async def legend_sheet_upload(job_id: str, file: UploadFile):
+    """The DROP route. Same scan, a file instead of a path.
+
+    From the 2026-09-02 screen share: the legend control was a prompt() asking
+    for a filesystem path, and the owner's business partner could not work out
+    what to put in it - "what do I put here to actually tell it it's this
+    page?". A path is a thing only the owner, sitting at his own laptop, can
+    supply; on the hosted box _client_pdf refuses paths outright, so there was
+    no way in at all.
+
+    Named by CONTENT like /api/upload, for the same reason: dropping the same
+    legend twice must not litter the store with copies. It is NOT registered
+    as a job - a legend sheet is a vocabulary, not a plan to review, and
+    putting it in the plan library is how the page strip fills up with sheets
+    nobody asked to take off.
+    """
+    JOBS.get(job_id) or _404()
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "that file was empty")
+    if raw[:5] != b"%PDF-":
+        # the drop zone accepts anything a person can drag, so say what is
+        # wrong here rather than failing inside pymupdf with a parser message
+        raise HTTPException(400, "that is not a PDF - a legend sheet has to "
+                                 "be a PDF")
+    if len(raw) > LEGEND_UPLOAD_MAX:
+        raise HTTPException(413, "that PDF is larger than "
+                                 f"{LEGEND_UPLOAD_MAX // (1024 * 1024)} MB")
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    stem = Path(file.filename or "legend.pdf").name
+    dest = JOBS_DIR / f"legend_{digest}_{stem}"
+    if not dest.exists() or dest.stat().st_size != len(raw):
+        dest.write_bytes(raw)
+    out = _legend_names(dest)
+    out["source"] = stem          # the operator's own filename, not our path
+    return JSONResponse(out)
 
 
 @app.get("/api/job/{job_id}/page/{page}/scale")

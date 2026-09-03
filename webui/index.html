@@ -1089,6 +1089,44 @@
     </div>
   </div>
 </div>
+<!-- THE LEGEND SHEET, AS A DROP TARGET.
+     From the 2026-09-02 screen share: this control was a prompt() asking for
+     a filesystem path and the owner's business partner could not work out
+     what to put in it - "what do I put here to actually tell it it's this
+     page?". A path is a thing only the owner, at his own laptop, can supply;
+     on the hosted box the server refuses paths outright, so for everyone else
+     there was no way in at all. Drop or pick a PDF now; the typed path is
+     kept, second, for the owner's own use. -->
+<div id="legendModal" class="lg-modal" hidden>
+  <div class="lg-card" role="dialog" aria-modal="true" aria-labelledby="lgTitle">
+    <div class="lg-head">
+      <h2 id="lgTitle">Read a legend sheet</h2>
+      <button id="lgClose" class="mini" title="Close (Esc)">&#10005;</button>
+    </div>
+    <p class="lg-lead">A legend sheet is the page that names the line types
+      (&ldquo;C1.1 LEGEND &amp; NOTES&rdquo;). Reading one fills the name box on
+      every style row with that sheet&rsquo;s own trade names. It changes no
+      quantity and applies no label by itself.</p>
+    <div id="lgDrop" class="lg-drop" tabindex="0" role="button"
+         aria-describedby="lgDropHint">
+      <div class="lg-drop-big">Drop a legend PDF here</div>
+      <div class="lg-drop-sub" id="lgDropHint">or <u>choose a file</u> &mdash;
+        one PDF, the sheet with the legend on it</div>
+      <input id="lgFile" type="file" accept="application/pdf,.pdf" hidden>
+    </div>
+    <div class="lg-or">or</div>
+    <div class="lg-path-row">
+      <label for="lgPathIn">A path on this machine</label>
+      <input id="lgPathIn" type="text" name="legend-path"
+             placeholder="C:\plans\C1.1-LEGEND-&amp;-NOTES.pdf">
+      <button id="lgPathGo" class="mini">Read it</button>
+    </div>
+    <div class="lg-actions">
+      <button id="lgSearch" class="mini">Search this document instead</button>
+      <span class="lg-note" id="lgMsg"></span>
+    </div>
+  </div>
+</div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
 <script src="app.js?v=154"></script>

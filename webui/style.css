@@ -3165,3 +3165,50 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .lc-tag.out { background: var(--t-stop-bg); color: var(--t-stop);
   border-color: transparent; }
 .lc-tag.hid { border-style: dashed; }
+
+/* ===== THE LEGEND SHEET MODAL ============================================
+   Replaces a prompt() that asked for a filesystem path. From the 2026-09-02
+   screen share: "what do I put here to actually tell it it's this page?" -
+   and the honest answer was that on the hosted box there was nothing he
+   COULD put there, because the server refuses client paths outright.
+
+   The drop zone is the biggest thing in the card because dropping is the
+   route that works for everyone; the typed path is kept, below an "or",
+   because the owner drives this box himself and a path is faster for him.
+   Same overlay grammar as the grading-zone modal. */
+.lg-modal { position: fixed; inset: 0; z-index: 80;
+  background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+  justify-content: center; }
+.lg-card { width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.lg-head { display: flex; align-items: center; gap: 8px; }
+.lg-head h2 { margin: 0; font-size: var(--t-fs-base); flex: 1; }
+/* WHAT A LEGEND SHEET IS AND WHAT READING ONE DOES. The prompt said neither,
+   and the second half - that it changes no quantity - is the part the owner
+   cannot check for himself. */
+.lg-lead { margin: 8px 0 12px; font-size: var(--t-fs-xs); line-height: 1.5;
+  color: var(--t-text-dim, var(--dim)); }
+.lg-drop { border: 2px dashed var(--t-border-strong, var(--line));
+  border-radius: 10px; padding: 26px 16px; text-align: center;
+  cursor: pointer; background: var(--t-surface-2, transparent); }
+.lg-drop:hover, .lg-drop:focus-visible { border-color: var(--t-accent); }
+.lg-drop:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+/* a drag is over it: the target has to answer, or a person lets go somewhere
+   else and the browser navigates away to the PDF */
+.lg-drop.over { border-color: var(--t-accent);
+  background: color-mix(in srgb, var(--t-accent) 14%, transparent); }
+.lg-drop-big { font-size: var(--t-fs-base); }
+.lg-drop-sub { margin-top: 4px; font-size: var(--t-fs-xs);
+  color: var(--t-text-dim, var(--dim)); }
+.lg-or { text-align: center; margin: 10px 0 8px; font-size: var(--t-fs-xs);
+  color: var(--t-text-faint); letter-spacing: .08em; }
+.lg-path-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: var(--t-fs-xs); }
+.lg-path-row input { flex: 1 1 220px; min-width: 0; }
+.lg-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; }
+.lg-note { font-size: var(--t-fs-xs); color: var(--t-text-dim, var(--dim)); }
+.lg-note.err { color: var(--t-stop); }
