@@ -11082,8 +11082,31 @@ function syncCardCounts() {
 // If that budget moves, or the read is warmed at Detect time, RE-MEASURE
 // and change this string - nothing else in the UI quotes a wait.
 const EW_SUGGEST_WAIT = "the first read of a page takes a minute or more";
-const EW_SUGGEST_BUSY = "reading this sheet's elevation labels — " + EW_SUGGEST_WAIT;
+const EW_SUGGEST_HEAD = "reading this sheet's elevation labels";
+const EW_SUGGEST_BUSY = EW_SUGGEST_HEAD + " — " + EW_SUGGEST_WAIT;
 const EW_SUGGEST_FAIL = "could not read this sheet's elevations — press EARTHWORK to try again";
+// A READ THAT NEVER ANSWERS IS A FAILURE, AND IT HAS TO SAY SO.
+//
+// Reported on the same screen share: the panel sat on the busy line "for
+// minutes" and the client asked "Is it not working? Is it dead? Is it
+// hung?" - there was no way to tell, because the sentence never changed and
+// nothing was ever going to change it. Every failure path here needs the
+// request to SETTLE, and a fetch with no deadline can decline to. So there
+// is a deadline, and past it the read is reported as failed rather than
+// left claiming to work.
+//
+// TWELVE MINUTES is deliberately far above any measured real read - 217.2 s
+// cold on Oncor Cloudcrest engine page index 3 = printed C-04, 94 s on
+// Belle Farms Upper Parcel ROAD GRADING 1 of 2 p0, 1.4 s warm - so it fires
+// on a dead socket, not on a slow sheet.
+//
+// The retry really is quick, and the sentence says so because it is true:
+// this is a sync endpoint, so the server thread keeps reading after the
+// browser gives up and writes p<N>_elevgaps2.json when it finishes.
+const ELEV_READ_CEILING_MS = 12 * 60 * 1000;
+const EW_SUGGEST_TIMEOUT = "the elevation read got no answer in 12 minutes "
+  + "— press EARTHWORK to try again; the server keeps reading in the "
+  + "background and caches the result, so the retry is usually quick";
 // ...and the one failure that is NOT retryable. The endpoint answers
 // 404 {"detail":"run detect first"} on a page that has never been detected,
 // and pressing EARTHWORK again can never change that.
@@ -11105,12 +11128,79 @@ function ewFailMsg() {
   const f = state.ewFailed;
   if (!f) return "";
   if (f.status === 404 || !state.result) return EW_NEED_DETECT;
+  // ...and the failure that looks like no failure at all: nothing came
+  // back. Retryable, like a dropped connection, but it needs its own words
+  // - "could not read" describes a read that answered badly, and the
+  // operator watching a frozen panel is asking a different question.
+  if (f.timeout) return EW_SUGGEST_TIMEOUT;
   return EW_SUGGEST_FAIL;
 }
 // The fifth state: rows are loaded, but they were read off a DIFFERENT sheet
 // (see ewIsThisPage). Never "not ready yet" - ready, and about the wrong
 // drawing, which is worse.
 const EW_SUGGEST_STALE = "these earthwork rows were read off another sheet";
+
+// ---- WHAT THE READ CAN HONESTLY REPORT ------------------------------------
+//
+// It cannot report a percentage. /earthwork/suggest OCRs the whole page in
+// one pytesseract loop inside takeoff_engine.earthwork.gap_label_elevations
+// and sends nothing until it is done, so any bar or fraction here would be
+// invented. What is genuinely known on this side is two things: WHAT stage
+// is running, and HOW LONG it has been running. Both are reported; nothing
+// else is.
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + "s";
+  return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+}
+// ms the read in flight has been running, or null when none is.
+function elevReadElapsed() {
+  const req = state.suggestReq;
+  return req && req.t0 ? Date.now() - req.t0 : null;
+}
+// The busy sentence, with the clock in it. Same words as EW_SUGGEST_BUSY
+// when nothing is in flight yet, so the existing callers read the same.
+function elevBusyLine() {
+  const ms = elevReadElapsed();
+  if (ms === null) return EW_SUGGEST_BUSY;
+  return EW_SUGGEST_HEAD + " — " + fmtElapsed(ms) + " so far; "
+    + EW_SUGGEST_WAIT;
+}
+
+// ONE TICK, THREE SURFACES, AND IT ONLY REWRITES WHAT IT OWNS.
+//
+// The elevation readout is ours outright. The panel's busy line and the
+// status bar are shared, so each is rewritten only while it is still
+// showing THIS sentence - otherwise a tick a second would stamp on
+// "removed 12 lines" or whatever the operator did next.
+let _elevTicker = null;
+function elevTickStart() {
+  if (_elevTicker === null && typeof setInterval === "function")
+    _elevTicker = setInterval(elevTickPaint, 1000);
+}
+function elevTickStop() {
+  if (_elevTicker !== null) { clearInterval(_elevTicker); _elevTicker = null; }
+}
+function elevTickPaint() {
+  if (elevReadElapsed() === null) { elevTickStop(); return; }
+  const line = elevBusyLine();
+  const eb = $("ewBusy");
+  if (eb && !eb.hidden && eb.textContent.indexOf(EW_SUGGEST_HEAD) === 0)
+    ewBusyPut(line + "\u2026");
+  const rows = $("ewRows");
+  if (rows) {
+    const hint = rows.querySelector(".ew-hint");
+    if (hint && hint.textContent.indexOf("reading elevation labels") === 0)
+      hint.textContent = "reading elevation labels\u2026 "
+        + fmtElapsed(elevReadElapsed());
+  }
+  const sb = $("status");
+  if (sb && sb.textContent.indexOf(EW_SUGGEST_HEAD) === 0)
+    setStatus(line, "busy");
+  if (state.selected !== null && typeof chainById === "function")
+    renderSelElev(chainById(state.selected));
+}
+
 
 // THE FIFTH STATE. state.ew can be non-null and still be the WRONG SHEET's:
 // it is stamped with the job and page it was read from, and this is the one
@@ -11296,8 +11386,26 @@ function suggestOnce() {
   const key = gen + "|" + job + "|" + page;
   const cur = state.suggestReq;
   if (cur && cur.key === key) return cur.promise;
+  // THE DEADLINE. Without it the promise can simply never settle, and every
+  // failure surface downstream is reached by a rejection - so a socket that
+  // goes quiet leaves the panel claiming to be working, forever. See
+  // ELEV_READ_CEILING_MS.
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), ELEV_READ_CEILING_MS) : null;
   const promise = (async () => {
-    const r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`);
+    let r;
+    try {
+      r = await fetch(`/api/job/${job}/page/${page}/earthwork/suggest`,
+                      ctl ? { signal: ctl.signal } : undefined);
+    } catch (e) {
+      if (ctl && ctl.signal.aborted) {
+        const err = new Error("no answer in " + fmtElapsed(ELEV_READ_CEILING_MS));
+        err.status = 0;
+        err.timeout = true;
+        throw err;
+      }
+      throw e;
+    }
     if (!r.ok) {
       // KEEP THE SERVER'S REASON. Throwing the body away is what left the
       // UI unable to tell "this page was never detected" (404, permanent)
@@ -11312,11 +11420,20 @@ function suggestOnce() {
     return await r.json();
   })();
   const done = () => {
+    if (timer !== null) clearTimeout(timer);
     if (state.suggestReq && state.suggestReq.promise === promise)
       state.suggestReq = null;
+    // repaint every surface once the clock has stopped, so none is left
+    // holding the last tick's elapsed time
+    elevTickStop();
+    if (state.selected !== null) renderSelElev(chainById(state.selected));
   };
   promise.then(done, done);
-  state.suggestReq = { key, promise };
+  // t0 rides ON the request record, not in a field of its own: when the
+  // record goes - settled, or dropped by elevReset on a page switch - the
+  // clock goes with it, and no orphaned flight can leave a stale one behind.
+  state.suggestReq = { key, promise, t0: Date.now() };
+  elevTickStart();
   return promise;
 }
 
@@ -11357,7 +11474,8 @@ async function ewFetchSuggest(gen) {
   } catch (err) {
     if (gen === state.gen)
       state.ewFailed = { status: (err && err.status) || 0,
-                         detail: (err && err.detail) || "" };
+                         detail: (err && err.detail) || "",
+                         timeout: !!(err && err.timeout) };
     return false;
   }
   {
@@ -17162,7 +17280,22 @@ async function ensureElev() {
   } catch (err) {
     if (stale()) return;          // elevReset() already owns this page
     state.elev = { status: "failed", byChain: null };
-    setStatus(ELEV_FAIL, "err");
+    // A read that never answered says so in its own words - the operator
+    // watching a frozen panel is asking "is it dead?", not "did it fail?"
+    setStatus(err && err.timeout ? EW_SUGGEST_TIMEOUT : ELEV_FAIL, "err");
+    // AND THE READOUT HAS TO HEAR ABOUT IT. suggestOnce's own settle handler
+    // repaints first, while this status is still `loading`, so without this
+    // line the box was left saying "reading this sheet's labels…" over a
+    // read that had already given up - measured live at T+720 s on the
+    // 12-minute deadline, every other surface correct and this one frozen.
+    //
+    // renderSelElev, NOT updateSelBar. updateSelBar re-asks out of the
+    // `failed` state - that is the operator's retry, and it is deliberate -
+    // so calling it from this catch is a retry loop that re-fires the read
+    // as fast as it can fail. Reproduced live on a dropped connection: the
+    // panel showed its failure sentence while state.elev sat on `loading`
+    // forever, one request per cycle. Only the readout is repainted here.
+    if (state.selected !== null) renderSelElev(chainById(state.selected));
     return;
   }
   if (stale()) return;
@@ -17239,15 +17372,21 @@ function renderSelElev(ch, ev, prov) {
   // whether the operator should wait, retry, or accept that this line has
   // none - and rendering nothing answered none of those three questions.
   const st = state.elev || {};
+  // A READ IS RUNNING whenever there is a request in flight, even one the
+  // EARTHWORK panel started - this readout must not say "not read yet" over
+  // a read the operator is already waiting on.
+  const ms = elevReadElapsed();
+  const busy = st.status === "loading" || ms !== null;
   const note = document.createElement("span");
   note.className = "se-none";
   note.textContent =
-      st.status === "loading" ? "reading this sheet's labels…"
+      busy ? "reading this sheet's labels…"
+             + (ms === null ? "" : " " + fmtElapsed(ms))
     : st.status === "failed"  ? "read failed — click the line again to retry"
     : st.status === "ready"   ? "none printed for this line"
     :                           "not read yet";
   note.title =
-      st.status === "loading"
+      busy
         ? "The sheet's elevation labels are being read. The first read of a "
           + "page is slow (measured 217 s on Oncor C-04); every read after "
           + "it on the same page is about a second."

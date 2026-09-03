@@ -121,7 +121,9 @@ const elevProvenance = new Function(PROV_SRC + "\nreturn elevProvenance;")();
 // it this compiles to a no-op, so the suites below report WHICH half of the
 // contract is missing instead of dying inside fnSrc.
 const SELELEV_SRC = SRC.indexOf("\nfunction renderSelElev(") >= 0
-  ? fnSrc("renderSelElev") : "function renderSelElev() {}";
+  ? fnSrc("fmtElapsed") + "\n" + fnSrc("elevReadElapsed") + "\n"
+    + fnSrc("renderSelElev")
+  : "function renderSelElev() {}";
 
 // --- the smallest DOM updateSelBar can run against -------------------------
 function elem(tag) {
@@ -698,6 +700,7 @@ function ensureScope(opts) {
     },
     setStatus: (t, cls) => said.push({ t, cls }),
     ELEV_FAIL: "could not read this sheet's elevations — retry",
+    EW_SUGGEST_TIMEOUT: "no answer in 12 minutes — press EARTHWORK to retry",
     updateSelBar: () => {},
     chainById: () => null,
   };
