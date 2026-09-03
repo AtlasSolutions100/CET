@@ -1514,6 +1514,49 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 /* The contour elevation, as its own flex:none chip. It is the one value on
    this pill that must survive any window width, so it is deliberately NOT
    part of .sel-txt - a flex:none child cannot be ellipsized. */
+/* ---- THE ELEVATION READOUT --------------------------------------------
+   The elevation is the number the operator acts on, so it does not compete
+   for room on the floating selection pill and it does not move.
+
+   WHAT WAS WRONG. .canvas-status is bottom-anchored, CENTRED
+   (left:50%/translateX(-50%)) and flex-wrap:wrap. So the chip's screen
+   position was a function of (a) how long this line's description happened
+   to be, (b) which of the pill's five children were present, and (c)
+   whether #ghostInfo happened to be sharing the row. Measured on Oncor
+   Cloudcrest engine page index 3 = printed C-04, 1536 px: over 14 contours
+   the chip's left edge ranged 920.4 -> 1023.0 px, and hovering any style
+   row wrapped the row and lifted the chip 785.4 -> 747.4 px. Nothing was
+   clipped at any width tested (1280/1366/1440/1920 at 100/110/125% zoom,
+   24 combinations, chip 100% visible in all 24) - it moved.
+
+   WHAT THIS IS. One box, absolutely positioned against a CORNER of the
+   sheet area, on its own line, with nothing beside it. top/right are
+   constants, so its position cannot depend on its own width, on a
+   sibling's, or on the window's. It wraps INSIDE itself and is capped at
+   the stage width, so a long provenance sentence can never push anything
+   off screen. z-index sits above .canvas-status (5) and .mini-legend (4).
+   It deliberately overlays the drawing, exactly as those two already do. */
+.sel-elev { position: absolute; top: 12px; right: 12px; z-index: 6;
+  /* A FIXED FOOTPRINT, so the digits land on the same pixel every time.
+     Anchoring the box alone was not enough: right-anchored and shrink-to-
+     fit, its LEFT edge still moved 1288.9 -> 1389.0 px over 14 contours,
+     because "EL 564 · inferred" is 89 px narrower than "EL 554.3 · “BW”
+     label 7.7 pt away". Width fixed and content left-aligned, the number
+     starts at one x forever and a long provenance sentence wraps DOWNWARD
+     inside the box, where nothing else is. */
+  width: 250px; max-width: calc(100% - 24px);
+  display: flex; flex-direction: column;
+  align-items: flex-start; gap: 3px; pointer-events: auto;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
+.sel-elev[hidden] { display: none; }
+/* the constant caption is the whole point of a fixed home: the operator
+   learns one place to look, and the place still says what it is when the
+   line has no number. */
+.se-cap { font-size: var(--t-fs-xs); letter-spacing: .08em; color: var(--dim);
+  text-transform: uppercase; line-height: 1; }
+.se-none { font-size: var(--t-fs-xs); color: var(--dim); }
+.sel-elev .sel-el { font-size: var(--t-fs-sm); white-space: normal; }
 .sel-el { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums;
   font-size: var(--t-fs-xs); padding: 2px 7px; border-radius: 999px;
   background: var(--chip); border: 1px solid var(--line); color: var(--text); }

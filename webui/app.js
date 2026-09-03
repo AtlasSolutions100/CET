@@ -17171,6 +17171,95 @@ async function ensureElev() {
                         dist: s.dist, tag: s.label_tag || null }])) };
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
+// THE ELEVATION READOUT — one number, one place, every time.
+//
+// REPORTED (screen share, 2026-09-02): "some of these you click and it says
+// the height and some it doesn't … I'm not seeing it anywhere obvious", and
+// then, when it finally appeared, "the elevation popped up on your thing.
+// It just moved … now it's on the bottom. So sometimes it hides."
+//
+// WHAT IT ACTUALLY WAS — measured live on Oncor Cloudcrest engine page
+// index 3 = printed C-04, 589 chains, 150 elevations:
+//
+//   NOT overflow. The chip was rendered at 100% of its width in all 24 of
+//   1280/1366/1440/1920 px x 100/110/125% zoom, with a 24-character family
+//   name, panel open and closed - down to a 1024 px CSS viewport, where
+//   .sel-txt was squeezed to 29.8 px and the chip still measured 166/166 px
+//   visible. Structurally it could not be the clipped one either: #selInfo
+//   overflows to the RIGHT and the chip was its second child, so the two
+//   things behind the ellipsis were "in list" and the colour swatch.
+//   NOT z-order: elementFromPoint at the chip's centre returned the chip.
+//
+//   IT MOVED, and half the time IT WAS NEVER BUILT.
+//   * Over 14 contours at 1536 px the chip's left edge ranged 920.4 ->
+//     1023.0 px, because the pill is CENTRED and its width changes with the
+//     description, the provenance wording and which controls are present.
+//   * Hovering any style row shows #ghostInfo in the same wrapping row:
+//     .canvas-status went 29.2 -> 75.2 px tall and the chip jumped 785.4 ->
+//     747.4 px. That is "it just moved … now it's on the bottom".
+//   * 439 of 589 chains - 110 of the 218 in a contour family - have no
+//     elevation at all, and the old code rendered NOTHING for them. Absence
+//     was silent, so "no elevation for this line" looked identical to "the
+//     read has not finished" and to "the chip is hiding somewhere".
+//   * And for the first 217.2 s after Detect on that sheet (measured, cold
+//     /earthwork/suggest) NO line has one, because the single read is still
+//     running. Every contour clicked in that window rendered nothing.
+//
+// SO: its own box, anchored to a corner of the sheet area, nothing else on
+// its line, a constant caption, and a sentence for every state - including
+// the two that used to render nothing. Its top/right are constants, so no
+// sibling's width, no window width and no zoom can move it.
+function renderSelElev(ch, ev, prov) {
+  const box = $("selElev");
+  if (!box) return;
+  box.textContent = "";
+  if (!ch || !state.result) { box.hidden = true; return; }
+  box.hidden = false;
+  const cap = document.createElement("span");
+  cap.className = "se-cap";
+  cap.textContent = "elevation";
+  box.appendChild(cap);
+  const z = (ev && typeof ev === "object") ? ev.z : ev;
+  if (z !== undefined && z !== null) {
+    // THE PROVENANCE TRAVELS WITH THE NUMBER, NOT IN A TOOLTIP.
+    // An elevation the sheet does NOT print is marked in the text itself -
+    // the same word, and the same reason, as the earthwork panel's per-row
+    // "inferred" badge. On C-04 that is 61 of 150. The tooltip carries the
+    // long form and, for an infilled row, the server's own sentence naming
+    // the two contours it was counted between.
+    const elc = document.createElement("span");
+    elc.className = "sel-el" + (prov && prov.cls ? " " + prov.cls : "");
+    const mark = elevChipTag(prov, ev);
+    elc.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
+    elc.title = (prov ? prov.why : "") + elevProvenanceDetail(ev);
+    box.appendChild(elc);
+    return;
+  }
+  // NO NUMBER IS A STATE, NOT A BLANK. Which of the four it is decides
+  // whether the operator should wait, retry, or accept that this line has
+  // none - and rendering nothing answered none of those three questions.
+  const st = state.elev || {};
+  const note = document.createElement("span");
+  note.className = "se-none";
+  note.textContent =
+      st.status === "loading" ? "reading this sheet's labels…"
+    : st.status === "failed"  ? "read failed — click the line again to retry"
+    : st.status === "ready"   ? "none printed for this line"
+    :                           "not read yet";
+  note.title =
+      st.status === "loading"
+        ? "The sheet's elevation labels are being read. The first read of a "
+          + "page is slow (measured 217 s on Oncor C-04); every read after "
+          + "it on the same page is about a second."
+    : st.status === "failed" ? ELEV_FAIL
+    : st.status === "ready"
+        ? "The read finished and paired no elevation with this line — "
+          + "either the sheet prints none for it, or it is not a contour. "
+          + "It is not a line that is still loading."
+    : "No elevation read has been asked for on this sheet yet.";
+  box.appendChild(note);
+}
+
 function updateSelBar(ch) {
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
@@ -17190,7 +17279,7 @@ function updateSelBar(ch) {
   // seeded - shows it. Same reveal, one writer.
   $("aiBtn").hidden = !state.result;
   $("removeBtn").disabled = !ch;
-  if (!ch) { $("selInfo").textContent = ""; return; }
+  if (!ch) { $("selInfo").textContent = ""; renderSelElev(null); return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
   const label = state.chainLabels.get(ch.chain_id) ||
     state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
@@ -17227,36 +17316,12 @@ function updateSelBar(ch) {
   // back; the elevation is not left to that (see the chip below).
   txt.title = txt.textContent;
   info.appendChild(txt);
-  // THE ELEVATION IS A CHIP, NOT THE TAIL OF THE SENTENCE.
-  // It used to be the last token inside .sel-txt, which is the one child of
-  // this pill that can shrink (overflow:hidden; text-overflow:ellipsis).
-  // Three flex:none controls landed on the same pill on 2026-08-30/31 - the
-  // family select, "in list" and the colour swatch, 248.9 px between them -
-  // and .canvas-status caps at a fraction of the canvas column, so on a
-  // 1097 px window .sel-txt was squeezed to 95 px for a 299 px string and
-  // " · EL 545" was the first thing behind the ellipsis. Measured on Oncor
-  // Cloudcrest engine page index 3 = printed C-04, contour chain 192, whose
-  // sheet prints 545 in the break of that dashed contour: clipped at 1097,
-  // 1280 and 1370 px, visible only from ~1400 px up. A flex:none child
-  // cannot be ellipsized, so the number is now width-proof.
-  // Nothing renders when the line has no elevation (a non-contour, or a
-  // contour the sheet never labelled) - no empty box.
-  // THE PROVENANCE TRAVELS WITH THE NUMBER, NOT IN A TOOLTIP.
-  // The number is what gets read and acted on, so an elevation the sheet
-  // does NOT print is marked in the chip text itself - the same word, and
-  // the same reason, as the earthwork panel's per-row "inferred" badge. On
-  // C-04 that is 61 of 150 (see ELEV_PROV for the measurement). The tooltip
-  // carries the long form and, for an infilled row, the server's own
-  // sentence naming the two contours it was counted between and saying
-  // which of those two, if either, the sheet actually labels.
-  if (z !== undefined && z !== null) {
-    const elc = document.createElement("span");
-    elc.className = "sel-el" + (prov.cls ? " " + prov.cls : "");
-    const mark = elevChipTag(prov, ev);
-    elc.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
-    elc.title = prov.why + elevProvenanceDetail(ev);
-    info.appendChild(elc);
-  }
+  // THE ELEVATION DOES NOT LIVE ON THIS PILL. See renderSelElev(): it is
+  // the number the operator acts on, and on this bar its screen position
+  // was a function of how long the description happened to be, of which of
+  // the pill's five children were present, and of whether the hover readout
+  // was sharing the row. It has a corner of the sheet area to itself now.
+  renderSelElev(ch, ev, prov);
   // family switcher, right on the bar: the SAME mutation the Reclassify
   // tool ends in (reclassCore), without the pick-click trip across the
   // canvas. Listed by footage so the family you want is near the top.
