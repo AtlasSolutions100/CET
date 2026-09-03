@@ -838,6 +838,16 @@
     <div id="runFlag" class="run-flag" role="status" aria-live="polite" hidden>
       <span class="rf-dot" aria-hidden="true"></span><span id="runFlagTxt"></span>
     </div>
+    <!-- WHAT DID I JUST CLICK, WHERE I AM LOOKING. From the 2026-09-02 screen
+         share the partner wanted the line list to open on every click -
+         "anytime you click on something, you want to immediately know what it
+         is" - and the owner pushed back, correctly: "sometimes you just want
+         to look at it, you don't want to mess up what you're looking at on
+         your left tab". The partner then offered the middle ground himself:
+         "either it should enlist or it should hover somewhere so you can see
+         it." This is that. It reads state, writes none, and never touches the
+         left-hand list. -->
+    <div id="lineCard" class="line-card" role="status" aria-live="polite" hidden></div>
     <div id="miniLegend" class="mini-legend" hidden>
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>

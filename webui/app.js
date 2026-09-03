@@ -15683,6 +15683,9 @@ function draw() {
   }
   drawStructural(ctx, k);
   ctx.restore();
+  // the card rides the sheet: a pan or a zoom moves the line under it, so its
+  // anchor is recomputed on the same frame rather than drifting off the line
+  if (typeof lineCardPlace === "function") lineCardPlace(null);
 }
 
 // Turn a detected cadence ("d9.0 d42.3 g9.0", "native 3 3") into a canvas
@@ -17534,6 +17537,161 @@ async function ensureElev() {
                         dist: s.dist, tag: s.label_tag || null }])) };
   if (state.selected !== null) updateSelBar(chainById(state.selected));
 }
+// LINE-CARD ==================================================================
+// WHAT DID I JUST CLICK, WHERE I AM ALREADY LOOKING.
+//
+// From the 2026-09-02 screen share. The partner wanted the left-hand line list
+// to open on every click - "anytime you click on something, you want to
+// immediately know what it is" - and the owner pushed back: "sometimes you
+// just want to look at it, you don't want to mess up what you're looking at on
+// your left tab". The partner then proposed the middle ground himself: "either
+// it should enlist or it should hover somewhere so you can see it."
+//
+// WHY THE SELECTION BAR WAS NOT ALREADY THE ANSWER, measured on 512f474 rather
+// than argued: clicking a line at y=537 in a 1000px window put the readout at
+// y=915 - 378 px away, bottom-right, in 12px type, sharing a strip with the
+// family switcher, "in list" and the colour chip. It says the right words in a
+// place the eye is not. The bar is KEPT exactly as it is (another branch owns
+// its elevation chip); this is additive and sits on the line itself.
+//
+// IT CHANGES NOTHING. It reads state and writes none: no isolate, no scroll,
+// no renderStyles, no revealStyleRow, no tick. That is the whole point of the
+// owner's objection, so it is worth saying twice - the ONLY state this file
+// owns is lineCardOff, whether the operator dismissed the card for now.
+//
+// The elevation is rendered through elevProvenance/elevChipTag, the same
+// helpers the selection bar uses, so a change to how provenance is worded
+// reaches both surfaces at once instead of leaving one behind.
+let lineCardOff = false;         // dismissed with x, until the next selection
+let lineCardFor = null;          // the chain the card is currently describing
+
+// Where a chain sits on screen, in #stage coordinates. The canvas fills
+// #stage (inset:0), so the canvas transform IS the card's offset parent's.
+function lineCardAnchor(ch) {
+  const P = (ch && ch.points) || [];
+  if (!P.length) return null;
+  const q = P[Math.floor(P.length / 2)];
+  const { x, y, k } = state.view;
+  const f = IMG_DPI / 72;
+  return [q[0] * f * k + x, q[1] * f * k + y];
+}
+
+// The selection moved. A NEW line un-dismisses the card, because "hide this
+// one" is not "never show me another"; the SAME line stays dismissed.
+function lineCardOnSelect(ch) {
+  if (ch && ch.chain_id !== lineCardFor) lineCardOff = false;
+  lineCardFor = ch ? ch.chain_id : null;
+  lineCardSync();
+}
+
+function lineCardHide() {
+  const el = $("lineCard");
+  if (el && !el.hidden) { el.hidden = true; el.textContent = ""; }
+}
+
+// Rebuild from the current selection. Called by updateSelBar (the one place
+// that already knows the selection changed) and re-POSITIONED by draw(), so a
+// pan or a zoom keeps the card on its line.
+function lineCardSync() {
+  const el = $("lineCard");
+  if (!el) return;
+  const ch = state.selected === null ? null : chainById(state.selected);
+  if (!ch || lineCardOff || !state.result) return lineCardHide();
+  const st = state.result.styles.find(s => s.style_id === ch.style_id);
+  const label = state.chainLabels.get(ch.chain_id)
+    || state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
+  el.textContent = "";
+
+  const head = document.createElement("div");
+  head.className = "lc-head";
+  if (st) {
+    const sw = document.createElement("canvas");
+    sw.className = "lc-swatch";
+    drawPatternSample(sw, st, 52, 14);
+    head.appendChild(sw);
+  }
+  const nm = document.createElement("b");
+  nm.className = "lc-name";
+  nm.textContent = label || ("line #" + ch.chain_id);
+  head.appendChild(nm);
+  const x = document.createElement("button");
+  x.type = "button"; x.className = "lc-x";
+  x.textContent = "×";
+  x.title = "Hide this card until the next line you click";
+  x.setAttribute("aria-label", "Hide this card");
+  x.onclick = (e) => { e.stopPropagation(); lineCardOff = true; lineCardHide(); };
+  head.appendChild(x);
+  el.appendChild(head);
+
+  // the measurement, in the same words and the same order the bar uses
+  const wf = wzChainFrac(ch);
+  const facts = document.createElement("div");
+  facts.className = "lc-facts";
+  facts.textContent = `${ch.class} · ${fmtQty(chainLenPt(ch))} · ${ch.points.length} points`;
+  el.appendChild(facts);
+  if (wzActive() && wf < 1) {
+    const w = document.createElement("div");
+    w.className = "lc-note";
+    w.textContent = wf > 0
+      ? `${fmtQty(chainCountedPt(ch))} of it is inside the work area`
+      : "outside the work area — counts 0";
+    el.appendChild(w);
+  }
+
+  const row = document.createElement("div");
+  row.className = "lc-marks";
+  // IS IT IN THE TAKEOFF - the fact the operator is usually actually asking,
+  // and the one the sidebar row now carries its own mark for (FAM-VIS).
+  const inc = !!state.include.get(ch.style_id);
+  const tk = document.createElement("span");
+  tk.className = "lc-tag " + (inc ? "in" : "out");
+  tk.textContent = inc ? "in the takeoff" : "NOT in the takeoff";
+  row.appendChild(tk);
+  if (!famVis(ch.style_id)) {
+    const hv = document.createElement("span");
+    hv.className = "lc-tag hid";
+    hv.textContent = "hidden by the eye";
+    row.appendChild(hv);
+  }
+  // the elevation, through the shared helpers so the two surfaces cannot word
+  // provenance differently
+  const ev = state.elev.byChain instanceof Map
+    ? state.elev.byChain.get(ch.chain_id) : undefined;
+  const z = (ev && typeof ev === "object") ? ev.z : ev;
+  if (z !== undefined && z !== null) {
+    const prov = elevProvenance(ev && typeof ev === "object" ? ev.how : undefined);
+    const mark = elevChipTag(prov, ev);
+    const ec = document.createElement("span");
+    ec.className = "lc-tag el" + (prov.cls ? " " + prov.cls : "");
+    ec.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
+    ec.title = prov.why + elevProvenanceDetail(ev);
+    row.appendChild(ec);
+  }
+  el.appendChild(row);
+  el.hidden = false;
+  lineCardPlace(ch);
+}
+
+// Put the card beside the line, clamped inside the stage. It flips to the
+// other side rather than being cut off, because a card half off the canvas is
+// worse than the bar it replaces.
+function lineCardPlace(ch) {
+  const el = $("lineCard");
+  if (!el || el.hidden) return;
+  const at = lineCardAnchor(ch || (state.selected === null ? null : chainById(state.selected)));
+  if (!at) return lineCardHide();
+  const stage = $("stage");
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const w = el.offsetWidth || 240, h = el.offsetHeight || 70;
+  const PAD = 10, GAP = 18;
+  let x = at[0] + GAP, y = at[1] - h - GAP;
+  if (x + w + PAD > W) x = at[0] - w - GAP;      // flip left
+  if (y < PAD) y = at[1] + GAP;                  // flip below
+  el.style.left = Math.max(PAD, Math.min(x, W - w - PAD)) + "px";
+  el.style.top = Math.max(PAD, Math.min(y, H - h - PAD)) + "px";
+}
+// LINE-CARD-END ==============================================================
+
 function updateSelBar(ch) {
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
@@ -17553,6 +17711,13 @@ function updateSelBar(ch) {
   // seeded - shows it. Same reveal, one writer.
   $("aiBtn").hidden = !state.result;
   $("removeBtn").disabled = !ch;
+  // THE CARD ON THE LINE (LINE-CARD). updateSelBar is the one place that
+  // already knows the selection moved, so it is where the card is rebuilt.
+  // ONE guarded call, deliberately: tests/test_sel_elevation.js evaluates
+  // updateSelBar in isolation against a stub scope it enumerates by hand, and
+  // that suite belongs to the branch reworking this bar's elevation chip. A
+  // typeof guard keeps this item additive to it - the same idiom draw() uses.
+  if (typeof lineCardOnSelect === "function") lineCardOnSelect(ch);
   if (!ch) { $("selInfo").textContent = ""; return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
   const label = state.chainLabels.get(ch.chain_id) ||

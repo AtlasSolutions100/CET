@@ -3124,3 +3124,44 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .marks-key .mk-seg { display: inline-flex; align-items: center; gap: 4px; }
 .marks-key .mark { width: 16px; height: 16px; cursor: default; }
 .marks-key .mark svg { width: 13px; height: 13px; }
+
+/* ===== THE LINE CARD: what you just clicked, where you are looking =======
+   From the 2026-09-02 screen share, the middle ground the partner proposed
+   himself after the owner refused to have the left list open itself on every
+   click: "either it should enlist or it should hover somewhere so you can see
+   it."
+
+   It is a READOUT, not a panel: no controls except the dismiss x, so there is
+   nothing on it that can change the sheet by being clicked at. It takes no
+   pointer except on that x, so it never eats a click meant for the drawing
+   under it - which matters, because it sits ON the drawing. */
+.line-card { position: absolute; z-index: 7; max-width: 300px;
+  padding: 8px 10px; border-radius: var(--t-r-2, 8px);
+  background: var(--t-surface-1, var(--panel));
+  border: 1px solid var(--t-border-strong, var(--line));
+  box-shadow: 0 6px 22px rgba(0,0,0,.38);
+  font-size: var(--t-fs-xs); color: var(--t-text, var(--text));
+  pointer-events: none; }
+.line-card .lc-x { pointer-events: auto; }
+.lc-head { display: flex; align-items: center; gap: 7px; }
+.lc-swatch { flex: none; width: 52px; height: 14px; }
+.lc-name { flex: 1 1 auto; min-width: 0; font-size: var(--t-fs-sm, 13px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-x { flex: none; width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: 1px solid transparent; border-radius: var(--t-r-1);
+  background: transparent; color: var(--t-text-faint); cursor: pointer; }
+.lc-x:hover { color: var(--t-text); border-color: var(--t-border-strong); }
+.lc-x:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 1px; }
+.lc-facts { margin-top: 3px; color: var(--t-text-dim);
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums); }
+.lc-note { margin-top: 2px; color: var(--t-warn); }
+.lc-marks { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
+.lc-tag { padding: 1px 7px; border-radius: 999px;
+  font-family: var(--mono); font-size: var(--t-fs-xs);
+  border: 1px solid var(--t-border); color: var(--t-text-dim); }
+.lc-tag.in { background: color-mix(in srgb, var(--t-accent) 18%, transparent);
+  color: var(--t-accent); border-color: transparent; }
+.lc-tag.out { background: var(--t-stop-bg); color: var(--t-stop);
+  border-color: transparent; }
+.lc-tag.hid { border-style: dashed; }
