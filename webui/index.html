@@ -826,6 +826,18 @@
   </aside>
   <section id="stage">
     <canvas id="view"></canvas>
+    <!-- A RUN IN PROGRESS, WHERE THE EYE ALREADY IS. The only two places a
+         detection announced itself were 12px of text in the status bar at
+         the foot of the window and a grey chip in the sheet header - the
+         partner pressed Detect on the 2026-09-02 call and could not tell
+         anything had happened. This pill sits over the sheet, in the run
+         colour, and blinks on a 1s cadence shared with every other surface
+         that reports the same run (see RUN-STATE in app.js). Reduced motion
+         drops the blink and keeps the solid colour, which is still the
+         loudest thing on the canvas. -->
+    <div id="runFlag" class="run-flag" role="status" aria-live="polite" hidden>
+      <span class="rf-dot" aria-hidden="true"></span><span id="runFlagTxt"></span>
+    </div>
     <div id="miniLegend" class="mini-legend" hidden>
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>

@@ -661,10 +661,98 @@ async function selectPage(p) {
   else if (st.stale) setStatus("this sheet was detected with an older engine — press Detect to refresh it", "busy");
 }
 
+// RUN-STATE-BEGIN ------------------------------------------------------------
+// ONE ANSWER TO "IS A DETECTION RUNNING, AND WHAT SHOULD EACH SURFACE SAY?"
+//
+// Pure block (no DOM, no state.*) so tests/test_run_state.js can run it under
+// node, same technique as TRENCH-MATH / TOOLS-MENU.
+//
+// The 2026-09-02 screen share: the owner's partner pressed Detect and could
+// not tell whether anything was happening. "I liked how before it said
+// detecting it. It's super unnoticeable. You should make it blink back and
+// forth every second or something." The owner's own answer in the moment was
+// "I'll make it green."
+//
+// Four surfaces reported the same run and none of them was loud:
+//   1. #status                12px text at the foot of the window
+//   2. the sheet-header chip  and it was WRONG on a re-detect (see below)
+//   3. the thumbnail badge    8px amber dot in the page strip
+//   4. #detectBtn             nothing at all - it looked idle mid-run
+// This function is now the only thing that decides, so they cannot disagree.
+//
+// THE DISAGREEMENT IT FIXES. renderSheetHead read the RESULT before the RUN
+// (`state.result ? "detected" : running ? "detecting…"`). Press Detect on a
+// sheet that already has a result - the common case, since a re-detect is how
+// you pick up an engine change or a fixed scale - and the header said
+// "detected", in the corroborated green, while the status bar three lines
+// below said "detecting…". RUNNING WINS: a run in progress is a fact about
+// right now and it outranks the stale result still on screen.
+//
+// `here` is this page's status; `others` is how many OTHER pages are running
+// (Detect all). The canvas flag names which, because "detecting…" over a
+// sheet that is not the one being detected is a lie the old status line
+// could not tell but a big pill over the drawing certainly could.
+const RUN_BLINK_MS = 1000;      // the cadence, shared by CSS (--run-blink)
+function runStateOf(here, others, hasResult) {
+  const mine = here === "running";
+  const busy = mine || others > 0;
+  return {
+    busy,
+    mine,
+    chip: mine ? "detecting…"
+      : here === "error" ? "detect failed"
+      : hasResult ? "detected"
+      : "not detected",
+    chipCls: mine ? "run"
+      : here === "error" ? "warn"
+      : hasResult ? "ok"
+      : "",
+    flag: !busy ? ""
+      : mine ? "DETECTING THIS SHEET"
+      : `DETECTING ${others} OTHER PAGE${others === 1 ? "" : "S"}`,
+    btn: mine ? "Detecting…" : "Detect lines",
+  };
+}
+// RUN-STATE-END --------------------------------------------------------------
+
+// The DOM half. runStateNow() reads the live state; runFlagSync() paints all
+// four surfaces from that one reading, and is called from every beat that can
+// change it (setPageStatus, renderSheetHead, the detect handlers).
+function runStateNow() {
+  const ps = state.pageStatus || [];
+  let others = 0;
+  for (let i = 0; i < ps.length; i++)
+    if (i !== state.page && ps[i] === "running") others++;
+  return runStateOf(ps[state.page], others, !!state.result);
+}
+function runFlagSync() {
+  const rs = runStateNow();
+  const flag = $("runFlag");
+  if (flag) {
+    flag.hidden = !rs.busy;
+    const t = $("runFlagTxt");
+    if (t && t.textContent !== rs.flag) t.textContent = rs.flag;
+  }
+  const b = $("detectBtn");
+  if (b) {
+    b.classList.toggle("running", rs.mine);
+    // aria-busy, not disabled: a second press is still a legitimate retry and
+    // taking the control away mid-run is how the old UI got accused of doing
+    // nothing. The label says what is happening; the button still works.
+    b.setAttribute("aria-busy", rs.mine ? "true" : "false");
+    if (b.textContent !== rs.btn) b.textContent = rs.btn;
+  }
+  document.body.classList.toggle("run-busy", rs.busy);
+  return rs;
+}
+
 $("detectBtn").onclick = async () => {
-  await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
-  setStatus("detecting…", "busy");
+  // Paint the run BEFORE the round trip, not after it. The POST below is the
+  // first thing that can take a second on a cold worker, and that second was
+  // exactly the window in which the app looked asleep.
   setPageStatus(state.page, "running");
+  setStatus("detecting…", "busy");
+  await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
   poll(state.gen);
 };
 async function poll(gen = state.gen) {
@@ -744,6 +832,10 @@ function setPageStatus(p, st) {
   const b = t && t.querySelector(".thumb-badge");
   if (b) { b.className = "thumb-badge " + st; b.title = BADGE_TITLE[st] || st; }
   if (p === state.page) renderSheetHead();   // status chip mirrors the badge
+  // ...and so does the canvas flag and the Detect button. A page OTHER than
+  // the one on screen going running (Detect all) still has to reach the flag,
+  // so this is outside the `p === state.page` guard.
+  runFlagSync();
 }
 async function refreshPageStatuses() {
   const job = state.job;
@@ -1496,6 +1588,10 @@ function renderSheetHead() {
   // page switch, every scale change (renderSheetHead is what all eleven of
   // those call). Before the early return, so an empty app clears it too.
   renderSheetFacts();
+  // Before the early return, for the same reason renderSheetFacts is: closing
+  // the document has to clear the run flag too, and an empty app takes the
+  // early exit below.
+  runFlagSync();
   const el = $("sheetHead");
   if (!state.job) { el.hidden = true; return; }
   el.hidden = false;
@@ -1568,12 +1664,14 @@ function renderSheetHead() {
         sc.source === "ocr" ? "warn" : "ok"));
     }
   }
-  const st = state.result ? "detected"
-    : (state.pageStatus || [])[state.page] === "running" ? "detecting…"
-    : (state.pageStatus || [])[state.page] === "error" ? "detect failed"
-    : "not detected";
-  meta.append(chip(st, state.result ? "ok"
-    : st === "detect failed" ? "warn" : ""));
+  // THE RUN CHIP NOW COMES FROM runStateOf(), the one place that decides what
+  // a run's state is. It used to be worked out here with `state.result ?
+  // "detected" : running ? "detecting…"`, which reads the RESULT before the
+  // RUN: pressing Detect on a sheet that already had a result left this chip
+  // saying "detected" in green while the status bar said "detecting…". Two
+  // surfaces, one run, opposite answers. Running now wins, everywhere.
+  const rs = runStateNow();
+  meta.append(chip(rs.chip, rs.chipCls));
   el.append(name, meta);
   renderScalePick(el);
   renderScaleTyped(el);

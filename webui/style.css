@@ -2974,3 +2974,99 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .ml-goto:hover { color: var(--t-accent); border-color: var(--t-accent); }
 .ml-goto:focus-visible { color: var(--t-text-dim);
   outline: 2px solid var(--t-focus); outline-offset: 1px; }
+
+/* ===== A RUN IN PROGRESS, UNMISSABLE ====================================
+   From the 2026-09-02 screen share: "I liked how before it said detecting
+   it. It's super unnoticeable. You should make it blink back and forth
+   every second or something." - and the owner's own answer, "I'll make it
+   green."
+
+   ONE CADENCE, ONE COLOUR, FOUR SURFACES. --run-blink is the 1s period the
+   partner asked for and every surface that reports the same run uses it, so
+   the canvas pill, the status line, the header chip and the Detect button
+   breathe together instead of each doing its own thing. The colour is the
+   accent green, which in this app already means "this is the live one".
+
+   REDUCED MOTION drops every animation and keeps the SOLID lit state - the
+   point of the change is that a run is impossible to miss, and a viewer who
+   has asked the OS for no animation must not be the one person who cannot
+   tell. It is the same bargain .style-row.row-found already strikes. */
+:root { --run-blink: 1000ms; }
+
+/* TWO DEPTHS, ON PURPOSE. "Blink back and forth every second" and "do not be
+   irritating" pull against each other, and the resolution is that the small
+   things flash hard and the big green pill never does. A 300x40 slab
+   strobing to a third of its opacity once a second is the version of this
+   that gets switched off in a week; it also, for half of every second, makes
+   the loudest indicator on the screen the FAINTEST thing on it, which is
+   exactly backwards. So the pill only breathes (1 -> .7, still solid, still
+   the first thing you see), and its dot does the full-contrast blink the
+   partner asked for. */
+@keyframes runBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
+@keyframes runBlinkSoft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .7; }
+}
+/* the dot travels the other way from its pill, so something is lit at every
+   instant and the pair reads as a heartbeat rather than a flicker */
+@keyframes runBlinkDot {
+  0%, 100% { opacity: .25; transform: scale(.7); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+
+/* 1. THE CANVAS PILL - over the sheet, which is where the operator is
+      already looking when they press Detect. */
+.run-flag { position: absolute; top: 14px; left: 50%; z-index: 6;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 16px 7px 12px; border-radius: 999px;
+  background: var(--t-accent); color: var(--t-accent-ink);
+  border: 1px solid var(--t-accent);
+  box-shadow: 0 2px 14px rgba(0,0,0,.35);
+  font-family: var(--mono); font-size: var(--t-fs-xs);
+  letter-spacing: .08em; font-weight: 600;
+  pointer-events: none;                /* never blocks a click on the sheet */
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+.run-flag .rf-dot { width: 9px; height: 9px; border-radius: 50%;
+  background: currentColor;
+  animation: runBlinkDot var(--run-blink) ease-in-out infinite; }
+
+/* 2. THE STATUS LINE. It was already green; now it keeps the same beat as
+      the pill so the two read as one event. */
+.status.busy { animation: runBlink var(--run-blink) steps(1, end) infinite alternate; }
+
+/* 3. THE SHEET-HEADER CHIP. Its own class, not .ok: "detecting" is not
+      "detected" and the two must never wear the same colour. */
+.sh-chip.run { background: var(--t-accent); color: var(--t-accent-ink);
+  border-color: var(--t-accent); font-weight: 600;
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+
+/* 4. THE DETECT BUTTON. It looked idle for the whole run, which is the
+      single biggest reason the partner thought nothing had happened - it is
+      the control he had just pressed. */
+/* The button itself only breathes; the RING around it does the hard blink,
+   so the control never goes faint while it is the one being reported on. */
+#detectBtn.running { position: relative;
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+#detectBtn.running::after { content: ""; position: absolute; inset: -3px;
+  border-radius: inherit; border: 2px solid var(--t-accent);
+  pointer-events: none;
+  animation: runBlink var(--run-blink) steps(1, end) infinite alternate; }
+
+/* 5. THE PAGE-STRIP BADGE keeps its amber - on the strip, amber "running"
+      against green "done" is a real distinction and flattening both to
+      green would lose it - but it is retimed onto the shared cadence so it
+      pulses with everything else rather than against it. */
+.thumb-badge.running { animation: pulse var(--run-blink) ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .run-flag, .run-flag .rf-dot, .status.busy, .sh-chip.run,
+  #detectBtn.running, #detectBtn.running::after,
+  .thumb-badge.running { animation: none; }
+  /* keep every lit state lit: the pill, the chip and the ring are still the
+     loudest things on the screen, they just hold still */
+  .run-flag .rf-dot { opacity: 1; transform: none; }
+}
