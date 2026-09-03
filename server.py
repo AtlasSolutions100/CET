@@ -3370,7 +3370,7 @@ def legend_sheet(job_id: str, body: LegendSheetBody):
 
 
 @app.post("/api/job/{job_id}/legend-sheet-upload")
-async def legend_sheet_upload(job_id: str, file: UploadFile):
+async def legend_sheet_upload(job_id: str, file: UploadFile, request: Request):
     """The DROP route. Same scan, a file instead of a path.
 
     From the 2026-09-02 screen share: the legend control was a prompt() asking
@@ -3387,6 +3387,16 @@ async def legend_sheet_upload(job_id: str, file: UploadFile):
     nobody asked to take off.
     """
     JOBS.get(job_id) or _404()
+    # REFUSE BEFORE READING, when the client says how big it is. The size
+    # check below runs on `raw`, which means a 2 GB drop is already in this
+    # process's memory before anything rejects it - one careless drag on a
+    # box with other work on it. Content-Length is the client's claim and a
+    # client can lie, so the check on the real bytes STAYS; this is the
+    # cheap door in front of it (2026-09-03).
+    _cl = request.headers.get("content-length")
+    if _cl and _cl.isdigit() and int(_cl) > LEGEND_UPLOAD_MAX * 2:
+        raise HTTPException(413, "that upload is larger than "
+                                 f"{LEGEND_UPLOAD_MAX // (1024 * 1024)} MB")
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "that file was empty")

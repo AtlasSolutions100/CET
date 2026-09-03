@@ -461,7 +461,14 @@ addEventListener("dragenter", (e) => {
   if (!dragHasFile(e)) return;
   e.preventDefault();
   DRAG_DEPTH += 1;
-  $("dropZone").hidden = false;
+  // NOT while a modal is asking for a file of its own. The legend dialog
+  // has its own drop zone; lighting the whole-window "drop a plan here"
+  // overlay on top of it steers the drop into the wrong handler, and that
+  // handler REPLACES the document (measured 2026-09-03: dropping a legend
+  // on the dialog's own lead paragraph swapped a 9-sheet job for a 1-page
+  // one and emptied the takeoff, with the legend dialog still open over
+  // the wrong document).
+  if (!modalWantsFiles()) $("dropZone").hidden = false;
 });
 addEventListener("dragover", (e) => { if (dragHasFile(e)) e.preventDefault(); });
 addEventListener("dragleave", (e) => {
@@ -469,6 +476,14 @@ addEventListener("dragleave", (e) => {
   DRAG_DEPTH = Math.max(0, DRAG_DEPTH - 1);
   if (!DRAG_DEPTH) $("dropZone").hidden = true;
 });
+// A modal that asks for a file owns every drop while it is open - not just
+// the 2.7% of the window its dashed rectangle covers. Anything else means
+// the app invites a drag and then punishes an inch of aim by throwing away
+// the sheet the operator was working on.
+function modalWantsFiles() {
+  const m = $("legendModal");
+  return !!(m && !m.hidden);
+}
 addEventListener("drop", (e) => {
   if (!dragHasFile(e)) return;
   e.preventDefault();
@@ -476,6 +491,11 @@ addEventListener("drop", (e) => {
   $("dropZone").hidden = true;
   const files = [...(e.dataTransfer.files || [])];
   if (!files.length) return;
+  if (modalWantsFiles()) {
+    if (files.length > 1) legendMsg(`${files.length} files dropped — reading the first`);
+    legendReadFile(files[0]);
+    return;
+  }
   if (files.length > 1)
     setStatus(`${files.length} files dropped \u2014 opening the first, `
       + `${files[0].name}`, "busy");
@@ -772,7 +792,27 @@ $("detectBtn").onclick = async () => {
   // exactly the window in which the app looked asleep.
   setPageStatus(state.page, "running");
   setStatus("detecting…", "busy");
-  await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
+  // ... AND TAKE IT BACK IF THE RUN NEVER STARTED. Painting first is what
+  // makes the app feel awake, and it is also what turns an unreachable
+  // server into a permanent lie: this fetch used to be unguarded, so a
+  // rejected POST (server restarted, wifi blip, laptop wake) killed the
+  // promise, poll() never ran, and all four surfaces blinked "DETECTING
+  // THIS SHEET" forever - measured offline 2026-09-03, still lit twelve
+  // seconds after the connection came back, clearing only on a reload.
+  // Before these surfaces existed the same failure was silent; loud and
+  // wrong is worse than quiet and wrong, so the catch is part of the
+  // feature, not a tidy-up.
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/detect`,
+                          { method: "POST" });
+    if (!r.ok) throw new Error("detect returned " + r.status);
+  } catch (e) {
+    setPageStatus(state.page, "error");
+    setStatus("the detection never started — " + (e && e.message
+      ? e.message : "the server could not be reached")
+      + ". Press Detect to try again.", "err");
+    return;
+  }
   poll(state.gen);
 };
 async function poll(gen = state.gen) {
@@ -999,7 +1039,22 @@ $("detectAllBtn").onclick = async () => {
     if (state.pageStatus[p] === "done") continue;
     setStatus(`detecting page ${p + 1} / ${n}…`, "busy");
     setPageStatus(p, "running");
-    await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+    // Same guard as the single-page button above, and the same reason: an
+    // unreachable server used to strand the sweep with "Stop" on the button
+    // and a page marked running forever. The status poll below already
+    // catches its own failures; the START never did.
+    try {
+      const r = await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+      if (!r.ok) throw new Error("detect returned " + r.status);
+    } catch (e) {
+      setPageStatus(p, "error");
+      state.detectAll = null;
+      $("detectAllBtn").textContent = "Detect all";
+      setStatus(`page ${p + 1} never started — ` + (e && e.message
+        ? e.message : "the server could not be reached")
+        + ". Press Detect all to resume.", "err");
+      return;
+    }
     while (true) {
       if (state.detectAll !== job || state.job !== job) return;
       let j;
@@ -1564,11 +1619,25 @@ function renderMiniLegend() {
       lab.textContent = state.labels.get(st.style_id) || st.suggested_label
         || `${st.class} · ${st.signature}`;
     }
+    // NOT IN THE TAKEOFF, said on the row that shows its footage. This
+    // list used to BE the counted set - it was built from state.include -
+    // so a footage here was a figure in the bid by construction. Now that
+    // the eye and the takeoff mark are separate, a family can be drawn and
+    // uncounted, and this became the one surface showing quantities without
+    // saying which kind: measured 2026-09-03 on Oncor C-03, the top row read
+    // "14.1k ft" while the tally below read 34.0k ft and did not include it.
+    // The sidebar row and the line card both carry the mark; so does this.
+    const counted = !!state.include.get(st.style_id);
+    if (!counted) row.classList.add("not-counted");
     const ft = document.createElement("span");
-    ft.className = "ml-ft";
+    ft.className = "ml-ft" + (counted ? "" : " not-counted");
     const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
     ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
-      + (ftPerIn ? " ft" : " pt");
+      + (ftPerIn ? " ft" : " pt") + (counted ? "" : " · not counted");
+    if (!counted)
+      ft.title = "Drawn on the sheet, but this family is out of the takeoff, "
+        + "so this footage is NOT in the tally or the export. The takeoff "
+        + "mark in the line-styles list is what puts it back.";
     // the second surface a line is identified on, so it gets the same jump
     // to the styles list. Its own button, with stopPropagation, because the
     // row's plain click already means "isolate" and that meaning is kept.
