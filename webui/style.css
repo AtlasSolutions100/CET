@@ -3075,3 +3075,52 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
      loudest things on the screen, they just hold still */
   .run-flag .rf-dot { opacity: 1; transform: none; }
 }
+
+/* ===== TWO MARKS ON A STYLE ROW: THE EYE AND THE TAKEOFF ==================
+   From the 2026-09-02 screen share: "Instead of checkboxes, there's one
+   that's like an eye for on or off visually, aka rendered versus not
+   rendered ... then another one which is some little symbol that means added
+   to takeoff or not."
+
+   One 16px checkbox carried both facts. Two buttons now carry one each, and
+   they are deliberately NOT the same shape as each other - two identical
+   ticks side by side is the confusion this replaces, not a fix for it. The
+   eye is an outline in the text colour (a picture control); the takeoff mark
+   is the accent (the money control), which is also the colour the rest of
+   this app uses for "counted". */
+.style-row { grid-template-columns: 44px 46px 1fr auto auto auto; }
+.style-marks { display: flex; align-items: center; gap: 2px; }
+.mark { width: 20px; height: 20px; padding: 0; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--t-r-1);
+  background: transparent; cursor: pointer; color: var(--t-text-faint); }
+.mark svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.mark:hover { border-color: var(--t-border-strong); background: var(--t-surface-2); }
+.mark:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 1px; }
+/* ON states. The eye lit is the ordinary text colour, because "you can see
+   it" is the resting state of a drawing and should not shout; the takeoff
+   mark lit is the accent, because that one is a claim about money. */
+.mark-eye.on { color: var(--t-text); }
+.mark-take.on { color: var(--t-accent); }
+/* an eye the operator has set BY HAND no longer follows the takeoff mark, and
+   that is a state worth seeing: a dot under it, not a colour, so it does not
+   compete with the on/off it is modifying */
+.mark-eye.ovr { position: relative; }
+.mark-eye.ovr::after { content: ""; position: absolute; bottom: 1px;
+  left: 50%; transform: translateX(-50%);
+  width: 3px; height: 3px; border-radius: 50%; background: var(--t-warn); }
+
+/* .style-row.off (not in the takeoff) already dims the row. HIDDEN is a
+   different fact and gets a different mark: the pattern swatch - the part of
+   the row that IS the drawing - goes faint, and nothing else moves, so a row
+   that is hidden but counted still reads as counted. */
+.style-row.novis .swatch-line { opacity: .45; }
+.style-row.novis .style-label { font-style: italic; }
+
+/* the one-line key above the rows */
+.marks-key { display: flex; align-items: center; gap: 14px;
+  padding: 4px 8px 8px; font-size: var(--t-fs-xs); color: var(--t-text-dim); }
+.marks-key .mk-seg { display: inline-flex; align-items: center; gap: 4px; }
+.marks-key .mark { width: 16px; height: 16px; cursor: default; }
+.marks-key .mark svg { width: 13px; height: 13px; }

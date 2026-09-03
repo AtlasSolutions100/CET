@@ -79,6 +79,10 @@ const state = window.state = {
   selPt: null,              // index of the selected vertex on state.selected
   cutA: null,               // first anchor of an in-progress cut-span
   drawPts: [],              // vertices of the in-progress drawn line
+  vis: new Map(),           // style_id -> shown on the drawing. OVERRIDES ONLY:
+                            // an absent key means "follow the takeoff mark",
+                            // which is why an untouched app renders exactly
+                            // what it always did (FAM-VIS)
   ewBoundDraft: [],         // vertices of an in-progress hand-drawn limit of work
   polySnap: false,          // the close-snap PREVIEW for whichever hand-drawn
                             // polygon is armed: true while the pointer sits
@@ -1056,6 +1060,8 @@ function pageReset() {
   // the detection and everything derived from it
   state.result = null; state.isolate = null;
   state.include = new Map(); state.labels = new Map();
+  // eye overrides are per PAGE, like the ticks they shadow (FAM-VIS)
+  state.vis = new Map();
   state.seedLabels = new Map(); state.chainLabels = new Map();
   state.inheritedInc = new Map();
   state.excluded = new Set();
@@ -1527,8 +1533,11 @@ function renderMiniLegend() {
     localStorage.getItem("core-minilegend") === "min");
   const rows = $("mlRows");
   rows.innerHTML = "";
+  // A LEGEND FOR THE DRAWING lists what is ON the drawing, so it follows the
+  // eye, not the takeoff mark (FAM-VIS). Identical to the old list until an
+  // eye is actually clicked, because famVis defaults to the tick.
   const vis = state.result.styles
-    .filter(st => state.include.get(st.style_id))
+    .filter(st => famVis(st.style_id))
     .sort((a, b) => b.length_pt - a.length_pt);
   const sc = state.result.scale;
   const ftPerIn = sc ? sc.ft_per_paper_inch : null;
@@ -5474,6 +5483,108 @@ function revealStyleRow(sid, from) {
   return true;
 }
 
+// ---- the two marks on a style row (FAM-VIS) ------------------------------
+// Both are real <button>s with aria-pressed, not checkboxes: they are two
+// different facts and a pair of identical ticks is exactly the confusion this
+// replaces. Each carries its own icon, its own colour and a title that says
+// which fact it is - the partner's complaint was that he could not tell what
+// the one checkbox meant, so the answer cannot be a second one.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function markSvg(paths) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const el = document.createElementNS(SVG_NS, "path");
+    el.setAttribute("d", d);
+    svg.appendChild(el);
+  }
+  return svg;
+}
+// an open eye, and the same eye with a stroke through it
+const EYE_OPEN = ["M2.2 12S6 5.6 12 5.6 21.8 12 21.8 12 18 18.4 12 18.4 2.2 12 2.2 12Z",
+                  "M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Z"];
+const EYE_OFF  = EYE_OPEN.concat(["M4 20 20 4"]);
+// a takeoff list with a tick against it: three rules and a check
+// A TAKEOFF LIST WITH A TICK AGAINST IT for in; the same list STRUCK THROUGH
+// for out. The slash is the shared grammar with the eye - one glyph says what
+// the mark is about, the slash says not - so the pair reads as a system after
+// being told once instead of having to be learned twice.
+const TAKE_IN  = ["M4 7h8M4 12h6M4 17h5", "m13.6 14.4 2.6 2.8 5.2-6"];
+const TAKE_OUT = ["M4 7h8M4 12h6M4 17h5", "M4 20 20 4"];
+
+function styleEyeBtn(s) {
+  const on = famVis(s.style_id);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mark mark-eye" + (on ? " on" : "")
+    + (famVisOverridden(s.style_id) ? " ovr" : "");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-label", (on ? "Hide" : "Show") + " this line type on the drawing");
+  b.appendChild(markSvg(on ? EYE_OPEN : EYE_OFF));
+  b.title = (on ? "SHOWN on the drawing." : "HIDDEN on the drawing.")
+    + " Click to " + (on ? "hide" : "show") + " it." + LF + LF
+    + "This is about the picture only. It changes no footage, no count and no "
+    + "price - the mark to its right is the one that decides what the takeoff "
+    + "counts." + LF + LF
+    + (famVisOverridden(s.style_id)
+        ? "You have set this by hand, so it no longer follows the takeoff "
+          + "mark. Click it back to match and it follows again."
+        : "It follows the takeoff mark until you set it by hand.");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    setFamVis(s.style_id, !famVis(s.style_id));
+    const now = famVis(s.style_id);
+    setStatus((state.labels.get(s.style_id) || s.suggested_label || "this line type")
+      + (now ? " is shown on the drawing again" : " is hidden on the drawing")
+      + " — the takeoff is unchanged");
+    renderStyles(); renderMiniLegend(); draw();
+  };
+  return b;
+}
+
+function styleTakeBtn(s) {
+  const on = !!state.include.get(s.style_id);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mark mark-take" + (on ? " on" : "");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-label",
+    (on ? "Take out of" : "Add to") + " the takeoff: " + (s.suggested_label || ""));
+  b.appendChild(markSvg(on ? TAKE_IN : TAKE_OUT));
+  b.title = (on
+      ? "IN THE TAKEOFF: this family's " + fmtQty(styleLenPt(s))
+        + " is counted, priced and exported."
+      : "NOT IN THE TAKEOFF: this family's " + fmtQty(styleLenPt(s))
+        + " is left out of every number.")
+    + " Click to " + (on ? "take it out." : "add it.");
+  return b;
+}
+
+// The one-line key at the top of the list. Two new marks with no words is a
+// second puzzle, not a fix, so the list says what they are once - built from
+// the same icon constants, so the key can never draw a mark the rows do not.
+function styleMarksKey() {
+  const key = document.createElement("div");
+  key.className = "marks-key";
+  const seg = (paths, cls, txt) => {
+    const w = document.createElement("span");
+    w.className = "mk-seg";
+    const ic = document.createElement("span");
+    ic.className = "mark " + cls + " on";
+    ic.appendChild(markSvg(paths));
+    const t = document.createElement("span");
+    t.textContent = txt;
+    w.append(ic, t);
+    return w;
+  };
+  key.append(seg(EYE_OPEN, "mark-eye", "shown on the drawing"),
+             seg(TAKE_IN, "mark-take", "counted in the takeoff"));
+  key.title = "Two separate things. The eye is the picture; the list-with-a-tick "
+    + "is the money. Hiding a line type does not change a single number.";
+  return key;
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -5488,6 +5599,8 @@ function renderStyles() {
   // missing feature. So: per row where the sheet HAS layers, and once for
   // the sheet where it has none, because 60 rows each reading "no CAD layer"
   // is noise rather than evidence.
+  // WHAT THE TWO MARKS MEAN, once, above the rows that carry them.
+  box.appendChild(styleMarksKey());
   const anyLayer = state.result.styles.some(s => (s.layer || "").trim());
   if (!anyLayer && state.result.styles.length) {
     const note = document.createElement("div");
@@ -5538,25 +5651,41 @@ function renderStyles() {
     const row = document.createElement("div");
     const sv = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
     row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off")
+      + (famVis(s.style_id) ? "" : " novis")
       + (sv.v === "out" ? " scope-out" : sv.v === "in" ? " scope-in"
         : sv.v === "kept" ? " scope-kept" : "");
     row.dataset.sid = s.style_id;
     row.dataset.scope = sv.v;
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
+    // TWO FACTS, TWO MARKS. One checkbox used to carry both "draw this on the
+    // sheet" and "count this in the takeoff", and famShown() read it for the
+    // canvas while every quantity read it for the numbers. From the
+    // 2026-09-02 screen share: "Instead of checkboxes, there's one that's
+    // like an eye for on or off visually, aka rendered versus not rendered
+    // ... then another one which is some little symbol that means added to
+    // takeoff or not." See famVis() for why the eye FOLLOWS the takeoff mark
+    // until it is touched - that is what keeps every default exactly where it
+    // was, which the owner and the partner explicitly agreed not to move.
+    const marks = document.createElement("div");
+    marks.className = "style-marks";
+    marks.appendChild(styleEyeBtn(s));
+    const cb = styleTakeBtn(s);
     if (state.inheritedInc && state.inheritedInc.has(s.style_id))
-      cb.title = "Carried over from another sheet of this set — change it "
-        + "here to override for this page.";
-    cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
+      cb.title += LF + LF + "Carried over from another sheet of this set "
+        + "— change it here to override for this page.";
+    marks.appendChild(cb);
+    cb.onclick = (e) => { e.stopPropagation();
+      const on = !state.include.get(s.style_id);
+      setInclude(s.style_id, on);
+      const cbChecked = on;
       // Ticking a row the scope filter set aside IS the put-back: record it,
       // or scopeApply() would untick it again on the next repaint and the
       // operator would watch their own click undo itself.
-      if (sv.v === "out" && cb.checked) { scopeKeepRow(s, true); return; }
-      if (sv.v === "kept" && !cb.checked) { scopeKeepRow(s, false); return; }
+      if (sv.v === "out" && cbChecked) { scopeKeepRow(s, true); return; }
+      if (sv.v === "kept" && !cbChecked) { scopeKeepRow(s, false); return; }
       // A hand tick on the row itself - and only that - also speaks for the
       // set (scope put-backs returned above; bulk buttons never come here).
-      setIncludeSetWide(s, cb.checked);
+      setIncludeSetWide(s, cbChecked);
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -5848,7 +5977,7 @@ function renderStyles() {
       famRenderList(s);
     };
 
-    row.append(cb, sw, main, mm, badge);
+    row.append(marks, sw, main, mm, badge);
     if (mineEl) row.appendChild(mineEl);
     row.appendChild(famBtn);
     if (layerEl) row.appendChild(layerEl);
@@ -11897,8 +12026,10 @@ function ewPickAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     for (let i = 1; i < ch.points.length; i++) {
       const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
       if (d < bestD) { bestD = d; best = ch; }
@@ -15971,8 +16102,7 @@ function chainHitAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
-    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
+    if (!famShown(ch.style_id)) continue;   // see famShown / FAM-VIS
     const pts = ch.points;
     for (let i = 1; i < pts.length; i++) {
       const d = distToSeg(px, py, pts[i-1], pts[i]);
@@ -16029,8 +16159,7 @@ function handleCanvasClick(e) {
     let tgt = null, tgtD = tolR;
     for (const ch of state.result.chains) {
       if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
-      if (state.isolate !== null ? ch.style_id !== state.isolate
-                                 : !state.include.get(ch.style_id)) continue;
+      if (!famShown(ch.style_id)) continue;   // see famShown / FAM-VIS
       for (let i = 1; i < ch.points.length; i++) {
         const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
         if (d < tgtD) { tgtD = d; tgt = ch; }
@@ -16363,8 +16492,10 @@ function snapToChain(px, py, skip, pickPx, vtxPx) {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (skip !== null && skip !== undefined && ch.chain_id === skip) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     if (!ch.points || !ch.points.length) continue;
     cands.push(ch);
   }
@@ -18054,9 +18185,46 @@ function hotChainSet(cid) {
 // Is this family painted as itself right now? The one place that question is
 // answered, so the canvas (draw()'s `shown`) and the readout below cannot
 // drift apart. Isolate wins over the tick, in both directions.
+// FAM-VIS-BEGIN --------------------------------------------------------------
+// SHOWN ON THE DRAWING is a different fact from COUNTED IN THE TAKEOFF, and
+// until 2026-09-02 one checkbox carried both. From the screen share:
+// "Instead of checkboxes, there's one that's like an eye for on or off
+// visually, aka rendered versus not rendered ... then another one which is
+// some little symbol that means added to takeoff or not."
+//
+// THE EYE FOLLOWS THE TAKEOFF MARK UNTIL IT IS TOUCHED. state.vis holds
+// OVERRIDES ONLY and starts empty, so with no eye ever clicked famVis(sid) IS
+// state.include.get(sid) and the app renders exactly what it rendered before -
+// on the first paint, after memApply's inherited decisions, after a scope
+// pass, after all/none, after everything. That is deliberate and it is the
+// whole reason this is safe to land on a small branch: the owner and the
+// partner discussed additive versus subtractive on the call and landed on
+// LEAVING THE DEFAULTS ALONE. This item shows the state; it does not move it.
+//
+// setFamVis DELETES the override when it would agree with the tick again, so
+// the two can always be re-coupled by clicking the eye back - an override you
+// cannot get out of is a trap, and a persistent one would quietly diverge from
+// the tick the next time a decision arrived from another sheet.
+//
+// state.include keeps its meaning untouched: it is what the takeoff counts,
+// and it is the ONLY thing every quantity, the itemized rows, the CSV and the
+// approve export read. Nothing below this line touches a number.
+function famVis(sid) {
+  return state.vis.has(sid) ? !!state.vis.get(sid)
+                            : !!state.include.get(sid);
+}
+function famVisOverridden(sid) {
+  return state.vis.has(sid) && !!state.vis.get(sid) !== !!state.include.get(sid);
+}
+function setFamVis(sid, on) {
+  if (!!on === !!state.include.get(sid)) state.vis.delete(sid);
+  else state.vis.set(sid, !!on);
+}
+// FAM-VIS-END ----------------------------------------------------------------
+
 function famShown(sid) {
   return state.isolate !== null ? sid === state.isolate
-                                : !!state.include.get(sid);
+                                : famVis(sid);
 }
 
 // THE WORDS HALF OF THE GHOST HOVER. Hovering an unticked family now paints
@@ -18114,7 +18282,22 @@ function ghostBarSync() {
   } else if (off.length > 1) {
     name = off.length + " families";
   }
-  const key = off.join(",") + "|" + name;
+  // WHAT A GHOST MEANS DEPENDS ON WHICH MARK PUT IT THERE (FAM-VIS). This
+  // pill used to end "NOT counted in the takeoff." unconditionally, which was
+  // true while one checkbox carried both facts. It is not true any more: a
+  // family hidden by the EYE is ghosted and IS still counted, and telling the
+  // owner otherwise is the same class of lie the pill exists to prevent - it
+  // would read as a quantity that had silently left the bid.
+  const nIn = off.filter(sid => !!state.include.get(sid)).length;
+  const them = off.length === 1 ? "it" : "them";
+  const tail = " — shown so you can find " + them + " on the sheet. "
+    + (nIn === off.length
+        ? "Hidden by the eye; still counted in the takeoff."
+      : nIn === 0
+        ? "NOT counted in the takeoff."
+        : nIn + " hidden by the eye but still counted; "
+          + (off.length - nIn) + " not counted in the takeoff.");
+  const key = off.join(",") + "|" + name + "|" + tail;
   if (key === ghostBarKey) return;
   ghostBarKey = key;
   if (!off.length) { el.hidden = true; el.textContent = ""; return; }
@@ -18122,9 +18305,7 @@ function ghostBarSync() {
   const nm = document.createElement("b");
   nm.textContent = name;
   el.appendChild(nm);
-  el.appendChild(document.createTextNode(
-    " — shown so you can find " + (off.length === 1 ? "it" : "them")
-    + " on the sheet. NOT counted in the takeoff."));
+  el.appendChild(document.createTextNode(tail));
   el.hidden = false;
 }
 
@@ -18398,8 +18579,10 @@ function marqueePick(rect) {
   const out = [];
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     if (snapTouchesRect(ch.points, rect, wzSegT, wzPtIn)) out.push(ch);
   }
   return out;
@@ -19464,8 +19647,10 @@ function stPickAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     const P = ch.points;
     for (let i = 1; i < P.length; i++) {
       const d = distToSeg(px, py, P[i-1], P[i]);
