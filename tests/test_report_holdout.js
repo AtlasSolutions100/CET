@@ -22,7 +22,7 @@
 //   2. SILENCE WHEN THERE IS NOTHING TO SAY. A sheet with no annotation-named
 //      families must add no note at all. A caveat that appears on every
 //      report is a caveat nobody reads.
-//   3. FIRST IN THE LIST. server.py approve() keeps body.notes[:6]. A caveat
+//   3. FIRST IN THE LIST. server.py approve() keeps body.notes[:7]. A caveat
 //      about the headline total outranks a caveat about one section of it, so
 //      if anything is going to be trimmed it must not be this.
 //
@@ -97,7 +97,7 @@ check(build([REAL], new Set([3])).length === 0,
   "a sheet with no annotation-named families adds NO note");
 check(build([], new Set()).length === 0, "no styles at all adds no note");
 
-// ---- 3. first in the list, because notes get trimmed at six ---------------
+// ---- 3. first in the list, because notes get trimmed at seven -------------
 const compose = extract("approveNotes");
 check(!!compose, "approveNotes() exists");
 if (compose) {
@@ -105,7 +105,7 @@ if (compose) {
     .map((f) => compose.indexOf(f));
   check(order.every((i) => i >= 0), "approveNotes composes all three sources");
   check(order[0] < order[1] && order[0] < order[2],
-    "the holdout note is FIRST - server.py keeps only body.notes[:6]");
+    "the holdout note is FIRST - server.py keeps only body.notes[:7]");
 }
 check(/APPROVE_NOTES_MAX\s*=\s*7/.test(SRC),
   "the cap is 7, matching server.py approve() - it moved from 6 on 2026-09-02 when the earthwork block gained its contour-coverage note");

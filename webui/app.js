@@ -11227,6 +11227,18 @@ function syncAutoCard() {
   head.hidden = silent;
   body.hidden = silent || folded;
 }
+// Blocks whose visibility belongs to their RENDERER, not to the fold. Both
+// start hidden in index.html and are un-hidden only when there is something
+// to say. The fold may put them away; it must not be the thing that brings
+// them back - collapsing and re-opening the earthwork card on a page where
+// coverage was never computed used to paint an empty bordered box above the
+// rows, and an empty filter bar under it. On open we call the renderer and
+// let it decide, which is the same answer the page would give on any other
+// path.
+const FOLD_RENDERED = {
+  ewCoverage: () => renderEwCoverage(),
+  ewFilters: () => renderEwFilters(),
+};
 for (const [headId, contentIds] of SECTIONS) {
   const head = document.getElementById(headId);
   if (!head) continue;
@@ -11236,7 +11248,9 @@ for (const [headId, contentIds] of SECTIONS) {
     head.classList.toggle("closed", closed);
     for (const cid of contentIds) {
       const el = document.getElementById(cid);
-      if (el) el.hidden = closed;
+      if (!el) continue;
+      if (!closed && FOLD_RENDERED[cid]) { FOLD_RENDERED[cid](); continue; }
+      el.hidden = closed;
     }
   };
   if (FOLD_KEEP.has(headId)) {
@@ -12913,12 +12927,25 @@ function ewCoverageLive(cov, rows, denom) {
   let outside = 0;
   for (const r of (rows || []))
     if (r && !inDen.has(r.chain_id)) outside++;
+  // ...and the ACCEPTED rows split the same way. A row is accepted when it
+  // carries a finite elevation AND a surface, which is exactly what puts it
+  // in the TIN - and a hand-added contour on a line outside every contour
+  // family is accepted without being one of the N. ewCoverageText used to
+  // subtract the whole accepted count from N and could print a NEGATIVE
+  // remainder onto the panel, the basis block and the exported note.
+  let accIn = 0, accOut = 0;
+  for (const r of (rows || [])) {
+    if (!r || !Number.isFinite(r.z)) continue;
+    if (r.surface !== "existing" && r.surface !== "proposed") continue;
+    if (inDen.has(r.chain_id)) accIn++; else accOut++;
+  }
   const r1 = v => Math.round(v * 10) / 10;
   return Object.assign({}, cov, {
     contour_chains: n, contour_len_pt: r1(ln),
     with_elev: cn, with_elev_len_pt: r1(cl),
     no_elev: n - cn, no_elev_len_pt: r1(ln - cl),
     rows: (rows || []).length, rows_outside: outside,
+    accepted_in: accIn, accepted_outside: accOut,
   });
 }
 
@@ -13049,10 +13076,38 @@ function ewCoverageText(cov, acc) {
       + " " + ewPlural(K, "line sits", "lines sit")
       + " outside the contour count.");
   if (acc && acc.total !== undefined) {
-    const A = acc.total;
-    out.push(A + " of the " + N + " " + ewPlural(A, "is", "are")
-      + " assigned to a surface and behind this volume. The other "
-      + (N - A) + " " + ewPlural(N - A, "is", "are") + " not in it.");
+    // A IS THE ACCEPTED ROWS THAT ARE IN THE N, not every accepted row.
+    // acc.total counts every row carrying a finite elevation and a surface,
+    // wherever its chain sits; N counts only the chains in a contour family.
+    // "+ Add contour" puts a row on any detected chain, so subtracting one
+    // from the other printed "25 of the 5 ... The other -20" onto the panel,
+    // the basis block and the exported note. ewCoverageLive walks the
+    // denominator already and now splits the accepted rows against it.
+    //
+    // WHEN IT COULD NOT (no denominator list served, so there is nothing to
+    // be inside of) the share is still stated, because in the ordinary case
+    // every accepted row IS one of the N and the sentence is the one an
+    // operator needs - but only while A fits inside N. Once A exceeds N we
+    // KNOW rows sit outside without knowing how many, and the claim is
+    // dropped rather than clamped: Math.min would print a share the code
+    // never checked, which reads as coverage it does not have (s5).
+    const split = cov.accepted_in !== undefined;
+    const A = split ? cov.accepted_in : acc.total;
+    const outA = split ? (cov.accepted_outside || 0) : 0;
+    const share = split || A <= N;
+    out.push(A + (share ? " of the " + N : "") + " "
+      + ewPlural(A, "is", "are")
+      + " assigned to a surface and behind this volume."
+      + (share
+         ? " The other " + (N - A) + " " + ewPlural(N - A, "is", "are")
+           + " not in it."
+         : "")
+      + (outA
+         ? " " + outA + " further assigned "
+           + ewPlural(outA, "row sits", "rows sit")
+           + " on linework outside that count and "
+           + ewPlural(outA, "is", "are") + " in the volume as well."
+         : ""));
   }
   // ...and WHICH lines those are, by the reason each was set aside, so the
   // parts add up on screen and a reader can check the arithmetic: the
@@ -13296,8 +13351,13 @@ function renderEwFilters() {
   if (!box) return;
   const st = state.ew;
   box.innerHTML = "";
-  if (!st || !st.rows) { box.hidden = true; return; }
+  // `[]` is truthy, so guarding on `!st.rows` painted an "All 0" chip and a
+  // sort switch directly above renderEw's "empty is not an answer" hint.
+  // The honest condition is the REVIEW SURFACE being empty, not the row
+  // array: a sheet with no rows but unelevated contours still has stubs to
+  // filter, and ewReviewView counts both.
   const v = ewReviewView();
+  if (!st || !st.rows || !v.total) { box.hidden = true; return; }
   box.hidden = false;
   const chip = (key, label, n, title, on) => {
     const b = document.createElement("button");
@@ -14015,7 +14075,7 @@ function renderEwModelNote(j) {
 // unless the estimator actually added earthwork - no earthwork row, no note.
 // Every free-text note the export carries, in priority order, plus the ONE
 // place that knows the server's cap. server.py `approve` keeps
-// `body.notes[:6]`; anything past that is dropped with no message, so the
+// `body.notes[:7]`; anything past that is dropped with no message, so the
 // count is checked here and disclosed on the status line rather than
 // discovered later on a report that is missing its caveat.
 const APPROVE_NOTES_MAX = 7;   // mirrors server.py approve(): body.notes[:7]
@@ -14035,7 +14095,7 @@ const APPROVE_NOTE_MAX = 400;  // ...and its per-note str(x)[:400]
 // smaller number with no way to learn why.
 //
 // It goes FIRST in the list on purpose. server.py approve() keeps
-// body.notes[:6], and a caveat about the headline total outranks a caveat
+// body.notes[:7], and a caveat about the headline total outranks a caveat
 // about one section of it. approveNotesDropped() still discloses any trim.
 function sgApproveNotes() {
   if (!state.result) return [];
