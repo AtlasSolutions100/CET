@@ -3533,6 +3533,7 @@ def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
     counted = set()
     fam_len: dict = {}
     unelevated = []
+    elevated = []
     for c in chs:
         cid = int(c.chain_id) if c.chain_id is not None else None
         if cid is None or not _is_plan_chain(c) or _chain_white(c):
@@ -3550,6 +3551,9 @@ def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
                 cov_n += 1
                 cov_len += c.length
                 counted.add(cid)
+                elevated.append({"chain_id": cid,
+                                 "style_id": int(c.style_id),
+                                 "length_pt": round(c.length, 1)})
             else:
                 unelevated.append({"chain_id": cid,
                                    "style_id": int(c.style_id),
@@ -3569,6 +3573,19 @@ def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
     # Longest first: a reviewer given 218 unlabelled lines should meet the
     # ones that carry the most ground first.
     unelevated.sort(key=lambda u: (-u["length_pt"], u["chain_id"]))
+    # THE OTHER HALF OF THE DENOMINATOR, BY NAME. `unelevated` alone lets a
+    # caller list the lines that hold no height; it does NOT let one say
+    # how many of this sheet's contour lines carry an elevation RIGHT NOW,
+    # because the elevated half is a bare count and the operator can delete
+    # a row after the count was taken. Measured 2026-09-03 on the DEM 1 ft
+    # sheet: delete twenty rows with the panel's own x and the served
+    # counts still read 144/101/43 while the live list holds 81 - and the
+    # twenty deleted contours appear in no list at all, so the review
+    # surface this feature exists for cannot show them again. Naming both
+    # halves makes `contour_chains` restatable from the live rows by
+    # anything holding this dict, and the sum of the two lists IS
+    # `contour_chains` by construction.
+    elevated.sort(key=lambda u: (-u["length_pt"], u["chain_id"]))
     return {
         "contour_chains": n,
         "contour_len_pt": round(ln, 1),
@@ -3585,5 +3602,9 @@ def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
         "unclassed_chains": un_n,
         "unclassed_len_pt": round(un_len, 1),
         "families": sorted(int(s) for s in fam),
+        # the denominator, named line by line and in two halves that sum to
+        # contour_chains: the caller can restate the coverage from its own
+        # live row set instead of trusting a count taken once (see above).
+        "elevated": elevated,
         "unelevated": unelevated,
     }

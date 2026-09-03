@@ -11438,6 +11438,9 @@ async function ewFetchSuggest(gen) {
       // state.extraItems, so an approve produces no earthwork line at all.
       // Session-only and per detection result, like the rest of this panel.
       added: false,
+      // what renderEwBasis last painted the basis block from, so a row edit
+      // can repaint it with the coverage the panel head is showing (R1)
+      basis: null,
       // What the reader DROPPED getting to those rows, and why - see
       // renderEwDropped. Held on the panel state so a re-render keeps it.
       dropped: j.suggestions_dropped || 0,
@@ -11449,6 +11452,12 @@ async function ewFetchSuggest(gen) {
       // line that carries no elevation at all.
       cov: j.contour_coverage || null,
       unelev: (j.contour_coverage && j.contour_coverage.unelevated) || [],
+      // ...and the OTHER half of that denominator, line by line. The two
+      // lists together are the sheet's contour lines, and holding both is
+      // what lets ewCovNow() restate the coverage from the rows on screen
+      // now rather than from the counts the route took once - see
+      // ewCoverageLive. Without it a deleted row falls out of every list.
+      elev: (j.contour_coverage && j.contour_coverage.elevated) || [],
       // review surface: which class of evidence is showing, in what order,
       // and whether the disclosed cap is open. View state only - no row,
       // no elevation and no volume depends on any of the three.
@@ -12377,6 +12386,64 @@ function ewReviewClasses(rows, noElevN, ivRaw) {
   return { cls: cls, counts: counts, iv: iv };
 }
 
+// ---- the coverage statement, RESTATED FROM THE LIVE ROWS -----------------
+//
+// THE DEFECT THIS CLOSES (found by review 2026-09-03). The server's
+// contour_coverage dict was captured once, in ewFetchSuggest, and every
+// surface read it verbatim: the panel block, the basis block beside the
+// volume, and the printed report. Only the CHIP counts came off the live
+// row set, so the two disagreed the moment an operator touched a row.
+// Measured on the DEM pad_1ft sheet: as served the block reads "144
+// contour lines. 101 carry an elevation ... 43 carry none at all"; delete
+// twenty rows with the rows' own x and the chips read "All 124 ... No
+// elevation 43" while the block one line above still says 144 / 101 / 43
+// - and the report's CONTOUR COVERAGE note, built from the same stale
+// dict, tells an estimator 101 are elevated when 81 are. Paper
+// OVERSTATED, which is the one direction CLAUDE.md s5 forbids.
+//
+// The fix is arithmetic, not a refresh: the served dict now names both
+// halves of the denominator line by line (earthwork.contour_coverage's
+// `elevated` and `unelevated`), so the count can be re-derived from
+// whatever rows are on screen at this instant. ewCoverageLive() is the ONE
+// source all three surfaces read, the way ewCautionText already is.
+//
+// AND THE ROWS THAT WERE DELETED COME BACK AS CONTOURS WITH NO ELEVATION.
+// A deleted row was not deleted from the sheet - the contour is still
+// drawn and now holds no height, which is exactly the fact this surface
+// exists to show. Before this, the twenty were rows no longer and had
+// never been in `unelevated`, so no chip could list them: the precise
+// unfindability the feature was built to end.
+function ewCoverageLive(cov, rows, denom) {
+  if (!cov) return null;
+  const den = denom || [];
+  if (!den.length) return cov;
+  const elev = new Set();
+  for (const r of (rows || []))
+    if (r && Number.isFinite(r.z)) elev.add(r.chain_id);
+  const inDen = new Set();
+  let n = 0, ln = 0, cn = 0, cl = 0;
+  for (const d of den) {
+    if (!d || inDen.has(d.chain_id)) continue;
+    inDen.add(d.chain_id);
+    n++; ln += d.length_pt || 0;
+    if (elev.has(d.chain_id)) { cn++; cl += d.length_pt || 0; }
+  }
+  // A row on a chain the denominator does not hold - one added by hand on
+  // a line outside every contour family, or one an exclusion removed.
+  // Counted and SAID, never folded in: it is why the "All" chip can read
+  // one more than the contour count.
+  let outside = 0;
+  for (const r of (rows || []))
+    if (r && !inDen.has(r.chain_id)) outside++;
+  const r1 = v => Math.round(v * 10) / 10;
+  return Object.assign({}, cov, {
+    contour_chains: n, contour_len_pt: r1(ln),
+    with_elev: cn, with_elev_len_pt: r1(cl),
+    no_elev: n - cn, no_elev_len_pt: r1(ln - cl),
+    rows: (rows || []).length, rows_outside: outside,
+  });
+}
+
 // ---- the coverage statement ---------------------------------------------
 //
 // WHERE IT BELONGS, and the argument. Three surfaces, one wording:
@@ -12438,6 +12505,15 @@ function ewCoverageText(cov, acc) {
       + " in no contour family - if any of "
       + ewPlural(cov.unclassed_chains, "it", "them")
       + " is a contour it is in neither count.");
+  // ...and the rows that are in the list but NOT in that count, so the
+  // "All" chip above the list reconciles with the sentence rather than
+  // reading one larger for no stated reason.
+  if (cov.rows_outside > 0)
+    out.push(cov.rows_outside + " " + ewPlural(cov.rows_outside, "row", "rows")
+      + " in the list " + ewPlural(cov.rows_outside, "sits", "sit")
+      + " on a line that is not one of those " + N
+      + " - added by hand, or in a family the exclusions took out - so the "
+      + "list runs to " + (N + cov.rows_outside) + ".");
   return out;
 }
 
@@ -12546,14 +12622,38 @@ const EW_ROW_CAP = 250;
 // defect this change exists to end. A stub becomes a real row the moment an
 // elevation is typed into it, through the same ewAppendRow the + Add contour
 // button uses.
+//
+// BUILT FROM THE WHOLE DENOMINATOR, not from the served `unelevated` half.
+// Until 2026-09-03 it was the latter minus `state.ew.removed`, and a row
+// the operator deleted therefore appeared in NO chip: it was not a row any
+// more and it had never been in `unelevated`. Deleting a row does not
+// rub the contour off the sheet - the line is still drawn and now holds no
+// height - so it belongs here, under "No elevation", where it can be found
+// and given one back. `removed` still does its own job (it stops a fresh
+// suggest re-seeding the deleted VALUE, ewApplySaved); it is not a reason
+// to hide the line.
+function ewDenomList() {
+  const st = state.ew;
+  if (!st) return [];
+  return (st.elev || []).concat(st.unelev || []);
+}
 function ewStubs() {
   const st = state.ew;
-  if (!st || !Array.isArray(st.unelev)) return [];
+  if (!st || !Array.isArray(st.rows)) return [];
   const have = new Set(st.rows.map(r => r.chain_id));
-  const gone = new Set(st.removed || []);
-  return st.unelev.filter(u => !have.has(u.chain_id) && !gone.has(u.chain_id))
+  return ewDenomList().filter(u => u && !have.has(u.chain_id))
     .map(u => ({ chain_id: u.chain_id, length_pt: u.length_pt,
                  style_id: u.style_id, z: NaN, noElev: true }));
+}
+
+// The coverage dict every surface reads: the served one, restated over the
+// rows that are on screen at this instant. ONE source for the panel block,
+// the basis block and the printed report - a stale copy on paper is the
+// whole of the defect ewCoverageLive documents.
+function ewCovNow() {
+  const st = state.ew;
+  if (!st) return null;
+  return ewCoverageLive(st.cov, st.rows || [], ewDenomList());
 }
 
 // Rows + stubs, classified, filtered and ordered - one function so the chip
@@ -12593,7 +12693,7 @@ function ewReviewView() {
 function renderEwCoverage() {
   const box = $("ewCoverage");
   if (!box) return;
-  const cov = state.ew && state.ew.cov;
+  const cov = ewCovNow();
   box.hidden = !(cov && cov.contour_chains > 0);
   box.innerHTML = "";
   if (box.hidden) return;
@@ -12667,6 +12767,13 @@ function renderEw() {
   const box = $("ewRows");
   renderEwDropped();
   renderEwCoverage();
+  // ...and the basis block beside the volume, which carries the SAME
+  // sentences. Without this a deleted row moved the head above the rows and
+  // left that block contradicting it - one screen apart, both live, both
+  // ours (R1). It repaints from what it was last painted with; a page with
+  // no calculation on it has nothing stored and nothing to repaint.
+  if (state.ew && state.ew.basis)
+    renderEwBasis(state.ew.basis.j, state.ew.basis.body);
   renderEwFilters();
   box.innerHTML = "";
   if (!state.ew || !(state.ew.rows.length || ewStubs().length)) {
@@ -13164,6 +13271,14 @@ function renderEwBasis(j, body) {
   if (!box) return;
   // a layers-only answer has no interpolation to describe
   const show = j && !j.layers_only;
+  // WHAT THIS BLOCK WAS PAINTED FROM, kept so a row edit can repaint it.
+  // Its coverage lines are ewCoverageText's, now read live off the rows
+  // (ewCovNow) - and this function used to run ONLY when a calculation
+  // landed, so deleting a row left the head above the rows saying 81 while
+  // this block one screen down still said 101. Remembered HERE rather than
+  // at the call site so ewRefused's renderEwBasis(null, null) clears it by
+  // the same line that clears the block.
+  if (state.ew) state.ew.basis = show ? { j: j, body: body } : null;
   box.classList.toggle("off", !show);
   if (!show) return;
   const ex = j.existing_contours, pr = j.proposed_contours;
@@ -13217,7 +13332,7 @@ function renderEwBasis(j, body) {
   // The words are ewCoverageText's, shared with the panel head above the
   // rows and with the printed report, so the three cannot drift.
   const covAcc = ewAcceptedSplit();
-  for (const sent of ewCoverageText(state.ew && state.ew.cov, covAcc))
+  for (const sent of ewCoverageText(ewCovNow(), covAcc))
     line(esc(sent)).className = "ew-basis-cov";
   const prov = ewAcceptedSplit();
   if (prov.machine) {
@@ -13406,7 +13521,7 @@ function ewApproveNotes() {
     // ...and HOW MUCH OF THE SHEET those elevations are. ewBasisNote says
     // what backs the accepted rows; this says how many of the sheet's
     // contour lines are not among them. Same sentences as the panel.
-    ...ewCoverageNote(state.ew && state.ew.cov, acc, APPROVE_NOTE_MAX),
+    ...ewCoverageNote(ewCovNow(), acc, APPROVE_NOTE_MAX),
     `Interpolated from ${j.existing_contours} existing and `
     + `${j.proposed_contours} proposed contours over `
     + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `

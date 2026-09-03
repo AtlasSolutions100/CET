@@ -287,10 +287,14 @@ check(/id="ewFilters"/.test(html), "...and a filter bar for the review");
 check(/function renderEwCoverage\(\)/.test(js)
    && /renderEwCoverage\(\);/.test(js),
   "the panel head renders the coverage statement");
-check(/for \(const sent of ewCoverageText\(state\.ew && state\.ew\.cov, covAcc\)\)/
+// ...and all three read ewCovNow(), the LIVE restatement, never the served
+// dict: `state.ew.cov` is captured once and an operator can delete a row
+// after it was captured (see ewCoverageLive, and tests/test_ew_live_
+// coverage.js for the arithmetic).
+check(/for \(const sent of ewCoverageText\(ewCovNow\(\), covAcc\)\)/
   .test(js),
   "the basis block BESIDE THE NUMBER renders the same sentences");
-check(/\.\.\.ewCoverageNote\(state\.ew && state\.ew\.cov, acc, APPROVE_NOTE_MAX\)/
+check(/\.\.\.ewCoverageNote\(ewCovNow\(\), acc, APPROVE_NOTE_MAX\)/
   .test(js), "and the printed report carries them through ewApproveNotes");
 check(/cov: j\.contour_coverage \|\| null/.test(js),
   "the panel state holds the server's coverage block");
