@@ -1546,7 +1546,14 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
      inside the box, where nothing else is. */
   width: 250px; max-width: calc(100% - 24px);
   display: flex; flex-direction: column;
-  align-items: flex-start; gap: 3px; pointer-events: auto;
+  /* THE BOX IS NOT A BUTTON, AND IT SITS ON THE DRAWING. With
+     pointer-events on the container, a fixed 250 x 55 patch of sheet
+     stopped being clickable for every selected line - measured 2026-09-03,
+     a click at its centre left the selection unchanged where the same
+     pixel used to pick a line. The container lets clicks through; only the
+     text itself takes the pointer, because the provenance tooltip needs a
+     hover target and the words are a fraction of the box. */
+  align-items: flex-start; gap: 3px; pointer-events: none;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
 .sel-elev[hidden] { display: none; }
@@ -1556,7 +1563,9 @@ main.sv-open #pageStrip, main.sv-open #sidebar, main.sv-open #stage {
 .se-cap { font-size: var(--t-fs-xs); letter-spacing: .08em; color: var(--dim);
   text-transform: uppercase; line-height: 1; }
 .se-none { font-size: var(--t-fs-xs); color: var(--dim); }
-.sel-elev .sel-el { font-size: var(--t-fs-sm); white-space: normal; }
+.sel-elev .sel-el { font-size: var(--t-fs-sm); white-space: normal;
+  pointer-events: auto; }
+.sel-elev .se-cap, .sel-elev .se-none { pointer-events: auto; }
 .sel-el { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums;
   font-size: var(--t-fs-xs); padding: 2px 7px; border-radius: 999px;
   background: var(--chip); border: 1px solid var(--line); color: var(--text); }

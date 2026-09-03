@@ -11198,7 +11198,7 @@ function elevTickPaint() {
   if (sb && sb.textContent.indexOf(EW_SUGGEST_HEAD) === 0)
     setStatus(line, "busy");
   if (state.selected !== null && typeof chainById === "function")
-    renderSelElev(chainById(state.selected));
+    repaintSelElev(chainById(state.selected));
 }
 
 
@@ -11426,7 +11426,7 @@ function suggestOnce() {
     // repaint every surface once the clock has stopped, so none is left
     // holding the last tick's elapsed time
     elevTickStop();
-    if (state.selected !== null) renderSelElev(chainById(state.selected));
+    if (state.selected !== null) repaintSelElev(chainById(state.selected));
   };
   promise.then(done, done);
   // t0 rides ON the request record, not in a field of its own: when the
@@ -17295,7 +17295,7 @@ async function ensureElev() {
     // as fast as it can fail. Reproduced live on a dropped connection: the
     // panel showed its failure sentence while state.elev sat on `loading`
     // forever, one request per cycle. Only the readout is repainted here.
-    if (state.selected !== null) renderSelElev(chainById(state.selected));
+    if (state.selected !== null) repaintSelElev(chainById(state.selected));
     return;
   }
   if (stale()) return;
@@ -17342,6 +17342,24 @@ async function ensureElev() {
 // its line, a constant caption, and a sentence for every state - including
 // the two that used to render nothing. Its top/right are constants, so no
 // sibling's width, no window width and no zoom can move it.
+// THE READOUT MAY NOT CONTRADICT WHAT IS LOADED. renderSelElev takes the
+// reading as an argument, and three callers had only the chain, so they
+// passed none and the no-number branch printed "none printed for this
+// line" OVER a contour whose elevation was in byChain the whole time.
+// Measured live 2026-09-03 on Oncor C-04 chain 102: the box read "EL 558.5
+// · “BW” label 10.6 pt away", then pressing Tools > Earthwork with the same
+// line still selected turned it into "none printed for this line",
+// permanently, while state.elev.status was "ready" and byChain still held
+// 558.5. A false denial is worse than the blank it replaced (CLAUDE.md s5).
+// So the chain-only callers go through here and the reading is re-derived
+// from the one place that has it.
+function repaintSelElev(ch) {
+  if (!ch) return renderSelElev(null);
+  const ev = (state.elev && state.elev.byChain instanceof Map)
+    ? state.elev.byChain.get(ch.chain_id) : undefined;
+  renderSelElev(ch, ev, elevProvenance(ev && ev.how));
+}
+
 function renderSelElev(ch, ev, prov) {
   const box = $("selElev");
   if (!box) return;

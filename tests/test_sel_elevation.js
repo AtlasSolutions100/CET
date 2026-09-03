@@ -778,3 +778,44 @@ runEnsure(null).then(st => {
   console.error("  FAIL: ensureElev suite threw " + (e && e.stack || e));
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// (This block is SYNCHRONOUS and sits after the async ensureElev suite on
+// purpose: it runs first, so its failures are already in `fails` when that
+// suite's .then() prints the summary and sets the exit code. Do not wrap it
+// in a promise without moving the summary.)
+// THE READOUT MAY NOT CONTRADICT WHAT IS LOADED (2026-09-03, blocking).
+// renderSelElev takes the reading as an argument. Three callers had only the
+// chain, passed none, and the no-number branch printed "none printed for
+// this line" over a contour whose elevation was in byChain the whole time -
+// measured on Oncor C-04 chain 102: "EL 558.5 · “BW” label 10.6 pt away"
+// became "none printed for this line" the moment Tools > Earthwork started a
+// second suggest flight, permanently, with state.elev.status "ready".
+// A false denial is worse than the blank it replaced.
+{
+  const src = fs.readFileSync(path.join(__dirname, "..", "webui", "app.js"),
+                              "utf8");
+  const chainOnly = [...src.matchAll(/renderSelElev\(chainById\([^)]*\)\)/g)];
+  check(chainOnly.length === 0,
+    "no caller passes renderSelElev a chain with no reading (found "
+    + chainOnly.length + ")");
+  check(/function repaintSelElev\(ch\)/.test(src),
+    "the chain-only callers go through repaintSelElev");
+  const w = src.slice(src.indexOf("function repaintSelElev(ch)"),
+                      src.indexOf("function renderSelElev(ch"));
+  check(/state\.elev\.byChain instanceof Map/.test(w)
+        && /\.get\(ch\.chain_id\)/.test(w),
+    "and it re-derives the reading from byChain, the one place that has it");
+  check(/elevProvenance\(/.test(w),
+    "and its provenance with it, so the wording cannot drift from the number");
+  // the box sits ON the drawing: it must not eat clicks meant for a line
+  const css = fs.readFileSync(path.join(__dirname, "..", "webui", "style.css"),
+                              "utf8");
+  const box = css.slice(css.indexOf(".sel-elev {"), css.indexOf(".sel-elev[hidden]"));
+  check(/pointer-events:\s*none/.test(box),
+    "the readout container lets clicks through to the sheet under it");
+  check(/\.sel-elev \.sel-el \{[^}]*pointer-events:\s*auto/.test(
+          css.replace(/\s+/g, " ").replace(/\.sel-elev \.sel-el \{/g, "\n.sel-elev .sel-el {"))
+        || /\.sel-elev \.sel-el[^{]*\{[\s\S]{0,200}?pointer-events:\s*auto/.test(css),
+    "while the text itself still takes a hover, for the provenance tooltip");
+}

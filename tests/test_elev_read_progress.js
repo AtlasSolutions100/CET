@@ -175,7 +175,7 @@ function onceScope(opts) {
     fmtElapsed: (ms) => String(ms),
     elevTickStart: () => { seen.ticks++; },
     elevTickStop: () => { seen.stops++; },
-    renderSelElev: () => {},
+    renderSelElev: () => {}, repaintSelElev: () => {},
     chainById: () => null,
     AbortController,
     setTimeout, clearTimeout,
@@ -274,7 +274,7 @@ console.log("5. the tick repaints what it owns and nothing else");
       Date: { now: () => 1_000_000 },
       ewBusyPut: (t) => { els.ewBusy.textContent = t; put.push(t); },
       setStatus: (t) => { els.status.textContent = t; },
-      renderSelElev: () => {},
+      renderSelElev: () => {}, repaintSelElev: () => {}, repaintSelElev: () => {},
       chainById: () => null,
       clearInterval: () => {}, setInterval: () => 1,
     };
@@ -391,6 +391,10 @@ const suite7 = (async () => {
     // as fast as it can fail.
     updateSelBar: (ch) => { bars.push(ch); },
     renderSelElev: (ch) => painted.push(ch),
+    // the tick goes through the wrapper, which re-derives the reading
+    // from byChain - a chain-only repaint is what printed a false
+    // "none printed for this line" over a loaded elevation
+    repaintSelElev: (ch) => painted.push(ch),
     chainById: (id) => ({ chain_id: id }),
   };
   const names = Object.keys(scope);
