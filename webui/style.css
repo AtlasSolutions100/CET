@@ -206,6 +206,11 @@ aside.side-folded .side-fold { width: 14px; transform: scaleX(-1); }
 canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 /* A tool is armed and the next click places a point, so stop advertising drag. */
 canvas#view.tool-point { cursor: crosshair; }
+/* The close-snap on a hand-drawn polygon (POLY-SNAP): the pointer is inside
+   the radius of the first corner, so the next click FINISHES the shape
+   instead of dropping another corner. The on-canvas ring is the real signal;
+   this is the coarse one you notice without looking. */
+canvas#view.snap-close { cursor: pointer; }
 /* Panning wins over both: while the sheet is actually moving under the
    cursor, that is what the pointer should say, tool armed or not. */
 canvas#view.panning { cursor: grabbing; }
@@ -3026,3 +3031,236 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .ml-goto:hover { color: var(--t-accent); border-color: var(--t-accent); }
 .ml-goto:focus-visible { color: var(--t-text-dim);
   outline: 2px solid var(--t-focus); outline-offset: 1px; }
+
+/* ===== A RUN IN PROGRESS, UNMISSABLE ====================================
+   From the 2026-09-02 screen share: "I liked how before it said detecting
+   it. It's super unnoticeable. You should make it blink back and forth
+   every second or something." - and the owner's own answer, "I'll make it
+   green."
+
+   ONE CADENCE, ONE COLOUR, FOUR SURFACES. --run-blink is the 1s period the
+   partner asked for and every surface that reports the same run uses it, so
+   the canvas pill, the status line, the header chip and the Detect button
+   breathe together instead of each doing its own thing. The colour is the
+   accent green, which in this app already means "this is the live one".
+
+   REDUCED MOTION drops every animation and keeps the SOLID lit state - the
+   point of the change is that a run is impossible to miss, and a viewer who
+   has asked the OS for no animation must not be the one person who cannot
+   tell. It is the same bargain .style-row.row-found already strikes. */
+:root { --run-blink: 1000ms; }
+
+/* TWO DEPTHS, ON PURPOSE. "Blink back and forth every second" and "do not be
+   irritating" pull against each other, and the resolution is that the small
+   things flash hard and the big green pill never does. A 300x40 slab
+   strobing to a third of its opacity once a second is the version of this
+   that gets switched off in a week; it also, for half of every second, makes
+   the loudest indicator on the screen the FAINTEST thing on it, which is
+   exactly backwards. So the pill only breathes (1 -> .7, still solid, still
+   the first thing you see), and its dot does the full-contrast blink the
+   partner asked for. */
+@keyframes runBlink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
+@keyframes runBlinkSoft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .7; }
+}
+/* the dot travels the other way from its pill, so something is lit at every
+   instant and the pair reads as a heartbeat rather than a flicker */
+@keyframes runBlinkDot {
+  0%, 100% { opacity: .25; transform: scale(.7); }
+  50%      { opacity: 1;   transform: scale(1); }
+}
+
+/* 1. THE CANVAS PILL - over the sheet, which is where the operator is
+      already looking when they press Detect. */
+.run-flag { position: absolute; top: 14px; left: 50%; z-index: 6;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 16px 7px 12px; border-radius: 999px;
+  background: var(--t-accent); color: var(--t-accent-ink);
+  border: 1px solid var(--t-accent);
+  box-shadow: 0 2px 14px rgba(0,0,0,.35);
+  font-family: var(--mono); font-size: var(--t-fs-xs);
+  letter-spacing: .08em; font-weight: 600;
+  pointer-events: none;                /* never blocks a click on the sheet */
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+.run-flag .rf-dot { width: 9px; height: 9px; border-radius: 50%;
+  background: currentColor;
+  animation: runBlinkDot var(--run-blink) ease-in-out infinite; }
+
+/* 2. THE STATUS LINE. It was already green; now it keeps the same beat as
+      the pill so the two read as one event. */
+.status.busy { animation: runBlink var(--run-blink) steps(1, end) infinite alternate; }
+
+/* 3. THE SHEET-HEADER CHIP. Its own class, not .ok: "detecting" is not
+      "detected" and the two must never wear the same colour. */
+.sh-chip.run { background: var(--t-accent); color: var(--t-accent-ink);
+  border-color: var(--t-accent); font-weight: 600;
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+
+/* 4. THE DETECT BUTTON. It looked idle for the whole run, which is the
+      single biggest reason the partner thought nothing had happened - it is
+      the control he had just pressed. */
+/* The button itself only breathes; the RING around it does the hard blink,
+   so the control never goes faint while it is the one being reported on. */
+#detectBtn.running { position: relative;
+  animation: runBlinkSoft var(--run-blink) ease-in-out infinite; }
+#detectBtn.running::after { content: ""; position: absolute; inset: -3px;
+  border-radius: inherit; border: 2px solid var(--t-accent);
+  pointer-events: none;
+  animation: runBlink var(--run-blink) steps(1, end) infinite alternate; }
+
+/* 5. THE PAGE-STRIP BADGE keeps its amber - on the strip, amber "running"
+      against green "done" is a real distinction and flattening both to
+      green would lose it - but it is retimed onto the shared cadence so it
+      pulses with everything else rather than against it. */
+.thumb-badge.running { animation: pulse var(--run-blink) ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .run-flag, .run-flag .rf-dot, .status.busy, .sh-chip.run,
+  #detectBtn.running, #detectBtn.running::after,
+  .thumb-badge.running { animation: none; }
+  /* keep every lit state lit: the pill, the chip and the ring are still the
+     loudest things on the screen, they just hold still */
+  .run-flag .rf-dot { opacity: 1; transform: none; }
+}
+
+/* ===== TWO MARKS ON A STYLE ROW: THE EYE AND THE TAKEOFF ==================
+   From the 2026-09-02 screen share: "Instead of checkboxes, there's one
+   that's like an eye for on or off visually, aka rendered versus not
+   rendered ... then another one which is some little symbol that means added
+   to takeoff or not."
+
+   One 16px checkbox carried both facts. Two buttons now carry one each, and
+   they are deliberately NOT the same shape as each other - two identical
+   ticks side by side is the confusion this replaces, not a fix for it. The
+   eye is an outline in the text colour (a picture control); the takeoff mark
+   is the accent (the money control), which is also the colour the rest of
+   this app uses for "counted". */
+.style-row { grid-template-columns: 44px 46px 1fr auto auto auto; }
+.style-marks { display: flex; align-items: center; gap: 2px; }
+.mark { width: 20px; height: 20px; padding: 0; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: var(--t-r-1);
+  background: transparent; cursor: pointer; color: var(--t-text-faint); }
+.mark svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.mark:hover { border-color: var(--t-border-strong); background: var(--t-surface-2); }
+.mark:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 1px; }
+/* ON states. The eye lit is the ordinary text colour, because "you can see
+   it" is the resting state of a drawing and should not shout; the takeoff
+   mark lit is the accent, because that one is a claim about money. */
+.mark-eye.on { color: var(--t-text); }
+.mark-take.on { color: var(--t-accent); }
+/* an eye the operator has set BY HAND no longer follows the takeoff mark, and
+   that is a state worth seeing: a dot under it, not a colour, so it does not
+   compete with the on/off it is modifying */
+.mark-eye.ovr { position: relative; }
+.mark-eye.ovr::after { content: ""; position: absolute; bottom: 1px;
+  left: 50%; transform: translateX(-50%);
+  width: 3px; height: 3px; border-radius: 50%; background: var(--t-warn); }
+
+/* .style-row.off (not in the takeoff) already dims the row. HIDDEN is a
+   different fact and gets a different mark: the pattern swatch - the part of
+   the row that IS the drawing - goes faint, and nothing else moves, so a row
+   that is hidden but counted still reads as counted. */
+.style-row.novis .swatch-line { opacity: .45; }
+.style-row.novis .style-label { font-style: italic; }
+
+/* the one-line key above the rows */
+.marks-key { display: flex; align-items: center; gap: 14px;
+  padding: 4px 8px 8px; font-size: var(--t-fs-xs); color: var(--t-text-dim); }
+.marks-key .mk-seg { display: inline-flex; align-items: center; gap: 4px; }
+.marks-key .mark { width: 16px; height: 16px; cursor: default; }
+.marks-key .mark svg { width: 13px; height: 13px; }
+
+/* ===== THE LINE CARD: what you just clicked, where you are looking =======
+   From the 2026-09-02 screen share, the middle ground the partner proposed
+   himself after the owner refused to have the left list open itself on every
+   click: "either it should enlist or it should hover somewhere so you can see
+   it."
+
+   It is a READOUT, not a panel: no controls except the dismiss x, so there is
+   nothing on it that can change the sheet by being clicked at. It takes no
+   pointer except on that x, so it never eats a click meant for the drawing
+   under it - which matters, because it sits ON the drawing. */
+.line-card { position: absolute; z-index: 7; max-width: 300px;
+  padding: 8px 10px; border-radius: var(--t-r-2, 8px);
+  background: var(--t-surface-1, var(--panel));
+  border: 1px solid var(--t-border-strong, var(--line));
+  box-shadow: 0 6px 22px rgba(0,0,0,.38);
+  font-size: var(--t-fs-xs); color: var(--t-text, var(--text));
+  pointer-events: none; }
+.line-card .lc-x { pointer-events: auto; }
+.lc-head { display: flex; align-items: center; gap: 7px; }
+.lc-swatch { flex: none; width: 52px; height: 14px; }
+.lc-name { flex: 1 1 auto; min-width: 0; font-size: var(--t-fs-sm, 13px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lc-x { flex: none; width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: 1px solid transparent; border-radius: var(--t-r-1);
+  background: transparent; color: var(--t-text-faint); cursor: pointer; }
+.lc-x:hover { color: var(--t-text); border-color: var(--t-border-strong); }
+.lc-x:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 1px; }
+.lc-facts { margin-top: 3px; color: var(--t-text-dim);
+  font-family: var(--t-font-data, var(--mono));
+  font-variant-numeric: var(--t-numeric, tabular-nums); }
+.lc-note { margin-top: 2px; color: var(--t-warn); }
+.lc-marks { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
+.lc-tag { padding: 1px 7px; border-radius: 999px;
+  font-family: var(--mono); font-size: var(--t-fs-xs);
+  border: 1px solid var(--t-border); color: var(--t-text-dim); }
+.lc-tag.in { background: color-mix(in srgb, var(--t-accent) 18%, transparent);
+  color: var(--t-accent); border-color: transparent; }
+.lc-tag.out { background: var(--t-stop-bg); color: var(--t-stop);
+  border-color: transparent; }
+.lc-tag.hid { border-style: dashed; }
+
+/* ===== THE LEGEND SHEET MODAL ============================================
+   Replaces a prompt() that asked for a filesystem path. From the 2026-09-02
+   screen share: "what do I put here to actually tell it it's this page?" -
+   and the honest answer was that on the hosted box there was nothing he
+   COULD put there, because the server refuses client paths outright.
+
+   The drop zone is the biggest thing in the card because dropping is the
+   route that works for everyone; the typed path is kept, below an "or",
+   because the owner drives this box himself and a path is faster for him.
+   Same overlay grammar as the grading-zone modal. */
+.lg-modal { position: fixed; inset: 0; z-index: 80;
+  background: rgba(0, 0, 0, .45); display: flex; align-items: center;
+  justify-content: center; }
+.lg-card { width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.lg-head { display: flex; align-items: center; gap: 8px; }
+.lg-head h2 { margin: 0; font-size: var(--t-fs-base); flex: 1; }
+/* WHAT A LEGEND SHEET IS AND WHAT READING ONE DOES. The prompt said neither,
+   and the second half - that it changes no quantity - is the part the owner
+   cannot check for himself. */
+.lg-lead { margin: 8px 0 12px; font-size: var(--t-fs-xs); line-height: 1.5;
+  color: var(--t-text-dim, var(--dim)); }
+.lg-drop { border: 2px dashed var(--t-border-strong, var(--line));
+  border-radius: 10px; padding: 26px 16px; text-align: center;
+  cursor: pointer; background: var(--t-surface-2, transparent); }
+.lg-drop:hover, .lg-drop:focus-visible { border-color: var(--t-accent); }
+.lg-drop:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+/* a drag is over it: the target has to answer, or a person lets go somewhere
+   else and the browser navigates away to the PDF */
+.lg-drop.over { border-color: var(--t-accent);
+  background: color-mix(in srgb, var(--t-accent) 14%, transparent); }
+.lg-drop-big { font-size: var(--t-fs-base); }
+.lg-drop-sub { margin-top: 4px; font-size: var(--t-fs-xs);
+  color: var(--t-text-dim, var(--dim)); }
+.lg-or { text-align: center; margin: 10px 0 8px; font-size: var(--t-fs-xs);
+  color: var(--t-text-faint); letter-spacing: .08em; }
+.lg-path-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: var(--t-fs-xs); }
+.lg-path-row input { flex: 1 1 220px; min-width: 0; }
+.lg-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; }
+.lg-note { font-size: var(--t-fs-xs); color: var(--t-text-dim, var(--dim)); }
+.lg-note.err { color: var(--t-stop); }

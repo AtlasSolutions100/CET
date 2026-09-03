@@ -79,7 +79,16 @@ const state = window.state = {
   selPt: null,              // index of the selected vertex on state.selected
   cutA: null,               // first anchor of an in-progress cut-span
   drawPts: [],              // vertices of the in-progress drawn line
+  vis: new Map(),           // style_id -> shown on the drawing. OVERRIDES ONLY:
+                            // an absent key means "follow the takeoff mark",
+                            // which is why an untouched app renders exactly
+                            // what it always did (FAM-VIS)
   ewBoundDraft: [],         // vertices of an in-progress hand-drawn limit of work
+  polySnap: false,          // the close-snap PREVIEW for whichever hand-drawn
+                            // polygon is armed: true while the pointer sits
+                            // inside the close radius of its first corner, so
+                            // the ring and the rubber band show what the next
+                            // click will do BEFORE it does it (POLY-SNAP)
   drawSrc: null,            // chain_id whose family a drawn line joins
   hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
@@ -189,9 +198,20 @@ const POINT_TOOLS = new Set([
   "gz-draw", "gz-box",
 ]);
 
+// The three polygons the operator draws corner by corner. One set, so the
+// close-snap (POLY-SNAP) and the cursor chokepoint cannot know about
+// different tools than the click handlers do.
+const POLY_DRAW_TOOLS = new Set(["ew-bound-draw", "gz-draw", "st-draw"]);
 function syncCursor() {
   const cv = document.getElementById("view");
   if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
+  // The polygon close-snap preview belongs to the tool that armed it, so it
+  // dies at the same chokepoint the cursor does rather than at each of the
+  // ~20 places that can take a tool away. Same lesson as the comment below.
+  if (!POLY_DRAW_TOOLS.has(state.tool)) {
+    state.polySnap = false;
+    if (cv) cv.classList.remove("snap-close");
+  }
   // The work-area button's lit state rides the same chokepoint as the
   // cursor: ~20 places assign state.tool, and any of them can take the
   // tool away (arming measure, a page switch). Hooked here so the button
@@ -441,7 +461,14 @@ addEventListener("dragenter", (e) => {
   if (!dragHasFile(e)) return;
   e.preventDefault();
   DRAG_DEPTH += 1;
-  $("dropZone").hidden = false;
+  // NOT while a modal is asking for a file of its own. The legend dialog
+  // has its own drop zone; lighting the whole-window "drop a plan here"
+  // overlay on top of it steers the drop into the wrong handler, and that
+  // handler REPLACES the document (measured 2026-09-03: dropping a legend
+  // on the dialog's own lead paragraph swapped a 9-sheet job for a 1-page
+  // one and emptied the takeoff, with the legend dialog still open over
+  // the wrong document).
+  if (!modalWantsFiles()) $("dropZone").hidden = false;
 });
 addEventListener("dragover", (e) => { if (dragHasFile(e)) e.preventDefault(); });
 addEventListener("dragleave", (e) => {
@@ -449,6 +476,14 @@ addEventListener("dragleave", (e) => {
   DRAG_DEPTH = Math.max(0, DRAG_DEPTH - 1);
   if (!DRAG_DEPTH) $("dropZone").hidden = true;
 });
+// A modal that asks for a file owns every drop while it is open - not just
+// the 2.7% of the window its dashed rectangle covers. Anything else means
+// the app invites a drag and then punishes an inch of aim by throwing away
+// the sheet the operator was working on.
+function modalWantsFiles() {
+  const m = $("legendModal");
+  return !!(m && !m.hidden);
+}
 addEventListener("drop", (e) => {
   if (!dragHasFile(e)) return;
   e.preventDefault();
@@ -456,6 +491,11 @@ addEventListener("drop", (e) => {
   $("dropZone").hidden = true;
   const files = [...(e.dataTransfer.files || [])];
   if (!files.length) return;
+  if (modalWantsFiles()) {
+    if (files.length > 1) legendMsg(`${files.length} files dropped — reading the first`);
+    legendReadFile(files[0]);
+    return;
+  }
   if (files.length > 1)
     setStatus(`${files.length} files dropped \u2014 opening the first, `
       + `${files[0].name}`, "busy");
@@ -661,10 +701,118 @@ async function selectPage(p) {
   else if (st.stale) setStatus("this sheet was detected with an older engine — press Detect to refresh it", "busy");
 }
 
+// RUN-STATE-BEGIN ------------------------------------------------------------
+// ONE ANSWER TO "IS A DETECTION RUNNING, AND WHAT SHOULD EACH SURFACE SAY?"
+//
+// Pure block (no DOM, no state.*) so tests/test_run_state.js can run it under
+// node, same technique as TRENCH-MATH / TOOLS-MENU.
+//
+// The 2026-09-02 screen share: the owner's partner pressed Detect and could
+// not tell whether anything was happening. "I liked how before it said
+// detecting it. It's super unnoticeable. You should make it blink back and
+// forth every second or something." The owner's own answer in the moment was
+// "I'll make it green."
+//
+// Four surfaces reported the same run and none of them was loud:
+//   1. #status                12px text at the foot of the window
+//   2. the sheet-header chip  and it was WRONG on a re-detect (see below)
+//   3. the thumbnail badge    8px amber dot in the page strip
+//   4. #detectBtn             nothing at all - it looked idle mid-run
+// This function is now the only thing that decides, so they cannot disagree.
+//
+// THE DISAGREEMENT IT FIXES. renderSheetHead read the RESULT before the RUN
+// (`state.result ? "detected" : running ? "detecting…"`). Press Detect on a
+// sheet that already has a result - the common case, since a re-detect is how
+// you pick up an engine change or a fixed scale - and the header said
+// "detected", in the corroborated green, while the status bar three lines
+// below said "detecting…". RUNNING WINS: a run in progress is a fact about
+// right now and it outranks the stale result still on screen.
+//
+// `here` is this page's status; `others` is how many OTHER pages are running
+// (Detect all). The canvas flag names which, because "detecting…" over a
+// sheet that is not the one being detected is a lie the old status line
+// could not tell but a big pill over the drawing certainly could.
+const RUN_BLINK_MS = 1000;      // the cadence, shared by CSS (--run-blink)
+function runStateOf(here, others, hasResult) {
+  const mine = here === "running";
+  const busy = mine || others > 0;
+  return {
+    busy,
+    mine,
+    chip: mine ? "detecting…"
+      : here === "error" ? "detect failed"
+      : hasResult ? "detected"
+      : "not detected",
+    chipCls: mine ? "run"
+      : here === "error" ? "warn"
+      : hasResult ? "ok"
+      : "",
+    flag: !busy ? ""
+      : mine ? "DETECTING THIS SHEET"
+      : `DETECTING ${others} OTHER PAGE${others === 1 ? "" : "S"}`,
+    btn: mine ? "Detecting…" : "Detect lines",
+  };
+}
+// RUN-STATE-END --------------------------------------------------------------
+
+// The DOM half. runStateNow() reads the live state; runFlagSync() paints all
+// four surfaces from that one reading, and is called from every beat that can
+// change it (setPageStatus, renderSheetHead, the detect handlers).
+function runStateNow() {
+  const ps = state.pageStatus || [];
+  let others = 0;
+  for (let i = 0; i < ps.length; i++)
+    if (i !== state.page && ps[i] === "running") others++;
+  return runStateOf(ps[state.page], others, !!state.result);
+}
+function runFlagSync() {
+  const rs = runStateNow();
+  const flag = $("runFlag");
+  if (flag) {
+    flag.hidden = !rs.busy;
+    const t = $("runFlagTxt");
+    if (t && t.textContent !== rs.flag) t.textContent = rs.flag;
+  }
+  const b = $("detectBtn");
+  if (b) {
+    b.classList.toggle("running", rs.mine);
+    // aria-busy, not disabled: a second press is still a legitimate retry and
+    // taking the control away mid-run is how the old UI got accused of doing
+    // nothing. The label says what is happening; the button still works.
+    b.setAttribute("aria-busy", rs.mine ? "true" : "false");
+    if (b.textContent !== rs.btn) b.textContent = rs.btn;
+  }
+  document.body.classList.toggle("run-busy", rs.busy);
+  return rs;
+}
+
 $("detectBtn").onclick = async () => {
-  await fetch(`/api/job/${state.job}/page/${state.page}/detect`, { method: "POST" });
-  setStatus("detecting…", "busy");
+  // Paint the run BEFORE the round trip, not after it. The POST below is the
+  // first thing that can take a second on a cold worker, and that second was
+  // exactly the window in which the app looked asleep.
   setPageStatus(state.page, "running");
+  setStatus("detecting…", "busy");
+  // ... AND TAKE IT BACK IF THE RUN NEVER STARTED. Painting first is what
+  // makes the app feel awake, and it is also what turns an unreachable
+  // server into a permanent lie: this fetch used to be unguarded, so a
+  // rejected POST (server restarted, wifi blip, laptop wake) killed the
+  // promise, poll() never ran, and all four surfaces blinked "DETECTING
+  // THIS SHEET" forever - measured offline 2026-09-03, still lit twelve
+  // seconds after the connection came back, clearing only on a reload.
+  // Before these surfaces existed the same failure was silent; loud and
+  // wrong is worse than quiet and wrong, so the catch is part of the
+  // feature, not a tidy-up.
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/detect`,
+                          { method: "POST" });
+    if (!r.ok) throw new Error("detect returned " + r.status);
+  } catch (e) {
+    setPageStatus(state.page, "error");
+    setStatus("the detection never started — " + (e && e.message
+      ? e.message : "the server could not be reached")
+      + ". Press Detect to try again.", "err");
+    return;
+  }
   poll(state.gen);
 };
 async function poll(gen = state.gen) {
@@ -744,6 +892,10 @@ function setPageStatus(p, st) {
   const b = t && t.querySelector(".thumb-badge");
   if (b) { b.className = "thumb-badge " + st; b.title = BADGE_TITLE[st] || st; }
   if (p === state.page) renderSheetHead();   // status chip mirrors the badge
+  // ...and so does the canvas flag and the Detect button. A page OTHER than
+  // the one on screen going running (Detect all) still has to reach the flag,
+  // so this is outside the `p === state.page` guard.
+  runFlagSync();
 }
 async function refreshPageStatuses() {
   const job = state.job;
@@ -887,7 +1039,22 @@ $("detectAllBtn").onclick = async () => {
     if (state.pageStatus[p] === "done") continue;
     setStatus(`detecting page ${p + 1} / ${n}…`, "busy");
     setPageStatus(p, "running");
-    await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+    // Same guard as the single-page button above, and the same reason: an
+    // unreachable server used to strand the sweep with "Stop" on the button
+    // and a page marked running forever. The status poll below already
+    // catches its own failures; the START never did.
+    try {
+      const r = await fetch(`/api/job/${job}/page/${p}/detect`, { method: "POST" });
+      if (!r.ok) throw new Error("detect returned " + r.status);
+    } catch (e) {
+      setPageStatus(p, "error");
+      state.detectAll = null;
+      $("detectAllBtn").textContent = "Detect all";
+      setStatus(`page ${p + 1} never started — ` + (e && e.message
+        ? e.message : "the server could not be reached")
+        + ". Press Detect all to resume.", "err");
+      return;
+    }
     while (true) {
       if (state.detectAll !== job || state.job !== job) return;
       let j;
@@ -948,6 +1115,8 @@ function pageReset() {
   // the detection and everything derived from it
   state.result = null; state.isolate = null;
   state.include = new Map(); state.labels = new Map();
+  // eye overrides are per PAGE, like the ticks they shadow (FAM-VIS)
+  state.vis = new Map();
   state.seedLabels = new Map(); state.chainLabels = new Map();
   state.inheritedInc = new Map();
   state.excluded = new Set();
@@ -963,6 +1132,7 @@ function pageReset() {
   state.sgPartial = new Map();
   // drawing / snapping / extending
   state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.polySnap = false;      // the polygon close-snap preview (POLY-SNAP)
   state.extendAnchor = null; state.drawPend = null; drawFamClose();
   // a fresh page invalidates every snapshot on the undo stack ("Reset edits"
   // reloads through here, and re-detect replaces every chain object)
@@ -1418,8 +1588,11 @@ function renderMiniLegend() {
     localStorage.getItem("core-minilegend") === "min");
   const rows = $("mlRows");
   rows.innerHTML = "";
+  // A LEGEND FOR THE DRAWING lists what is ON the drawing, so it follows the
+  // eye, not the takeoff mark (FAM-VIS). Identical to the old list until an
+  // eye is actually clicked, because famVis defaults to the tick.
   const vis = state.result.styles
-    .filter(st => state.include.get(st.style_id))
+    .filter(st => famVis(st.style_id))
     .sort((a, b) => b.length_pt - a.length_pt);
   const sc = state.result.scale;
   const ftPerIn = sc ? sc.ft_per_paper_inch : null;
@@ -1446,11 +1619,25 @@ function renderMiniLegend() {
       lab.textContent = state.labels.get(st.style_id) || st.suggested_label
         || `${st.class} · ${st.signature}`;
     }
+    // NOT IN THE TAKEOFF, said on the row that shows its footage. This
+    // list used to BE the counted set - it was built from state.include -
+    // so a footage here was a figure in the bid by construction. Now that
+    // the eye and the takeoff mark are separate, a family can be drawn and
+    // uncounted, and this became the one surface showing quantities without
+    // saying which kind: measured 2026-09-03 on Oncor C-03, the top row read
+    // "14.1k ft" while the tally below read 34.0k ft and did not include it.
+    // The sidebar row and the line card both carry the mark; so does this.
+    const counted = !!state.include.get(st.style_id);
+    if (!counted) row.classList.add("not-counted");
     const ft = document.createElement("span");
-    ft.className = "ml-ft";
+    ft.className = "ml-ft" + (counted ? "" : " not-counted");
     const q = ftPerIn ? styleLenPt(st) / 72 * ftPerIn : styleLenPt(st);
     ft.textContent = (q >= 1000 ? (q/1000).toFixed(1) + "k" : q.toFixed(0))
-      + (ftPerIn ? " ft" : " pt");
+      + (ftPerIn ? " ft" : " pt") + (counted ? "" : " · not counted");
+    if (!counted)
+      ft.title = "Drawn on the sheet, but this family is out of the takeoff, "
+        + "so this footage is NOT in the tally or the export. The takeoff "
+        + "mark in the line-styles list is what puts it back.";
     // the second surface a line is identified on, so it gets the same jump
     // to the styles list. Its own button, with stopPropagation, because the
     // row's plain click already means "isolate" and that meaning is kept.
@@ -1496,6 +1683,10 @@ function renderSheetHead() {
   // page switch, every scale change (renderSheetHead is what all eleven of
   // those call). Before the early return, so an empty app clears it too.
   renderSheetFacts();
+  // Before the early return, for the same reason renderSheetFacts is: closing
+  // the document has to clear the run flag too, and an empty app takes the
+  // early exit below.
+  runFlagSync();
   const el = $("sheetHead");
   if (!state.job) { el.hidden = true; return; }
   el.hidden = false;
@@ -1568,12 +1759,14 @@ function renderSheetHead() {
         sc.source === "ocr" ? "warn" : "ok"));
     }
   }
-  const st = state.result ? "detected"
-    : (state.pageStatus || [])[state.page] === "running" ? "detecting…"
-    : (state.pageStatus || [])[state.page] === "error" ? "detect failed"
-    : "not detected";
-  meta.append(chip(st, state.result ? "ok"
-    : st === "detect failed" ? "warn" : ""));
+  // THE RUN CHIP NOW COMES FROM runStateOf(), the one place that decides what
+  // a run's state is. It used to be worked out here with `state.result ?
+  // "detected" : running ? "detecting…"`, which reads the RESULT before the
+  // RUN: pressing Detect on a sheet that already had a result left this chip
+  // saying "detected" in green while the status bar said "detecting…". Two
+  // surfaces, one run, opposite answers. Running now wins, everywhere.
+  const rs = runStateNow();
+  meta.append(chip(rs.chip, rs.chipCls));
   el.append(name, meta);
   renderScalePick(el);
   renderScaleTyped(el);
@@ -5359,6 +5552,108 @@ function revealStyleRow(sid, from) {
   return true;
 }
 
+// ---- the two marks on a style row (FAM-VIS) ------------------------------
+// Both are real <button>s with aria-pressed, not checkboxes: they are two
+// different facts and a pair of identical ticks is exactly the confusion this
+// replaces. Each carries its own icon, its own colour and a title that says
+// which fact it is - the partner's complaint was that he could not tell what
+// the one checkbox meant, so the answer cannot be a second one.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function markSvg(paths) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const el = document.createElementNS(SVG_NS, "path");
+    el.setAttribute("d", d);
+    svg.appendChild(el);
+  }
+  return svg;
+}
+// an open eye, and the same eye with a stroke through it
+const EYE_OPEN = ["M2.2 12S6 5.6 12 5.6 21.8 12 21.8 12 18 18.4 12 18.4 2.2 12 2.2 12Z",
+                  "M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6Z"];
+const EYE_OFF  = EYE_OPEN.concat(["M4 20 20 4"]);
+// a takeoff list with a tick against it: three rules and a check
+// A TAKEOFF LIST WITH A TICK AGAINST IT for in; the same list STRUCK THROUGH
+// for out. The slash is the shared grammar with the eye - one glyph says what
+// the mark is about, the slash says not - so the pair reads as a system after
+// being told once instead of having to be learned twice.
+const TAKE_IN  = ["M4 7h8M4 12h6M4 17h5", "m13.6 14.4 2.6 2.8 5.2-6"];
+const TAKE_OUT = ["M4 7h8M4 12h6M4 17h5", "M4 20 20 4"];
+
+function styleEyeBtn(s) {
+  const on = famVis(s.style_id);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mark mark-eye" + (on ? " on" : "")
+    + (famVisOverridden(s.style_id) ? " ovr" : "");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-label", (on ? "Hide" : "Show") + " this line type on the drawing");
+  b.appendChild(markSvg(on ? EYE_OPEN : EYE_OFF));
+  b.title = (on ? "SHOWN on the drawing." : "HIDDEN on the drawing.")
+    + " Click to " + (on ? "hide" : "show") + " it." + LF + LF
+    + "This is about the picture only. It changes no footage, no count and no "
+    + "price - the mark to its right is the one that decides what the takeoff "
+    + "counts." + LF + LF
+    + (famVisOverridden(s.style_id)
+        ? "You have set this by hand, so it no longer follows the takeoff "
+          + "mark. Click it back to match and it follows again."
+        : "It follows the takeoff mark until you set it by hand.");
+  b.onclick = (e) => {
+    e.stopPropagation();
+    setFamVis(s.style_id, !famVis(s.style_id));
+    const now = famVis(s.style_id);
+    setStatus((state.labels.get(s.style_id) || s.suggested_label || "this line type")
+      + (now ? " is shown on the drawing again" : " is hidden on the drawing")
+      + " — the takeoff is unchanged");
+    renderStyles(); renderMiniLegend(); draw();
+  };
+  return b;
+}
+
+function styleTakeBtn(s) {
+  const on = !!state.include.get(s.style_id);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "mark mark-take" + (on ? " on" : "");
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-label",
+    (on ? "Take out of" : "Add to") + " the takeoff: " + (s.suggested_label || ""));
+  b.appendChild(markSvg(on ? TAKE_IN : TAKE_OUT));
+  b.title = (on
+      ? "IN THE TAKEOFF: this family's " + fmtQty(styleLenPt(s))
+        + " is counted, priced and exported."
+      : "NOT IN THE TAKEOFF: this family's " + fmtQty(styleLenPt(s))
+        + " is left out of every number.")
+    + " Click to " + (on ? "take it out." : "add it.");
+  return b;
+}
+
+// The one-line key at the top of the list. Two new marks with no words is a
+// second puzzle, not a fix, so the list says what they are once - built from
+// the same icon constants, so the key can never draw a mark the rows do not.
+function styleMarksKey() {
+  const key = document.createElement("div");
+  key.className = "marks-key";
+  const seg = (paths, cls, txt) => {
+    const w = document.createElement("span");
+    w.className = "mk-seg";
+    const ic = document.createElement("span");
+    ic.className = "mark " + cls + " on";
+    ic.appendChild(markSvg(paths));
+    const t = document.createElement("span");
+    t.textContent = txt;
+    w.append(ic, t);
+    return w;
+  };
+  key.append(seg(EYE_OPEN, "mark-eye", "shown on the drawing"),
+             seg(TAKE_IN, "mark-take", "counted in the takeoff"));
+  key.title = "Two separate things. The eye is the picture; the list-with-a-tick "
+    + "is the money. Hiding a line type does not change a single number.";
+  return key;
+}
+
 function renderStyles() {
   const box = $("styleList");
   box.innerHTML = "";
@@ -5373,6 +5668,8 @@ function renderStyles() {
   // missing feature. So: per row where the sheet HAS layers, and once for
   // the sheet where it has none, because 60 rows each reading "no CAD layer"
   // is noise rather than evidence.
+  // WHAT THE TWO MARKS MEAN, once, above the rows that carry them.
+  box.appendChild(styleMarksKey());
   const anyLayer = state.result.styles.some(s => (s.layer || "").trim());
   if (!anyLayer && state.result.styles.length) {
     const note = document.createElement("div");
@@ -5423,25 +5720,41 @@ function renderStyles() {
     const row = document.createElement("div");
     const sv = (state.scopeV && state.scopeV.get(s.style_id)) || { v: "unknown" };
     row.className = "style-row" + (state.include.get(s.style_id) ? "" : " off")
+      + (famVis(s.style_id) ? "" : " novis")
       + (sv.v === "out" ? " scope-out" : sv.v === "in" ? " scope-in"
         : sv.v === "kept" ? " scope-kept" : "");
     row.dataset.sid = s.style_id;
     row.dataset.scope = sv.v;
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !!state.include.get(s.style_id);
+    // TWO FACTS, TWO MARKS. One checkbox used to carry both "draw this on the
+    // sheet" and "count this in the takeoff", and famShown() read it for the
+    // canvas while every quantity read it for the numbers. From the
+    // 2026-09-02 screen share: "Instead of checkboxes, there's one that's
+    // like an eye for on or off visually, aka rendered versus not rendered
+    // ... then another one which is some little symbol that means added to
+    // takeoff or not." See famVis() for why the eye FOLLOWS the takeoff mark
+    // until it is touched - that is what keeps every default exactly where it
+    // was, which the owner and the partner explicitly agreed not to move.
+    const marks = document.createElement("div");
+    marks.className = "style-marks";
+    marks.appendChild(styleEyeBtn(s));
+    const cb = styleTakeBtn(s);
     if (state.inheritedInc && state.inheritedInc.has(s.style_id))
-      cb.title = "Carried over from another sheet of this set — change it "
-        + "here to override for this page.";
-    cb.onclick = (e) => { e.stopPropagation(); setInclude(s.style_id, cb.checked);
+      cb.title += LF + LF + "Carried over from another sheet of this set "
+        + "— change it here to override for this page.";
+    marks.appendChild(cb);
+    cb.onclick = (e) => { e.stopPropagation();
+      const on = !state.include.get(s.style_id);
+      setInclude(s.style_id, on);
+      const cbChecked = on;
       // Ticking a row the scope filter set aside IS the put-back: record it,
       // or scopeApply() would untick it again on the next repaint and the
       // operator would watch their own click undo itself.
-      if (sv.v === "out" && cb.checked) { scopeKeepRow(s, true); return; }
-      if (sv.v === "kept" && !cb.checked) { scopeKeepRow(s, false); return; }
+      if (sv.v === "out" && cbChecked) { scopeKeepRow(s, true); return; }
+      if (sv.v === "kept" && !cbChecked) { scopeKeepRow(s, false); return; }
       // A hand tick on the row itself - and only that - also speaks for the
       // set (scope put-backs returned above; bulk buttons never come here).
-      setIncludeSetWide(s, cb.checked);
+      setIncludeSetWide(s, cbChecked);
       renderStyles(); renderChips(); renderItemized(); renderMiniLegend(); draw(); };
 
     // a real pattern sample, not a flat chip: estimators match rows to
@@ -5733,7 +6046,7 @@ function renderStyles() {
       famRenderList(s);
     };
 
-    row.append(cb, sw, main, mm, badge);
+    row.append(marks, sw, main, mm, badge);
     if (mineEl) row.appendChild(mineEl);
     row.appendChild(famBtn);
     if (layerEl) row.appendChild(layerEl);
@@ -11234,7 +11547,7 @@ function ewPageReset() {
   // staleness is the one that drops out. Same sibling gap a0a71cc closed
   // for state.ew, left open for its neighbour.
   state.ewBound = null;
-  state.ewBoundDraft = []; state.ewBoundHover = null;
+  state.ewBoundDraft = []; state.ewBoundHover = null; state.polySnap = false;
   renderEwBound();
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
@@ -11747,13 +12060,17 @@ $("ewBoundDraw").onclick = () => {
   if (state.tool === "ew-bound-draw") { ewBoundDrawCancel("limit of work: drawing cancelled"); return; }
   state.tool = "ew-bound-draw";
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.add("active");
   syncCursor();
-  setStatus("limit of work: click the corners of the graded area "
-    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+  setStatus("limit of work: click the corners of the graded area"
+    + POLY_CLOSE_HINT, "busy");
 };
 function ewBoundDrawClick(px, py) {
   const d = state.ewBoundDraft;
+  // SNAP TO CLOSE. A click inside POLY_CLOSE_PX of the first corner IS the
+  // close, not a new corner - the fifth point the partner kept getting.
+  if (polyCloseHit(d, px, py, polyCloseTolPt())) { polySnapClear(); return ewBoundDrawFinish(); }
   const last = d[d.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
   d.push([px, py]);
@@ -11765,7 +12082,7 @@ function ewBoundDrawClick(px, py) {
     const sf = Math.abs(polyAreaPt(d)) * ftPerPt * ftPerPt;
     live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
   }
-  setStatus(`limit of work: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`limit of work: ${d.length} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function ewBoundDrawFinish() {
@@ -11779,6 +12096,7 @@ function ewBoundDrawFinish() {
   }
   state.tool = null;
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.remove("active");
   syncCursor();
   if (ewBoundSet(pts, "drawn outline")) {
@@ -11791,6 +12109,7 @@ function ewBoundDrawFinish() {
 function ewBoundDrawCancel(msg) {
   state.tool = null;
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.remove("active");
   syncCursor();
   if (msg) setStatus(msg);
@@ -11894,8 +12213,10 @@ function ewPickAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     for (let i = 1; i < ch.points.length; i++) {
       const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
       if (d < bestD) { bestD = d; best = ch; }
@@ -14772,14 +15093,109 @@ $("approveBtn").onclick = async () => {
 };
 
 // ---------- legend sheet vocabulary ----------
+// The TYPED-PATH / search-this-document route. Ends in legendApply, the same
+// tail the drop route uses, so the two cannot report a legend differently.
 async function loadLegendVocab(path) {
-  const r = await fetch(`/api/job/${state.job}/legend-sheet`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path || null }),
-  });
-  if (!r.ok) return setStatus("could not read a legend sheet", "err");
+  const whose = path ? path.split(/[\\/]/).pop() : "this document";
+  legendMsg(`reading ${whose}…`);
+  let r;
+  try {
+    r = await fetch(`/api/job/${state.job}/legend-sheet`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path || null }),
+    });
+  } catch (e) { return legendMsg("could not reach the server", "err"); }
+  if (!r.ok) {
+    let why = "could not read a legend sheet (" + r.status + ")";
+    try { const j = await r.json(); if (j && j.detail) why = j.detail; } catch (e) { /* not json */ }
+    return legendMsg(why, "err");
+  }
+  legendApply(await r.json(), whose);
+}
+// LEGEND-DROP ================================================================
+// THE LEGEND SHEET, AS A DROP TARGET.
+//
+// From the 2026-09-02 screen share. This control was a prompt() reading
+// "Legend sheet PDF path (blank = search this document):" and the owner's
+// business partner could not work out what to put in it - "what do I put here
+// to actually tell it it's this page?". Three things were wrong with it and
+// all three are the same thing: a browser prompt cannot take a FILE.
+//
+//   * A filesystem path is a thing only the owner, sitting at his own laptop,
+//     can supply. On the hosted box the server refuses paths outright
+//     (_client_pdf, HOSTED), so for every other person there was no way in.
+//   * The prompt did not say what a legend sheet IS, what reading one does,
+//     or - crucially - that it changes no quantity.
+//   * Blank meant "search this document", which is a real and useful action
+//     hidden inside an empty text field.
+//
+// All three are now on screen: a drop zone, a file picker behind it, the typed
+// path kept for the owner, and "Search this document instead" as its own
+// button. Nothing here applies a label - the vocabulary only fills the
+// suggestion list on the style rows, which is what it always did.
+function legendModalOpen() {
+  if (!state.job) return setStatus("open a plan first", "err");
+  $("lgPathIn").value = $("legendPath").value || "";
+  legendMsg("");
+  $("legendModal").hidden = false;
+  $("lgDrop").focus();
+}
+function legendModalClose() {
+  $("legendModal").hidden = true;
+  $("lgDrop").classList.remove("over");
+}
+function legendMsg(txt, cls) {
+  const el = $("lgMsg");
+  el.textContent = txt || "";
+  el.className = "lg-note" + (cls ? " " + cls : "");
+}
+
+// The one place a dropped or picked FILE becomes a vocabulary. Multipart to
+// /legend-sheet-upload, which runs the same scan the typed path does
+// (_legend_names in server.py) so the two routes can never read a legend
+// differently.
+async function legendReadFile(file) {
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name || "") && file.type !== "application/pdf")
+    return legendMsg(`“${file.name}” is not a PDF — a legend sheet has to be a PDF`, "err");
+  legendMsg(`reading ${file.name}…`);
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  let r;
+  try {
+    r = await fetch(url(`/api/job/${state.job}/legend-sheet-upload`),
+                    { method: "POST", body: fd });
+  } catch (e) {
+    return legendMsg("could not reach the server", "err");
+  }
+  if (!r.ok) {
+    let why = "could not read that PDF (" + r.status + ")";
+    try { const j = await r.json(); if (j && j.detail) why = j.detail; } catch (e) { /* not json */ }
+    return legendMsg(why, "err");
+  }
   const j = await r.json();
-  state.legendNames = j.names || [];
+  legendApply(j, file.name);
+}
+
+// Shared tail: the names land in the datalist and the operator is told what
+// happened, in the modal AND in the status bar, because the modal closes.
+function legendApply(j, whose) {
+  const names = j.names || [];
+  // A READ THAT FOUND NOTHING REPLACES NOTHING. The old code assigned
+  // `j.names || []` unconditionally, so a second read that came back empty -
+  // "Search this document instead" on a plan sheet that carries no legend,
+  // which is most of them - silently emptied the vocabulary the operator had
+  // just loaded from a legend PDF, and the label boxes lost their suggestions
+  // with no message saying so. Reproduced live on C3.0-Site-Plan-Rev.1 after
+  // dropping C1.1-LEGEND-&-NOTES: 26 names, then 0.
+  if (!names.length) {
+    return legendMsg(`no legend rows found in ${whose}`
+      + (state.legendNames.length
+          ? ` — the ${state.legendNames.length} names you already loaded are `
+            + `still there. Is that the sheet with the legend block on it?`
+          : ` — is that the sheet with the legend block on it?`), "err");
+  }
+  state.legendNames = names;
   const dl = $("legendVocab");
   dl.innerHTML = "";
   for (const n of state.legendNames) {
@@ -14788,17 +15204,58 @@ async function loadLegendVocab(path) {
     dl.appendChild(o);
   }
   renderStyles();
-  setStatus(state.legendNames.length
-    ? `${state.legendNames.length} names from the legend sheet — pick them in any label box`
-    : "no legend sheet found in this document");
+  legendModalClose();
+  setStatus(`${state.legendNames.length} names from ${whose} — pick them in any `
+    + `label box. Nothing was labelled and no quantity changed.`);
 }
-$("legendBtn").onclick = () => {
-  const p = prompt("Legend sheet PDF path (blank = search this document):",
-                   $("legendPath").value || "");
-  if (p === null) return;
-  $("legendPath").value = p;
-  loadLegendVocab(p.trim());
+
+$("legendBtn").onclick = legendModalOpen;
+$("lgClose").onclick = legendModalClose;
+$("lgFile").onchange = () => {
+  const f = $("lgFile").files && $("lgFile").files[0];
+  $("lgFile").value = "";           // so the same file can be picked twice
+  legendReadFile(f);
 };
+$("lgDrop").onclick = () => $("lgFile").click();
+$("lgDrop").onkeydown = (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("lgFile").click(); }
+};
+// dragover MUST be prevented or the browser navigates to the dropped file
+for (const ev of ["dragenter", "dragover"])
+  $("lgDrop").addEventListener(ev, (e) => {
+    e.preventDefault(); e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    $("lgDrop").classList.add("over");
+  });
+for (const ev of ["dragleave", "dragend"])
+  $("lgDrop").addEventListener(ev, () => $("lgDrop").classList.remove("over"));
+$("lgDrop").addEventListener("drop", (e) => {
+  e.preventDefault(); e.stopPropagation();
+  $("lgDrop").classList.remove("over");
+  const fs = (e.dataTransfer && e.dataTransfer.files) || [];
+  if (!fs.length) return legendMsg("nothing was dropped", "err");
+  if (fs.length > 1)
+    legendMsg(`${fs.length} files dropped — reading the first`);
+  legendReadFile(fs[0]);
+});
+// the typed path, kept: the owner drives this box himself and a path is the
+// fastest thing he can give it
+$("lgPathGo").onclick = () => {
+  const p = $("lgPathIn").value.trim();
+  if (!p) return legendMsg("type a path, or drop a PDF above", "err");
+  $("legendPath").value = p;
+  loadLegendVocab(p);
+};
+$("lgPathIn").onkeydown = (e) => { if (e.key === "Enter") $("lgPathGo").click(); };
+// blank used to mean this, hidden inside an empty text field
+$("lgSearch").onclick = () => { $("legendPath").value = ""; loadLegendVocab(""); };
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("legendModal").hidden) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    legendModalClose();
+  }
+}, true);
+// LEGEND-DROP-END ============================================================
 
 // ---------- theme ----------
 // ONE store, TWO controls. `core-theme` in localStorage is the value; the
@@ -15333,7 +15790,13 @@ function draw() {
     ctx.moveTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
     for (let i = 1; i < state.ewBoundDraft.length; i++)
       ctx.lineTo(state.ewBoundDraft[i][0] * f2b, state.ewBoundDraft[i][1] * f2b);
-    if (state.ewBoundHover && !panning)
+    // THE SNAP, SHOWN BEFORE THE CLICK COMMITS. While the pointer is inside
+    // the close radius the rubber band runs to the FIRST corner instead of to
+    // the cursor, so the shape on screen is exactly the shape the click will
+    // make. Without this the snap is a surprise; with it, it is a promise.
+    if (state.polySnap)
+      ctx.lineTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
+    else if (state.ewBoundHover && !panning)
       ctx.lineTo(state.ewBoundHover[0] * f2b, state.ewBoundHover[1] * f2b);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -15343,6 +15806,7 @@ function draw() {
       ctx.fillStyle = CV_EWBOUND_DOT;
       ctx.fill();
     }
+    if (state.polySnap) drawPolyCloseRing(state.ewBoundDraft[0], CV_EWBOUND);
     ctx.restore();
   }
   // grading zone: in-progress hand-drawn outline (same grammar as the
@@ -15357,7 +15821,9 @@ function draw() {
     ctx.moveTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
     for (let i = 1; i < state.gzDraft.length; i++)
       ctx.lineTo(state.gzDraft[i][0] * fz, state.gzDraft[i][1] * fz);
-    if (state.gzHover && !panning)
+    if (state.polySnap)
+      ctx.lineTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
+    else if (state.gzHover && !panning)
       ctx.lineTo(state.gzHover[0] * fz, state.gzHover[1] * fz);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -15367,6 +15833,7 @@ function draw() {
       ctx.fillStyle = CV_GZONE;
       ctx.fill();
     }
+    if (state.polySnap) drawPolyCloseRing(state.gzDraft[0], CV_GZONE_DRAFT);
     ctx.restore();
   }
   // grading zone: in-progress box drag
@@ -15539,6 +16006,9 @@ function draw() {
   }
   drawStructural(ctx, k);
   ctx.restore();
+  // the card rides the sheet: a pan or a zoom moves the line under it, so its
+  // anchor is recomputed on the same frame rather than drifting off the line
+  if (typeof lineCardPlace === "function") lineCardPlace(null);
 }
 
 // Turn a detected cadence ("d9.0 d42.3 g9.0", "native 3 3") into a canvas
@@ -15958,8 +16428,7 @@ function chainHitAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null && ch.style_id !== state.isolate) continue;
-    if (state.isolate === null && !state.include.get(ch.style_id)) continue;
+    if (!famShown(ch.style_id)) continue;   // see famShown / FAM-VIS
     const pts = ch.points;
     for (let i = 1; i < pts.length; i++) {
       const d = distToSeg(px, py, pts[i-1], pts[i]);
@@ -16016,8 +16485,7 @@ function handleCanvasClick(e) {
     let tgt = null, tgtD = tolR;
     for (const ch of state.result.chains) {
       if (state.excluded.has(ch.chain_id) || ch.chain_id === state.selected) continue;
-      if (state.isolate !== null ? ch.style_id !== state.isolate
-                                 : !state.include.get(ch.style_id)) continue;
+      if (!famShown(ch.style_id)) continue;   // see famShown / FAM-VIS
       for (let i = 1; i < ch.points.length; i++) {
         const d = distToSeg(px, py, ch.points[i-1], ch.points[i]);
         if (d < tgtD) { tgtD = d; tgt = ch; }
@@ -16219,6 +16687,52 @@ function snapTouchesRect(points, rect, segT, ptIn) {
 }
 // SNAP-PURE-END
 
+// POLY-SNAP-BEGIN --------------------------------------------------------
+// SNAP THE LAST CLICK OF A DRAWN POLYGON BACK TO ITS FIRST CORNER.
+//
+// From the 2026-09-02 screen share. Drawing the limit of work the partner
+// ended up with FIVE points where he wanted four: "if you could have a thing
+// where it auto snaps when you're near, that'd be good." Reproduced live
+// before this change on C3.0-Site-Plan-Rev.1.pdf - four corners, then a fifth
+// click 8 px from the first: the draft went to 5 corners and the running area
+// slid from 35,958 SF to 35,598 SF, silently, because a corner 8 px from the
+// start is a corner and the tool had no way to know it was meant as a close.
+//
+// THREE POLYGONS SHARE THIS, and they are all the operator draws by hand:
+//   ew-bound-draw   the limit of work        (ewBoundDrawClick)
+//   gz-draw         a grading zone           (gzDrawClick)
+//   st-draw         a structure outline      (stDrawClick)
+// One predicate for all three, so they cannot disagree about what "near the
+// start" means - the three had already drifted into three copies of the same
+// click handler and this is the shared part being named.
+//
+// WHY >= 3. Closing on two corners makes a line, not a polygon. The operator
+// who has clicked twice and comes back near the start is still drawing (a
+// narrow spur along the same edge is an ordinary shape), and stealing that
+// click would make the tool unusable on exactly the shapes it is for. All
+// three finishers already refuse a 2-corner ring; this refuses to even offer.
+//
+// WHY A RADIUS AND NOT A BUCKET. CLAUDE.md section 5: `round(x / TOL)` answers
+// "which bin", not "are these within TOL". This is a genuine distance test
+// against ONE point, which is the shape that question needs.
+//
+// THE RADIUS IS A SCREEN-PIXEL BUDGET, converted to page points at the live
+// zoom, so the reach is 14 px whether the sheet is at 22% or 400%. It does NOT
+// reuse snapTolFrom: that adds a flat 1.5 pt pad on top, which is a sensible
+// floor for picking an existing line when zoomed out but at 400% turns into
+// nearly 25 screen px of grab - and at 400% the operator is placing corners
+// precisely, which is exactly when a greedy close is worst. Measured: 14.0 px
+// here at every zoom, against snapTolFrom's 20.3 / 16.7 / 24.8 px at
+// 0.22x / 1x / 4x.
+const POLY_CLOSE_PX = 14;
+function polyCloseTolFrom(k, dpi) { return POLY_CLOSE_PX / k / (dpi / 72); }
+function polyCloseHit(draft, px, py, tolPt) {
+  if (!draft || draft.length < 3) return false;
+  const a = draft[0];
+  return Math.hypot(px - a[0], py - a[1]) <= tolPt;
+}
+// POLY-SNAP-END ----------------------------------------------------------
+
 // ---- the app-side wrapper: visibility, zoom, and the on-screen budget ----
 
 // Screen-space tolerances, in PIXELS, converted to page pt at the live zoom.
@@ -16237,6 +16751,61 @@ const SNAP_TOOLS = new Set(Object.keys(SNAP_RADII));
 
 function snapTolPt(px) { return snapTolFrom(px, state.view.k, IMG_DPI); }
 
+// ---- the DOM side of the polygon close-snap (POLY-SNAP above) -----------
+// One place that knows which of the three hand-drawn polygons is armed, so
+// the click handler, the mousemove preview, the canvas ring and the status
+// wording all read the same draft. state.polySnap is the PREVIEW: it is set
+// on hover and it is what makes the snap visible BEFORE the click commits,
+// which is the half of the request that makes it predictable rather than
+// magic ("show the snap before the click").
+function polyActiveDraft() {
+  if (state.tool === "ew-bound-draw") return state.ewBoundDraft;
+  if (state.tool === "gz-draw") return state.gzDraft;
+  if (state.tool === "st-draw") return (state.st && state.st.drawPts) || null;
+  return null;
+}
+function polyCloseTolPt() { return polyCloseTolFrom(state.view.k, IMG_DPI); }
+// Would a click at (px,py) close the armed polygon? Used by all three click
+// handlers, and by the mousemove that arms the preview.
+function polyWouldClose(px, py) {
+  return polyCloseHit(polyActiveDraft(), px, py, polyCloseTolPt());
+}
+// Hover: arm or disarm the preview, and repaint only when it actually moved.
+function polySnapHover(px, py) {
+  const on = polyWouldClose(px, py);
+  if (state.polySnap === on) return false;
+  state.polySnap = on;
+  // a second, coarser tell: the crosshair that means "this click drops a
+  // corner" becomes the pointer that means "this click finishes the shape"
+  cv.classList.toggle("snap-close", on);
+  return true;
+}
+function polySnapClear() {
+  state.polySnap = false;
+  cv.classList.remove("snap-close");
+}
+// The ring on the first corner, drawn while the preview is armed. Deliberately
+// bigger than the corner dots and in the draft's own colour, so it reads as
+// "this corner is the target" and not as a new kind of vertex.
+function drawPolyCloseRing(pt, colour) {
+  const f = IMG_DPI / 72, k = state.view.k;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(pt[0] * f, pt[1] * f, 9 / k, 0, Math.PI * 2);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 2.5 / k;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(pt[0] * f, pt[1] * f, 3.5 / k, 0, Math.PI * 2);
+  ctx.fillStyle = colour;
+  ctx.fill();
+  ctx.restore();
+}
+// The sentence every one of the three tools ends with, so the operator is
+// told the close exists before they need it.
+const POLY_CLOSE_HINT = " — Enter, double-click, or click the first corner to close; Esc backs up";
+
 // THE shared pick. Same visibility rules as a plain canvas click: excluded,
 // hidden and isolated-away lines cannot be snapped to. `skip` drops one
 // chain (normally the one being edited). Radii default to the armed tool's.
@@ -16249,8 +16818,10 @@ function snapToChain(px, py, skip, pickPx, vtxPx) {
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
     if (skip !== null && skip !== undefined && ch.chain_id === skip) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     if (!ch.points || !ch.points.length) continue;
     cands.push(ch);
   }
@@ -17417,6 +17988,161 @@ function renderSelElev(ch, ev, prov) {
   box.appendChild(note);
 }
 
+// LINE-CARD ==================================================================
+// WHAT DID I JUST CLICK, WHERE I AM ALREADY LOOKING.
+//
+// From the 2026-09-02 screen share. The partner wanted the left-hand line list
+// to open on every click - "anytime you click on something, you want to
+// immediately know what it is" - and the owner pushed back: "sometimes you
+// just want to look at it, you don't want to mess up what you're looking at on
+// your left tab". The partner then proposed the middle ground himself: "either
+// it should enlist or it should hover somewhere so you can see it."
+//
+// WHY THE SELECTION BAR WAS NOT ALREADY THE ANSWER, measured on 512f474 rather
+// than argued: clicking a line at y=537 in a 1000px window put the readout at
+// y=915 - 378 px away, bottom-right, in 12px type, sharing a strip with the
+// family switcher, "in list" and the colour chip. It says the right words in a
+// place the eye is not. The bar is KEPT exactly as it is (another branch owns
+// its elevation chip); this is additive and sits on the line itself.
+//
+// IT CHANGES NOTHING. It reads state and writes none: no isolate, no scroll,
+// no renderStyles, no revealStyleRow, no tick. That is the whole point of the
+// owner's objection, so it is worth saying twice - the ONLY state this file
+// owns is lineCardOff, whether the operator dismissed the card for now.
+//
+// The elevation is rendered through elevProvenance/elevChipTag, the same
+// helpers the selection bar uses, so a change to how provenance is worded
+// reaches both surfaces at once instead of leaving one behind.
+let lineCardOff = false;         // dismissed with x, until the next selection
+let lineCardFor = null;          // the chain the card is currently describing
+
+// Where a chain sits on screen, in #stage coordinates. The canvas fills
+// #stage (inset:0), so the canvas transform IS the card's offset parent's.
+function lineCardAnchor(ch) {
+  const P = (ch && ch.points) || [];
+  if (!P.length) return null;
+  const q = P[Math.floor(P.length / 2)];
+  const { x, y, k } = state.view;
+  const f = IMG_DPI / 72;
+  return [q[0] * f * k + x, q[1] * f * k + y];
+}
+
+// The selection moved. A NEW line un-dismisses the card, because "hide this
+// one" is not "never show me another"; the SAME line stays dismissed.
+function lineCardOnSelect(ch) {
+  if (ch && ch.chain_id !== lineCardFor) lineCardOff = false;
+  lineCardFor = ch ? ch.chain_id : null;
+  lineCardSync();
+}
+
+function lineCardHide() {
+  const el = $("lineCard");
+  if (el && !el.hidden) { el.hidden = true; el.textContent = ""; }
+}
+
+// Rebuild from the current selection. Called by updateSelBar (the one place
+// that already knows the selection changed) and re-POSITIONED by draw(), so a
+// pan or a zoom keeps the card on its line.
+function lineCardSync() {
+  const el = $("lineCard");
+  if (!el) return;
+  const ch = state.selected === null ? null : chainById(state.selected);
+  if (!ch || lineCardOff || !state.result) return lineCardHide();
+  const st = state.result.styles.find(s => s.style_id === ch.style_id);
+  const label = state.chainLabels.get(ch.chain_id)
+    || state.labels.get(ch.style_id) || (st && st.suggested_label) || "";
+  el.textContent = "";
+
+  const head = document.createElement("div");
+  head.className = "lc-head";
+  if (st) {
+    const sw = document.createElement("canvas");
+    sw.className = "lc-swatch";
+    drawPatternSample(sw, st, 52, 14);
+    head.appendChild(sw);
+  }
+  const nm = document.createElement("b");
+  nm.className = "lc-name";
+  nm.textContent = label || ("line #" + ch.chain_id);
+  head.appendChild(nm);
+  const x = document.createElement("button");
+  x.type = "button"; x.className = "lc-x";
+  x.textContent = "×";
+  x.title = "Hide this card until the next line you click";
+  x.setAttribute("aria-label", "Hide this card");
+  x.onclick = (e) => { e.stopPropagation(); lineCardOff = true; lineCardHide(); };
+  head.appendChild(x);
+  el.appendChild(head);
+
+  // the measurement, in the same words and the same order the bar uses
+  const wf = wzChainFrac(ch);
+  const facts = document.createElement("div");
+  facts.className = "lc-facts";
+  facts.textContent = `${ch.class} · ${fmtQty(chainLenPt(ch))} · ${ch.points.length} points`;
+  el.appendChild(facts);
+  if (wzActive() && wf < 1) {
+    const w = document.createElement("div");
+    w.className = "lc-note";
+    w.textContent = wf > 0
+      ? `${fmtQty(chainCountedPt(ch))} of it is inside the work area`
+      : "outside the work area — counts 0";
+    el.appendChild(w);
+  }
+
+  const row = document.createElement("div");
+  row.className = "lc-marks";
+  // IS IT IN THE TAKEOFF - the fact the operator is usually actually asking,
+  // and the one the sidebar row now carries its own mark for (FAM-VIS).
+  const inc = !!state.include.get(ch.style_id);
+  const tk = document.createElement("span");
+  tk.className = "lc-tag " + (inc ? "in" : "out");
+  tk.textContent = inc ? "in the takeoff" : "NOT in the takeoff";
+  row.appendChild(tk);
+  if (!famVis(ch.style_id)) {
+    const hv = document.createElement("span");
+    hv.className = "lc-tag hid";
+    hv.textContent = "hidden by the eye";
+    row.appendChild(hv);
+  }
+  // the elevation, through the shared helpers so the two surfaces cannot word
+  // provenance differently
+  const ev = state.elev.byChain instanceof Map
+    ? state.elev.byChain.get(ch.chain_id) : undefined;
+  const z = (ev && typeof ev === "object") ? ev.z : ev;
+  if (z !== undefined && z !== null) {
+    const prov = elevProvenance(ev && typeof ev === "object" ? ev.how : undefined);
+    const mark = elevChipTag(prov, ev);
+    const ec = document.createElement("span");
+    ec.className = "lc-tag el" + (prov.cls ? " " + prov.cls : "");
+    ec.textContent = `EL ${z}` + (mark ? ` · ${mark}` : "");
+    ec.title = prov.why + elevProvenanceDetail(ev);
+    row.appendChild(ec);
+  }
+  el.appendChild(row);
+  el.hidden = false;
+  lineCardPlace(ch);
+}
+
+// Put the card beside the line, clamped inside the stage. It flips to the
+// other side rather than being cut off, because a card half off the canvas is
+// worse than the bar it replaces.
+function lineCardPlace(ch) {
+  const el = $("lineCard");
+  if (!el || el.hidden) return;
+  const at = lineCardAnchor(ch || (state.selected === null ? null : chainById(state.selected)));
+  if (!at) return lineCardHide();
+  const stage = $("stage");
+  const W = stage.clientWidth, H = stage.clientHeight;
+  const w = el.offsetWidth || 240, h = el.offsetHeight || 70;
+  const PAD = 10, GAP = 18;
+  let x = at[0] + GAP, y = at[1] - h - GAP;
+  if (x + w + PAD > W) x = at[0] - w - GAP;      // flip left
+  if (y < PAD) y = at[1] + GAP;                  // flip below
+  el.style.left = Math.max(PAD, Math.min(x, W - w - PAD)) + "px";
+  el.style.top = Math.max(PAD, Math.min(y, H - h - PAD)) + "px";
+}
+// LINE-CARD-END ==============================================================
+
 function updateSelBar(ch) {
   for (const id of ["splitBtn", "extendBtn", "sepBtn", "cutSpanBtn"])
     $(id).disabled = !ch;
@@ -17436,6 +18162,13 @@ function updateSelBar(ch) {
   // seeded - shows it. Same reveal, one writer.
   $("aiBtn").hidden = !state.result;
   $("removeBtn").disabled = !ch;
+  // THE CARD ON THE LINE (LINE-CARD). updateSelBar is the one place that
+  // already knows the selection moved, so it is where the card is rebuilt.
+  // ONE guarded call, deliberately: tests/test_sel_elevation.js evaluates
+  // updateSelBar in isolation against a stub scope it enumerates by hand, and
+  // that suite belongs to the branch reworking this bar's elevation chip. A
+  // typeof guard keeps this item additive to it - the same idiom draw() uses.
+  if (typeof lineCardOnSelect === "function") lineCardOnSelect(ch);
   if (!ch) { $("selInfo").textContent = ""; renderSelElev(null); return; }
   const st = state.result.styles.find(s => s.style_id === ch.style_id);
   const label = state.chainLabels.get(ch.chain_id) ||
@@ -18044,9 +18777,46 @@ function hotChainSet(cid) {
 // Is this family painted as itself right now? The one place that question is
 // answered, so the canvas (draw()'s `shown`) and the readout below cannot
 // drift apart. Isolate wins over the tick, in both directions.
+// FAM-VIS-BEGIN --------------------------------------------------------------
+// SHOWN ON THE DRAWING is a different fact from COUNTED IN THE TAKEOFF, and
+// until 2026-09-02 one checkbox carried both. From the screen share:
+// "Instead of checkboxes, there's one that's like an eye for on or off
+// visually, aka rendered versus not rendered ... then another one which is
+// some little symbol that means added to takeoff or not."
+//
+// THE EYE FOLLOWS THE TAKEOFF MARK UNTIL IT IS TOUCHED. state.vis holds
+// OVERRIDES ONLY and starts empty, so with no eye ever clicked famVis(sid) IS
+// state.include.get(sid) and the app renders exactly what it rendered before -
+// on the first paint, after memApply's inherited decisions, after a scope
+// pass, after all/none, after everything. That is deliberate and it is the
+// whole reason this is safe to land on a small branch: the owner and the
+// partner discussed additive versus subtractive on the call and landed on
+// LEAVING THE DEFAULTS ALONE. This item shows the state; it does not move it.
+//
+// setFamVis DELETES the override when it would agree with the tick again, so
+// the two can always be re-coupled by clicking the eye back - an override you
+// cannot get out of is a trap, and a persistent one would quietly diverge from
+// the tick the next time a decision arrived from another sheet.
+//
+// state.include keeps its meaning untouched: it is what the takeoff counts,
+// and it is the ONLY thing every quantity, the itemized rows, the CSV and the
+// approve export read. Nothing below this line touches a number.
+function famVis(sid) {
+  return state.vis.has(sid) ? !!state.vis.get(sid)
+                            : !!state.include.get(sid);
+}
+function famVisOverridden(sid) {
+  return state.vis.has(sid) && !!state.vis.get(sid) !== !!state.include.get(sid);
+}
+function setFamVis(sid, on) {
+  if (!!on === !!state.include.get(sid)) state.vis.delete(sid);
+  else state.vis.set(sid, !!on);
+}
+// FAM-VIS-END ----------------------------------------------------------------
+
 function famShown(sid) {
   return state.isolate !== null ? sid === state.isolate
-                                : !!state.include.get(sid);
+                                : famVis(sid);
 }
 
 // THE WORDS HALF OF THE GHOST HOVER. Hovering an unticked family now paints
@@ -18104,7 +18874,22 @@ function ghostBarSync() {
   } else if (off.length > 1) {
     name = off.length + " families";
   }
-  const key = off.join(",") + "|" + name;
+  // WHAT A GHOST MEANS DEPENDS ON WHICH MARK PUT IT THERE (FAM-VIS). This
+  // pill used to end "NOT counted in the takeoff." unconditionally, which was
+  // true while one checkbox carried both facts. It is not true any more: a
+  // family hidden by the EYE is ghosted and IS still counted, and telling the
+  // owner otherwise is the same class of lie the pill exists to prevent - it
+  // would read as a quantity that had silently left the bid.
+  const nIn = off.filter(sid => !!state.include.get(sid)).length;
+  const them = off.length === 1 ? "it" : "them";
+  const tail = " — shown so you can find " + them + " on the sheet. "
+    + (nIn === off.length
+        ? "Hidden by the eye; still counted in the takeoff."
+      : nIn === 0
+        ? "NOT counted in the takeoff."
+        : nIn + " hidden by the eye but still counted; "
+          + (off.length - nIn) + " not counted in the takeoff.");
+  const key = off.join(",") + "|" + name + "|" + tail;
   if (key === ghostBarKey) return;
   ghostBarKey = key;
   if (!off.length) { el.hidden = true; el.textContent = ""; return; }
@@ -18112,9 +18897,7 @@ function ghostBarSync() {
   const nm = document.createElement("b");
   nm.textContent = name;
   el.appendChild(nm);
-  el.appendChild(document.createTextNode(
-    " — shown so you can find " + (off.length === 1 ? "it" : "them")
-    + " on the sheet. NOT counted in the takeoff."));
+  el.appendChild(document.createTextNode(tail));
   el.hidden = false;
 }
 
@@ -18388,8 +19171,10 @@ function marqueePick(rect) {
   const out = [];
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     if (snapTouchesRect(ch.points, rect, wzSegT, wzPtIn)) out.push(ch);
   }
   return out;
@@ -19431,14 +20216,16 @@ function stArm(mode) {
   else if (state.tool === "cutspan") cancelCut();
   else if (state.tool === "reclass") $("reclassBtn").onclick();
   state.tool = mode; st.drawPts = []; st.hover = null;
+  polySnapClear();
   setStatus(mode === "st-pick"
     ? "structure: click a closed line that is the building outline (Esc cancels)"
-    : "structure: click each corner of the building — Enter or double-click closes, Esc backs up", "busy");
+    : "structure: click each corner of the building" + POLY_CLOSE_HINT, "busy");
   renderSt(); draw();
 }
 function stDisarm(msg) {
   const st = stSync();
   state.tool = null; st.drawPts = []; st.hover = null;
+  polySnapClear();
   if (msg !== undefined) setStatus(msg);
   renderSt(); draw();
 }
@@ -19452,8 +20239,10 @@ function stPickAt(px, py) {
   let best = null, bestD = tolPt;
   for (const ch of state.result.chains) {
     if (state.excluded.has(ch.chain_id)) continue;
-    if (state.isolate !== null ? ch.style_id !== state.isolate
-                               : !state.include.get(ch.style_id)) continue;
+    // WHAT YOU CANNOT SEE, YOU CANNOT PICK. famShown() is the canvas's own
+    // answer, so a family hidden by the eye is unpickable and one shown by it
+    // is pickable - before FAM-VIS this expression WAS famShown, inlined.
+    if (!famShown(ch.style_id)) continue;
     const P = ch.points;
     for (let i = 1; i < P.length; i++) {
       const d = distToSeg(px, py, P[i-1], P[i]);
@@ -19482,6 +20271,10 @@ function stPickAt(px, py) {
 }
 function stDrawClick(px, py) {
   const st = stSync();
+  // SNAP TO CLOSE - see POLY-SNAP. A building outline is the polygon most
+  // likely to be drawn back onto its own first corner, so it gets the same
+  // rule as the limit of work rather than a second, nearly-identical one.
+  if (polyCloseHit(st.drawPts, px, py, polyCloseTolPt())) { polySnapClear(); return stFinishDraw(); }
   const last = st.drawPts[st.drawPts.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
   st.drawPts.push([px, py]);
@@ -19491,7 +20284,7 @@ function stDrawClick(px, py) {
   if (n >= 3 && fpp) {
     live = ` · so far ${stFmt(stPolyArea(st.drawPts) * fpp * fpp, 0)} SF, ${stFmt(stPolyPerim(st.drawPts) * fpp, 0)} LF`;
   }
-  setStatus(`structure: ${n} corner(s)${live} — Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`structure: ${n} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function stFinishDraw() {
@@ -19508,6 +20301,7 @@ function stFinishDraw() {
   st.draft = { name: `Structure ${st.seq}`, pts, source: "drawn", chain_id: null, gap_pt: 0,
                depth_ft: st.depth_ft, layback_ft: st.layback_ft, footing_ft: st.footing_ft };
   state.tool = null; st.drawPts = []; st.hover = null;
+  polySnapClear();
   const c = stCalc(st.draft);
   setStatus(c.area_sf !== null
     ? `outline closed: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
@@ -19529,6 +20323,7 @@ handleCanvasClick = function (e) {
 addEventListener("mousemove", (e) => {
   if (state.tool !== "st-draw" || panning || !state.st || !state.st.drawPts.length) return;
   state.st.hover = ptFromEvent(e);
+  polySnapHover(state.st.hover[0], state.st.hover[1]);
   draw();
 });
 cv.addEventListener("dblclick", () => { if (state.tool === "st-draw") stFinishDraw(); });
@@ -19548,6 +20343,7 @@ cv.addEventListener("dblclick", () => {
 addEventListener("mousemove", (e) => {
   if (state.tool !== "ew-bound-draw" || panning || !state.ewBoundDraft.length) return;
   state.ewBoundHover = ptFromEvent(e);
+  polySnapHover(state.ewBoundHover[0], state.ewBoundHover[1]);
   draw();
 });
 addEventListener("keydown", (e) => {
@@ -19562,6 +20358,7 @@ addEventListener("keydown", (e) => {
     e.preventDefault(); e.stopImmediatePropagation();
     if (state.ewBoundDraft.length) {
       state.ewBoundDraft.pop();
+      polySnapClear();     // a pop can take the draft below 3, where nothing closes
       setStatus(state.ewBoundDraft.length
         ? `limit of work: ${state.ewBoundDraft.length} corner(s) ` + '—' + " Esc again removes another"
         : "all corners removed " + '—' + " Esc again exits", "busy");
@@ -19587,6 +20384,7 @@ addEventListener("keydown", (e) => {
     const st = stSync();
     if (state.tool === "st-draw" && st.drawPts.length) {
       st.drawPts.pop();
+      polySnapClear();
       setStatus(st.drawPts.length
         ? `structure: ${st.drawPts.length} corner(s) — Esc again removes another`
         : "all corners removed — Esc again exits the structure tool", "busy");
@@ -19643,7 +20441,8 @@ function renderSt() {
   pick.classList.toggle("active", state.tool === "st-pick");
   pick.onclick = () => state.tool === "st-pick" ? stDisarm("") : stArm("st-pick");
   const drawB = mk("button", "mini", "Draw outline");
-  drawB.title = "Click each corner of the building on the sheet; Enter or double-click closes";
+  drawB.title = "Click each corner of the building on the sheet; Enter, double-click, "
+    + "or a click back on the first corner closes it";
   drawB.classList.toggle("active", state.tool === "st-draw");
   drawB.onclick = () => state.tool === "st-draw" ? stDisarm("") : stArm("st-draw");
   modes.append(pick, drawB);
@@ -19815,7 +20614,7 @@ function drawStructural(ctx, k) {
     ctx.beginPath();
     ctx.moveTo(P[0][0] * f, P[0][1] * f);
     for (let i = 1; i < P.length; i++) ctx.lineTo(P[i][0] * f, P[i][1] * f);
-    if (st.hover) ctx.lineTo(st.hover[0] * f, st.hover[1] * f);
+    if (st.hover && !state.polySnap) ctx.lineTo(st.hover[0] * f, st.hover[1] * f);
     if (P.length >= 2) ctx.lineTo(P[0][0] * f, P[0][1] * f);   // closing edge preview
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([6 / k, 4 / k]);
@@ -19828,6 +20627,7 @@ function drawStructural(ctx, k) {
       ctx.fillStyle = CV_VERTEX; ctx.fill();
       ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
     }
+    if (state.polySnap) drawPolyCloseRing(P[0], ST_DRAFT_COLOR);
   }
 }
 
@@ -20359,10 +21159,11 @@ $("gzDraw").onclick = () => {
   if (state.tool === "gz-draw") { gzDrawCancel("grading zone: drawing cancelled"); return; }
   state.tool = "gz-draw";
   state.gzDraft = [];
+  polySnapClear();
   $("gzDraw").classList.add("active");
   syncCursor();
-  setStatus("grading zone: click the corners of the region "
-    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+  setStatus("grading zone: click the corners of the region"
+    + POLY_CLOSE_HINT, "busy");
 };
 $("gzBox").onclick = () => {
   if (!state.result) return setStatus("run Detect first", "err");
@@ -20382,6 +21183,9 @@ $("gzBox").onclick = () => {
 
 function gzDrawClick(px, py) {
   const d = state.gzDraft;
+  // SNAP TO CLOSE - see POLY-SNAP. Same predicate as the limit of work and
+  // the structure outline, so the three cannot disagree about "near enough".
+  if (polyCloseHit(d, px, py, polyCloseTolPt())) { polySnapClear(); return gzDrawFinish(); }
   const last = d[d.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return; // dblclick echo
   d.push([px, py]);
@@ -20391,7 +21195,7 @@ function gzDrawClick(px, py) {
     const sf = Math.abs(polyAreaPt(d)) * (fpi / 72) * (fpi / 72);
     live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
   }
-  setStatus(`grading zone: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`grading zone: ${d.length} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function gzDrawFinish() {
@@ -20405,6 +21209,7 @@ function gzDrawFinish() {
   }
   state.tool = null;
   state.gzDraft = []; state.gzHover = null;
+  polySnapClear();
   $("gzDraw").classList.remove("active");
   syncCursor();
   draw();
@@ -20413,6 +21218,7 @@ function gzDrawFinish() {
 function gzDrawCancel(msg) {
   state.tool = null;
   state.gzDraft = []; state.gzHover = null;
+  polySnapClear();
   $("gzDraw").classList.remove("active");
   syncCursor();
   if (msg) setStatus(msg);
@@ -20441,6 +21247,7 @@ cv.addEventListener("dblclick", () => { if (state.tool === "gz-draw") gzDrawFini
 addEventListener("mousemove", (e) => {
   if (state.tool !== "gz-draw" || panning || !state.gzDraft.length) return;
   state.gzHover = ptFromEvent(e);
+  polySnapHover(state.gzHover[0], state.gzHover[1]);
   draw();
 });
 // capture phase, same Esc semantics as the limit-of-work draw: back up one
@@ -20457,6 +21264,7 @@ addEventListener("keydown", (e) => {
     e.preventDefault(); e.stopImmediatePropagation();
     if (state.gzDraft.length) {
       state.gzDraft.pop();
+      polySnapClear();
       setStatus(state.gzDraft.length
         ? `grading zone: ${state.gzDraft.length} corner(s) ` + '—' + " Esc again removes another"
         : "all corners removed " + '—' + " Esc again exits", "busy");

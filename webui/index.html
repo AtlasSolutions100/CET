@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=74">
+<link rel="stylesheet" href="style.css?v=76">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -494,7 +494,7 @@
           <span id="gzState" class="ew-bound-state">none</span>
         </div>
         <div class="ew-bound-row">
-          <button id="gzDraw" class="mini" title="Click the corners of the region, Enter or double-click closes, Esc backs up one corner then cancels. Then declare the design for that region.">+ grading zone (draw)</button>
+          <button id="gzDraw" class="mini" title="Click the corners of the region; a click back on the first corner closes it, and so do Enter and double-click. Esc backs up one corner then cancels. Then declare the design for that region.">+ grading zone (draw)</button>
           <button id="gzBox" class="mini" title="Drag a rectangle over the region, then declare the design for it.">+ grading zone (box)</button>
         </div>
         <div id="gzRows" class="gz-rows"></div>
@@ -516,7 +516,7 @@
         </div>
         <div class="ew-bound-row">
           <button id="ewBoundPick" class="mini" title="Click the grading-limit line on the sheet. Most grading plans draw one - a dashed outline around the disturbed area - and using the sheet's own line beats any boundary we could invent.">use a line on the sheet</button>
-          <button id="ewBoundDraw" class="mini" title="Draw the limit by hand - click corners around the graded area, Enter or double-click closes, Esc backs up. For sheets whose limit line is broken, missing, or shaped with cuts a picked chain cannot follow.">draw it</button>
+          <button id="ewBoundDraw" class="mini" title="Draw the limit by hand - click corners around the graded area; a click back on the first corner closes it, and so do Enter and double-click. Esc backs up. For sheets whose limit line is broken, missing, or shaped with cuts a picked chain cannot follow.">draw it</button>
           <button id="ewBoundClear" class="mini" hidden title="Go back to the whole overlap of the two surfaces">clear</button>
         </div>
       </div>
@@ -844,6 +844,28 @@
          the ones with no elevation, which used to render nothing at all
          and were indistinguishable from a read that had not finished. -->
     <div id="selElev" class="sel-elev" hidden></div>
+    <!-- A RUN IN PROGRESS, WHERE THE EYE ALREADY IS. The only two places a
+         detection announced itself were 12px of text in the status bar at
+         the foot of the window and a grey chip in the sheet header - the
+         partner pressed Detect on the 2026-09-02 call and could not tell
+         anything had happened. This pill sits over the sheet, in the run
+         colour, and blinks on a 1s cadence shared with every other surface
+         that reports the same run (see RUN-STATE in app.js). Reduced motion
+         drops the blink and keeps the solid colour, which is still the
+         loudest thing on the canvas. -->
+    <div id="runFlag" class="run-flag" role="status" aria-live="polite" hidden>
+      <span class="rf-dot" aria-hidden="true"></span><span id="runFlagTxt"></span>
+    </div>
+    <!-- WHAT DID I JUST CLICK, WHERE I AM LOOKING. From the 2026-09-02 screen
+         share the partner wanted the line list to open on every click -
+         "anytime you click on something, you want to immediately know what it
+         is" - and the owner pushed back, correctly: "sometimes you just want
+         to look at it, you don't want to mess up what you're looking at on
+         your left tab". The partner then offered the middle ground himself:
+         "either it should enlist or it should hover somewhere so you can see
+         it." This is that. It reads state, writes none, and never touches the
+         left-hand list. -->
+    <div id="lineCard" class="line-card" role="status" aria-live="polite" hidden></div>
     <div id="miniLegend" class="mini-legend" hidden>
       <div class="ml-head"><span>ON SHEET</span><button id="mlToggle" class="mini" title="Collapse (L)">&ndash;</button></div>
       <div id="mlRows" class="ml-rows"></div>
@@ -1085,8 +1107,46 @@
     </div>
   </div>
 </div>
+<!-- THE LEGEND SHEET, AS A DROP TARGET.
+     From the 2026-09-02 screen share: this control was a prompt() asking for
+     a filesystem path and the owner's business partner could not work out
+     what to put in it - "what do I put here to actually tell it it's this
+     page?". A path is a thing only the owner, at his own laptop, can supply;
+     on the hosted box the server refuses paths outright, so for everyone else
+     there was no way in at all. Drop or pick a PDF now; the typed path is
+     kept, second, for the owner's own use. -->
+<div id="legendModal" class="lg-modal" hidden>
+  <div class="lg-card" role="dialog" aria-modal="true" aria-labelledby="lgTitle">
+    <div class="lg-head">
+      <h2 id="lgTitle">Read a legend sheet</h2>
+      <button id="lgClose" class="mini" title="Close (Esc)">&#10005;</button>
+    </div>
+    <p class="lg-lead">A legend sheet is the page that names the line types
+      (&ldquo;C1.1 LEGEND &amp; NOTES&rdquo;). Reading one fills the name box on
+      every style row with that sheet&rsquo;s own trade names. It changes no
+      quantity and applies no label by itself.</p>
+    <div id="lgDrop" class="lg-drop" tabindex="0" role="button"
+         aria-describedby="lgDropHint">
+      <div class="lg-drop-big">Drop a legend PDF here</div>
+      <div class="lg-drop-sub" id="lgDropHint">or <u>choose a file</u> &mdash;
+        one PDF, the sheet with the legend on it</div>
+      <input id="lgFile" type="file" accept="application/pdf,.pdf" hidden>
+    </div>
+    <div class="lg-or">or</div>
+    <div class="lg-path-row">
+      <label for="lgPathIn">A path on this machine</label>
+      <input id="lgPathIn" type="text" name="legend-path"
+             placeholder="C:\plans\C1.1-LEGEND-&amp;-NOTES.pdf">
+      <button id="lgPathGo" class="mini">Read it</button>
+    </div>
+    <div class="lg-actions">
+      <button id="lgSearch" class="mini">Search this document instead</button>
+      <span class="lg-note" id="lgMsg"></span>
+    </div>
+  </div>
+</div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=154"></script>
+<script src="app.js?v=156"></script>
 </body>
 </html>

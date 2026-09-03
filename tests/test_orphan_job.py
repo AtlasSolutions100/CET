@@ -119,6 +119,10 @@ PINNED = sorted([
     ("GET", J + "/page/{page}/confidence"),
     ("POST", J + "/page/{page}/approve"),
     ("POST", J + "/legend-sheet"),
+    # the drop route added 2026-09-02: same scan, a multipart file instead of
+    # a filesystem path, because a path is a thing only the owner on his own
+    # laptop can supply (and HOSTED refuses one outright)
+    ("POST", J + "/legend-sheet-upload"),
     ("GET", J + "/page/{page}/scale"),
     ("GET", J + "/page/{page}/calcstate"),
     ("POST", J + "/page/{page}/calcstate"),
@@ -220,7 +224,7 @@ def test_0_every_job_route_is_enumerated():
             f"{m} {p}" for m, p in sorted(set(live) - set(PINNED)))
         + "\n  -" + "\n  -".join(
             f"{m} {p}" for m, p in sorted(set(PINNED) - set(live))))
-    assert len(live) == 27, len(live)
+    assert len(live) == 28, len(live)
 
 
 def test_1_gate_fails_closed_on_a_missing_row():
