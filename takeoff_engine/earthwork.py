@@ -2473,6 +2473,31 @@ _DARK_MAX = 0.30
 # otherwise black-and-white sheet must not flip the whole page to color
 # screening (the monochrome Barn sheets are exactly that case).
 _POP_MIN = 2
+# ...AND the smaller population must be a real SHARE of the sheet, not two
+# strokes. The absolute floor above does not do what its own comment claims:
+# two strays are enough to trip it, and measured 2026-09-03 two sheets in the
+# corpus sit exactly one stroke from that edge -
+#
+#   sheet                       gray   dark   minority share   screening
+#   Oncor C-04 p3                 89     26         23%        fires, CORRECT
+#   Oncor C-06 p5                 60     15         20%        fires, CORRECT
+#   Oncor C-08 p7                 34     18         35%        fires, CORRECT
+#   Belle Farms ROAD GRADING      39      1          2%        held off
+#   C2.1-Grading-Plan              1     17          6%        held off
+#   C4.0 / C4.1-C4.4 (mono)        0   5-13          0%        held off
+#
+# - Belle Farms would screen 39 rows against 2 if it carried one more dark
+# stroke, and C2.1 would screen 17 against 2 with one more gray. Neither
+# sheet draws two populations; each just happens to carry a stray.
+#
+# 15% sits in the empty band between the highest wrong case (6%) and the
+# lowest right one (20%), so it closes both near-misses and MOVES NO SHEET
+# MEASURED: all three correct pages keep screening, all five held-off pages
+# stay held off. The threshold is a share of the seeded rows because that is
+# the quantity that distinguishes "the drafter screened one population" from
+# "a stray got in" - an absolute count cannot, at any value, since a big
+# sheet's stray count scales with the sheet.
+_POP_SHARE_MIN = 0.15
 
 
 def _ink_kind(color) -> str | None:
@@ -2519,8 +2544,21 @@ def family_verdicts(styles: list) -> dict:
             continue
         up = lab.upper()
         if "CONTOUR" in up:
-            role = ("existing" if "EXIST" in up
-                    else "proposed" if "PROPOSED" in up
+            # BOTH TOKENS -> ABSTAIN. This was a substring test with EXIST
+            # checked first, so an ordinary caption like "PROPOSED CONTOUR TO
+            # MATCH EXISTING GRADE (legend)" resolved to "existing" and put
+            # every chain in that family confidently on the wrong surface -
+            # and the legend tier has absolute precedence in
+            # split_rows_surface with no consistency check behind it, so
+            # nothing downstream could catch it. A row naming both surfaces
+            # does not say which one it IS; "contour" keeps the family
+            # seeding rows while letting colour and width decide the side,
+            # which is the same shape as the scale reader abstaining on a
+            # contradiction rather than picking the first candidate.
+            has_ex, has_pr = "EXIST" in up, "PROPOSED" in up
+            role = ("contour" if has_ex and has_pr
+                    else "existing" if has_ex
+                    else "proposed" if has_pr
                     else "contour")
         else:
             role = "noncontour"
@@ -2557,7 +2595,13 @@ def split_rows_surface(rows: list, chain_info: dict,
                  if k == "gray")
     n_dark = sum(1 for k in (kinds[r["chain_id"]] for r in rows)
                  if k == "dark")
-    two_inks = n_gray >= _POP_MIN and n_dark >= _POP_MIN
+    # BOTH floors: at least _POP_MIN rows of each ink, and the smaller of the
+    # two at least _POP_SHARE_MIN of every seeded row on the sheet. The share
+    # is over len(rows), not over gray+dark, so a sheet that is mostly a third
+    # ink cannot have two small populations vote it two-toned between them.
+    _ink_share = (min(n_gray, n_dark) / len(rows)) if rows else 0.0
+    two_inks = (n_gray >= _POP_MIN and n_dark >= _POP_MIN
+                and _ink_share >= _POP_SHARE_MIN)
     still = []
     for r in undecided:
         k = kinds[r["chain_id"]]
