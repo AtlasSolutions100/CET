@@ -3419,3 +3419,171 @@ def read_spot_grades(words: list, max_dx: float = 26.0,
         datum_info["legend_excluded"] = n_legend
         datum_info["z_missing"] = sum(1 for g in out if g["z"] is None)
     return out
+
+
+# --- COVERAGE: how much of this sheet's contour linework carries a height --
+#
+# THE HOLE THIS FILLS. Every fact needed to answer "how many of this sheet's
+# contours have an elevation" was already on the wire - the suggestion rows
+# carry `how` per row, the route reports n_chains per excluded family - and
+# nothing added them up. Measured by grep on 512f474: `spot_z_missing`
+# exists for SPOT grades and no field anywhere states a contour denominator.
+# So a sheet where the reader elevated 150 of 368 contour lines rendered
+# byte-identically to one where it elevated all of them, and the operator's
+# only route to the difference was counting linework by eye.
+#
+# WHAT IS COUNTED, and why each exclusion is the route's own.
+#
+# The DENOMINATOR is this sheet's contour linework: chains that
+#   - could be a contour at all (`_is_plan_chain`: not an annotation glyph,
+#     not on a profile/section/title-block layer);
+#   - the suggest route did not exclude (a family the legend named as
+#     something other than a contour, and near-white mask ink);
+#   - sit in a family the engine has a reason to call a contour: either the
+#     sheet's own legend named that family a contour row, or the family
+#     produced at least one elevation. A family with neither is NOT
+#     silently added to the denominator (it would make every sheet look
+#     hopeless) and NOT silently dropped either - it is reported as
+#     `unclassed`, because CLAUDE.md s5's rule is that a cap must be said
+#     out loud. Measured 2026-09-02: Barn civil p2 has 351 chains in
+#     contour families and 1,000 more in families with no contour evidence
+#     at all; reporting "351" with no mention of the 1,000 would be a
+#     coverage claim over a third of the sheet's linework.
+#
+# The NUMERATOR is the chains that carry a suggestion row, split by the
+# `how` that produced it, so "carries an elevation" can never be read as
+# "carries a printed elevation". Measured on Oncor C-04 (engine page index
+# 3 = printed sheet C-04, job e183a0d44d89): 368 contour chains, 150 with a
+# row - 0 inline, 20 radius, 69 gap-ocr, 26 inherited, 35 interval-infill.
+#
+# LENGTH AS WELL AS COUNT, and length is the honest one. C-04's 150 elevated
+# chains are 40.8% of the contour chains but 59.0% of the contour footage:
+# the reader lands labels on the long through-going contours and misses the
+# fragments. A count-only statement understates the coverage; a length-only
+# one hides how many separate lines a reviewer has to look at. Both ship.
+#
+# PURE. No PDF, no numpy, no I/O: plain dicts in, plain dict out, so the
+# arithmetic can be frozen against a recorded row set
+# (tests/test_ew_coverage.py) rather than re-measured off a sheet.
+COVERAGE_HOWS = ("inline", "radius", "gap-ocr", "inherited",
+                 "interval-infill", "unknown")
+
+
+class _CovChain:
+    """Attribute view over a stored chain dict, so this function and the
+    route agree on `_is_plan_chain` / `_chain_white` by CALLING them rather
+    than by two authors writing the same test twice."""
+
+    __slots__ = ("chain_id", "style_id", "length", "klass", "layer", "color")
+
+    def __init__(self, d):
+        self.chain_id = d.get("chain_id")
+        self.style_id = d.get("style_id")
+        self.length = d.get("length_pt") or 0.0
+        self.klass = d.get("class") or ""
+        self.layer = d.get("layer") or ""
+        self.color = d.get("color")
+
+
+def contour_coverage(chains, rows, verdicts=None, excluded=None) -> dict:
+    """How much of this sheet's contour linework carries an elevation.
+
+    chains:   [{chain_id, style_id, length_pt, class, layer, color}] - the
+              stored detect result's chains, as dicts.
+    rows:     the /earthwork/suggest suggestion rows, [{chain_id, how, z}].
+    verdicts: family_verdicts() output, {style_id: {"role", "label"}}.
+    excluded: chain ids the route took out of the seeding pool.
+
+    Returns a dict of counts and paper-point lengths - never a percentage:
+    the caller renders the share, so the numerator and the denominator are
+    always both on screen (CLAUDE.md s2).
+    """
+    verdicts = verdicts or {}
+    excl = {int(c) for c in (excluded or ())}
+    chs = [_CovChain(c) for c in (chains or [])]
+    by_id = {int(c.chain_id): c for c in chs if c.chain_id is not None}
+
+    rows = [r for r in (rows or []) if r is not None]
+    seeded, by_how = {}, {h: 0 for h in COVERAGE_HOWS}
+    for r in rows:
+        cid = r.get("chain_id")
+        if cid is None:
+            continue
+        cid = int(cid)
+        how = r.get("how") or "unknown"
+        if how not in by_how:
+            how = "unknown"
+        seeded[cid] = how
+
+    # The legend's own verdict, and the families that produced a row. A
+    # noncontour verdict only DISQUALIFIES when the same legend read also
+    # found a contour family somewhere - the route's rule, for the reason
+    # its comment gives (Stice: a legend that named the contours "PROPOSED
+    # LOT LINE" would otherwise delete 634 verified rows).
+    legend_fam = {int(sid) for sid, v in verdicts.items()
+                  if v.get("role") in ("existing", "proposed", "contour")}
+    noncontour = {int(sid) for sid, v in verdicts.items()
+                  if v.get("role") == "noncontour"}
+    legend_saw_contours = bool(legend_fam)
+    row_fam = {by_id[cid].style_id for cid in seeded if cid in by_id}
+    fam = legend_fam | {int(s) for s in row_fam if s is not None}
+
+    n = ln = cov_n = cov_len = 0
+    un_n = un_len = 0
+    counted = set()
+    fam_len: dict = {}
+    unelevated = []
+    for c in chs:
+        cid = int(c.chain_id) if c.chain_id is not None else None
+        if cid is None or not _is_plan_chain(c) or _chain_white(c):
+            continue
+        if cid in excl:
+            continue
+        if legend_saw_contours and c.style_id in noncontour:
+            continue
+        if c.style_id is not None and int(c.style_id) in fam:
+            n += 1
+            ln += c.length
+            fam_len[int(c.style_id)] = fam_len.get(int(c.style_id), 0.0) \
+                + c.length
+            if cid in seeded:
+                cov_n += 1
+                cov_len += c.length
+                counted.add(cid)
+            else:
+                unelevated.append({"chain_id": cid,
+                                   "style_id": int(c.style_id),
+                                   "length_pt": round(c.length, 1)})
+        else:
+            un_n += 1
+            un_len += c.length
+    # by_how describes the NUMERATOR - the contour chains this coverage
+    # statement claims are elevated - not every row the route returned. A
+    # row on a chain outside the denominator (an annotation glyph the
+    # reader elevated, a chain the exclusions removed) is counted in
+    # rows_outside instead, so with_elev and the row count reconcile
+    # rather than quietly disagreeing.
+    for cid, how in seeded.items():
+        if cid in counted:
+            by_how[how] += 1
+    # Longest first: a reviewer given 218 unlabelled lines should meet the
+    # ones that carry the most ground first.
+    unelevated.sort(key=lambda u: (-u["length_pt"], u["chain_id"]))
+    return {
+        "contour_chains": n,
+        "contour_len_pt": round(ln, 1),
+        "with_elev": cov_n,
+        "with_elev_len_pt": round(cov_len, 1),
+        "no_elev": n - cov_n,
+        "no_elev_len_pt": round(ln - cov_len, 1),
+        "by_how": by_how,
+        # rows whose chain is not in the contour denominator at all (a row
+        # on an excluded or non-plan chain). Reported so with_elev and
+        # len(rows) can be reconciled instead of quietly disagreeing.
+        "rows": len(seeded),
+        "rows_outside": len(seeded) - len(counted),
+        "unclassed_chains": un_n,
+        "unclassed_len_pt": round(un_len, 1),
+        "families": sorted(int(s) for s in fam),
+        "unelevated": unelevated,
+    }

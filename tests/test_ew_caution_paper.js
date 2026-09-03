@@ -82,10 +82,14 @@ eq(rawHits, 1, "`.caution` is read at exactly one site in app.js now");
 console.log("2. the same words reach the report");
 // ---------------------------------------------------------------------------
 const APPROVE_NOTE_MAX = 400;
-const APPROVE_NOTES_MAX = 6;
+// 6 until 2026-09-02: the earthwork block gained a seventh note (the contour
+// coverage statement - how much of this sheet's linework is behind the
+// volume), and server.py approve() moved to body.notes[:7] with it rather
+// than letting the new note push the last caveat off the report.
+const APPROVE_NOTES_MAX = 7;
 const mk = (extra) => new Function(
   "state", "APPROVE_NOTE_MAX", "APPROVE_NOTES_MAX", "ewModelName",
-  "ewAcceptedSplit", "ewBasisNote",
+  "ewAcceptedSplit", "ewBasisNote", "ewCoverageNote",
   (fnSrc("ewCautionText") || "function ewCautionText() { return ''; }")
   + "\n" + (SRC.match(/^const EW_CAUTION_HEAD = .*$/m) || [""])[0]
   + "\n" + (fnSrc("ewApproveNotes") || "function ewApproveNotes() { return []; }")
@@ -95,7 +99,10 @@ const mk = (extra) => new Function(
   (m) => String(m),
   () => ({ total: 21, printed: 17, nearby: 0, nearbyTagged: 0, infill: 4,
            inherited: 0, manual: 0, unknown: 0, machine: 17 }),
-  () => ["a machine-read note"]);
+  () => ["a machine-read note"],
+  // the coverage note the same report now carries
+  () => ["CONTOUR COVERAGE. This sheet draws 368 contour lines. 150 carry an "
+       + "elevation; 218 carry none at all."]);
 
 {
   const api = mk(RESULT);

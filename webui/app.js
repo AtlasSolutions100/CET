@@ -10891,7 +10891,7 @@ const SECTIONS = [
   ["stylesHead", ["styleList", "colorChips", "styleSearch"]],
   ["takeoffHead", ["itemized"]],
   ["ewHead", ["ewRows", "ewHint", "ewLimit", "ewLayers", "ewActions",
-              "ewBasis", "ewTake", "ewBalance"]],
+              "ewCoverage", "ewFilters", "ewBasis", "ewTake", "ewBalance"]],
   ["trHead", ["trBody", "trHint", "trBandBox", "trActions", "trTake"]],
   ["symHead", ["symRows", "symHint"]],
   ["coHead", ["coRows", "coHint"]],
@@ -11038,7 +11038,14 @@ const CARD_COUNTS = [
   ["stylesCount", "#styleList .style-row",
    () => (state.result && state.result.styles) ? state.result.styles.length : 0],
   ["takeoffCount", ".itemized .item-row:not(.head):not(.total)", null],
-  ["ewRowsCount", "#ewRows .ew-row", null],
+  // The earthwork rows are FILTERABLE and capped, so the total is the
+  // sheet's whole contour list - rows plus the lines that carry no
+  // elevation - and the label reads "23 of 368" whenever either is hiding
+  // something. Reporting the filtered number as the total is exactly the
+  // silent cap this card's own comment forbids.
+  ["ewRowsCount", "#ewRows .ew-row",
+   () => (state.ew && state.ew.rows)
+     ? state.ew.rows.length + ewStubs().length : 0],
   ["legendCount", "#legendBox .legend-chip", null],
   ["areasCount", "#arList .ar-row", null],
   ["bidCount", "#bidBox .bid-bucket", null],
@@ -11152,6 +11159,11 @@ function ewPageReset() {
   // sheet's 150 <div class="ew-row"> in the DOM, and anything that unhides
   // the panel before renderEw runs would show them again
   $("ewRows").innerHTML = "";
+  // ...and the coverage statement and the filter chips, for the same
+  // reason: they are the PREVIOUS sheet's contour counts, and a count for
+  // another drawing is the worst thing this panel can leave on screen.
+  $("ewCoverage").innerHTML = ""; $("ewCoverage").hidden = true;
+  $("ewFilters").innerHTML = ""; $("ewFilters").hidden = true;
   ewBusyPut("");
   $("ewResult").textContent = "";   // stale numbers must not survive a switch
   // ...and neither must the basis line or the consent button that belonged
@@ -11430,6 +11442,17 @@ async function ewFetchSuggest(gen) {
       // renderEwDropped. Held on the panel state so a re-render keeps it.
       dropped: j.suggestions_dropped || 0,
       ladder: j.ocr_ladder || null,
+      // HOW MUCH OF THIS SHEET'S CONTOUR LINEWORK THESE ROWS ARE.
+      // takeoff_engine.earthwork.contour_coverage, computed on the route:
+      // the denominator nothing in the app stated before 2026-09-02, plus
+      // the sheet's own contour interval and the chain ids of every contour
+      // line that carries no elevation at all.
+      cov: j.contour_coverage || null,
+      unelev: (j.contour_coverage && j.contour_coverage.unelevated) || [],
+      // review surface: which class of evidence is showing, in what order,
+      // and whether the disclosed cap is open. View state only - no row,
+      // no elevation and no volume depends on any of the three.
+      filter: null, sort: "z", showAll: false,
     };
     // the durable inputs for this page (server sidecar), applied before
     // the panel's first paint; chain-keyed values only where the chain
@@ -12162,6 +12185,269 @@ const EW_ITEM_RE = /^(Site Cut|Site Fill|Strip Topsoil|Remove |Rough Place |Plac
 // and the sentinel is never rendered as a measurement.
 const EW_DIST_INHERITED = 999;   // earthwork.py suggest_elevations pass 2
 
+// EW-REVIEW-BEGIN
+// ==========================================================================
+// THE CONTOUR REVIEW SURFACE, and the coverage statement that sizes it.
+//
+// WHAT WAS MISSING. The owner's business partner ran Calculate on a demo
+// sheet on 2026-09-02, saw by eye that two contours the sheet prints as 562
+// and 563 had been given 564 and 570, and asked for every contour line to be
+// named individually - "by the elevation the engine thinks it is, or marked
+// unknown" - so he could go down the list. Independently measured the same
+// day: nothing in the app stated how many of a sheet's contours carry an
+// elevation. Every fact was on the wire (each row's `how`, each excluded
+// family's chain count) and nothing added them up.
+//
+// WHY IT DECIDES THE NUMBER, not just the presentation. On the DEM-truth
+// sheets at a 1 ft interval the engine ran +22% cut / -22% fill and the
+// WHOLE error was label mis-pairing and chains welded across levels;
+// correcting four rows and dropping five welded chains took the same run
+// under 1%. So the accuracy fix is making the four wrong rows findable.
+//
+// This block is PURE - no DOM, no state, no fetch - so tests/test_ew_review.js
+// can eval it (the CHECK-QUEUE block is the same arrangement).
+// ==========================================================================
+
+// The sheet's own contour interval is EVIDENCE, and it is only usable as
+// evidence when enough of the sheet's labels agree on it.
+//
+// MEASURED, Oncor C-04 (engine page index 3 = printed sheet C-04, job
+// e183a0d44d89, fresh detect): interval 1.0 ft off 23 of 56 steps between
+// adjacent labelled elevations, and 18 of the 20 `radius` rows carry a
+// FRACTIONAL elevation - 551.2, 554.3, 557.2, 557.4, 557.6, 558.5, 558.8,
+// 566.8, 567.8, 569.9, 570.9, 582.5, 583.5, 583.6, 583.9, 584.4, 584.7,
+// 585.9. Ten of those carry a legend-keyed spot tag (BW bottom of wall, TW
+// top of wall, ME match existing, EW end of wall) which the sheet's own
+// legend defines as spot annotations, not contour labels. A number that is
+// not on the sheet's own step cannot be one of its contour elevations, so
+// these rank first - as a QUESTION on the row, never as a correction.
+//
+// TWO GUARDS, because an interval read wrong would condemn half the sheet:
+//  * MODAL SUPPORT. Fewer than EW_IV_MIN_STEPS steps agreeing is a sample,
+//    not a convention (CLAUDE.md s6), and the flag stays off.
+//  * SELF-CHECK. If more than EW_OFF_IV_MAX_SHARE of the elevations are off
+//    the step, the thing that is wrong is the interval, not the rows. The
+//    flag stays off and says so. On C-04 the off-step share is 23/150 =
+//    15%; on Stice p0 the interval reads 0.1 ft (decimal design labels) and
+//    flags nothing, which is the correct no-op rather than a false alarm.
+const EW_IV_MIN_STEPS = 5;         // modal steps behind a usable interval
+const EW_IV_TOL_FT = 0.02;         // a label is "on the step" within this
+const EW_OFF_IV_MAX_SHARE = 0.4;   // more off-step than this: distrust the step
+
+// Every class of evidence a contour row can carry, in the order an operator
+// should sweep them. `rank` is the sort key for "most doubtful first";
+// `chip` is the filter label, which has the whole bar to itself; `badge` is
+// the SHORT form for the row, where it shares a ~200 px column with the
+// elevation input, three surface buttons and the row's own sentence (the
+// first live pass rendered "Off the sheet's interval" as a two-line pill
+// that overflowed its own background and made every row five lines tall);
+// `why` is the sentence both of them carry as a tooltip.
+//
+// The five separations the review has to make are the four the brief names
+// plus one the measurement forced: `radius` ("the nearest printed number
+// BESIDE the line") is neither "read from the sheet's own text" nor
+// inferred - the number IS printed, but nothing says it belongs to this
+// contour, and on C-04 half of them are wall and match-existing spot
+// heights. Folding it into "printed" is what let 551.2 BW pass as a
+// contour elevation.
+const EW_REVIEW = {
+  "off-interval": { rank: 0, chip: "Off the sheet's interval",
+    badge: "off interval",
+    short: "not on this sheet's contour interval",
+    why: "This number is not a step on the contour interval this sheet's "
+       + "own labels march by, so it cannot be one of its contour "
+       + "elevations. Most often it is a spot height - a wall top, a match "
+       + "point - that the reader picked up as the nearest number to the "
+       + "line. Check the drawing and correct it or drop the row; nothing "
+       + "has been changed for you." },
+  nearby: { rank: 1, chip: "Printed nearby", badge: "nearby",
+    short: "nearest printed number, not this line's own label",
+    why: "The number is printed on the sheet but not in this line's own "
+       + "break - it is the nearest printed number, and that it belongs to "
+       + "this contour is our assumption, not the sheet's statement." },
+  machine: { rank: 2, chip: "Read by machine", badge: "machine-read",
+    short: "digits read by machine off a picture",
+    why: "The sheet does print a label in this line's break, but the "
+       + "drafter drew it as line work, so the digits here were recognised "
+       + "off a picture of the sheet and can disagree with what is "
+       + "printed." },
+  inferred: { rank: 3, chip: "Inferred", badge: "inferred",
+    short: "nobody printed this - it was worked out",
+    why: "Nothing is printed on this line. The elevation was either "
+       + "carried along the contour from another piece of it or counted "
+       + "between two other contours at this sheet's interval." },
+  unknown: { rank: 4, chip: "Source not recorded", badge: "source?",
+    short: "we did not record where this came from",
+    why: "The reader did not say where this number came from, so we cannot "
+       + "tell you whether the sheet prints it or whether we worked it "
+       + "out." },
+  none: { rank: 5, chip: "No elevation", badge: "no elevation",
+    short: "no elevation at all",
+    why: "This contour line carries no elevation. It is drawn on the sheet "
+       + "and it holds no height, so it contributes nothing to the volume. "
+       + "Type the elevation you read on the drawing to bring it in." },
+  typed: { rank: 6, chip: "Typed by you", badge: "typed",
+    short: "typed in by you",
+    why: "You typed this elevation. Nothing here second-guesses it." },
+  read: { rank: 7, chip: "Read from the sheet", badge: "from the sheet",
+    short: "label printed in this line's own break",
+    why: "Read out of the label this sheet prints in the break in this "
+       + "contour - real text in the PDF, not a reading of ours." },
+};
+const EW_REVIEW_ORDER = ["off-interval", "nearby", "machine", "inferred",
+                         "unknown", "none", "typed", "read"];
+
+// Is `z` a step on this sheet's contour interval? A null interval is
+// unknown, which is never "off": absence of evidence is not evidence.
+function ewOnInterval(z, ivFt) {
+  if (!(ivFt > 0) || !isFinite(z)) return true;
+  const r = Math.abs(z / ivFt - Math.round(z / ivFt)) * ivFt;
+  return r <= EW_IV_TOL_FT;
+}
+
+// The class of ONE row, before the interval self-check. `row` is a panel
+// row ({z, how, manual}) or an unelevated stub ({noElev: true}).
+function ewRowClassBase(row) {
+  if (!row) return "unknown";
+  if (row.noElev || !isFinite(row.z)) return "none";
+  if (row.manual) return "typed";
+  switch (row.how) {
+    case "inline": return "read";
+    case "radius": return "nearby";
+    case "gap-ocr": return "machine";
+    case "inherited": case "interval-infill": return "inferred";
+    default: return row.inferred ? "inferred" : "unknown";
+  }
+}
+
+// Whether this sheet's interval may be used to rank rows, and why not when
+// it may not. `rows` is every panel row; `ivRaw` is the server's
+// contour_coverage.interval.
+function ewIntervalUse(ivRaw, rows) {
+  const ft = ivRaw && ivRaw.interval_ft;
+  const modal = (ivRaw && ivRaw.modal_count) || 0;
+  if (!(ft > 0))
+    return { ft: null, ok: false, share: null, modal: modal,
+      why: "This sheet's labels do not step by a readable contour interval, "
+         + "so no row is ranked on one." };
+  if (modal < EW_IV_MIN_STEPS)
+    return { ft: ft, ok: false, share: null, modal: modal,
+      why: "Only " + modal + " step" + (modal === 1 ? "" : "s")
+         + " between labelled elevations agree on " + ft + " ft - too few "
+         + "to call it this sheet's interval, so no row is ranked on it." };
+  let n = 0, off = 0;
+  for (const r of (rows || [])) {
+    if (!r || r.noElev || !isFinite(r.z) || r.manual) continue;
+    n++;
+    if (!ewOnInterval(r.z, ft)) off++;
+  }
+  const share = n ? off / n : 0;
+  if (n && share > EW_OFF_IV_MAX_SHARE)
+    return { ft: ft, ok: false, share: share, modal: modal,
+      why: off + " of " + n + " elevations are off a " + ft + " ft step - "
+         + "more than the interval reading can carry, so the reading is "
+         + "what is in doubt and no row is ranked on it." };
+  return { ft: ft, ok: true, share: share, modal: modal,
+    why: "This sheet's contours step by " + ft + " ft (" + modal
+       + " agreeing steps between labelled elevations)." };
+}
+
+// Every row's class, with the interval self-check applied. Returns
+// { cls: [class per row, same order], counts: {class: n}, iv }.
+// `noElevN` is how many contour lines carry no elevation at all - they are
+// not panel rows, and leaving them out of the counts would be the same
+// silent cap this whole change exists to end.
+function ewReviewClasses(rows, noElevN, ivRaw) {
+  const iv = ewIntervalUse(ivRaw, rows);
+  const cls = [];
+  const counts = {};
+  for (const k of EW_REVIEW_ORDER) counts[k] = 0;
+  for (const r of (rows || [])) {
+    let k = ewRowClassBase(r);
+    if (iv.ok && k !== "none" && k !== "typed" && isFinite(r.z)
+        && !ewOnInterval(r.z, iv.ft))
+      k = "off-interval";
+    cls.push(k);
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  counts.none += Math.max(0, noElevN || 0);
+  return { cls: cls, counts: counts, iv: iv };
+}
+
+// ---- the coverage statement ---------------------------------------------
+//
+// WHERE IT BELONGS, and the argument. Three surfaces, one wording:
+//
+//  1. THE PANEL, above the rows. This is where the operator is deciding
+//     which contours the volume is built from, and it is readable BEFORE
+//     Calculate - the only place the fact can change what they do rather
+//     than explain a number they already have.
+//  2. BESIDE THE NUMBER (the basis block). The basis block already says
+//     what the volume was interpolated from and what backs the elevations;
+//     a reader there must not have to assume the rows in front of them are
+//     all the sheet has. CLAUDE.md s5: a silent cap reports as full
+//     coverage.
+//  3. THE PRINTED REPORT, when the volume is added to the takeoff, in the
+//     same words from this one function - the arrangement ewBasisNote and
+//     ewCautionText already use, and for the same reason: an estimator
+//     reads the report, not the panel.
+//
+// NOT the CHECK FIRST list. That list is a ranked queue of ANOMALIES capped
+// at CK_CAP, and coverage is a property of EVERY sheet, not an anomaly - a
+// permanent entry there would push a real contradiction below the cap on
+// every page. (A LOW-coverage entry is a defensible follow-up; it is not
+// this change, which adds no threshold and no judgement.)
+//
+// EVERY SENTENCE STATES WHAT IS NOT COVERED, not only what is - counts on
+// both sides, never a bare percentage (CLAUDE.md s2).
+function ewPlural(n, one, many) { return n === 1 ? one : many; }
+
+function ewCoverageText(cov, acc) {
+  if (!cov || !(cov.contour_chains > 0)) return [];
+  const N = cov.contour_chains, M = cov.with_elev, none = cov.no_elev;
+  const out = [];
+  const pct = cov.contour_len_pt > 0
+    ? Math.round(100 * cov.with_elev_len_pt / cov.contour_len_pt) : null;
+  out.push("This sheet draws " + N + " contour "
+    + ewPlural(N, "line", "lines") + ". " + M + " carry an elevation"
+    + (pct === null ? "" : " (" + pct + "% of that contour footage)")
+    + "; " + none + " carry none at all"
+    + (none ? " and hold no height in any surface." : "."));
+  if (acc && acc.total !== undefined) {
+    const A = acc.total;
+    out.push(A + " of the " + N + " " + ewPlural(A, "is", "are")
+      + " assigned to a surface and behind this volume. The other "
+      + (N - A) + " " + ewPlural(N - A, "is", "are") + " not in it.");
+  }
+  if (cov.unclassed_chains > 0)
+    out.push("A further " + cov.unclassed_chains + " "
+      + ewPlural(cov.unclassed_chains, "line", "lines")
+      + " of plan linework on this sheet "
+      + ewPlural(cov.unclassed_chains, "sits", "sit")
+      + " in no contour family - if any of "
+      + ewPlural(cov.unclassed_chains, "it", "them")
+      + " is a contour it is in neither count.");
+  return out;
+}
+
+// The report's copy: the same sentences, joined, headed so a reader of the
+// PDF who never saw the panel knows what the paragraph is about, and cut to
+// APPROVE_NOTE_MAX by dropping WHOLE sentences from the tail rather than
+// shipping half of one (the rule ewBasisNote and ewCautionText apply).
+const EW_COVERAGE_HEAD = "CONTOUR COVERAGE. ";
+function ewCoverageNote(cov, acc, cap) {
+  const parts = ewCoverageText(cov, acc);
+  if (!parts.length) return [];
+  const lim = cap || 400;
+  let s = EW_COVERAGE_HEAD + parts.join(" ");
+  while (s.length > lim && parts.length > 1) {
+    parts.pop();
+    s = EW_COVERAGE_HEAD + parts.join(" ");
+  }
+  return [s.length <= lim ? s : s.slice(0, lim)];
+}
+// EW-REVIEW-END
+
 // Is this row's elevation something nobody printed? Asked of `how`, not of
 // the server's `inferred` flag: the server sets that on interval-infill
 // rows ONLY, and `inherited` rows - equally unprinted - never carry it.
@@ -12229,11 +12515,150 @@ function renderEwDropped() {
          + "contour</b>.");
 }
 
+// ---- the review surface, rendered -----------------------------------------
+//
+// 368 contour lines on Oncor C-04 is not a list an operator reads. The chips
+// below cut it by CLASS OF EVIDENCE, each carrying its own count, so the
+// sweep the owner's partner asked for - "go through them all really quick" -
+// starts at the rows nobody printed rather than at 545.0.
+//
+// The cap is disclosed, never silent (CLAUDE.md s5): #ewRowsCount reads
+// "23 of 368" whenever a filter or the cap is hiding rows, and the opener
+// below says how many and offers them.
+const EW_ROW_CAP = 250;
+
+// The contour lines with NO elevation are not panel rows - a row with no
+// number would be handed to no surface and would move no volume. They are
+// listed as STUBS under their own chip, because "this contour holds no
+// height" is exactly the fact the operator asked to be able to see, and a
+// list that silently omitted 218 of a sheet's 368 contours would be the
+// defect this change exists to end. A stub becomes a real row the moment an
+// elevation is typed into it, through the same ewAppendRow the + Add contour
+// button uses.
+function ewStubs() {
+  const st = state.ew;
+  if (!st || !Array.isArray(st.unelev)) return [];
+  const have = new Set(st.rows.map(r => r.chain_id));
+  const gone = new Set(st.removed || []);
+  return st.unelev.filter(u => !have.has(u.chain_id) && !gone.has(u.chain_id))
+    .map(u => ({ chain_id: u.chain_id, length_pt: u.length_pt,
+                 style_id: u.style_id, z: NaN, noElev: true }));
+}
+
+// Rows + stubs, classified, filtered and ordered - one function so the chip
+// counts, the list and the card count can never disagree about what is on
+// screen.
+function ewReviewView() {
+  const st = state.ew;
+  const rows = (st && st.rows) || [];
+  const stubs = ewStubs();
+  const iv = (st && st.cov && st.cov.interval) || null;
+  const r = ewReviewClasses(rows, 0, iv);
+  const items = rows.map((row, i) => ({ row: row, cls: r.cls[i] }))
+    .concat(stubs.map(s => ({ row: s, cls: "none" })));
+  const counts = {};
+  for (const k of EW_REVIEW_ORDER) counts[k] = 0;
+  for (const it of items) counts[it.cls] = (counts[it.cls] || 0) + 1;
+  const filt = (st && st.filter) || null;
+  let shown = filt ? items.filter(it => it.cls === filt) : items;
+  const zk = v => Number.isFinite(v) ? v : 1e9;
+  if (st && st.sort === "doubt")
+    shown = [...shown].sort((a, b) =>
+      EW_REVIEW[a.cls].rank - EW_REVIEW[b.cls].rank
+      || zk(a.row.z) - zk(b.row.z)
+      || a.row.chain_id - b.row.chain_id);
+  else
+    shown = [...shown].sort((a, b) => zk(a.row.z) - zk(b.row.z)
+      || a.row.chain_id - b.row.chain_id);
+  const cap = (st && st.showAll) ? shown.length : EW_ROW_CAP;
+  return { items: items, counts: counts, iv: r.iv, total: items.length,
+           shown: shown.slice(0, cap), hidden: Math.max(0, shown.length - cap),
+           filtered: shown.length };
+}
+
+// HOW MUCH OF THE SHEET IS BEHIND THE NUMBER, above the rows and readable
+// before Calculate. The sentences are ewCoverageText's, the same ones the
+// basis block beside the volume and the printed report use.
+function renderEwCoverage() {
+  const box = $("ewCoverage");
+  if (!box) return;
+  const cov = state.ew && state.ew.cov;
+  box.hidden = !(cov && cov.contour_chains > 0);
+  box.innerHTML = "";
+  if (box.hidden) return;
+  const head = document.createElement("div");
+  head.className = "ew-cov-head";
+  head.textContent = "How much of this sheet is behind the volume";
+  box.appendChild(head);
+  for (const s of ewCoverageText(cov, null)) {
+    const d = document.createElement("div");
+    d.className = "ew-cov-line";
+    d.textContent = s;
+    box.appendChild(d);
+  }
+  const iv = ewReviewView().iv;
+  const d = document.createElement("div");
+  d.className = "ew-cov-iv";
+  d.textContent = iv.why;
+  box.appendChild(d);
+}
+
+// One chip per class of evidence, with its count. Clicking filters; clicking
+// the live chip clears. The sort switch is here too: "by elevation" is the
+// order the panel has always used and stays the default (this change moves
+// no number and no default), "most doubtful first" is the sweep order.
+function renderEwFilters() {
+  const box = $("ewFilters");
+  if (!box) return;
+  const st = state.ew;
+  box.innerHTML = "";
+  if (!st || !st.rows) { box.hidden = true; return; }
+  const v = ewReviewView();
+  box.hidden = false;
+  const chip = (key, label, n, title, on) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ew-chip" + (on ? " on" : "")
+      + (key ? " c-" + key.replace(/[^a-z]/g, "") : "");
+    b.textContent = label + " " + n;
+    b.title = title;
+    b.onclick = () => {
+      st.filter = (st.filter === key) ? null : key;
+      st.showAll = false;
+      renderEw();
+    };
+    box.appendChild(b);
+  };
+  chip(null, "All", v.total,
+    "Every contour line on this sheet - the ones with an elevation and the "
+    + "ones without.", !st.filter);
+  for (const k of EW_REVIEW_ORDER) {
+    if (!v.counts[k]) continue;
+    chip(k, EW_REVIEW[k].chip, v.counts[k], EW_REVIEW[k].why,
+         st.filter === k);
+  }
+  const sort = document.createElement("button");
+  sort.type = "button";
+  sort.className = "ew-chip ew-chip-sort" + (st.sort === "doubt" ? " on" : "");
+  sort.textContent = st.sort === "doubt" ? "most doubtful first"
+                                         : "by elevation";
+  sort.title = "Switch the order. “Most doubtful first” puts the "
+    + "rows nothing printed, and the rows a machine transcribed, at the top. "
+    + "It changes the order only - no elevation, no surface, no volume.";
+  sort.onclick = () => {
+    st.sort = st.sort === "doubt" ? "z" : "doubt";
+    renderEw();
+  };
+  box.appendChild(sort);
+}
+
 function renderEw() {
   const box = $("ewRows");
   renderEwDropped();
+  renderEwCoverage();
+  renderEwFilters();
   box.innerHTML = "";
-  if (!state.ew || !state.ew.rows.length) {
+  if (!state.ew || !(state.ew.rows.length || ewStubs().length)) {
     // "EMPTY IS NOT AN ANSWER" (the same shape as the elevation reader's
     // failed-vs-answered-empty split). An empty row set can mean the
     // drafter labelled nothing, or that the reader missed them, or that
@@ -12251,15 +12676,35 @@ function renderEw() {
   // reach the comparator (NaN-returning comparators scramble the sort)
   const zk = v => Number.isFinite(v) ? v : 1e9;
   state.ew.rows.sort((a, b) => zk(a.z) - zk(b.z));
-  for (const row of state.ew.rows) {
+  const view = ewReviewView();
+  if (!view.shown.length) {
+    const d = document.createElement("div");
+    d.className = "ew-hint";
+    d.textContent = "No contour line on this sheet is in that group. Press "
+      + "“All” above to see every one of the " + view.total + ".";
+    box.appendChild(d);
+    return;
+  }
+  for (const it of view.shown) {
+    const row = it.row;
+    if (row.noElev) { box.appendChild(ewStubRow(row)); continue; }
     const div = document.createElement("div");
-    div.className = "ew-row has-x";
-    div.title = "click to select this contour on the sheet";
+    div.className = "ew-row has-x rc-" + it.cls.replace(/[^a-z]/g, "");
+    // ONE GESTURE, THE ONE THE LINE LIST ALREADY USES. Clicking a row used
+    // to select the chain and repaint, leaving the operator to find it on a
+    // sheet that may be scrolled anywhere; revealChain() is the per-family
+    // line list's click - select, centre, flash - and going list-to-sheet is
+    // the whole point of a review surface (it changes nothing: no tick, no
+    // quantity, no elevation).
+    div.title = "Click to go to this contour on the sheet — it selects, "
+      + "centres and flashes the line. Nothing is changed.";
     div.onclick = (ev) => {
       if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
-      state.selected = row.chain_id; state.selPt = null;
-      updateSelBar(chainById(row.chain_id));
-      draw();
+      if (!revealChain(row.chain_id)) {
+        state.selected = row.chain_id; state.selPt = null;
+        updateSelBar(chainById(row.chain_id));
+        draw();
+      }
     };
     const z = document.createElement("input");
     z.className = "z"; z.type = "number"; z.step = "0.1";
@@ -12278,17 +12723,30 @@ function renderEw() {
     // click, add, remove) re-sorts anyway
     const meta = document.createElement("div");
     meta.className = "ew-meta";
-    meta.textContent = `chain ${row.chain_id} · w ${row.width} · `
+    // THE IDENTITY THE OPERATOR SAYS OUT LOUD. "line 168" is the name this
+    // app already uses for one chain (the selection bar's "in list" button
+    // reveals "line #168"), so the review list, the canvas and the style
+    // list name the same object the same way.
+    meta.textContent = `line ${row.chain_id} · w ${row.width} · `
       + ewRowSource(row);
+    // WHICH CLASS OF EVIDENCE, on the row and in the filter chips, from one
+    // table (EW_REVIEW) - so a row can never be sorted into a group whose
+    // name it does not wear.
+    // `ew-inf-tag` is kept as the badge's class for the inferred group: the
+    // panel has worn that word (and that style) since the infill pass
+    // landed, and the selection chip's tooltip test points at it as the
+    // vocabulary the two screens share.
+    const cb = document.createElement("span");
+    cb.className = "ew-cls k-" + it.cls.replace(/[^a-z]/g, "")
+      + (it.cls === "inferred" ? " ew-inf-tag" : "");
+    cb.textContent = EW_REVIEW[it.cls].badge;
+    cb.title = EW_REVIEW[it.cls].why;
+    meta.prepend(cb);
     if (ewRowInferred(row)) {
       // The badge and the sentence, on the row, not in a tooltip: an
       // inferred elevation must never be able to pass for a read one.
       div.classList.add("ew-inferred");
       z.classList.add("inferred");
-      const tag = document.createElement("span");
-      tag.className = "ew-inf-tag";
-      tag.textContent = "inferred";
-      meta.prepend(tag);
       if (row.inferredWhy) {
         const why = document.createElement("div");
         why.className = "ew-inf-why";
@@ -12324,6 +12782,83 @@ function renderEw() {
     div.onmouseleave = () => hotChainSet(null);
     box.appendChild(div);
   }
+  if (view.hidden > 0) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "ew-more";
+    more.textContent = "and " + view.hidden + " more in this group — show "
+      + "them all (the cap hides nothing; this opens it)";
+    more.onclick = () => { state.ew.showAll = true; renderEw(); };
+    box.appendChild(more);
+  } else if (state.ew.showAll && view.filtered > EW_ROW_CAP) {
+    const less = document.createElement("button");
+    less.type = "button";
+    less.className = "ew-more";
+    less.textContent = "showing all " + view.filtered + " — collapse to the "
+      + "first " + EW_ROW_CAP;
+    less.onclick = () => { state.ew.showAll = false; renderEw(); };
+    box.appendChild(less);
+  }
+}
+
+// A contour line with NO elevation, listed so it can be found and fixed
+// where it is found. It is NOT a panel row and moves no volume until an
+// elevation is typed into it - typing one runs the same ewAppendRow the
+// "+ Add contour" button runs, and the line then wears the "Typed by you"
+// class like any other hand-entered elevation.
+function ewStubRow(stub) {
+  const div = document.createElement("div");
+  div.className = "ew-row ew-stub rc-none";
+  div.title = "Click to go to this contour on the sheet — it selects, "
+    + "centres and flashes the line. Nothing is changed.";
+  div.onclick = (ev) => {
+    if (ev.target.tagName === "INPUT" || ev.target.tagName === "BUTTON") return;
+    if (!revealChain(stub.chain_id)) {
+      state.selected = stub.chain_id; state.selPt = null;
+      updateSelBar(chainById(stub.chain_id));
+      draw();
+    }
+  };
+  const z = document.createElement("input");
+  z.className = "z"; z.type = "number"; z.step = "0.1";
+  z.placeholder = "elev";
+  z.name = "ew-nz-" + stub.chain_id;
+  const commit = () => {
+    const v = parseFloat(z.value);
+    if (Number.isFinite(v)) ewAdoptStub(stub.chain_id, v);
+  };
+  z.onchange = commit;
+  z.onkeydown = (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+    else if (ev.key === "Escape") { ev.stopPropagation(); z.blur(); }
+  };
+  const meta = document.createElement("div");
+  meta.className = "ew-meta";
+  meta.textContent = `line ${stub.chain_id} · `
+    + "no elevation read on this line — type the one you read on the drawing";
+  const cb = document.createElement("span");
+  cb.className = "ew-cls k-none";
+  cb.textContent = EW_REVIEW.none.badge;
+  cb.title = EW_REVIEW.none.why;
+  meta.prepend(cb);
+  div.append(z, meta);
+  div.onmouseenter = () => hotChainSet(stub.chain_id);
+  div.onmouseleave = () => hotChainSet(null);
+  return div;
+}
+
+function ewAdoptStub(cid, val) {
+  if (!Number.isFinite(val)) return;
+  const before = state.ew.rows.length;
+  ewAppendRow(cid);
+  if (state.ew.rows.length === before) return;   // ewAppendRow refused
+  const row = state.ew.rows.find(r => r.chain_id === cid);
+  if (!row) return;
+  row.z = val;
+  renderEw();
+  calcStateDirty();
+  setStatus("line " + cid + " added at " + val
+    + " — press EXIST or PROP to put it in a surface");
 }
 
 $("ewCalc").onclick = async () => {
@@ -12663,6 +13198,16 @@ function renderEwBasis(j, body) {
     const c = line(`<b>Check these rows.</b> ${esc(cautionTxt)}`);
     c.className = "ew-basis-ocr";
   }
+  // HOW MUCH OF THE SHEET IS UNDER THIS NUMBER, beside the number. The
+  // block above says what the volume was interpolated FROM; without this it
+  // says nothing about what it was NOT interpolated from, and a volume
+  // built on 41 of a sheet's 368 contour lines read exactly like one built
+  // on all of them (CLAUDE.md s5: a silent cap reports as full coverage).
+  // The words are ewCoverageText's, shared with the panel head above the
+  // rows and with the printed report, so the three cannot drift.
+  const covAcc = ewAcceptedSplit();
+  for (const sent of ewCoverageText(state.ew && state.ew.cov, covAcc))
+    line(esc(sent)).className = "ew-basis-cov";
   const prov = ewAcceptedSplit();
   if (prov.machine) {
     line(`<b>${prov.machine}</b> of the <b>${prov.total}</b> elevations `
@@ -12774,7 +13319,13 @@ function renderEwModelNote(j) {
 // `body.notes[:6]`; anything past that is dropped with no message, so the
 // count is checked here and disclosed on the status line rather than
 // discovered later on a report that is missing its caveat.
-const APPROVE_NOTES_MAX = 6;   // mirrors server.py approve(): body.notes[:6]
+const APPROVE_NOTES_MAX = 7;   // mirrors server.py approve(): body.notes[:7]
+// Six until 2026-09-02. The earthwork block gained a seventh fact the
+// report must carry - how much of the sheet's contour linework is behind
+// the volume (ewCoverageNote below) - and keeping the cap at six would
+// have made adding it drop whichever caveat sat last, silently. The cap
+// is there to stop prose burying the table; one more 400-char line does
+// not do that, and server.py approve() moved with it.
 const APPROVE_NOTE_MAX = 400;  // ...and its per-note str(x)[:400]
 // DEFECT 0, ON THE DELIVERABLE. The Suggested disables group takes real
 // footage out of the sheet total - measured at 11.6% of Kayden C5.1, 45
@@ -12841,6 +13392,10 @@ function ewApproveNotes() {
     // printed; this one accounts for every accepted row (see
     // ewAcceptedSplit) and stays inside `approve`'s 400-char per-note cap.
     ...ewBasisNote(acc),
+    // ...and HOW MUCH OF THE SHEET those elevations are. ewBasisNote says
+    // what backs the accepted rows; this says how many of the sheet's
+    // contour lines are not among them. Same sentences as the panel.
+    ...ewCoverageNote(state.ew && state.ew.cov, acc, APPROVE_NOTE_MAX),
     `Interpolated from ${j.existing_contours} existing and `
     + `${j.proposed_contours} proposed contours over `
     + `${Number(j.area_sf).toLocaleString()} SF. That region is NOT the graded `

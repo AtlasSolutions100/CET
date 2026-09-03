@@ -107,8 +107,8 @@ if (compose) {
   check(order[0] < order[1] && order[0] < order[2],
     "the holdout note is FIRST - server.py keeps only body.notes[:6]");
 }
-check(/APPROVE_NOTES_MAX\s*=\s*6/.test(SRC),
-  "the cap is still 6, matching server.py approve()");
+check(/APPROVE_NOTES_MAX\s*=\s*7/.test(SRC),
+  "the cap is 7, matching server.py approve() - it moved from 6 on 2026-09-02 when the earthwork block gained its contour-coverage note");
 
 // ---- 4. the scope sentence cannot go stale after a group tick -------------
 // It used to refresh only inside the `scoped` branch and not at all on the
