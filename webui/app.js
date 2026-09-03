@@ -80,6 +80,11 @@ const state = window.state = {
   cutA: null,               // first anchor of an in-progress cut-span
   drawPts: [],              // vertices of the in-progress drawn line
   ewBoundDraft: [],         // vertices of an in-progress hand-drawn limit of work
+  polySnap: false,          // the close-snap PREVIEW for whichever hand-drawn
+                            // polygon is armed: true while the pointer sits
+                            // inside the close radius of its first corner, so
+                            // the ring and the rubber band show what the next
+                            // click will do BEFORE it does it (POLY-SNAP)
   drawSrc: null,            // chain_id whose family a drawn line joins
   hoverPt: null,            // cursor position for the draw preview
   dragPt: false,
@@ -189,9 +194,20 @@ const POINT_TOOLS = new Set([
   "gz-draw", "gz-box",
 ]);
 
+// The three polygons the operator draws corner by corner. One set, so the
+// close-snap (POLY-SNAP) and the cursor chokepoint cannot know about
+// different tools than the click handlers do.
+const POLY_DRAW_TOOLS = new Set(["ew-bound-draw", "gz-draw", "st-draw"]);
 function syncCursor() {
   const cv = document.getElementById("view");
   if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
+  // The polygon close-snap preview belongs to the tool that armed it, so it
+  // dies at the same chokepoint the cursor does rather than at each of the
+  // ~20 places that can take a tool away. Same lesson as the comment below.
+  if (!POLY_DRAW_TOOLS.has(state.tool)) {
+    state.polySnap = false;
+    if (cv) cv.classList.remove("snap-close");
+  }
   // The work-area button's lit state rides the same chokepoint as the
   // cursor: ~20 places assign state.tool, and any of them can take the
   // tool away (arming measure, a page switch). Hooked here so the button
@@ -1055,6 +1071,7 @@ function pageReset() {
   state.sgPartial = new Map();
   // drawing / snapping / extending
   state.drawSnaps = []; state.snapHit = null; state.snapMsg = "";
+  state.polySnap = false;      // the polygon close-snap preview (POLY-SNAP)
   state.extendAnchor = null; state.drawPend = null; drawFamClose();
   // a fresh page invalidates every snapshot on the undo stack ("Reset edits"
   // reloads through here, and re-detect replaces every chain object)
@@ -11242,7 +11259,7 @@ function ewPageReset() {
   // staleness is the one that drops out. Same sibling gap a0a71cc closed
   // for state.ew, left open for its neighbour.
   state.ewBound = null;
-  state.ewBoundDraft = []; state.ewBoundHover = null;
+  state.ewBoundDraft = []; state.ewBoundHover = null; state.polySnap = false;
   renderEwBound();
   $("ewPanel").hidden = true; $("ewBtn").hidden = false;
   $("ewMap").checked = false;
@@ -11727,13 +11744,17 @@ $("ewBoundDraw").onclick = () => {
   if (state.tool === "ew-bound-draw") { ewBoundDrawCancel("limit of work: drawing cancelled"); return; }
   state.tool = "ew-bound-draw";
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.add("active");
   syncCursor();
-  setStatus("limit of work: click the corners of the graded area "
-    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+  setStatus("limit of work: click the corners of the graded area"
+    + POLY_CLOSE_HINT, "busy");
 };
 function ewBoundDrawClick(px, py) {
   const d = state.ewBoundDraft;
+  // SNAP TO CLOSE. A click inside POLY_CLOSE_PX of the first corner IS the
+  // close, not a new corner - the fifth point the partner kept getting.
+  if (polyCloseHit(d, px, py, polyCloseTolPt())) { polySnapClear(); return ewBoundDrawFinish(); }
   const last = d[d.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
   d.push([px, py]);
@@ -11745,7 +11766,7 @@ function ewBoundDrawClick(px, py) {
     const sf = Math.abs(polyAreaPt(d)) * ftPerPt * ftPerPt;
     live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
   }
-  setStatus(`limit of work: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`limit of work: ${d.length} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function ewBoundDrawFinish() {
@@ -11759,6 +11780,7 @@ function ewBoundDrawFinish() {
   }
   state.tool = null;
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.remove("active");
   syncCursor();
   if (ewBoundSet(pts, "drawn outline")) {
@@ -11771,6 +11793,7 @@ function ewBoundDrawFinish() {
 function ewBoundDrawCancel(msg) {
   state.tool = null;
   state.ewBoundDraft = [];
+  polySnapClear();
   $("ewBoundDraw").classList.remove("active");
   syncCursor();
   if (msg) setStatus(msg);
@@ -15313,7 +15336,13 @@ function draw() {
     ctx.moveTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
     for (let i = 1; i < state.ewBoundDraft.length; i++)
       ctx.lineTo(state.ewBoundDraft[i][0] * f2b, state.ewBoundDraft[i][1] * f2b);
-    if (state.ewBoundHover && !panning)
+    // THE SNAP, SHOWN BEFORE THE CLICK COMMITS. While the pointer is inside
+    // the close radius the rubber band runs to the FIRST corner instead of to
+    // the cursor, so the shape on screen is exactly the shape the click will
+    // make. Without this the snap is a surprise; with it, it is a promise.
+    if (state.polySnap)
+      ctx.lineTo(state.ewBoundDraft[0][0] * f2b, state.ewBoundDraft[0][1] * f2b);
+    else if (state.ewBoundHover && !panning)
       ctx.lineTo(state.ewBoundHover[0] * f2b, state.ewBoundHover[1] * f2b);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -15323,6 +15352,7 @@ function draw() {
       ctx.fillStyle = CV_EWBOUND_DOT;
       ctx.fill();
     }
+    if (state.polySnap) drawPolyCloseRing(state.ewBoundDraft[0], CV_EWBOUND);
     ctx.restore();
   }
   // grading zone: in-progress hand-drawn outline (same grammar as the
@@ -15337,7 +15367,9 @@ function draw() {
     ctx.moveTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
     for (let i = 1; i < state.gzDraft.length; i++)
       ctx.lineTo(state.gzDraft[i][0] * fz, state.gzDraft[i][1] * fz);
-    if (state.gzHover && !panning)
+    if (state.polySnap)
+      ctx.lineTo(state.gzDraft[0][0] * fz, state.gzDraft[0][1] * fz);
+    else if (state.gzHover && !panning)
       ctx.lineTo(state.gzHover[0] * fz, state.gzHover[1] * fz);
     ctx.stroke();
     ctx.setLineDash([]);
@@ -15347,6 +15379,7 @@ function draw() {
       ctx.fillStyle = CV_GZONE;
       ctx.fill();
     }
+    if (state.polySnap) drawPolyCloseRing(state.gzDraft[0], CV_GZONE_DRAFT);
     ctx.restore();
   }
   // grading zone: in-progress box drag
@@ -16199,6 +16232,52 @@ function snapTouchesRect(points, rect, segT, ptIn) {
 }
 // SNAP-PURE-END
 
+// POLY-SNAP-BEGIN --------------------------------------------------------
+// SNAP THE LAST CLICK OF A DRAWN POLYGON BACK TO ITS FIRST CORNER.
+//
+// From the 2026-09-02 screen share. Drawing the limit of work the partner
+// ended up with FIVE points where he wanted four: "if you could have a thing
+// where it auto snaps when you're near, that'd be good." Reproduced live
+// before this change on C3.0-Site-Plan-Rev.1.pdf - four corners, then a fifth
+// click 8 px from the first: the draft went to 5 corners and the running area
+// slid from 35,958 SF to 35,598 SF, silently, because a corner 8 px from the
+// start is a corner and the tool had no way to know it was meant as a close.
+//
+// THREE POLYGONS SHARE THIS, and they are all the operator draws by hand:
+//   ew-bound-draw   the limit of work        (ewBoundDrawClick)
+//   gz-draw         a grading zone           (gzDrawClick)
+//   st-draw         a structure outline      (stDrawClick)
+// One predicate for all three, so they cannot disagree about what "near the
+// start" means - the three had already drifted into three copies of the same
+// click handler and this is the shared part being named.
+//
+// WHY >= 3. Closing on two corners makes a line, not a polygon. The operator
+// who has clicked twice and comes back near the start is still drawing (a
+// narrow spur along the same edge is an ordinary shape), and stealing that
+// click would make the tool unusable on exactly the shapes it is for. All
+// three finishers already refuse a 2-corner ring; this refuses to even offer.
+//
+// WHY A RADIUS AND NOT A BUCKET. CLAUDE.md section 5: `round(x / TOL)` answers
+// "which bin", not "are these within TOL". This is a genuine distance test
+// against ONE point, which is the shape that question needs.
+//
+// THE RADIUS IS A SCREEN-PIXEL BUDGET, converted to page points at the live
+// zoom, so the reach is 14 px whether the sheet is at 22% or 400%. It does NOT
+// reuse snapTolFrom: that adds a flat 1.5 pt pad on top, which is a sensible
+// floor for picking an existing line when zoomed out but at 400% turns into
+// nearly 25 screen px of grab - and at 400% the operator is placing corners
+// precisely, which is exactly when a greedy close is worst. Measured: 14.0 px
+// here at every zoom, against snapTolFrom's 20.3 / 16.7 / 24.8 px at
+// 0.22x / 1x / 4x.
+const POLY_CLOSE_PX = 14;
+function polyCloseTolFrom(k, dpi) { return POLY_CLOSE_PX / k / (dpi / 72); }
+function polyCloseHit(draft, px, py, tolPt) {
+  if (!draft || draft.length < 3) return false;
+  const a = draft[0];
+  return Math.hypot(px - a[0], py - a[1]) <= tolPt;
+}
+// POLY-SNAP-END ----------------------------------------------------------
+
 // ---- the app-side wrapper: visibility, zoom, and the on-screen budget ----
 
 // Screen-space tolerances, in PIXELS, converted to page pt at the live zoom.
@@ -16216,6 +16295,61 @@ const SNAP_RADII = {              // tool -> [pick px, vertex px]
 const SNAP_TOOLS = new Set(Object.keys(SNAP_RADII));
 
 function snapTolPt(px) { return snapTolFrom(px, state.view.k, IMG_DPI); }
+
+// ---- the DOM side of the polygon close-snap (POLY-SNAP above) -----------
+// One place that knows which of the three hand-drawn polygons is armed, so
+// the click handler, the mousemove preview, the canvas ring and the status
+// wording all read the same draft. state.polySnap is the PREVIEW: it is set
+// on hover and it is what makes the snap visible BEFORE the click commits,
+// which is the half of the request that makes it predictable rather than
+// magic ("show the snap before the click").
+function polyActiveDraft() {
+  if (state.tool === "ew-bound-draw") return state.ewBoundDraft;
+  if (state.tool === "gz-draw") return state.gzDraft;
+  if (state.tool === "st-draw") return (state.st && state.st.drawPts) || null;
+  return null;
+}
+function polyCloseTolPt() { return polyCloseTolFrom(state.view.k, IMG_DPI); }
+// Would a click at (px,py) close the armed polygon? Used by all three click
+// handlers, and by the mousemove that arms the preview.
+function polyWouldClose(px, py) {
+  return polyCloseHit(polyActiveDraft(), px, py, polyCloseTolPt());
+}
+// Hover: arm or disarm the preview, and repaint only when it actually moved.
+function polySnapHover(px, py) {
+  const on = polyWouldClose(px, py);
+  if (state.polySnap === on) return false;
+  state.polySnap = on;
+  // a second, coarser tell: the crosshair that means "this click drops a
+  // corner" becomes the pointer that means "this click finishes the shape"
+  cv.classList.toggle("snap-close", on);
+  return true;
+}
+function polySnapClear() {
+  state.polySnap = false;
+  cv.classList.remove("snap-close");
+}
+// The ring on the first corner, drawn while the preview is armed. Deliberately
+// bigger than the corner dots and in the draft's own colour, so it reads as
+// "this corner is the target" and not as a new kind of vertex.
+function drawPolyCloseRing(pt, colour) {
+  const f = IMG_DPI / 72, k = state.view.k;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(pt[0] * f, pt[1] * f, 9 / k, 0, Math.PI * 2);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 2.5 / k;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(pt[0] * f, pt[1] * f, 3.5 / k, 0, Math.PI * 2);
+  ctx.fillStyle = colour;
+  ctx.fill();
+  ctx.restore();
+}
+// The sentence every one of the three tools ends with, so the operator is
+// told the close exists before they need it.
+const POLY_CLOSE_HINT = " — Enter, double-click, or click the first corner to close; Esc backs up";
 
 // THE shared pick. Same visibility rules as a plain canvas click: excluded,
 // hidden and isolated-away lines cannot be snapped to. `skip` drops one
@@ -19307,14 +19441,16 @@ function stArm(mode) {
   else if (state.tool === "cutspan") cancelCut();
   else if (state.tool === "reclass") $("reclassBtn").onclick();
   state.tool = mode; st.drawPts = []; st.hover = null;
+  polySnapClear();
   setStatus(mode === "st-pick"
     ? "structure: click a closed line that is the building outline (Esc cancels)"
-    : "structure: click each corner of the building — Enter or double-click closes, Esc backs up", "busy");
+    : "structure: click each corner of the building" + POLY_CLOSE_HINT, "busy");
   renderSt(); draw();
 }
 function stDisarm(msg) {
   const st = stSync();
   state.tool = null; st.drawPts = []; st.hover = null;
+  polySnapClear();
   if (msg !== undefined) setStatus(msg);
   renderSt(); draw();
 }
@@ -19358,6 +19494,10 @@ function stPickAt(px, py) {
 }
 function stDrawClick(px, py) {
   const st = stSync();
+  // SNAP TO CLOSE - see POLY-SNAP. A building outline is the polygon most
+  // likely to be drawn back onto its own first corner, so it gets the same
+  // rule as the limit of work rather than a second, nearly-identical one.
+  if (polyCloseHit(st.drawPts, px, py, polyCloseTolPt())) { polySnapClear(); return stFinishDraw(); }
   const last = st.drawPts[st.drawPts.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;  // dblclick echo
   st.drawPts.push([px, py]);
@@ -19367,7 +19507,7 @@ function stDrawClick(px, py) {
   if (n >= 3 && fpp) {
     live = ` · so far ${stFmt(stPolyArea(st.drawPts) * fpp * fpp, 0)} SF, ${stFmt(stPolyPerim(st.drawPts) * fpp, 0)} LF`;
   }
-  setStatus(`structure: ${n} corner(s)${live} — Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`structure: ${n} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function stFinishDraw() {
@@ -19384,6 +19524,7 @@ function stFinishDraw() {
   st.draft = { name: `Structure ${st.seq}`, pts, source: "drawn", chain_id: null, gap_pt: 0,
                depth_ft: st.depth_ft, layback_ft: st.layback_ft, footing_ft: st.footing_ft };
   state.tool = null; st.drawPts = []; st.hover = null;
+  polySnapClear();
   const c = stCalc(st.draft);
   setStatus(c.area_sf !== null
     ? `outline closed: ${stFmt(c.area_sf, 0)} SF · ${stFmt(c.perim_lf, 0)} LF — set the depth, then Add to takeoff`
@@ -19405,6 +19546,7 @@ handleCanvasClick = function (e) {
 addEventListener("mousemove", (e) => {
   if (state.tool !== "st-draw" || panning || !state.st || !state.st.drawPts.length) return;
   state.st.hover = ptFromEvent(e);
+  polySnapHover(state.st.hover[0], state.st.hover[1]);
   draw();
 });
 cv.addEventListener("dblclick", () => { if (state.tool === "st-draw") stFinishDraw(); });
@@ -19424,6 +19566,7 @@ cv.addEventListener("dblclick", () => {
 addEventListener("mousemove", (e) => {
   if (state.tool !== "ew-bound-draw" || panning || !state.ewBoundDraft.length) return;
   state.ewBoundHover = ptFromEvent(e);
+  polySnapHover(state.ewBoundHover[0], state.ewBoundHover[1]);
   draw();
 });
 addEventListener("keydown", (e) => {
@@ -19438,6 +19581,7 @@ addEventListener("keydown", (e) => {
     e.preventDefault(); e.stopImmediatePropagation();
     if (state.ewBoundDraft.length) {
       state.ewBoundDraft.pop();
+      polySnapClear();     // a pop can take the draft below 3, where nothing closes
       setStatus(state.ewBoundDraft.length
         ? `limit of work: ${state.ewBoundDraft.length} corner(s) ` + '—' + " Esc again removes another"
         : "all corners removed " + '—' + " Esc again exits", "busy");
@@ -19463,6 +19607,7 @@ addEventListener("keydown", (e) => {
     const st = stSync();
     if (state.tool === "st-draw" && st.drawPts.length) {
       st.drawPts.pop();
+      polySnapClear();
       setStatus(st.drawPts.length
         ? `structure: ${st.drawPts.length} corner(s) — Esc again removes another`
         : "all corners removed — Esc again exits the structure tool", "busy");
@@ -19519,7 +19664,8 @@ function renderSt() {
   pick.classList.toggle("active", state.tool === "st-pick");
   pick.onclick = () => state.tool === "st-pick" ? stDisarm("") : stArm("st-pick");
   const drawB = mk("button", "mini", "Draw outline");
-  drawB.title = "Click each corner of the building on the sheet; Enter or double-click closes";
+  drawB.title = "Click each corner of the building on the sheet; Enter, double-click, "
+    + "or a click back on the first corner closes it";
   drawB.classList.toggle("active", state.tool === "st-draw");
   drawB.onclick = () => state.tool === "st-draw" ? stDisarm("") : stArm("st-draw");
   modes.append(pick, drawB);
@@ -19691,7 +19837,7 @@ function drawStructural(ctx, k) {
     ctx.beginPath();
     ctx.moveTo(P[0][0] * f, P[0][1] * f);
     for (let i = 1; i < P.length; i++) ctx.lineTo(P[i][0] * f, P[i][1] * f);
-    if (st.hover) ctx.lineTo(st.hover[0] * f, st.hover[1] * f);
+    if (st.hover && !state.polySnap) ctx.lineTo(st.hover[0] * f, st.hover[1] * f);
     if (P.length >= 2) ctx.lineTo(P[0][0] * f, P[0][1] * f);   // closing edge preview
     ctx.lineWidth = 2 / k;
     ctx.setLineDash([6 / k, 4 / k]);
@@ -19704,6 +19850,7 @@ function drawStructural(ctx, k) {
       ctx.fillStyle = CV_VERTEX; ctx.fill();
       ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
     }
+    if (state.polySnap) drawPolyCloseRing(P[0], ST_DRAFT_COLOR);
   }
 }
 
@@ -20235,10 +20382,11 @@ $("gzDraw").onclick = () => {
   if (state.tool === "gz-draw") { gzDrawCancel("grading zone: drawing cancelled"); return; }
   state.tool = "gz-draw";
   state.gzDraft = [];
+  polySnapClear();
   $("gzDraw").classList.add("active");
   syncCursor();
-  setStatus("grading zone: click the corners of the region "
-    + '—' + " Enter or double-click closes, Esc backs up", "busy");
+  setStatus("grading zone: click the corners of the region"
+    + POLY_CLOSE_HINT, "busy");
 };
 $("gzBox").onclick = () => {
   if (!state.result) return setStatus("run Detect first", "err");
@@ -20258,6 +20406,9 @@ $("gzBox").onclick = () => {
 
 function gzDrawClick(px, py) {
   const d = state.gzDraft;
+  // SNAP TO CLOSE - see POLY-SNAP. Same predicate as the limit of work and
+  // the structure outline, so the three cannot disagree about "near enough".
+  if (polyCloseHit(d, px, py, polyCloseTolPt())) { polySnapClear(); return gzDrawFinish(); }
   const last = d[d.length - 1];
   if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return; // dblclick echo
   d.push([px, py]);
@@ -20267,7 +20418,7 @@ function gzDrawClick(px, py) {
     const sf = Math.abs(polyAreaPt(d)) * (fpi / 72) * (fpi / 72);
     live = ` ${'·'} ${Math.round(sf).toLocaleString()} SF so far`;
   }
-  setStatus(`grading zone: ${d.length} corner(s)${live} ${'—'} Enter/double-click closes, Esc backs up`, "busy");
+  setStatus(`grading zone: ${d.length} corner(s)${live}` + POLY_CLOSE_HINT, "busy");
   draw();
 }
 function gzDrawFinish() {
@@ -20281,6 +20432,7 @@ function gzDrawFinish() {
   }
   state.tool = null;
   state.gzDraft = []; state.gzHover = null;
+  polySnapClear();
   $("gzDraw").classList.remove("active");
   syncCursor();
   draw();
@@ -20289,6 +20441,7 @@ function gzDrawFinish() {
 function gzDrawCancel(msg) {
   state.tool = null;
   state.gzDraft = []; state.gzHover = null;
+  polySnapClear();
   $("gzDraw").classList.remove("active");
   syncCursor();
   if (msg) setStatus(msg);
@@ -20317,6 +20470,7 @@ cv.addEventListener("dblclick", () => { if (state.tool === "gz-draw") gzDrawFini
 addEventListener("mousemove", (e) => {
   if (state.tool !== "gz-draw" || panning || !state.gzDraft.length) return;
   state.gzHover = ptFromEvent(e);
+  polySnapHover(state.gzHover[0], state.gzHover[1]);
   draw();
 });
 // capture phase, same Esc semantics as the limit-of-work draw: back up one
@@ -20333,6 +20487,7 @@ addEventListener("keydown", (e) => {
     e.preventDefault(); e.stopImmediatePropagation();
     if (state.gzDraft.length) {
       state.gzDraft.pop();
+      polySnapClear();
       setStatus(state.gzDraft.length
         ? `grading zone: ${state.gzDraft.length} corner(s) ` + '—' + " Esc again removes another"
         : "all corners removed " + '—' + " Esc again exits", "busy");

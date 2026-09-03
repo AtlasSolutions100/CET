@@ -206,6 +206,11 @@ aside.side-folded .side-fold { width: 14px; transform: scaleX(-1); }
 canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 /* A tool is armed and the next click places a point, so stop advertising drag. */
 canvas#view.tool-point { cursor: crosshair; }
+/* The close-snap on a hand-drawn polygon (POLY-SNAP): the pointer is inside
+   the radius of the first corner, so the next click FINISHES the shape
+   instead of dropping another corner. The on-canvas ring is the real signal;
+   this is the coarse one you notice without looking. */
+canvas#view.snap-close { cursor: pointer; }
 /* Panning wins over both: while the sheet is actually moving under the
    cursor, that is what the pointer should say, tool armed or not. */
 canvas#view.panning { cursor: grabbing; }
