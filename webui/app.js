@@ -7178,6 +7178,19 @@ function calcStatePayload() {
         z: calcNum(r.z), surface: r.surface || null,
         width: r.width || 0, dist: r.dist == null ? null : r.dist,
         manual: !!r.manual,
+        // WHO CHOSE THIS SURFACE. calcStatePayload snapshots EVERY row, not
+        // the edited ones, and calcStateDirty() fires from 18 unrelated
+        // gestures (a check-queue tick, a zone, the limit-of-work ring), so
+        // a sheet the operator merely visited already has all of its ENGINE
+        // DEFAULTS frozen on disk. ewApplySaved then wrote them back
+        // unconditionally. Without this flag, improving the default would
+        // have been invisible on every sheet anyone had touched: the old
+        // width-median guess would restore itself over the sheet's own
+        // legend, and the operator would have no way to see why.
+        // `surfaceBy` is the same "the saved record is the authority on
+        // provenance" pattern `how`/`tag`/`inferred` above already use.
+        ...(r.surfaceBy ? { surface_by: r.surfaceBy } : {}),
+        ...(r.splitBy ? { split_by: r.splitBy } : {}),
         // provenance is a page fact that must survive a reload: without it
         // a restored row falls back to "we did not record where this came
         // from" and the report's printed/not-printed split goes with it
@@ -7393,7 +7406,24 @@ function ewApplySaved() {
       const ch = chains.get(r.chain_id);
       if (row) {
         if (calcNum(r.z) !== null) row.z = r.z;
-        row.surface = surf;
+        // ONLY AN OPERATOR'S CHOICE OVERRIDES THE FRESH DEFAULT. A saved
+        // row carries surface_by "operator" only if someone clicked
+        // EXIST/PROP/skip on it; everything else in the blob is an engine
+        // default that was snapshotted because some unrelated gesture
+        // dirtied the page. Restoring those would pin every sheet to
+        // whatever the engine believed the first time it was opened - so an
+        // engine that learned to read the legend would never be seen again
+        // on any sheet already visited. A blob written before this flag
+        // existed has no surface_by at all, and is therefore treated as
+        // engine defaults and allowed to refresh: that is the deliberate
+        // choice, because the alternative freezes the old guess forever and
+        // the operator can always click the row back.
+        if (r.surface_by === "operator") {
+          row.surface = surf;
+          row.surfaceBy = "operator";
+        } else if (r.split_by) {
+          row.splitBy = r.split_by;
+        }
         // the saved record is the authority on provenance: a row the
         // operator accepted as inferred keeps saying so
         if (r.inferred) {
@@ -11832,9 +11862,46 @@ async function ewFetchSuggest(gen) {
         // printed the 999 "no label at all" sentinel as "label 999pt away"
         // while the selection chip called the same row inferred.
         how: s.how || null, tag: s.label_tag || null,
-        // default split by stroke weight - existing plots lighter than
-        // proposed on most grading sheets; every row is user-flippable
-        surface: (s.width || 0) <= wmed ? "existing" : "proposed",
+        // WHICH SIDE THIS CONTOUR IS ON, and WHO SAID SO.
+        //
+        // The server already decided this with a real precedence - the
+        // sheet's own legend, then colour screening, then the same width
+        // median as a last resort (earthwork.split_rows_surface) - and
+        // shipped it on every row as `surface` + `split_by`. This panel
+        // used to throw both away and recompute the BOTTOM tier only.
+        //
+        // Measured 2026-09-03 on Oncor C-04 (engine page index 3): 115
+        // labelled rows, 82 decided by the legend and 33 by ink, ZERO by
+        // width - and the width median disagreed with the sheet on 67 of
+        // them. The stated premise of the old rule ("existing plots
+        // lighter") is inverted on that drawing: EXISTING CONTOUR is drawn
+        // at 0.2 pt AND 1.1 pt across three families while PROPOSED sits
+        // between them at 0.4-0.7, so `w > wmed` selected the 1.1 pt
+        // chains - which are EXISTING. The panel was reporting the heavy
+        // existing contours as the proposed surface. Cut read 22,032.7 CY
+        // against the offline analyst's ~2,002 for that sheet; on the
+        // server's split it reads 2,158.4, and the proposed population
+        // goes from spanning the whole drawing to a compact band (hull 21%
+        // of existing's) - which is what a designed pad looks like and
+        // what a width-sorted half of natural topo does not.
+        //
+        // The width median stays as the fallback for a sheet that carries
+        // no legend and no screening, where it is all there is - and where
+        // the server, having the same rule, returns the same answer.
+        // `splitBy` rides along so the panel can say WHICH of the three
+        // decided, because "the sheet's legend says so" and "we guessed
+        // from stroke weight" are not the same claim (see ewSplitNote).
+        // An interval-infill row is EXPLICITLY excluded from the fallback,
+        // not merely nulled afterwards. The `.map` below does set
+        // row.surface = null for every inferred row and would cover this -
+        // but only while it runs second. Naming the case here means a
+        // reorder cannot silently start feeding counted-not-printed
+        // elevations into a surface through the back door.
+        surface: (s.split_by === "interval-infill") ? null
+          : (s.surface === "existing" || s.surface === "proposed")
+          ? s.surface
+          : ((s.width || 0) <= wmed ? "existing" : "proposed"),
+        splitBy: s.split_by || null,
       })).map((row, i) => {
         // INTERVAL-INFILL rows: an elevation nobody printed, worked out by
         // counting the contours between two anchors - anchors that are
@@ -13396,6 +13463,34 @@ function renderEwFilters() {
   box.appendChild(sort);
 }
 
+// Plain English for how a row got its surface. `splitBy` is the server's
+// own word for which tier decided (earthwork.split_rows_surface); a row the
+// operator clicked outranks all of it and says so.
+function ewSplitNote(row) {
+  if (!row) return "";
+  if (row.surfaceBy === "operator")
+    return "You put this contour on this side.";
+  if (row.splitBy === "interval-infill")
+    return "No printed elevation - this one was counted between two "
+      + "labelled contours, so it starts on skip and adds nothing to a "
+      + "volume until you choose a side.";
+  if (row.splitBy === "legend")
+    return "This sheet's own legend names the family this contour belongs "
+      + "to, and that is what put it on this side.";
+  if (row.splitBy === "color")
+    return "Nothing in the legend named this family. It is on this side "
+      + "because of how it is inked - screened grey reads as existing "
+      + "ground, solid black as proposed - which is a drafting convention, "
+      + "not something this sheet states.";
+  if (row.splitBy === "width")
+    return "A GUESS. Neither the legend nor the ink separated this sheet's "
+      + "contours, so the side comes from stroke weight alone: lighter than "
+      + "the middle of the page reads existing, heavier reads proposed. "
+      + "That premise is wrong on some drawings - check this one against "
+      + "the paper before trusting the volume.";
+  return "Where this contour's side came from was not recorded.";
+}
+
 function renderEw() {
   const box = $("ewRows");
   renderEwDropped();
@@ -13507,12 +13602,26 @@ function renderEw() {
     }
     const seg = document.createElement("div");
     seg.className = "seg";
+    // WHO PUT THIS ROW ON THIS SIDE. The panel now takes the server's split
+    // (legend > ink > width), and those are three very different strengths
+    // of claim - "the sheet's own legend names this family" is evidence,
+    // "we sorted the strokes by weight and cut at the middle" is a guess
+    // that was measured wrong on 67 of Oncor C-04's 115 rows. An operator
+    // sweeping a sheet needs to know which one they are looking at before
+    // deciding whether to check it against the paper.
+    seg.title = ewSplitNote(row);
     for (const [key, lab] of [["existing", "EXIST"], ["proposed", "PROP"], [null, "skip"]]) {
       const b = document.createElement("button");
       b.textContent = lab;
       if (row.surface === key) b.className = key === "existing" ? "on-ex" : key === "proposed" ? "on-pr" : "";
       if (row.surface === key && key === null) b.style.opacity = "1";
-      b.onclick = () => { row.surface = key; renderEw(); calcStateDirty(); };
+      b.onclick = () => {
+        // the ONE place a surface becomes an operator decision rather than
+        // an engine default - see calcStatePayload's surface_by note
+        row.surface = key;
+        row.surfaceBy = "operator";
+        renderEw(); calcStateDirty();
+      };
       seg.appendChild(b);
     }
     const x = document.createElement("button");

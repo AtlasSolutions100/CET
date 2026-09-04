@@ -279,7 +279,7 @@ check(/if \(!uniq\.length\) return;/.test(fn("renderScaleSuggest"))
   + "pre-selects nothing");
 
 // ---- the cache buster moved, or nobody sees any of this ----------------
-check(/app\.js\?v=159/.test(html), "app.js cache buster bumped to 159");
+check(/app\.js\?v=160/.test(html), "app.js cache buster bumped to 160");
 
 console.log();
 if (fails) { console.error(fails + " FAILED"); process.exit(1); }
