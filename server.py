@@ -74,6 +74,21 @@ HOSTED = os.environ.get("TAKEOFF_HOSTED", "").strip().lower() in ("1", "true", "
 PRODUCT = os.environ.get("TAKEOFF_PRODUCT", "construction").strip().lower() or "construction"
 PRODUCT_NAME = {"construction": "CET", "excavation": "CORE Takeoff"}.get(PRODUCT, "CET")
 PRODUCT_LINE = {"construction": "GENERAL CONSTRUCTION", "excavation": "TAKEOFF"}.get(PRODUCT, "GENERAL CONSTRUCTION")
+
+
+def _product_page(name: str):
+    """A static page (sign-in, change-password) with the product's name
+    stamped in. The pages are static files that were written for one
+    product; served raw, construction.workoptional.studio greeted people
+    with "Sign in - CORE Takeoff" (live, 2026-09-08). Text-only
+    substitution, the excavation product is byte-identical."""
+    from fastapi.responses import HTMLResponse
+    html = (Path(__file__).resolve().parent / "webui" / name).read_text(encoding="utf-8")
+    if PRODUCT == "construction":
+        html = html.replace("CORE Takeoff", PRODUCT_NAME)
+        html = html.replace('C<span class="brand-o">O</span>RE<span class="brand-sub">TAKEOFF &middot; WORK OPTIONAL</span>',
+                            PRODUCT_NAME + '<span class="brand-sub">' + PRODUCT_LINE + ' &middot; WORK OPTIONAL</span>')
+    return HTMLResponse(html)
 _roots_env = os.environ.get("TAKEOFF_PLAN_ROOTS", "").strip()
 PLAN_ROOTS = [Path(r).expanduser().resolve()
               for r in (_roots_env.split(os.pathsep) if _roots_env else [])
@@ -501,8 +516,7 @@ if True:
 
     @app.get("/login")
     def login_page():
-        return FileResponse(ROOT / "webui" / "login.html",
-                            media_type="text/html")
+        return _product_page("login.html")
 
     @app.post("/api/login")
     async def login(request: Request):
@@ -544,8 +558,7 @@ if True:
 
     @app.get("/change-password")
     def change_password_page():
-        return FileResponse(ROOT / "webui" / "change-password.html",
-                            media_type="text/html")
+        return _product_page("change-password.html")
 
     @app.post("/api/change-password")
     async def change_password(request: Request):
