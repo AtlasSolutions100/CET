@@ -6007,6 +6007,54 @@ def marks_rollup(job_id: str):
     })
 
 
+# ---- ROOMS (flooring) --------------------------------------------------------
+class RoomPickBody(BaseModel):
+    x: float
+    y: float
+    styles: list[int] | None = None     # visible style ids = "these are walls"
+    dpi: int = 100
+    # operator-drawn segments [[x0,y0,x1,y1], ...] in pt that count as wall
+    closures: list[list[float]] | None = None
+
+
+@app.post("/api/job/{job_id}/page/{page}/rooms/pick")
+def rooms_pick(job_id: str, page: int, body: RoomPickBody):
+    """The room enclosing a click, off the detected walls of the visible
+    styles, door openings bridged. takeoff_engine/rooms.py has the method
+    and its limits; this route only feeds it the result, the page's words
+    and a cache key. Needs a detection result: the walls ARE the chains."""
+    from takeoff_engine import rooms as _rooms
+    job = JOBS.get(job_id) or _404()
+    f = _job_dir(job_id) / f"p{page}_result.json"
+    if not f.exists():
+        raise HTTPException(409, "run Detect on this page first - the room is found between its detected walls")
+    try:
+        res = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(500, "could not read this page's detection result")
+    dpi = max(50, min(200, int(body.dpi or 100)))
+    styles = set(int(v) for v in body.styles) if body.styles is not None else None
+    try:
+        doc = pymupdf.open(job["path"])
+        try:
+            words = doc[page].get_text("words")
+        finally:
+            doc.close()
+    except Exception:
+        words = []
+    try:
+        stamp = f.stat().st_mtime
+    except OSError:
+        stamp = 0
+    key = _rooms._cache_key(job_id, page, dpi, styles, stamp)
+    try:
+        return _rooms.pick_room(res, words, float(body.x), float(body.y),
+                                styles, dpi, cache_key=key,
+                                closures=body.closures or None)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
 @app.post("/api/job/{job_id}/page/{page}/structure")
 def structure_calc(job_id: str, page: int, body: StructureBody):
     """Building footprint(s) -> Mass Excavation / Structure Excavation /

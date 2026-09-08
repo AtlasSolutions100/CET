@@ -195,13 +195,13 @@ const state = window.state = {
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
   "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
-  "gz-draw", "gz-box",
+  "gz-draw", "gz-box", "fl-pick", "fl-draw", "fl-close",
 ]);
 
 // The three polygons the operator draws corner by corner. One set, so the
 // close-snap (POLY-SNAP) and the cursor chokepoint cannot know about
 // different tools than the click handlers do.
-const POLY_DRAW_TOOLS = new Set(["ew-bound-draw", "gz-draw", "st-draw"]);
+const POLY_DRAW_TOOLS = new Set(["ew-bound-draw", "gz-draw", "st-draw", "fl-draw"]);
 function syncCursor() {
   const cv = document.getElementById("view");
   if (cv) cv.classList.toggle("tool-point", POINT_TOOLS.has(state.tool));
@@ -1206,6 +1206,7 @@ function pageReset() {
   // the fix for the undetected one.
   state.calcSaved = null; state.calcSavedLoaded = false;
   state.calcStApplied = false;
+  state.calcFlApplied = false;
   state.calcSaveBroken = false; state.calcSaveWarned = false;
   // areas
   state.areaInc = new Map(); state.areaLabels = new Map();
@@ -7278,6 +7279,12 @@ function calcStatePayload() {
       layback_ft: st.layback_ft, footing_ft: st.footing_ft,
     };
   } else if (saved.st) out.st = saved.st;
+  // FLOORING (additive key "fl"): floor types with their colours and
+  // prices, every room with its polygon and numbers, the hand-closed gaps.
+  const fl = (state.fl && state.fl.result === state.result
+              && state.calcFlApplied) ? state.fl : null;
+  if (fl) out.fl = flSavePayload(fl);
+  else if (saved.fl) out.fl = saved.fl;
   // WORK AREA boxes (additive key "zones"): plain page-pt rects, keyed to
   // no chain or style id, so a re-detect can never orphan them - restore
   // re-applies them against whatever the live detection holds. Unlike the
@@ -7356,7 +7363,7 @@ async function calcStatePush() {
 
 // One GET per page load, awaited by loadResult before the panels can paint.
 async function calcStateLoad(gen) {
-  state.calcSaved = null; state.calcSavedLoaded = false; state.calcStApplied = false;
+  state.calcSaved = null; state.calcSavedLoaded = false; state.calcStApplied = false; state.calcFlApplied = false;
   state.calcSaveBroken = false; state.calcSaveWarned = false;
   calcStateSent = null;
   const job = state.job, page = state.page;
@@ -7386,6 +7393,7 @@ async function calcStateLoad(gen) {
   // what the server holds right now, so a no-op save is never sent
   calcStateSent = JSON.stringify(calcStatePayload());
   stApplySaved();
+  flApplySaved();
   gzRestoreCompute();
 }
 
@@ -17013,6 +17021,7 @@ function draw() {
     }
   }
   drawStructural(ctx, k);
+  drawFlooring(ctx, k);
   ctx.restore();
   // the card rides the sheet: a pan or a zoom moves the line under it, so its
   // anchor is recomputed on the same frame rather than drifting off the line
@@ -21102,6 +21111,498 @@ function renderZoomFact() {
   el.textContent = pct === null ? "" : `zoom ${pct}%`;
 }
 
+// ---------- flooring calculator: rooms by floor type ----------
+// THE FLOORING TAKEOFF, as Shamrock Flooring does it by hand (via Christian,
+// 2026-09-02): draw each room, colour it by the flooring that goes in it,
+// add up the square feet per colour; trace the walls for base / molding
+// footage. Here:
+//   Pick rooms   click inside a room; the server fills to the walls of the
+//                line types you have SHOWING (the style checkboxes are the
+//                role assignment: hide the dimension strings and fixtures,
+//                keep the walls), bridging the doors the detector found.
+//                takeoff_engine/rooms.py has the method and its limits.
+//   Close a gap  two clicks across an opening the sheet leaves open (a cased
+//                opening, a partition drawn in no line style, a doorway the
+//                detector missed); the fill treats that line as wall.
+//   Draw outline click the corners yourself - the traced fallback.
+// Every room gets a floor TYPE; the type's colour paints the room on the
+// sheet (the colour is the estimator's convention, never the drawing's),
+// and the takeoff gets one "Flooring - <type>" SF row and one
+// "Base/molding - <type>" LF row per type, base = ring less the door
+// openings on it. Numbers come from the sheet scale; with none the panel
+// shows pt and prices nothing (same rule as the structure tool).
+// NO TRUTH DATA YET: the corpus is civil. The first real flooring plans with
+// the client's own marked-up takeoff are what score these numbers.
+SECTIONS.push(["flHead", ["flHint", "flTypes", "flBody", "flRows", "flActions"]]);
+{
+  const head = $("flHead");
+  head.querySelector("h2").onclick = () => {
+    const closed = head.classList.toggle("closed");
+    for (const cid of ["flHint", "flTypes", "flBody", "flRows", "flActions"]) $(cid).hidden = closed;
+  };
+}
+const FL_PALETTE = ["#4e9af1", "#f2a33a", "#4fc27a", "#e05c8a", "#b58cf5", "#e8d44d", "#49c7c9", "#c98b5a"];
+const FL_DEFAULT_TYPES = ["Carpet", "LVP", "Tile", "Hardwood"];
+const FL_UNASSIGNED = "#9aa3b2";
+const FL_CLOSE_COLOR = "#ff5d3b";
+const FL_LABEL_RX = /^(Flooring|Base\/molding) \u2014 /;
+const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close"];
+const flFmt = (v, d = 0) => (v === null || v === undefined || !Number.isFinite(v))
+  ? "?" : v.toLocaleString(undefined, { maximumFractionDigits: d });
+
+function flNewType(name, i, extra) {
+  return Object.assign({ name, color: FL_PALETTE[i % FL_PALETTE.length], sf_price: 0, lf_price: 0 }, extra || {});
+}
+function flSync() {
+  if (!state.fl || state.fl.result !== state.result) {
+    state.fl = { result: state.result, types: FL_DEFAULT_TYPES.map((n, i) => flNewType(n, i)),
+                 rooms: [], closures: [], seq: 1, hot: null, busy: false, drawPts: [],
+                 hover: null, closeDraft: null, lastType: 0 };
+    if (FL_TOOLS.includes(state.tool)) state.tool = null;
+    $("flPanel").hidden = true;
+    $("flResult").textContent = "";
+    flApplySaved();
+  }
+  $("flBtn").hidden = !state.result;
+  return state.fl;
+}
+// ---- pure ----
+// wall footage for the base: the ring less the door openings on it
+function flWallLf(r) {
+  if (!r || r.perim_lf === null || r.perim_lf === undefined) return null;
+  return Math.max(0, r.perim_lf - (r.openings_lf || 0));
+}
+// per floor type: SF, base LF, room count; rooms with no type are their own
+// row at the end so they are never silently outside the takeoff
+function flTotals(types, rooms) {
+  const out = (types || []).map((t, i) => ({ i, name: t.name, color: t.color, sf: 0, lf: 0, rooms: 0 }));
+  const un = { i: -1, name: "unassigned", color: FL_UNASSIGNED, sf: 0, lf: 0, rooms: 0 };
+  for (const r of rooms || []) {
+    const t = Number.isInteger(r.type) && out[r.type] ? out[r.type] : un;
+    t.rooms += 1; t.sf += r.area_sf || 0; t.lf += flWallLf(r) || 0;
+  }
+  if (un.rooms) out.push(un);
+  return out;
+}
+// the takeoff rows: one SF row and one LF row per type that has rooms
+function flItems(types, rooms) {
+  const items = [];
+  for (const t of flTotals(types, rooms)) {
+    if (t.i < 0 || !t.rooms) continue;
+    const ty = types[t.i];
+    if (t.sf > 0)
+      items.push(Object.assign({ label: "Flooring \u2014 " + t.name, qty: Math.round(t.sf * 10) / 10, unit: "SF" },
+                               +ty.sf_price > 0 ? { unit_price: +ty.sf_price } : {}));
+    if (t.lf > 0)
+      items.push(Object.assign({ label: "Base/molding \u2014 " + t.name, qty: Math.round(t.lf * 10) / 10, unit: "LF" },
+                               +ty.lf_price > 0 ? { unit_price: +ty.lf_price } : {}));
+  }
+  return items;
+}
+// one room's line: what it measures and what was done to get it
+function flRoomLine(r) {
+  if (r.area_sf === null || r.area_sf === undefined) return "no scale set \u2014 " + flFmt(r.area_pt2) + " pt\u00b2";
+  let s = flFmt(r.area_sf) + " SF \u00b7 walls " + flFmt(flWallLf(r)) + " LF";
+  if (r.doors) s += " (" + r.doors + " door" + (r.doors === 1 ? "" : "s") + ", \u2212" + flFmt(r.openings_lf, 1) + " LF)";
+  if (r.holes_sf > 0) s += " \u00b7 " + flFmt(r.holes_sf) + " SF inside it not counted";
+  if (r.closures) s += " \u00b7 " + r.closures + " gap" + (r.closures === 1 ? "" : "s") + " closed by hand";
+  if (r.source === "drawn") s += " \u00b7 outline drawn by hand";
+  return s;
+}
+function flApplyItems() {
+  const fl = flSync();
+  state.extraItems = state.extraItems.filter(it => !FL_LABEL_RX.test(it.label));
+  for (const it of flItems(fl.types, fl.rooms)) state.extraItems.push(it);
+  renderItemized();
+  state.calcFlApplied = true;
+  calcStateDirty();
+}
+// ---- persistence (calcstate sidecar, additive key "fl") ----
+function flSavePayload(fl) {
+  return {
+    types: fl.types.map(t => ({ name: t.name, color: t.color, sf_price: +t.sf_price || 0, lf_price: +t.lf_price || 0 })),
+    rooms: fl.rooms.map(r => ({
+      name: r.name, pts: r.pts.map(p => [p[0], p[1]]), area_sf: r.area_sf, area_pt2: r.area_pt2,
+      perim_lf: r.perim_lf, perim_pt: r.perim_pt, openings_lf: r.openings_lf, holes_sf: r.holes_sf,
+      doors: r.doors || 0, closures: r.closures || 0, type: r.type, source: r.source, click: r.click || null,
+    })),
+    closures: fl.closures.map(c => c.map(v => Math.round(v * 100) / 100)),
+    seq: fl.seq,
+  };
+}
+function flApplySaved() {
+  if (state.calcFlApplied || !state.calcSavedLoaded) return;
+  if (!state.fl || state.fl.result !== state.result) return;
+  state.calcFlApplied = true;
+  const sv = (state.calcSaved || {}).fl;
+  if (!sv) return;
+  const fl = state.fl;
+  if (Array.isArray(sv.types) && sv.types.length)
+    fl.types = sv.types.map((t, i) => flNewType(String((t && t.name) || ("Type " + (i + 1))), i, {
+      color: (t && t.color) || FL_PALETTE[i % FL_PALETTE.length],
+      sf_price: calcNum(t && t.sf_price) || 0, lf_price: calcNum(t && t.lf_price) || 0 }));
+  if (Array.isArray(sv.rooms) && !fl.rooms.length) {
+    for (const r of sv.rooms) {
+      if (!r || !Array.isArray(r.pts) || r.pts.length < 3) continue;
+      fl.rooms.push({
+        name: String(r.name || ("Room " + (fl.rooms.length + 1))), pts: r.pts.map(p => [p[0], p[1]]),
+        area_sf: calcNum(r.area_sf), area_pt2: calcNum(r.area_pt2) || 0,
+        perim_lf: calcNum(r.perim_lf), perim_pt: calcNum(r.perim_pt) || 0,
+        openings_lf: calcNum(r.openings_lf) || 0, holes_sf: calcNum(r.holes_sf) || 0,
+        doors: calcNum(r.doors) || 0, closures: calcNum(r.closures) || 0,
+        type: Number.isInteger(r.type) ? r.type : null,
+        source: r.source === "drawn" ? "drawn" : "click", click: Array.isArray(r.click) ? r.click : null,
+      });
+    }
+  }
+  if (Array.isArray(sv.closures))
+    fl.closures = sv.closures.filter(c => Array.isArray(c) && c.length === 4 && c.every(v => calcNum(v) !== null));
+  if (calcNum(sv.seq) !== null) fl.seq = sv.seq;
+  if (fl.rooms.length) {
+    flApplyItems();
+    if (!$("flPanel").hidden) renderFl();
+    setStatus(fl.rooms.length + " room" + (fl.rooms.length === 1 ? "" : "s") + " restored from this page's saved record");
+  }
+}
+// ---- the three tools ----
+function flArm(mode) {
+  const fl = flSync();
+  if (!state.result) return setStatus("run Detect first", "err");
+  if (state.tool === "drawline") cancelDraw();
+  else if (state.tool === "measure") $("measureBtn").click();
+  else if (state.tool === "cutspan") cancelCut();
+  else if (state.tool === "reclass") $("reclassBtn").onclick();
+  else if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
+  state.tool = mode; fl.drawPts = []; fl.hover = null; fl.closeDraft = null;
+  polySnapClear();
+  setStatus(mode === "fl-pick"
+    ? "flooring: click inside a room \u2014 only the line types you have showing count as walls (Esc exits)"
+    : mode === "fl-close"
+    ? "close a gap: click one side of the opening, then the other \u2014 the fill treats that line as wall"
+    : "flooring: click each corner of the room" + POLY_CLOSE_HINT, "busy");
+  renderFl(); draw();
+}
+function flDisarm(msg) {
+  const fl = flSync();
+  state.tool = null; fl.drawPts = []; fl.hover = null; fl.closeDraft = null;
+  polySnapClear();
+  if (msg !== undefined) setStatus(msg);
+  renderFl(); draw();
+}
+// the role assignment: what is showing is a wall
+function flVisibleStyles() {
+  return (state.result.styles || []).map(s => s.style_id).filter(id => famShown(id));
+}
+function flAddRoom(room) {
+  const fl = flSync();
+  if (!room.name) room.name = "Room " + fl.seq;
+  if (!Number.isInteger(room.type)) room.type = fl.lastType;
+  fl.rooms.push(room); fl.seq += 1;
+  flApplyItems(); renderFl(); draw();
+}
+async function flPickAt(px, py) {
+  const fl = flSync();
+  if (fl.busy) return;
+  fl.busy = true;
+  setStatus("finding the room\u2026", "busy");
+  try {
+    const r = await fetch(`/api/job/${state.job}/page/${state.page}/rooms/pick`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: px, y: py, styles: flVisibleStyles(), closures: fl.closures }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { setStatus(j.detail || `room lookup failed (${r.status})`, "err"); return; }
+    if (!j.ok) { setStatus(j.why, "err"); return; }
+    const room = { name: j.name || null, pts: j.polygon, area_sf: j.area_sf, area_pt2: j.area_pt2,
+                   perim_lf: j.perim_lf, perim_pt: j.perim_pt, openings_lf: j.openings_lf || 0,
+                   holes_sf: j.holes_sf || 0, doors: (j.bridges_used || []).length,
+                   closures: j.closures_used || 0, type: fl.lastType, source: "click", click: [px, py] };
+    flAddRoom(room);
+    setStatus(`${room.name}: ${flRoomLine(room)} \u2014 pick its floor type in the panel, or click the next room`, "ok");
+  } catch (e) {
+    setStatus("room lookup failed \u2014 the server did not answer", "err");
+  } finally {
+    fl.busy = false;
+  }
+}
+function flDrawClick(px, py) {
+  const fl = flSync();
+  if (polyCloseHit(fl.drawPts, px, py, polyCloseTolPt())) { polySnapClear(); return flFinishDraw(); }
+  const last = fl.drawPts[fl.drawPts.length - 1];
+  if (last && Math.hypot(px - last[0], py - last[1]) < 0.5) return;
+  fl.drawPts.push([px, py]);
+  const fpp = stFtPerPt();
+  const n = fl.drawPts.length;
+  setStatus(`room outline: ${n} corner(s)` + (n >= 3 && fpp ? ` \u00b7 so far ${flFmt(stPolyArea(fl.drawPts) * fpp * fpp)} SF` : "") + POLY_CLOSE_HINT, "busy");
+  draw();
+}
+function flFinishDraw() {
+  const fl = flSync();
+  const pts = [];
+  for (const q of fl.drawPts)
+    if (!pts.length || Math.hypot(q[0] - pts[pts.length - 1][0], q[1] - pts[pts.length - 1][1]) > 0.5) pts.push(q);
+  if (pts.length >= 2 && Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) < 0.5) pts.pop();
+  if (pts.length < 3) return setStatus(`an outline needs at least 3 corners (have ${pts.length}) \u2014 keep clicking, or Esc to cancel`, "err");
+  const fpp = stFtPerPt();
+  const area_pt2 = stPolyArea(pts), perim_pt = stPolyPerim(pts);
+  const room = { name: null, pts, area_sf: fpp ? area_pt2 * fpp * fpp : null, area_pt2,
+                 perim_lf: fpp ? perim_pt * fpp : null, perim_pt, openings_lf: 0, holes_sf: 0,
+                 doors: 0, closures: 0, type: fl.lastType, source: "drawn", click: null };
+  fl.drawPts = []; fl.hover = null; polySnapClear(); state.tool = null;
+  flAddRoom(room);
+  setStatus(`${room.name}: ${flRoomLine(room)}`, "ok");
+}
+function flCloseClick(px, py) {
+  const fl = flSync();
+  if (!fl.closeDraft) {
+    fl.closeDraft = [px, py];
+    setStatus("close a gap: now click the other side of the opening", "busy");
+    draw();
+    return;
+  }
+  const seg = [fl.closeDraft[0], fl.closeDraft[1], px, py];
+  fl.closeDraft = null;
+  if (Math.hypot(seg[2] - seg[0], seg[3] - seg[1]) < 0.5) return;
+  fl.closures.push(seg);
+  state.calcFlApplied = true;
+  calcStateDirty();
+  state.tool = "fl-pick";
+  setStatus(`gap closed (${fl.closures.length} on this sheet) \u2014 now click inside the room`, "ok");
+  renderFl(); draw();
+}
+function flCanvasClick(e) {
+  const [px, py] = ptFromEvent(e);
+  if (state.tool === "fl-pick") flPickAt(px, py);
+  else if (state.tool === "fl-draw") flDrawClick(px, py);
+  else if (state.tool === "fl-close") flCloseClick(px, py);
+}
+const _flClickBefore = handleCanvasClick;
+handleCanvasClick = function (e) {
+  if (FL_TOOLS.includes(state.tool)) return flCanvasClick(e);
+  return _flClickBefore(e);
+};
+addEventListener("mousemove", (e) => {
+  if (panning || !state.fl) return;
+  if (state.tool === "fl-draw" && state.fl.drawPts.length) {
+    state.fl.hover = ptFromEvent(e);
+    polySnapHover(state.fl.hover[0], state.fl.hover[1]);
+    draw();
+  } else if (state.tool === "fl-close" && state.fl.closeDraft) {
+    state.fl.hover = ptFromEvent(e);
+    draw();
+  }
+});
+cv.addEventListener("dblclick", () => { if (state.tool === "fl-draw") flFinishDraw(); });
+addEventListener("keydown", (e) => {
+  if (typing()) return;
+  if (!FL_TOOLS.includes(state.tool)) return;
+  if (e.key === "Enter" && state.tool === "fl-draw") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    flFinishDraw();
+    return;
+  }
+  if (e.key === "Escape") {
+    e.preventDefault(); e.stopImmediatePropagation();
+    const fl = flSync();
+    if (state.tool === "fl-draw" && fl.drawPts.length) {
+      fl.drawPts.pop(); polySnapClear();
+      setStatus(fl.drawPts.length ? `room outline: ${fl.drawPts.length} corner(s) \u2014 Esc again removes another`
+                                  : "all corners removed \u2014 Esc again exits", "busy");
+      draw();
+    } else if (state.tool === "fl-close" && fl.closeDraft) {
+      fl.closeDraft = null;
+      setStatus("close a gap: first point cleared \u2014 Esc again exits", "busy");
+      draw();
+    } else {
+      flDisarm("flooring: tool released");
+    }
+  }
+}, true);
+
+// ---- the panel ----
+function renderFl() {
+  const fl = flSync();
+  const types = $("flTypes"), body = $("flBody"), rows = $("flRows");
+  types.innerHTML = ""; body.innerHTML = ""; rows.innerHTML = "";
+  if (!state.result) { body.textContent = "run Detect first"; return; }
+  const mk = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt !== undefined) d.textContent = txt; return d; };
+  const fpp = stFtPerPt();
+  const tot = flTotals(fl.types, fl.rooms);
+
+  // floor types: colour, name, prices, what they hold
+  const tbl = mk("div", "fl-types-tbl");
+  for (const h of ["floor type", "$/SF", "$/LF base", "on the sheet", ""]) tbl.appendChild(mk("div", "fl-th", h));
+  fl.types.forEach((t, i) => {
+    const sw = document.createElement("input");
+    sw.type = "color"; sw.value = t.color; sw.className = "fl-swatch";
+    sw.title = "the colour this floor type paints on the sheet";
+    sw.oninput = () => { t.color = sw.value; draw(); calcStateDirty(); };
+    const nm = document.createElement("input");
+    nm.value = t.name; nm.className = "fl-name"; nm.placeholder = "floor type";
+    nm.oninput = () => { t.name = nm.value; flApplyItems(); };
+    const cell = mk("div", "fl-td fl-td-name"); cell.append(sw, nm);
+    const num = (key) => {
+      const inp = document.createElement("input");
+      inp.type = "number"; inp.step = "0.01"; inp.min = "0"; inp.className = "fl-num";
+      inp.value = t[key] || "";
+      inp.oninput = () => { t[key] = +inp.value || 0; flApplyItems(); };
+      const c = mk("div", "fl-td"); c.appendChild(inp); return c;
+    };
+    const tt = tot[i];
+    const totc = mk("div", "fl-td ew-meta", tt.rooms
+      ? `${flFmt(tt.sf)} SF \u00b7 ${flFmt(tt.lf)} LF \u00b7 ${tt.rooms} room${tt.rooms === 1 ? "" : "s"}` : "\u2014");
+    const rm = mk("button", "mini", "\u00d7");
+    rm.title = "remove this floor type (its rooms become unassigned)";
+    rm.onclick = () => {
+      fl.types.splice(i, 1);
+      for (const r of fl.rooms) { if (r.type === i) r.type = null; else if (r.type > i) r.type -= 1; }
+      if (fl.lastType >= fl.types.length) fl.lastType = 0;
+      flApplyItems(); renderFl(); draw();
+    };
+    const rmc = mk("div", "fl-td"); rmc.appendChild(rm);
+    tbl.append(cell, num("sf_price"), num("lf_price"), totc, rmc);
+  });
+  types.appendChild(tbl);
+  const add = mk("button", "mini", "+ floor type");
+  add.onclick = () => { fl.types.push(flNewType("Type " + (fl.types.length + 1), fl.types.length)); renderFl(); calcStateDirty(); };
+  types.appendChild(add);
+  const un = tot.find(t => t.i < 0);
+  if (un) types.appendChild(mk("div", "ew-meta fl-unassigned",
+    `${un.rooms} room${un.rooms === 1 ? "" : "s"} with no floor type yet \u2014 ${flFmt(un.sf)} SF not in the takeoff`));
+
+  // modes
+  const modes = mk("div", "st-modes");
+  const mode = (label, tool, title) => {
+    const b = mk("button", "mini", label);
+    b.title = title;
+    b.classList.toggle("active", state.tool === tool);
+    b.onclick = () => state.tool === tool ? flDisarm("") : flArm(tool);
+    return b;
+  };
+  modes.append(
+    mode("Pick rooms", "fl-pick", "Click inside a room: the engine fills to the walls of the line types you have showing, bridging the doors it detected"),
+    mode("Close a gap", "fl-close", "Two clicks across an opening the sheet leaves open; the fill treats that line as wall"),
+    mode("Draw outline", "fl-draw", "Click each corner of the room yourself"));
+  modes.appendChild(mk("span", "ew-meta", fpp ? `scale ${state.result.scale.text}` : "NO SCALE SET \u2014 pt only"));
+  body.appendChild(modes);
+  if (fl.closures.length) {
+    const c = mk("div", "ew-meta", `${fl.closures.length} gap${fl.closures.length === 1 ? "" : "s"} closed by hand on this sheet `);
+    const clr = mk("button", "mini", "clear");
+    clr.onclick = () => { fl.closures = []; calcStateDirty(); renderFl(); draw(); };
+    c.appendChild(clr);
+    body.appendChild(c);
+  }
+
+  // rooms
+  fl.rooms.forEach((r, k) => {
+    const row = mk("div", "st-row fl-row");
+    const top = mk("div", "fl-row-top");
+    const dot = mk("span", "fl-dot");
+    dot.style.background = Number.isInteger(r.type) && fl.types[r.type] ? fl.types[r.type].color : FL_UNASSIGNED;
+    const nm = document.createElement("input");
+    nm.value = r.name; nm.className = "fl-name";
+    nm.oninput = () => { r.name = nm.value; calcStateDirty(); };
+    const sel = document.createElement("select");
+    sel.className = "fl-sel";
+    const o0 = document.createElement("option"); o0.value = ""; o0.textContent = "\u2014 floor type \u2014"; sel.appendChild(o0);
+    fl.types.forEach((t, i) => {
+      const o = document.createElement("option"); o.value = String(i); o.textContent = t.name;
+      if (r.type === i) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => {
+      r.type = sel.value === "" ? null : +sel.value;
+      if (Number.isInteger(r.type)) fl.lastType = r.type;
+      flApplyItems(); renderFl(); draw();
+    };
+    const rm = mk("button", "mini", "\u00d7");
+    rm.title = "remove this room";
+    rm.onclick = () => { fl.rooms.splice(k, 1); flApplyItems(); renderFl(); draw(); };
+    top.append(dot, nm, sel, rm);
+    row.appendChild(top);
+    row.appendChild(mk("div", "ew-meta", flRoomLine(r)));
+    row.onmouseenter = () => { fl.hot = k; draw(); };
+    row.onmouseleave = () => { fl.hot = null; draw(); };
+    rows.appendChild(row);
+  });
+  const assigned = tot.filter(t => t.i >= 0 && t.rooms);
+  $("flResult").textContent = fl.rooms.length
+    ? `${fl.rooms.length} room${fl.rooms.length === 1 ? "" : "s"} \u00b7 ` + assigned.map(t => `${t.name} ${flFmt(t.sf)} SF / ${flFmt(t.lf)} LF`).join(" \u00b7 ")
+    : "";
+}
+$("flBtn").onclick = () => {
+  flSync();
+  const panel = $("flPanel");
+  if (!panel.hidden) {
+    panel.hidden = true;
+    if (FL_TOOLS.includes(state.tool)) flDisarm("");
+    draw();
+    return;
+  }
+  panel.hidden = false;
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
+  renderFl(); draw();
+};
+$("flClose").onclick = () => {
+  $("flPanel").hidden = true;
+  if (FL_TOOLS.includes(state.tool)) flDisarm("");
+  draw();
+};
+// canvas: every room filled in its type's colour, closures as short bars,
+// the draft outline / gap while drawing
+function drawFlooring(ctx, k) {
+  const fl = flSync();
+  const armed = FL_TOOLS.includes(state.tool);
+  if ($("flPanel").hidden && !armed) return;
+  const f = IMG_DPI / 72;
+  const rgba = (hex, a) => {
+    const n = parseInt(String(hex).slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+  fl.rooms.forEach((r, i) => {
+    const pts = r.pts;
+    if (!pts || pts.length < 3) return;
+    const color = Number.isInteger(r.type) && fl.types[r.type] ? fl.types[r.type].color : FL_UNASSIGNED;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+    for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j][0] * f, pts[j][1] * f);
+    ctx.closePath();
+    ctx.fillStyle = rgba(color, fl.hot === i ? 0.55 : 0.35);
+    ctx.fill();
+    ctx.lineWidth = (fl.hot === i ? 3 : 1.6) / k;
+    ctx.strokeStyle = color;
+    ctx.setLineDash([]);
+    ctx.stroke();
+  });
+  for (const c of fl.closures) {
+    ctx.beginPath(); ctx.moveTo(c[0] * f, c[1] * f); ctx.lineTo(c[2] * f, c[3] * f);
+    ctx.lineWidth = 3 / k; ctx.strokeStyle = FL_CLOSE_COLOR; ctx.setLineDash([]); ctx.stroke();
+  }
+  if (state.tool === "fl-close" && fl.closeDraft) {
+    ctx.beginPath(); ctx.arc(fl.closeDraft[0] * f, fl.closeDraft[1] * f, 4 / k, 0, Math.PI * 2);
+    ctx.fillStyle = FL_CLOSE_COLOR; ctx.fill();
+    if (fl.hover) {
+      ctx.beginPath(); ctx.moveTo(fl.closeDraft[0] * f, fl.closeDraft[1] * f); ctx.lineTo(fl.hover[0] * f, fl.hover[1] * f);
+      ctx.lineWidth = 2 / k; ctx.setLineDash([6 / k, 4 / k]); ctx.strokeStyle = FL_CLOSE_COLOR; ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  if (state.tool === "fl-draw" && fl.drawPts.length) {
+    const P = fl.drawPts;
+    ctx.beginPath();
+    ctx.moveTo(P[0][0] * f, P[0][1] * f);
+    for (let j = 1; j < P.length; j++) ctx.lineTo(P[j][0] * f, P[j][1] * f);
+    if (fl.hover && !state.polySnap) ctx.lineTo(fl.hover[0] * f, fl.hover[1] * f);
+    if (P.length >= 2) ctx.lineTo(P[0][0] * f, P[0][1] * f);
+    ctx.lineWidth = 2 / k; ctx.setLineDash([6 / k, 4 / k]); ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke(); ctx.setLineDash([]);
+    for (const q of P) {
+      ctx.beginPath(); ctx.arc(q[0] * f, q[1] * f, 3.5 / k, 0, Math.PI * 2);
+      ctx.fillStyle = CV_VERTEX; ctx.fill();
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = ST_DRAFT_COLOR; ctx.stroke();
+    }
+    if (state.polySnap) drawPolyCloseRing(P[0], ST_DRAFT_COLOR);
+  }
+}
+
 // ---------- structure calculator: footprint dig + perimeter layback ----------
 // The excavator's bid-sheet formulas (client_meet/beaumont, "Bid sheet" p1,
 // handwritten; FINDINGS-2026-08-21 F52):
@@ -22534,6 +23035,7 @@ const TOOLS_MENU_ITEMS = [
   ["rollBtn", "rollPanel"],
   ["xsBtn", "xsPanel"],
   ["coBtn", "coPanel"],
+  ["flBtn", "flPanel"],
   ["stBtn", "stPanel"],
   ["legendBtn", null],
 ];
