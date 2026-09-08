@@ -15038,12 +15038,20 @@ function xsKey(page, label) {
 async function xsLoadApproved() {
   const n = (state.kinds || []).length;
   const pages = [];
-  // p<N>_elements.json exists only for an approved page; 404 means "not
-  // approved", which is a fact, not an error. Fetched 8 at a time so a
-  // 200-sheet job does not open 200 sockets.
-  for (let base = 0; base < n; base += 8) {
-    const batch = [];
-    for (let p = base; p < Math.min(base + 8, n); p++) batch.push(p);
+  // ASK FIRST. /api/job/{id}/approved lists the pages that carry an
+  // approved export; only those are fetched. Probing every page and
+  // reading 404 as "not approved" was a fact, not an error - but the
+  // browser logs each 404 as a console error, 15 on a 15-sheet job
+  // (Seer Stone, headed sweep 2026-09-08). An older server without the
+  // route falls back to the probe.
+  let want = null;
+  try {
+    const r = await fetch(`/api/job/${state.job}/approved`);
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.pages)) want = j.pages.filter(Number.isInteger); }
+  } catch (e) { /* fall back to probing */ }
+  const all = want !== null ? want : Array.from({ length: n }, (_, i) => i);
+  for (let base = 0; base < all.length; base += 8) {
+    const batch = all.slice(base, base + 8);
     const got = await Promise.all(batch.map(async (p) => {
       try {
         const r = await fetch(`/api/job/${state.job}/page/${p}/elements`);

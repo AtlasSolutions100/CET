@@ -3960,6 +3960,25 @@ async def post_calcstate(job_id: str, page: int, request: Request):
     return JSONResponse(_calcstate_put(job_id, page, await request.body()))
 
 
+@app.get("/api/job/{job_id}/approved")
+def approved_pages(job_id: str):
+    """Which pages of a job are approved (carry p<N>_elements.json), so a
+    whole-job reader asks once instead of probing every page and logging
+    a 404 per unapproved sheet in the browser console."""
+    if job_id not in JOBS:
+        _404()
+    pages = []
+    try:
+        for f in _job_dir(job_id).glob("p*_elements.json"):
+            try:
+                pages.append(int(f.name[1:].split("_")[0]))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return {"pages": sorted(pages)}
+
+
 @app.get("/api/job/{job_id}/page/{page}/elements")
 def get_elements(job_id: str, page: int):
     f = _job_dir(job_id) / f"p{page}_elements.json"
