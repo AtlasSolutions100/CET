@@ -23724,29 +23724,40 @@ async function pvPullBid(b, btn, card) {
   const note = card.querySelector(".pv-bid-note");
   btn.disabled = true;
   btn.textContent = "fetching plans\u2026";
-  setStatus("fetching the plan set for \u201c" + b.title + "\u201d\u2026", "busy");
+  const fail = await bidPull(b.id, b.title);
+  if (fail) {
+    note.hidden = false;
+    note.textContent = fail;
+    btn.disabled = false;
+    btn.textContent = bidActionText(b);
+  }
+}
+
+// THE PULL ITSELF, shared by the card button and the #bid= boot hook. One
+// POST with the browser's own session, so the job belongs to whoever is
+// signed in here - never to an account the sniper holds. Resolves to null
+// on success (the sheet is open) or to the sentence to show on failure;
+// the status bar gets both.
+async function bidPull(id, title) {
+  setStatus("fetching the plan set for \u201c" + (title || id) + "\u201d\u2026", "busy");
   try {
-    const resp = await fetch("/api/bids/" + encodeURIComponent(b.id) + "/pull",
+    const resp = await fetch("/api/bids/" + encodeURIComponent(id) + "/pull",
                              { method: "POST" });
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      note.hidden = false;
-      note.textContent = j.detail || ("could not start (" + resp.status + ")");
-      setStatus(note.textContent, "err");
-      btn.disabled = false;
-      btn.textContent = bidActionText(b);
-      return;
+      const why = j.detail || ("could not start (" + resp.status + ")");
+      setStatus(why, "err");
+      return why;
     }
     applyOpened(j);
     setStatus("opened " + (j.file || j.name) + " from the bid \u2014 detection "
       + (j.detect === "off" ? "not started" : "queued on the pages that look like site work"),
       "ok");
+    return null;
   } catch (e) {
-    note.hidden = false;
-    note.textContent = "could not start \u2014 the server did not answer";
-    setStatus(note.textContent, "err");
-    btn.disabled = false;
-    btn.textContent = bidActionText(b);
+    const why = "could not start \u2014 the server did not answer";
+    setStatus(why, "err");
+    return why;
   }
 }
 
@@ -25312,6 +25323,24 @@ svGoto(BOOT_HASH);
 // hands back to it. Same route and same applyOpened() as a card click; an
 // unknown or unreadable id says so in the status bar and leaves Projects up.
 (function bootJob() {
+  // #bid=<listing id>: Bid Sniper's "Send to Takeoff" opens THIS site in a
+  // new tab with that fragment, and the pull runs here with this browser's
+  // session - so a person who is already signed in gets the sheet with no
+  // second login, and one who is not signs in once (login.html keeps the
+  // fragment) and then gets it. The sniper never needs an engine password.
+  const bm = /^#bid=(.+)$/.exec(BOOT_HASH || "");
+  if (bm) {
+    let id = bm[1];
+    try { id = decodeURIComponent(id); } catch (err) { /* use it raw */ }
+    try { history.replaceState(null, "", location.pathname + location.search); }
+    catch (err) { /* convenience only */ }
+    bidPull(id, null).then((fail) => {
+      // on failure Projects is still up; land on the bids tab so the card
+      // for this bid, with its own note, is what the person is looking at
+      if (fail && pvIsOpen()) { pvTab = "bids"; loadProjects(); }
+    });
+    return;
+  }
   const m = /^#job=([0-9a-f]{6,32})$/.exec(BOOT_HASH || "");
   if (!m) return;
   fetch("/api/job/" + m[1] + "/open").then(async (resp) => {

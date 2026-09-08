@@ -120,14 +120,32 @@ check(card && /pvOpenJob\(\{ job_id: b\.takeoff_job \}\)/.test(card),
       "...or opens the job already here");
 check(card && /target = "_blank"/.test(card) && /rel = "noopener"/.test(card),
       "the portal link opens in a new tab without an opener");
-const pull = grab("pvPullBid");
-check(!!pull, "pvPullBid exists");
-check(pull && /"\/api\/bids\/" \+ encodeURIComponent\(b\.id\) \+ "\/pull"/.test(pull),
+const pull = grab("bidPull");
+check(!!pull, "bidPull exists (shared by the card button and the #bid= boot hook)");
+check(pull && /"\/api\/bids\/" \+ encodeURIComponent\(id\) \+ "\/pull"/.test(pull),
       "the pull POSTs to /api/bids/{id}/pull with the id encoded (ids carry colons)");
 check(pull && /method: "POST"/.test(pull), "...as a POST");
 check(pull && /applyOpened\(j\)/.test(pull), "success goes through the same applyOpened as an upload");
-check(pull && /btn\.disabled = false/.test(pull), "failure re-arms the button");
 check(pull && /j\.detail/.test(pull), "failure prints the server's own words");
+const cardPull = grab("pvPullBid");
+check(cardPull && /await bidPull\(b\.id, b\.title\)/.test(cardPull), "the card button goes through bidPull");
+check(cardPull && /btn\.disabled = false/.test(cardPull), "failure re-arms the button");
+
+// ---- Send to Takeoff from the sniper: #bid=<id> on this site --------------
+// The sniper's dashboard opens <engine>/#bid=<listing id> in a new tab and
+// THIS site does the pull with the browser's own session. So: the hook
+// exists, it decodes the id, it runs bidPull, and login.html keeps the
+// fragment across a sign-in so a person who was not signed in still lands
+// on the pulled sheet instead of on Projects with the hand-off lost.
+console.log("hand-off");
+const boot = grab("bootJob");
+check(boot && /\/\^#bid=\(\.\+\)\$\/\.exec\(BOOT_HASH/.test(boot), "boot: #bid=<id> is recognised");
+check(boot && /decodeURIComponent\(id\)/.test(boot), "boot: the id is decoded (the sniper encodes the colons)");
+check(boot && /bidPull\(id, null\)/.test(boot), "boot: it runs the same pull as the card");
+check(boot && boot.indexOf("#bid=") < boot.indexOf("#job="), "boot: #bid= is tried before #job=");
+const LOGIN = fs.readFileSync(path.join(__dirname, "..", "webui", "login.html"), "utf8");
+check(/dest \+ \(location\.hash \|\| ""\)/.test(LOGIN), "login.html: the fragment survives the sign-in redirect");
+check(/dest\.includes\("#"\) \? dest :/.test(LOGIN), "login.html: ...unless `next` carries its own");
 
 // ---- the project card says where a pulled plan came from --------------------
 const pc = grab("pvCard");

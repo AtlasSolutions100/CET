@@ -116,7 +116,12 @@
       if (r.ok) {
         // Whatever page they were sent here from, else the app root.
         const to = new URLSearchParams(location.search).get("next") || "/";
-        location.href = to.startsWith("/") ? to : "/";
+        // Keep the fragment. A link from Bid Sniper is <root>/#bid=<id> (or
+        // #job=<id>); the server never sees a fragment, so the redirect to
+        // /login?next=/ carried it here on the login URL, and dropping it
+        // would land the person on Projects with the hand-off lost.
+        const dest = to.startsWith("/") ? to : "/";
+        location.href = dest.includes("#") ? dest : dest + (location.hash || "");
         return;
       }
       const j = await r.json().catch(() => ({}));
