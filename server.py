@@ -12,6 +12,7 @@ out/jobs/, so re-opening a document reuses finished work.
 """
 
 import hashlib
+import requests
 import json
 import math
 import multiprocessing
@@ -32,6 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from takeoff_engine import bids as _bids
 from takeoff_engine import branding as _branding
 from takeoff_engine import ledger
 from takeoff_engine.chain import build_chains
@@ -658,7 +660,10 @@ def _save_registry() -> None:
         REGISTRY.write_text(json.dumps(
             {jid: {"path": j["path"], "pages": j["pages"],
                    "mtime": j.get("mtime"), "kinds": j.get("kinds"),
-                   "sizes": j.get("sizes"), "owner": j.get("owner")}
+                   "sizes": j.get("sizes"), "owner": j.get("owner"),
+                   # where the plan came from when Open bids pulled it
+                   # (/api/bids/{id}/pull); None for an upload
+                   "bid": j.get("bid")}
              for jid, j in JOBS.items()}, indent=1))
     except OSError:
         pass
@@ -689,7 +694,7 @@ def _load_registry() -> None:
         JOBS[jid] = {"path": j["path"], "pages": j.get("pages", 0),
                      "mtime": j.get("mtime"), "kinds": j.get("kinds"),
                      "sizes": j.get("sizes"), "owner": j.get("owner"),
-                     "status": status}
+                     "bid": j.get("bid"), "status": status}
 
 
 _load_registry()
@@ -757,9 +762,130 @@ def recent_documents(request: Request):
             "mine": owner is not None and owner == me,
             "shared": owner is None,
             "deletable": staff or (owner == me),
+            "bid": j.get("bid"),
         })
     out.sort(key=lambda r: -r["when"])
     return out[:60]
+
+# ---- OPEN BIDS (Bid Sniper) --------------------------------------------------
+# The landing page's third tab. Bid Sniper (:8200 on the operator's own
+# machine) watches the Utah portals and holds the plan sets; the engine PULLS
+# from it so the job belongs to whoever clicked, and the sniper never needs
+# an engine password. takeoff_engine/bids.py has the reasoning and the pure
+# parts; these two routes are the glue.
+BID_SNIPER_URL = _bids.sniper_url(HOSTED)
+
+
+def _bid_job_visible(jid, me, staff) -> bool:
+    """A linked job counts as 'here' only when this account could open it -
+    the same rule /api/recent applies - and its PDF is still on disk."""
+    if not jid:
+        return False
+    j = JOBS.get(jid)
+    if not j or not Path(j.get("path", "")).exists():
+        return False
+    owner = j.get("owner")
+    return staff or owner is None or owner == me
+
+
+@app.get("/api/bids")
+def list_bids(request: Request):
+    """Open, relevant, undismissed bids from Bid Sniper, best first.
+
+    Never raises for a sniper that is down: the reply says enabled/ok and
+    an error line, and the tab prints that instead of an empty grid. On a
+    box with no BID_SNIPER_URL (every hosted box) enabled is false and the
+    UI does not draw the tab at all."""
+    if not BID_SNIPER_URL:
+        return {"enabled": False, "ok": False, "url": "", "bids": []}
+    try:
+        with _bids.Sniper(BID_SNIPER_URL) as s:
+            rows = s.list_open()
+    except Exception as e:
+        return {"enabled": True, "ok": False, "url": BID_SNIPER_URL,
+                "error": "%s: %s" % (e.__class__.__name__, str(e)[:160]),
+                "bids": []}
+    me = _who(request)
+    staff = _is_staff(request)
+    out = _bids.open_bids(rows)
+    with JOBS_LOCK:
+        for b in out:
+            b["job_here"] = _bid_job_visible(b.get("takeoff_job"), me, staff)
+    return {"enabled": True, "ok": True, "url": BID_SNIPER_URL, "bids": out}
+
+
+def _bid_detect_core(job_id: str) -> None:
+    """After a pull: triage the set (text layer only, seconds) and queue
+    detection on the pages it calls core. Runs on its own thread so the
+    pull answers as soon as the job exists and the page opens while the
+    sheets are still being read - the page strip shows them running."""
+    try:
+        tri = job_triage(job_id)
+    except Exception:
+        return
+    for pg in tri.get("pages") or []:
+        if pg.get("tier") == "core":
+            try:
+                _enqueue_detect(job_id, int(pg["page"]))
+            except Exception:
+                pass
+
+
+@app.post("/api/bids/{lid}/pull")
+def pull_bid(lid: str, request: Request, detect: int = 1, file: int = -1):
+    """Make a job from a bid: have the sniper download the plan set, stream
+    the drawing PDF here, register it exactly as an upload would, remember
+    which bid it came from, and tell the sniper the job id.
+
+    Same content-addressed path as /api/upload, so pulling the same bid
+    twice lands on the same job with its detections and saved decisions.
+    `file` picks one of the sniper's PDFs by index when the biggest is not
+    the drawing set; `detect=0` skips the triage-and-detect kick-off."""
+    if not BID_SNIPER_URL:
+        raise HTTPException(404, "Bid Sniper is not configured on this server")
+    try:
+        with _bids.Sniper(BID_SNIPER_URL) as s:
+            plan = s.plans(lid, fetch=True)
+            f = _bids.pick_plan(plan.get("files"), file)
+            if f is None:
+                raise HTTPException(
+                    409, "Bid Sniper could not fetch a plan PDF for this bid "
+                    "(%d document link(s) listed). Download it from the "
+                    "portal in your browser and upload it here."
+                    % int(plan.get("documents") or 0))
+            raw = s.file_bytes(lid, int(f["i"]))
+    except HTTPException:
+        raise
+    except requests.HTTPError as e:
+        raise HTTPException(502, "Bid Sniper answered %s for %s"
+                            % (getattr(e.response, "status_code", "?"),
+                               getattr(e.request, "path_url", lid)))
+    except Exception as e:
+        raise HTTPException(502, "Bid Sniper did not answer: %s: %s"
+                            % (e.__class__.__name__, str(e)[:160]))
+    if raw[:4] != b"%PDF":
+        raise HTTPException(502, "the file Bid Sniper sent is not a PDF")
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    stem = Path(f.get("name") or "plans.pdf").name
+    dest = JOBS_DIR / f"upload_{digest}_{stem}"
+    if not dest.exists() or dest.stat().st_size != len(raw):
+        dest.write_bytes(raw)
+    reg = _register(dest, classify=True, owner=_who(request))
+    jid = reg["job_id"]
+    meta = _bids.bid_meta(plan, lid)
+    with JOBS_LOCK:
+        if jid in JOBS:
+            JOBS[jid]["bid"] = meta
+        _save_registry()
+    base = str(request.base_url).rstrip("/")
+    with _bids.Sniper(BID_SNIPER_URL) as s:
+        linked = s.link(lid, jid, f"{base}/#job={jid}")
+    if detect:
+        threading.Thread(target=_bid_detect_core, args=(jid,),
+                         name="bid-detect", daemon=True).start()
+    reg.update({"bid": meta, "file": stem, "size": len(raw), "linked": linked,
+                "detect": "core pages, after triage" if detect else "off"})
+    return reg
 
 
 @app.get("/api/job/{job_id}/open")
@@ -901,6 +1027,10 @@ def list_projects(request: Request):
             # row to anyone who is not staff), so a hosted client sees no
             # delete on a demo card and our own box still can clean one off.
             "deletable": staff or (owner == me),
+            # the solicitation this plan set was pulled from, when Open bids
+            # made the job: {id, title, agency, due, url}. The card prints
+            # it under the name; an upload has none.
+            "bid": j.get("bid"),
         }
         (demos if dm is not None else out).append(row)
 
