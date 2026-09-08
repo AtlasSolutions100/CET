@@ -100,6 +100,8 @@ const fin = grab("flFinishDraw");
 check(fin && /source: "drawn"/.test(fin) && /stPolyArea\(pts\)/.test(fin), "draw outline: shoelace area, marked drawn");
 const apply = grab("flApplyItems");
 check(apply && /filter\(it => !FL_LABEL_RX\.test\(it\.label\)\)/.test(apply), "re-apply replaces only its own rows");
+check(apply && /store\.setItem\(priceKey\(it\.label\), String\(it\.unit_price\)\)/.test(apply),
+      "a typed $/SF or $/LF is written to the price book, which is what the export prices from");
 check(apply && /calcStateDirty\(\)/.test(apply), "...and marks the sidecar dirty");
 const saved = grab("flApplySaved");
 check(saved && /if \(state\.calcFlApplied \|\| !state\.calcSavedLoaded\) return;/.test(saved), "restore runs once, after the sidecar answered");

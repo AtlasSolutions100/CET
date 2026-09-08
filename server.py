@@ -647,10 +647,10 @@ def post_branding(body: BrandingBody, request: Request):
 # in a bid, so the caveat has to travel WITH the number, not sit on a login
 # page nobody re-reads. It is stamped on every page of the report PDF, tailed
 # onto the CSV, and shown as a banner the UI cannot dismiss.
-BETA_SHORT = ("BETA - CORE Takeoff is still being refined. Automated de"
+BETA_SHORT = ("BETA - " + PRODUCT_NAME + " is still being refined. Automated de"
               "tection can be wrong, so check every quantity against the drawings.")
 BETA_LONG = (
-    "BETA SOFTWARE. CORE Takeoff is in active development. The quanti"
+    "BETA SOFTWARE. " + PRODUCT_NAME + " is in active development. The quanti"
     "ties here are produced by automated line detection and scale rea"
     "ding and can be incomplete or wrong. Check every figure against "
     "the source drawings before relying on it.")

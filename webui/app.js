@@ -522,6 +522,8 @@ function applyProduct(cfg) {
     if (el) { el.hidden = true; el.dataset.productHidden = "1"; }
   }
   if (cfg.product_name) {
+    const beta = $("betaBanner");
+    if (beta && beta.title) beta.title = beta.title.replace("CORE Takeoff", cfg.product_name);
     const mark = document.querySelector(".brand-mark");
     const sub = document.querySelector(".brand-sub");
     if (mark && cfg.product === "construction") mark.textContent = cfg.product_name;
@@ -21236,7 +21238,16 @@ function flRoomLine(r) {
 function flApplyItems() {
   const fl = flSync();
   state.extraItems = state.extraItems.filter(it => !FL_LABEL_RX.test(it.label));
-  for (const it of flItems(fl.types, fl.rooms)) state.extraItems.push(it);
+  for (const it of flItems(fl.types, fl.rooms)) {
+    state.extraItems.push(it);
+    // THE PRICE TRAVELS THROUGH THE PRICE BOOK. The approve payload prices
+    // every extra item from store "price:<label>" (the itemized panel's
+    // own inputs) and ignores unit_price on the item - so a $/SF typed in
+    // this panel reached the report as "-" (Seer Stone export, headed,
+    // 2026-09-08). Writing it into the book is also the pricing memory
+    // the roadmap asks for: the next sheet's Carpet row opens priced.
+    if (it.unit_price > 0) store.setItem(priceKey(it.label), String(it.unit_price));
+  }
   renderItemized();
   state.calcFlApplied = true;
   calcStateDirty();
