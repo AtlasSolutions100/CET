@@ -5650,7 +5650,7 @@ def _doc_schedule(job_id: str, path: str, page: int) -> dict:
 # bump when the symbol finder's own logic changes (it lives in this file,
 # outside engine_sig's hash): 3 = disclosed caps + legend glyph naming
 # (line-row veto, composed glyphs, twin candidates)
-SYMBOLS_ALGO = 4
+SYMBOLS_ALGO = 5   # 5: "No."-headed schedules, bare-number marks, two tables per sheet
 
 
 @app.get("/api/job/{job_id}/page/{page}/symbols/suggest")
@@ -5743,16 +5743,27 @@ def _symbols_compute(job_id: str, page: int):
         groups.setdefault(key, []).append([round(float(c[0]), 1),
                                            round(float(c[1]), 1)])
 
+    # every table on the sheet, not only the largest: a window schedule
+    # and a door schedule stacked in one corner are two boxes, and the
+    # mark cells of the second one counted as a symbol family (Seer Stone
+    # A2.1: a 24x12 pt "1 / 2 / 3 / A / B / C / D" family of one each)
+    table_boxes = [t.get("box") for t in (here.get("tables") or []) if t.get("box")]
+    if table_box and table_box not in table_boxes:
+        table_boxes.append(table_box)
+
     def _in_table(c):
-        return table_box and table_box[0] <= c[0] <= table_box[2] \
-            and table_box[1] <= c[1] <= table_box[3]
+        return any(b[0] <= c[0] <= b[2] and b[1] <= c[1] <= b[3] for b in table_boxes)
+
+    vocab_set = set(str(v).strip().upper() for v in (vocab or []))
 
     def _mark_at(c):
         # the mark text lives INSIDE its bubble (measured 0.7pt): the word
-        # box containing (or within 3pt of) the symbol center names it
+        # box containing (or within 3pt of) the symbol center names it.
+        # A bare "2" or "B" names a bubble only when the sheet's own
+        # schedule lists it - otherwise any digit near a shape would.
         for w in words:
             t = str(w[4]).strip().upper()
-            if not MARK_WORD.match(t):
+            if not MARK_WORD.match(t) and t not in vocab_set:
                 continue
             if w[0] - 3 <= c[0] <= w[2] + 3 and w[1] - 3 <= c[1] <= w[3] + 3:
                 return t
@@ -5786,6 +5797,14 @@ def _symbols_compute(job_id: str, page: int):
                      "centers": marks[m], "name": m}
                 if m in sched:
                     g["schedule_qty"] = sched[m]
+                # which schedule lists this mark: "WINDOW NO." -> WINDOW, so
+                # the panel can call the group "WINDOW 2" and not just "2"
+                for t in here.get("tables") or []:
+                    if m in (t.get("marks") or []):
+                        word = str(t.get("header") or "").replace("NO.", "").replace("TYPE", "").strip()
+                        if word:
+                            g["table"] = word
+                        break
                 out.append(g)
             if len(unmarked) >= 3:
                 out.append({"w": w, "h": h, "l4": l4, "n": len(unmarked),

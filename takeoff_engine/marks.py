@@ -1104,6 +1104,11 @@ def scope_state(tags: list[Tag], trade: str | None) -> dict:
 # both mean "the code you will see inside the bubbles".
 _MARK_HEADS = ("MARK", "TYPE", "SYMBOL", "TAG")
 _TYPE_PREFIX = ("WINDOW", "DOOR", "STOREFRONT", "GLAZING", "FRAME", "OPENING")
+# A residential schedule heads its mark column "No." (Wells Built / Seer
+# Stone A2.1: WINDOW SCHEDULE No. 1/2/3, DOOR SCHEDULE No. A/B/C/D, each
+# with a QTY column). "No." is a mark head ONLY when a strong quantity head
+# sits on the same row - alone it is the weak quantity head it always was.
+_NUM_HEADS = ("NO", "NO.", "#", "NUMBER")
 # The column that holds how many.  NO. is ambiguous (it also heads "DOOR NO.")
 # so it is accepted only when nothing better is on the header row.
 _QTY_HEADS = ("QTY", "QTY.", "QUANTITY", "COUNT", "TOTAL", "EA")
@@ -1175,10 +1180,11 @@ def read_mark_schedule(words: list, y_tol: float = 5.0,
            "fuzzy": [], "source": "none"}
     if not words:
         return out
-    best = None
+    cands = []
     for hw in words:
         t = _txt(hw)
-        if t not in _MARK_HEADS:
+        num_head = t in _NUM_HEADS
+        if t not in _MARK_HEADS and not num_head:
             continue
         hy = (hw[1] + hw[3]) / 2.0
         hx = (hw[0] + hw[2]) / 2.0
@@ -1195,6 +1201,17 @@ def read_mark_schedule(words: list, y_tol: float = 5.0,
                 header = texts[j - 1] + " TYPE"
             elif len(set(texts)) < 3:
                 continue        # a bare "TYPE" with no table around it
+        if num_head:
+            # only with a real quantity column beside it, and it must be
+            # the first column: "DOOR NO." mid-row is not a mark head
+            if not any(_is_qty_head(x) for x in texts if x != t):
+                continue
+            # the row match has no x limit (a skewed scan needs the slope
+            # widening), so "row" holds every word on the sheet at this
+            # height: only a NEIGHBOUR to the left disqualifies
+            if any(w is not hw and w[2] < hw[0] - 1 and hw[0] - w[2] < 60 for w in row):
+                continue
+            header = _schedule_title(words, hw, y_tol) + " NO."
         qcol = None
         for w in row:
             if _is_qty_head(_txt(w)):
@@ -1205,10 +1222,59 @@ def read_mark_schedule(words: list, y_tol: float = 5.0,
                 if _txt(w).rstrip(".") in [q.rstrip(".") for q in _QTY_WEAK]:
                     qcol = w
                     break
-        cand = _harvest(words, hw, qcol, row, header, y_tol, fuzzy)
-        if cand and (best is None or len(cand["marks"]) > len(best["marks"])):
-            best = cand
-    return best or out
+        # THE NEXT TABLE DOWN ENDS THIS ONE. Two schedules stacked in one
+        # corner share a mark column x, and without a stop the upper one
+        # harvested the lower one's marks as its own (Seer Stone A2.1: the
+        # window table came back holding A-D as well as 1-3).
+        y_stop = None
+        for hw2 in words:
+            if hw2 is hw or _txt(hw2) not in (_MARK_HEADS + _NUM_HEADS):
+                continue
+            if hw2[1] > hw[3] and abs((hw2[0] + hw2[2]) / 2.0 - hx) <= 40:
+                y_stop = hw2[1] if y_stop is None else min(y_stop, hw2[1])
+        cand = _harvest(words, hw, qcol, row, header, y_tol, fuzzy,
+                        digits_ok=num_head, y_stop=y_stop)
+        if cand:
+            cands.append(cand)
+    if not cands:
+        return out
+    cands.sort(key=lambda c: -len(c["marks"]))
+    best = dict(cands[0])
+    # TWO SCHEDULES ON ONE SHEET (windows 1/2/3 and doors A-D): when their
+    # marks do not collide, the vocabulary and quantities are the union - a
+    # bubble reading "2" and one reading "B" are both on this sheet. The
+    # box stays the largest table's; `tables` carries each one.
+    best["tables"] = [{"header": c["header"], "marks": list(c["marks"]),
+                       "qty": dict(c["qty"]), "box": c["box"]} for c in cands]
+    for c in cands[1:]:
+        if set(c["marks"]) & set(best["marks"]):
+            continue
+        best["marks"] = best["marks"] + [m for m in c["marks"] if m not in best["marks"]]
+        best["qty"] = {**c["qty"], **best["qty"]}
+        best["header"] = best["header"] + " + " + c["header"]
+    return best
+
+
+def _schedule_title(words: list, hw, y_tol: float) -> str:
+    """The word before SCHEDULE in the title above a "No." header (WINDOW /
+    DOOR), or "" when no title is within 60 pt above it."""
+    hx = (hw[0] + hw[2]) / 2.0
+    best = ""
+    for w in words:
+        if _txt(w) != "SCHEDULE":
+            continue
+        wy = (w[1] + w[3]) / 2.0
+        if not (hw[1] - 60 <= wy <= hw[1]):
+            continue
+        if abs((w[0] + w[2]) / 2.0 - hx) > 400:
+            continue
+        left = [m for m in words if abs((m[1] + m[3]) / 2.0 - wy) <= y_tol
+                and m[2] <= w[0] + 1 and w[0] - m[2] < 40]
+        if left:
+            t = _txt(max(left, key=lambda m: m[2]))
+            if t in _TYPE_PREFIX:
+                best = t
+    return best
 
 
 # Characters an OCR pass confuses at drafting-text size, both directions.
@@ -1239,23 +1305,34 @@ def _fuzzy_mark(t: str) -> str | None:
     return None
 
 
-def _as_mark(t: str, fuzzy: bool) -> str | None:
-    """One word -> a mark code, or None."""
+def _as_mark(t: str, fuzzy: bool, digits_ok: bool = False) -> str | None:
+    """One word -> a mark code, or None. `digits_ok` admits a bare 1-2 digit
+    number - only under a "No." header, where the numbers ARE the marks."""
     if _MARK_RE.match(t):
         return t
     if len(t) == 1 and t.isalpha():
         return t              # a bare type letter: Mission Bell heads A..Z
+    if digits_ok and t.isdigit() and len(t) <= 2:
+        return t
     if fuzzy and t[:1].isalpha():
         return _fuzzy_mark(t)
     return None
 
 
 def _harvest(words: list, hw, qcol, row: list, header: str,
-             y_tol: float, fuzzy: bool) -> dict | None:
-    """Rows under one header: mark codes in the mark column, qty beside."""
+             y_tol: float, fuzzy: bool, digits_ok: bool = False,
+             y_stop: float | None = None) -> dict | None:
+    """Rows under one header: mark codes in the mark column, qty beside;
+    nothing at or below `y_stop` (the next table's header) is this table's."""
     mx0, mx1 = hw[0] - 14, hw[2] + 14
-    rx0 = min(w[0] for w in row) - 8
-    rx1 = max(w[2] for w in row) + 8
+    # THE TABLE'S EXTENT IS ITS OWN. `row` is every word on the sheet at
+    # the header's height (the skew-tolerant match has no x limit), so
+    # taking the table's edges from it made the RV garage notes 1,300 pt
+    # away "left of" the window marks and disqualified them (Seer Stone
+    # A2.1). The mark column is the first column: nothing of the table is
+    # more than 30 pt left of its header, or 700 pt right of it.
+    rx0 = max(min(w[0] for w in row) - 8, hw[0] - 30)
+    rx1 = min(max(w[2] for w in row) + 8, hw[2] + 700)
     qcx = (qcol[0] + qcol[2]) / 2.0 if qcol is not None else None
     # The table's own two headers give its row slope, so a quantity 700 pt
     # away is looked for where that row ACTUALLY runs rather than inside a
@@ -1270,18 +1347,25 @@ def _harvest(words: list, hw, qcol, row: list, header: str,
     marks, raws, qty, y_max = [], [], {}, hw[3]
     letters_only = True
     for w in words:
-        if w[1] <= hw[3] or not (mx0 <= (w[0] + w[2]) / 2.0 <= mx1):
+        # by CENTRE, not box top: a 12 pt row pitch with 11 pt word boxes
+        # puts the first row's top above the header's bottom (Seer Stone:
+        # window "1" was dropped and the table read as two marks)
+        if (w[1] + w[3]) / 2.0 <= hw[3] or not (mx0 <= (w[0] + w[2]) / 2.0 <= mx1):
+            continue
+        if y_stop is not None and w[1] >= y_stop - 2:
             continue
         t = _txt(w)
-        code = _as_mark(t, fuzzy)
+        code = _as_mark(t, fuzzy, digits_ok)
         if code is None:
             continue
         # the mark column is the table's FIRST column: nothing else on this
         # row may sit to its left.  Without this, a "WINDOW TYPE" heading
         # over a hardware column harvests prose ("OR", "OF", "IN", "IS")
         wy = (w[1] + w[3]) / 2.0
+        # under a "No." header a single letter to the left counts too: the
+        # door table's "38" (of 38 1/2") sits beside the mark "A"
         if any(m[2] < w[0] - 1 and abs((m[1] + m[3]) / 2.0 - wy) <= y_tol
-               and rx0 <= m[0] and len(_txt(m)) > 1 and _txt(m).isalnum()
+               and rx0 <= m[0] and (len(_txt(m)) > 1 or digits_ok) and _txt(m).isalnum()
                for m in words):
             continue
         if len(code) > 1:

@@ -15274,7 +15274,20 @@ function renderSym() {
     $("symTotal").hidden = true;
     return;
   }
-  state.sym.forEach((g, k) => {
+  // SCHEDULE MARKS FIRST. A group the sheet's own schedule names is the
+  // one the estimator came for (the window count, the door count); the
+  // unnamed shape families follow in count order as before. Stable, so
+  // nothing else reorders.
+  const order = state.sym.map((g, i) => [g, i]);
+  order.sort((a, b) => {
+    const an = a[0].schedule_qty !== undefined ? 0 : a[0].name ? 1 : 2;
+    const bn = b[0].schedule_qty !== undefined ? 0 : b[0].name ? 1 : 2;
+    if (an !== bn) return an - bn;
+    if (an === 0) return String(a[0].table || "").localeCompare(String(b[0].table || ""))
+      || String(a[0].name).localeCompare(String(b[0].name), undefined, { numeric: true });
+    return a[1] - b[1];
+  });
+  order.map(x => x[0]).forEach((g, k) => {
     const row = document.createElement("div");
     const gv = (g._scope || { v: "unknown" });
     const aside = gv.v === "out" && !g._keep;
@@ -15287,6 +15300,9 @@ function renderSym() {
     nm.className = "sym-name";
     nm.placeholder = "name it (e.g. WINDOW)";
     nm.name = "sym-name-" + k;
+    // a schedule mark is named by its table too: "WINDOW 2", "DOOR D" -
+    // that is the row the takeoff gets, and "2 x 8 EA" would say nothing
+    if (g.name && g.table && !g._labelled) { g.name = g.table + " " + g.name; g._labelled = true; }
     nm.value = g.name || "";
     nm.oninput = () => { g.name = nm.value; };
     const meta = document.createElement("div");
