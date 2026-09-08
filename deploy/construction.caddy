@@ -1,0 +1,37 @@
+# CET, construction.workoptional.studio, on the SHARED box.
+#
+# Copied to /home/deploy/takeoff/caddy-sites/ on the VPS, which the running
+# Caddy (core's stack, takeoff-caddy-1) mounts at /etc/caddy/conf.d and
+# imports. Kept in this repo so the routing is versioned with the app it
+# routes to; the takeoff deploy never overwrites conf.d. Caddy reaches
+# cet-app over the external `web-proxy` network both stacks join.
+#
+# Same two things a plan-set upload needs from a proxy as core's own block:
+# a long silent-socket ceiling (report.pdf across many sheets) and a body
+# cap, because /api/upload reads the whole body into memory first.
+construction.workoptional.studio {
+	encode zstd gzip
+
+	reverse_proxy cet-app:8100 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	request_body {
+		max_size 512MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000;"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,3 +1,37 @@
+# CET on the shared workoptional box (2026-09-08)
+
+**https://construction.workoptional.studio** -> the same Hostinger VPS as
+core (`31.220.50.13`), as a SECOND stack in `~/cet`, behind core's Caddy.
+
+```
+ssh -i ~/.ssh/takeoff_deploy deploy@31.220.50.13
+cd ~/cet
+docker compose build            # from the source shipped into ~/cet
+docker compose up -d            # app only: container cet-app, volume cet-jobs
+cp deploy/construction.caddy ~/takeoff/caddy-sites/
+(cd ~/takeoff && docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile)
+```
+
+* `docker-compose.yml` here is the SHARED-BOX shape: no Caddy, no host
+  ports, joined to the external `web-proxy` network so core's Caddy can
+  reach `cet-app:8100`. `docker-compose.standalone.yml` is the full stack
+  for a box of its own.
+* `.env` on the box: the LLM keys (copied from `~/takeoff/.env`), workers
+  2, memory 8g - core keeps its 4 workers / 24g of the 31 GB.
+* Accounts: `TAKEOFF_UI_PASSWORD` is not set. `users.json` in the `cet-jobs`
+  volume holds the two staff accounts, copied from core's (same emails,
+  same passwords). Add people with
+  `docker compose run --rm app python -m takeoff_engine.users add <email>`.
+* A `v*` tag on this repo builds `ghcr.io/atlassolutions100/cet`; the deploy
+  job needs the repo secrets DEPLOY_SSH_KEY / DEPLOY_HOST / DEPLOY_USER /
+  DEPLOY_DIR (`/home/deploy/cet`) before it can do anything, and without
+  them it fails harmlessly. Until they are set, deploy by hand as above.
+
+Everything below is the engine's own deploy guide and still applies to a
+dedicated box.
+
+---
+
 # Deploying the review UI
 
 One container, one instance. `JOBS` lives in process memory and every artifact

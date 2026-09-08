@@ -1,80 +1,59 @@
-# CORE takeoff, hosted.
+# CET (general construction), hosted on the SHARED workoptional box.
 #
-#   cp .env.example .env   # fill in the password and the keys
+#   cp .env.example .env   # keys; no SITE_HOST here - Caddy is core's
+#   docker compose build   # or: TAG=v1.0.0 docker compose pull app
 #   docker compose up -d
 #
-# ONE app container, on purpose. JOBS lives in process memory and the artifacts
-# live on the mounted volume, so a second replica would hold half the state.
-# Scale the box up, never out, until the job store moves somewhere shared.
+# This box already runs core (takeoff-app-1 + takeoff-caddy-1), portal and
+# bisonlawn behind ONE Caddy - core's - which imports a site block per app
+# from ~/takeoff/caddy-sites and reaches each app over the external
+# `web-proxy` network. So this stack is the app only: no Caddy, no ports on
+# the host; deploy/construction.caddy is the site block. For a box of its
+# own, docker-compose.standalone.yml is the full stack with Caddy.
+#
+# ONE app container, on purpose. JOBS lives in process memory and the
+# artifacts live on the mounted volume, so a second replica would hold half
+# the state. Scale the box up, never out.
 
 services:
   app:
-    image: ghcr.io/atlassolutions100/takeoff-detection-engine:${TAG:-latest}
+    image: ghcr.io/atlassolutions100/cet:${TAG:-latest}
     # local build: docker compose build
     build: .
+    # the name core's Caddy proxies to (deploy/construction.caddy)
+    container_name: cet-app
     restart: unless-stopped
     environment:
-      # Refuses client-supplied filesystem paths. Uploads are the way in.
       TAKEOFF_HOSTED: "1"
+      # WHICH PRODUCT. construction hides the excavation calculators and
+      # names the product CET; Bid Sniper stays off unless BID_SNIPER_URL
+      # is set on purpose.
+      TAKEOFF_PRODUCT: construction
       TAKEOFF_JOBS_DIR: /data/jobs
-      # 4 workers x a heavy sheet peaking at multiple GB is why this box needs
-      # real memory. Lower it before lowering the RAM.
-      TAKEOFF_WORKERS: ${TAKEOFF_WORKERS:-4}
+      # Two workers and 8 GB by default: core on the same box already
+      # reserves four workers and 24 GB of the 31.
+      TAKEOFF_WORKERS: ${TAKEOFF_WORKERS:-2}
       TAKEOFF_PAGE_BUDGET_S: ${TAKEOFF_PAGE_BUDGET_S:-900}
-      # Optional since per-user logins exist. The entrypoint requires EITHER
-      # this or at least one account in users.json, so a box with real accounts
-      # boots fine without it - and `:?` here would stop compose dead before
-      # the entrypoint ever got to make that judgement.
       TAKEOFF_UI_PASSWORD: ${TAKEOFF_UI_PASSWORD:-}
       TAKEOFF_LLM_MODEL: ${TAKEOFF_LLM_MODEL:-grok-4-fast-reasoning}
       XAI_API_KEY: ${XAI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
     volumes:
-      # The detection cache IS the demo experience. Named volume, never a
-      # bind into the image, and never anonymous - an anonymous volume is
-      # discarded on `compose down -v` and takes an hour of compute with it.
-      - takeoff-jobs:/data/jobs
+      # Named, never anonymous: the detection cache and users.json live here.
+      - cet-jobs:/data/jobs
     expose:
       - "8100"
-    # A single detection child can peak at multiple GB; without a ceiling a
-    # runaway page can take the whole box down with it, Caddy included.
-    mem_limit: ${APP_MEM_LIMIT:-24g}
+    mem_limit: ${APP_MEM_LIMIT:-8g}
     shm_size: "1g"
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    depends_on:
-      - app
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # the hostname Caddy gets its certificate for
-      SITE_HOST: ${SITE_HOST:?set SITE_HOST in .env}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Site blocks belonging to OTHER apps on this box. Not in this repo, and
-      # not overwritten by a takeoff deploy - see the note in the Caddyfile.
-      - ./caddy-sites:/etc/caddy/conf.d:ro
-      - caddy-data:/data
-      - caddy-config:/config
     networks:
-      # `default` must be listed explicitly once any network is named, or the
-      # app container becomes unreachable from here.
       - default
-      # Shared with other stacks so Caddy can reach their containers by name.
-      # Declared here rather than attached live with `docker network connect`,
-      # because a live attachment is lost the moment anything recreates Caddy.
       - web-proxy
 
 networks:
   web-proxy:
-    # Created once by hand: `docker network create web-proxy`. External so
-    # that tearing down this stack cannot take another project's network away.
+    # Created once by hand on the box (`docker network create web-proxy`);
+    # external so tearing this stack down cannot take core's network away.
     external: true
 
 volumes:
-  takeoff-jobs:
-  caddy-data:
-  caddy-config:
+  cet-jobs:
