@@ -118,6 +118,21 @@ if a["ok"]:
     check(abs(min(xs) - P(0, 0)[0]) < 3 and abs(max(xs) - P(20, 0)[0]) < 3,
           "polygon spans the room, not the doorway")
 
+# ---- a label that wraps onto two lines ---------------------------------------------
+print("wrapped label")
+def words_wrapped():
+    def w(xf, yf, txt, h=6.0, blk=0, wn=0):
+        x, y = P(xf, yf)
+        return (x, y, x + 3.0 * len(txt), y + h, txt, blk, 0, wn)
+    # "BRIDAL DRESSING" over "ROOM", centred; a wall note taller and off to the side
+    return [w(8, 7, "BRIDAL", 6.0, 1, 0), w(11, 7, "DRESSING", 6.0, 1, 1), w(9.5, 7.5, "ROOM", 6.0, 2, 0),
+            w(2, 13, "2x6", 7.0, 5, 0), w(4, 13, "STUDS", 7.0, 5, 1), w(24, 8, "BEDROOM", 6.0, 3, 0), w(28, 8, "2", 6.0, 3, 1)]
+wr = rooms.pick_room(res, words_wrapped(), *P(10, 10), styles={0}, dpi=100)
+check(wr["ok"] and wr["name"] == "BRIDAL DRESSING ROOM",
+      "two adjacent label lines join in reading order, got %r" % wr.get("name"))
+wr2 = rooms.pick_room(res, words_wrapped(), *P(26, 4), styles={0}, dpi=100)
+check(wr2["ok"] and wr2["name"] == "BEDROOM 2", "the other room is unaffected: %r" % wr2.get("name"))
+
 # ---- room B --------------------------------------------------------------------
 print("room B")
 b = rooms.pick_room(res, words(), *P(26, 4), styles={0}, dpi=100)

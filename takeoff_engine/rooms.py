@@ -506,6 +506,7 @@ def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
             order.append(key)
         lines[key]["words"].append(w)
     best = None
+    cands = []
     for key in order:
         ln = lines[key]
         ws = sorted(ln["words"], key=lambda w: w[0])
@@ -523,9 +524,30 @@ def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
                  - 0.002 * dist + 0.1 * ln["h"] + (0.5 if text.isupper() else 0.0))
         if n_room == 0 and (len(ws) > 3 or not text.isupper()):
             continue
-        if best is None or score > best[0]:
-            best = (score, text)
-    return best[1][:60] if best else None
+        cand = {"score": score, "text": text, "cx": lx, "cy": ly, "h": ln["h"],
+                "x0": min(w[0] for w in ws), "x1": max(w[2] for w in ws),
+                "y0": min(w[1] for w in ws), "y1": max(w[3] for w in ws)}
+        cands.append(cand)
+        if best is None or score > best["score"]:
+            best = cand
+    if best is None:
+        return None
+    # A LABEL WRAPS. "BRIDAL DRESSING" over "ROOM" (Belle A1.00), "PRIMARY"
+    # over "BEDROOM": the scorer prefers the shorter, more central line and
+    # returned "ROOM". A candidate line directly above or below the winner
+    # (within 1.4 x its height, centres within half a width) is the same
+    # label; join in reading order. Same-height only, so a note under a
+    # label is not glued on.
+    parts = [best]
+    for c in cands:
+        if c is best or abs(c["h"] - best["h"]) > 0.35 * best["h"]:
+            continue
+        gap = min(abs(c["y0"] - best["y1"]), abs(best["y0"] - c["y1"]))
+        wid = max(best["x1"] - best["x0"], c["x1"] - c["x0"], 1.0)
+        if gap <= 1.4 * best["h"] and abs(c["cx"] - best["cx"]) <= 0.5 * wid:
+            parts.append(c)
+    parts.sort(key=lambda c: c["cy"])
+    return " ".join(c["text"] for c in parts)[:60]
 
 
 def pick_room(result: dict, words: list, x_pt: float, y_pt: float,
