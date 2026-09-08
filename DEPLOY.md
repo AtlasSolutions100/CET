@@ -16,7 +16,7 @@ cp deploy/construction.caddy ~/takeoff/caddy-sites/
   ports, joined to the external `web-proxy` network so core's Caddy can
   reach `cet-app:8100`. `docker-compose.standalone.yml` is the full stack
   for a box of its own.
-* `.env` on the box: the LLM keys (copied from `~/takeoff/.env`), workers
+* `.env` on the box: the LLM keys (copied from `~/takeoff/.env`), `SITE_HOST=construction.workoptional.studio` (compose ignores it; the CI deploy probe reads it), workers
   2, memory 8g - core keeps its 4 workers / 24g of the 31 GB.
 * Accounts: `TAKEOFF_UI_PASSWORD` is not set. `users.json` in the `cet-jobs`
   volume holds the two staff accounts, copied from core's (same emails,
