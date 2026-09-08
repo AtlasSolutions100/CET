@@ -1,7 +1,7 @@
 {
  "_about": "EXACT cut_fill outputs for manifest case 'oncor_c04'. Written by tests/test_earthwork_regress.py --accept oncor_c04; a test run never writes here. Change it only in a commit that says which code change moved which number and why.",
  "compare": "recipe",
- "earthwork_sig": "669f03aed84de577",
+ "earthwork_sig": "503f355ed2ed3f4f",
  "earthwork_sig_files": [
   "../provision_demo.py",
   "../server.py",
@@ -33,7 +33,7 @@
  ],
  "earthwork_file_hashes": {
   "../provision_demo.py": "1a96cc2c0b21f70f",
-  "../server.py": "6414a2027dda55dc",
+  "../server.py": "f18a4a508d699e0d",
   "__init__.py": "1c1bd33bace42bb3",
   "areas.py": "0e2584993c6ba702",
   "batch.py": "39bc6cb7960674c3",
@@ -67,8 +67,8 @@
   "extract.py"
  ],
  "accepted": {
-  "tree": "C:\\Users\\kobys\\OneDrive\\Desktop\\past\\P\\Takeoff Automation\\detection-engine",
-  "date": "2026-09-07",
+  "tree": "C:\\Users\\kobys\\OneDrive\\Desktop\\OptionallyWorking\\CET",
+  "date": "2026-09-08",
   "contours": [
    69,
    34

@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .DS_Store
 nohup.out
+
+# CET: its own interpreter (python -m venv; no import hooks - the gate refuses them)
+.venv/

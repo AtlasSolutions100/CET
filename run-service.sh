@@ -9,7 +9,11 @@
 # sharing violation - the "another app is using this file" errors, and the
 # freeze that took the machine out once already. Same reasoning that put
 # Postgres in C:/Users/kobys/takeoff-pg.
-export TAKEOFF_JOBS_DIR="${TAKEOFF_JOBS_DIR:-C:/Users/kobys/takeoff-jobs}"
+export TAKEOFF_JOBS_DIR="${TAKEOFF_JOBS_DIR:-C:/Users/kobys/cet-jobs}"
+# CET is the general-construction product: symbol counts, doors/windows,
+# flooring. The excavation calculators stay in the code (shared engine)
+# but the UI hides them under this profile. See CLAUDE.md, "CET".
+export TAKEOFF_PRODUCT="${TAKEOFF_PRODUCT:-construction}"
 cd "$(dirname "$0")"
 set -a; [ -f .env ] && source .env; set +a
 # Tesseract (raster OCR): harness-launched shells can miss the user PATH
@@ -23,4 +27,4 @@ esac
 if [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe
 elif [ -x .venv/bin/python ]; then PY=.venv/bin/python
 else PY=python3; fi
-exec "$PY" -m uvicorn server:app --port "${PORT:-8100}"
+exec "$PY" -m uvicorn server:app --port "${PORT:-8300}"

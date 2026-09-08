@@ -65,6 +65,15 @@ SAMPLES_DIR = (ROOT / ".." / "TakeoffPro AI").resolve()
 #                       refused outright (uploads only) and /api/samples
 #                       is empty, so one tenant never sees another's files
 HOSTED = os.environ.get("TAKEOFF_HOSTED", "").strip().lower() in ("1", "true", "yes")
+# WHICH PRODUCT THIS BOX IS. The engine is shared between two products:
+#   excavation    - CORE Takeoff: earthwork, trench, structure dig, cut/fill
+#   construction  - CET: symbol counts, door/window marks, flooring, callouts
+# The code for both is present either way (the gates and the shared
+# detection path do not fork); the profile decides what the UI OFFERS and
+# what the product is called. Defaults to construction in this repo.
+PRODUCT = os.environ.get("TAKEOFF_PRODUCT", "construction").strip().lower() or "construction"
+PRODUCT_NAME = {"construction": "CET", "excavation": "CORE Takeoff"}.get(PRODUCT, "CET")
+PRODUCT_LINE = {"construction": "GENERAL CONSTRUCTION", "excavation": "TAKEOFF"}.get(PRODUCT, "GENERAL CONSTRUCTION")
 _roots_env = os.environ.get("TAKEOFF_PLAN_ROOTS", "").strip()
 PLAN_ROOTS = [Path(r).expanduser().resolve()
               for r in (_roots_env.split(os.pathsep) if _roots_env else [])
@@ -773,7 +782,12 @@ def recent_documents(request: Request):
 # from it so the job belongs to whoever clicked, and the sniper never needs
 # an engine password. takeoff_engine/bids.py has the reasoning and the pure
 # parts; these two routes are the glue.
-BID_SNIPER_URL = _bids.sniper_url(HOSTED)
+# Bid Sniper watches CIVIL solicitations for the excavation product. On
+# CET it is off unless BID_SNIPER_URL is set on purpose, so the tab does
+# not appear here just because the sniper happens to be running.
+BID_SNIPER_URL = (_bids.sniper_url(HOSTED)
+                  if PRODUCT != "construction" or os.environ.get("BID_SNIPER_URL")
+                  else "")
 
 
 def _bid_job_visible(jid, me, staff) -> bool:
@@ -1224,6 +1238,9 @@ def ui_config():
     list - an empty list is also what a local box with no plans looks
     like."""
     return {"hosted": HOSTED,
+            "product": PRODUCT,
+            "product_name": PRODUCT_NAME,
+            "product_line": PRODUCT_LINE,
             "auth": bool(_UI_PASSWORD),
             "workers": TAKEOFF_WORKERS,
             "page_budget_s": TAKEOFF_PAGE_BUDGET_S}

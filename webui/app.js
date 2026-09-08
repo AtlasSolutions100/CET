@@ -507,7 +507,31 @@ addEventListener("drop", (e) => {
 // The three controls now live in Settings -> "This machine", so the whole
 // section and its nav entry go with them: an empty group under a heading
 // that says "This machine" reads as a broken page, not as a hidden feature.
+// WHICH PRODUCT. CET (construction) hides the excavation calculators in
+// the Tools menu - Earthwork, Trench, Structure - and names itself. The
+// buttons stay in the markup and the code, because the engine underneath is
+// shared with CORE Takeoff and the panels are tested; they are simply not
+// offered here. Everything else in Tools (Count, Whole job, Across sheets,
+// Callouts, Legend sheet, Analyze) is construction work and stays.
+const PRODUCT_HIDE = { construction: ["ewBtn", "trBtn", "stBtn"], excavation: [] };
+function applyProduct(cfg) {
+  if (!cfg || !cfg.product) return;
+  window.PRODUCT = cfg.product;
+  for (const id of PRODUCT_HIDE[cfg.product] || []) {
+    const el = $(id);
+    if (el) { el.hidden = true; el.dataset.productHidden = "1"; }
+  }
+  if (cfg.product_name) {
+    const mark = document.querySelector(".brand-mark");
+    const sub = document.querySelector(".brand-sub");
+    if (mark && cfg.product === "construction") mark.textContent = cfg.product_name;
+    if (sub) sub.textContent = (cfg.product_line || "") + " \u00b7 WORK OPTIONAL";
+    document.title = cfg.product_name + " \u2014 " + (cfg.product_line || "").toLowerCase()
+      .replace(/\b\w/g, c => c.toUpperCase()) + " \u00b7 Work Optional";
+  }
+}
 fetch("/api/config").then(r => r.ok ? r.json() : null).then(cfg => {
+  applyProduct(cfg);
   if (!cfg || !cfg.hosted) return;
   for (const id of ["pathInput", "openBtn", "sampleSel",
                     "svGroupMachine", "svMachineSection", "svNavMachine"]) {
@@ -22561,6 +22585,25 @@ function toolsMenuDescribe() {
 }
 
 function toolsMenuSync() {
+  // PRODUCT FIRST. loadResult un-hides ewBtn/trBtn/stBtn when a sheet
+  // opens; under the construction profile they go straight back, so the
+  // menu below never lists an excavation calculator on CET.
+  for (const id of PRODUCT_HIDE[window.PRODUCT] || []) {
+    const el = $(id);
+    if (el) el.hidden = true;
+  }
+  // A GROUP HEADING WITH NOTHING UNDER IT goes too: on CET the whole
+  // Calculators group is excavation, and a heading over an empty space
+  // reads as a broken menu rather than as a hidden feature.
+  const menu = $("toolsMenu");
+  if (menu) {
+    for (const g of menu.querySelectorAll(".tm-group")) {
+      let any = false;
+      for (let n = g.nextElementSibling; n && !n.classList.contains("tm-group"); n = n.nextElementSibling)
+        if (n.tagName === "BUTTON" && !n.hidden) { any = true; break; }
+      g.hidden = !any;
+    }
+  }
   const model = toolsMenuModel(TOOLS_MENU_ITEMS.map(([id, panel]) => ({
     id,
     hidden: $(id).hidden,

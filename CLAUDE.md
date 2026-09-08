@@ -1,3 +1,49 @@
+# CET — general-construction takeoff (this repo)
+
+**What this is.** A fork of the CORE Takeoff detection engine
+(`Takeoff Automation/detection-engine`, branch `dev` at 8fb1fdb, forked
+2026-09-08) that ships as its own product for the *building* side of a bid:
+symbol counts (fixtures, grid bubbles), door and window marks against the
+schedule, callouts, legend sheets, and - the first thing to build here - the
+**flooring calculator** (room areas by floor type plus wall length, with the
+room boundary bridged across doorways). The excavation product stays in the
+original repo; the two share the detection engine and nothing else.
+
+**How the split works.** `TAKEOFF_PRODUCT=construction` (the default in
+`run-service.sh` here) makes `/api/config` say so, and `webui/app.js`
+`applyProduct` hides the excavation calculators - Earthwork, Trench,
+Structure - from the Tools menu and names the product CET. The code for
+those panels is still in the tree on purpose: the regress gates and the
+shared detection path do not fork, and a change to `chain.py` here should
+be able to land there. Delete nothing that the gates hash.
+
+**Its own everything.** Port **8300**, job store `C:/Users/kobys/cet-jobs`,
+its own `.venv` (built with `uv venv .venv --python 3.12`), no git remote
+yet (create the GitHub repo and `git remote add origin ...` when ready; the
+excavation remote was deliberately removed so a stray push cannot land
+there). `.env` was copied from the engine: the same UI password and LLM
+keys.
+
+**Run.** `bash run-service.sh` then http://localhost:8300 (any username,
+the UI password from `.env`). `python -m takeoff_engine.regress --check
+--require` before committing anything that touches detection.
+
+**Roadmap (from the 2026-09 meeting; see the memory note "flooring
+calculator ask").**
+1. Flooring calculator - room polygons from wall lines, doorway bridging,
+   floor-type from the finish schedule / legend, area by type + wall LF.
+2. Door / window schedule: mark counts on the plan reconciled against the
+   schedule table (`marks.py` reads schedules already; the reconciliation
+   view is the new part).
+3. Symbol counting as a first-class panel with per-sheet and whole-job
+   rollups (exists under Tools -> Count / Whole job; needs the same
+   evidence discipline as the excavation panels).
+4. Pricing memory and calculators per the boss roadmap.
+
+Everything below this line is the engine's own contract and still binds.
+
+---
+
 # CLAUDE.md — Takeoff Detection Engine
 
 Read README.md for architecture. This file is the working contract: how to
