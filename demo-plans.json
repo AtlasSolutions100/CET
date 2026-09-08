@@ -66,33 +66,25 @@
   ],
   "version": 1,
   "plans": {
-    "Oncor Cloudcrest Substation Civils - 20251212.pdf_safe.pdf": {
-      "page": 2,
-      "shows": "Substation civils drawn with no CAD layer names at all — 314 runs sorted into 49 styles by line pattern alone."
-    },
-    "C4.0-SITE-GRADING-PLAN-Rev.1.pdf": {
-      "page": 0,
-      "shows": "The densest sheet we score: 1,429 runs in 113 styles, every one carrying the drafter's own layer name."
+    "Church - Peony G-L w Shop Lot 1 Block 10 - Seer Stone 3-18-2026.pdf": {
+      "page": 3,
+      "shows": "A full house set. A2.1 is a FLOOR & FLOORING PLAN that prints its own area table and door/window schedules - the flooring calculator and the Count tool are both checkable against the sheet itself."
     },
     "Belle Farms Structural Plans.pdf": {
-      "page": 0,
-      "shows": "A building sheet, not a civil one — and the only one here whose scale is confirmed twice: printed and drawn agree."
+      "page": 1,
+      "shows": "A wedding venue: 27 door swings found on the plan, rooms filled by a click. Its dimension strings and its scale bar disagree, and the app says so."
     },
-    "Belle Farms Upper Parcel ROAD GRADING 1 of 2.pdf": {
-      "page": 0,
-      "shows": "Heavy topography: 685 contour runs, 254k ft of line. It prints three scales, and the app refuses to pick one for you."
+    "Approved Construction Set_2-17-26 (2).pdf": {
+      "page": 5,
+      "shows": "A residential construction set whose scale notes are drawn as outlines, not text: the app abstains and offers what OCR read instead of guessing."
     },
-    "C6.0-WATER-MAIN-PLAN-AND-PROFILE-Rev.1.pdf": {
+    "001^A1.20 ADD3 DOOR AND WINDOW TYPES AND INFORMATION.pdf": {
       "page": 0,
-      "shows": "Wet utilities, plan and profile on one page — water, gas and electric runs above, the profile band below."
+      "shows": "Door and window types on a commercial vehicle-shop set - what the schedule reader sees when the marks are elevations, not a table."
     },
-    "C8.0-STORM-LAYOUT-Rev.1.pdf": {
+    "001^ ADD1 A2.41 SIGNAGE PLAN.pdf": {
       "page": 0,
-      "shows": "A storm drain network: O-PIPE runs between structures. Its scale came from OCR, and the app says not to trust that."
-    },
-    "GCHC North Stairs Plan 1 Grading.pdf": {
-      "page": 0,
-      "shows": "The cleanest read in the set — 52 of its 53 styles arrive already named by the drafter, leaving one thing to check."
+      "shows": "A signage plan at 1/8\" - repeated symbols to count, with a legend to name them from."
     }
   }
 }
