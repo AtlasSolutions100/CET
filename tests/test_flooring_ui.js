@@ -120,6 +120,39 @@ check(rf && /fl-unassigned/.test(rf) && /not in the takeoff/.test(rf), "the pane
 check(rf && /"Pick rooms"/.test(rf) && /"Close a gap"/.test(rf) && /"Draw outline"/.test(rf), "three mode buttons");
 check(rf && /NO SCALE SET/.test(rf), "the panel says when there is no scale");
 
+console.log("walls only");
+const Wf = new Function(grab("flWallStyleIds") + "\nreturn flWallStyleIds;")();
+const layered = [
+  { style_id: 1, layer: "A-wall", class: "solid", width: 0.7, n: 42 },
+  { style_id: 2, layer: "A-Flooring", class: "solid", width: 0.8, n: 58 },
+  { style_id: 3, layer: "A-Exterior Wall Line", class: "solid", width: 0.4, n: 9 },
+  { style_id: 4, layer: "A-Wall Hatch", class: "solid", width: 2.6, n: 47 },
+  { style_id: 5, layer: "A-Door", class: "dash1", width: 0.7, n: 15 },
+  { style_id: 6, layer: "A-Door-Window", class: "solid", width: 2.2, n: 2 },
+  { style_id: 7, layer: "A-Dim", class: "solid", width: 0.4, n: 60 },
+  { style_id: 8, layer: "I-Furn", class: "solid", width: 0.7, n: 32 },
+];
+let wl = Wf(layered);
+check(wl.by === "layer name" && wl.ids.join(",") === "1,2,3,4",
+      "with CAD layers: wall, flooring, exterior and wall hatch are in; door, door-window, dim, furniture are out");
+const unnamed = [
+  { style_id: 17, layer: "", class: "solid", width: 3.2, n: 48 },
+  { style_id: 0, layer: "", class: "solid", width: 1.5, n: 38 },
+  { style_id: 33, layer: "", class: "dash1", width: 0.8, n: 10, suggested_label: "SHEAR WALL (legend)" },
+  { style_id: 26, layer: "", class: "solid", width: 0.2, n: 13 },
+  { style_id: 31, layer: "", class: "solid", width: 1.9, n: 1 },
+  { style_id: 14, layer: "", class: "dash1", width: 3.2, n: 7 },
+];
+wl = Wf(unnamed);
+check(wl.by === "line weight" && wl.ids.join(",") === "17,0,33",
+      "without layers: heavy solids with 3+ lines and a WALL legend label; thin solids, singletons and dashes are out");
+check(Wf([]).ids.length === 0, "no styles: nothing kept");
+const rfw = grab("renderFl");
+check(rfw && /"Show walls only"/.test(rfw) && /flShowWallsOnly\(\)/.test(rfw), "the panel has the Show walls only button");
+const swo = grab("flShowWallsOnly");
+check(swo && /setFamVis\(s\.style_id, keep\.has\(s\.style_id\)\)/.test(swo), "it sets visibility through setFamVis, the checkboxes' own path");
+check(swo && /chosen by \$\{by\}/.test(swo), "and says which rule chose");
+
 console.log("html/css");
 check(/id="flBtn" hidden/.test(HTML), "index.html: the Tools button, hidden until a sheet is open");
 check(/id="flPanel" class="ew-panel" hidden/.test(HTML), "index.html: the panel");

@@ -6037,7 +6037,15 @@ def rooms_pick(job_id: str, page: int, body: RoomPickBody):
     try:
         doc = pymupdf.open(job["path"])
         try:
-            words = doc[page].get_text("words")
+            pg = doc[page]
+            words = pg.get_text("words")
+            # get_text answers in the UNROTATED page frame; the chains and
+            # the rendered image are in the rotated one (Seer Stone A2.1 is
+            # stored /Rotate 270 and every room label landed on the wrong
+            # room until this). Same fix the rest of the engine applies.
+            if pg.rotation:
+                M = pg.rotation_matrix
+                words = [tuple(pymupdf.Rect(w[:4]) * M) + tuple(w[4:]) for w in words]
         finally:
             doc.close()
     except Exception:

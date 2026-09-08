@@ -86,11 +86,15 @@ def plan(with_door=True, wall_style=0, closet=True):
 
 
 def words():
-    def w(xf, yf, txt, h=4.0):
+    # pymupdf 'words' tuples: (x0, y0, x1, y1, text, block, line, word) - the
+    # block/line pair is what groups a label's words into one line
+    def w(xf, yf, txt, h=4.0, blk=0, wn=0):
         x, y = P(xf, yf)
-        return (x, y, x + 3.0 * len(txt), y + h, txt, 0, 0, 0)
-    return [w(9, 8, "LIVING", 6.0), w(12, 8, "ROOM", 6.0), w(8, 13, "20'-0\"", 3.0),
-            w(24, 8, "BEDROOM", 6.0), w(28, 8, "2", 6.0), w(3, 4, "CL", 3.0)]
+        return (x, y, x + 3.0 * len(txt), y + h, txt, blk, 0, wn)
+    return [w(9, 8, "LIVING", 6.0, 1, 0), w(12, 8, "ROOM", 6.0, 1, 1), w(8, 13, "20'-0\"", 3.0, 2),
+            w(24, 8, "BEDROOM", 6.0, 3, 0), w(28, 8, "2", 6.0, 3, 1), w(3, 4, "CL", 3.0, 4),
+            # a wall note inside room A, taller than the label: must NOT win
+            w(4, 9, "2x6", 7.0, 5, 0), w(6, 9, "STUDS", 7.0, 5, 1), w(9, 9, "@", 7.0, 5, 2), w(10, 9, "16\"", 7.0, 5, 3), w(12, 9, "O.C.", 7.0, 5, 4)]
 
 
 # ---- room A --------------------------------------------------------------------
@@ -152,6 +156,77 @@ ns = plan()
 ns["scale"] = {}
 n = rooms.pick_room(ns, words(), *P(10, 10), styles={0}, dpi=100)
 check(n["ok"] and n["area_sf"] is None and n["area_pt2"] > 0, "no scale: pt only, sf None")
+
+# ---- doors drawn as dashed arcs: found from the CHAIN, not the units ----------------
+print("doors from chains")
+import math as _m
+
+
+def door_chain(cid, hx, hy, r, sx=1, sy=1, leaf=True, n_arc=30):
+    """A quarter arc about (hx, hy) toward (+sx, +sy), preceded by the leaf
+    along the y axis - the shape the chain builder makes of a dashed swing."""
+    pts = []
+    if leaf:
+        pts.append([hx, hy + sy * r])
+    for i in range(n_arc + 1):
+        a = _m.radians(90 * i / n_arc)
+        pts.append([hx + sx * r * _m.sin(a), hy + sy * r * _m.cos(a)])
+    L = sum(_m.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+    return {"chain_id": cid, "style_id": 5, "points": pts, "length_pt": L}
+
+
+d = door_chain(900, 500.0, 300.0, 54.0)
+found = rooms.doors_from_chains([d], 4.0)
+check(len(found) == 1, "a leaf + quarter-arc chain is one door")
+if found:
+    o = found[0]
+    check(abs(o["cx"] - 500) < 1 and abs(o["cy"] - 300) < 1 and abs(o["r"] - 54) < 2,
+          "hinged at the arc's centre corner with r = 54 pt (3'-0\" at 1/4\"), got %s" % o)
+    check(o["mx"] > 500 and o["my"] > 300, "the arc midpoint points into the swing")
+    check(o["source"] == "chain" and o["chain_id"] == 900, "the record says where it came from")
+check(len(rooms.doors_from_chains([door_chain(901, 500.0, 300.0, 54.0, leaf=False)], 4.0)) == 1,
+      "a bare quarter arc is a door too")
+check(len(rooms.doors_from_chains([door_chain(902, 500.0, 300.0, 54.0, sx=-1, sy=-1)], 4.0)) == 1
+      and rooms.doors_from_chains([door_chain(902, 500.0, 300.0, 54.0, sx=-1, sy=-1)], 4.0)[0]["cx"] == 500.0,
+      "any of the four corners can be the hinge")
+box = {"chain_id": 903, "style_id": 5, "length_pt": 216.0,
+       "points": [[0, 0], [54, 0], [54, 54], [0, 54], [0, 0]] + [[0, 0]] * 6}
+check(rooms.doors_from_chains([box], 4.0) == [], "a square box (length 4r) is not a door")
+check(rooms.doors_from_chains([door_chain(904, 500.0, 300.0, 12.0)], 4.0) == [],
+      "12 pt at 1/4\" is an 8 in door: outside the 1.25-6 ft window")
+check(rooms.doors_from_chains([door_chain(905, 500.0, 300.0, 54.0)], 4.0,
+                              known=[{"cx": 505, "cy": 302, "r": 54}]) == [],
+      "a hinge the unit pass already reported within r/4 is not reported twice")
+# ...and it bridges: the synthetic plan with its door drawn as a chain instead of a record
+plan_c = plan(with_door=False)
+plan_c["chains"].append(door_chain(906, *P(20, 6), 3 * FT, sx=1, sy=1))   # swings into room B, down the wall
+bc = rooms.pick_room(plan_c, words(), *P(10, 10), styles={0}, dpi=100)
+check(bc["ok"] and abs(bc["area_sf"] - (300 - 16)) / 284 < 0.02 and len(bc["bridges_used"]) == 1,
+      "a dashed-arc door closes room A exactly like a swing record: %s SF, %d door" % (bc.get("area_sf"), len(bc.get("bridges_used", []))))
+
+# ---- a door known only by its LEAF (a pair / bi-fold: one arc per door in a
+# chain no circle fits, but each leaf is its own 2-point stroke on the layer)
+print("doors from leaves")
+plan_l = plan(with_door=False)
+# the leaf drawn open into room B from the hinge (20,6): 3 ft at 45 degrees
+plan_l["chains"].append({"chain_id": 907, "style_id": 7, "layer": "A-Door", "length_pt": 3 * FT,
+                         "points": [P(20, 6), P(20 + 3 * _m.cos(_m.radians(45)), 6 + 3 * _m.sin(_m.radians(45)))]})
+bl = rooms.pick_room(plan_l, words(), *P(10, 10), styles={0}, dpi=100)
+check(bl["ok"] and abs(bl["area_sf"] - (300 - 16)) / 284 < 0.02 and len(bl["bridges_used"]) == 1,
+      "a leaf on the door layer closes room A: %s SF, %d door" % (bl.get("area_sf"), len(bl.get("bridges_used", []))))
+w_l, br_l = rooms.sealed_walls(plan_l, {0}, 100)
+check(len(br_l) == 1 and abs(br_l[0]["x1"] - P(20, 9)[0]) < 1.5 and abs(br_l[0]["y1"] - P(20, 9)[1]) < 1.5,
+      "...bridged hinge -> strike along the wall, got %s" % ((br_l[0]["x1"], br_l[0]["y1"]) if br_l else None,))
+plan_n = plan(with_door=False)
+plan_n["chains"].append({"chain_id": 908, "style_id": 7, "layer": "", "length_pt": 3 * FT,
+                         "points": [P(20, 6), P(22.1, 8.1)]})
+w_n, br_n = rooms.sealed_walls(plan_n, {0}, 100)
+check(len(br_n) == 0, "an unnamed 3 ft stroke is not a door (any short line would be)")
+plan_f = plan(with_door=False)
+plan_f["chains"].append({"chain_id": 909, "style_id": 7, "layer": "A-Door", "length_pt": 3 * FT,
+                         "points": [P(10, 3), P(12.1, 5.1)]})   # floating in room A: both ends on no wall
+w_f, br_f = rooms.sealed_walls(plan_f, {0}, 100)
+check(len(br_f) == 0, "a door-layer stroke with neither end on a wall abstains")
 
 # ---- cache -----------------------------------------------------------------------
 print("cache")

@@ -2530,8 +2530,9 @@ header #pageSel { flex: none; max-width: 220px; }
 .bid-pick-act { display: flex; gap: 8px; }
 
 /* FLOORING: floor types (colour, name, prices, totals) and room rows */
-.fl-types-tbl { display: grid; grid-template-columns: minmax(0, 1fr) 62px 62px auto 26px;
-  gap: 4px 6px; align-items: center; font-size: var(--t-fs-xs, 12px); margin-bottom: 6px; }
+.fl-types-tbl { display: grid; grid-template-columns: minmax(0, 1fr) 58px 58px 26px;
+  gap: 2px 6px; align-items: center; font-size: var(--t-fs-xs, 12px); margin-bottom: 6px; }
+.fl-tot { grid-column: 1 / -1; padding: 0 0 4px 30px; }
 .fl-th { color: var(--t-text-dim, var(--dim)); font-size: var(--t-fs-xs, 12px); }
 .fl-td-name { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .fl-swatch { width: 22px; height: 22px; padding: 0; border: 1px solid var(--t-border, var(--line));

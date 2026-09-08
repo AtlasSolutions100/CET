@@ -21289,6 +21289,43 @@ function flDisarm(msg) {
   if (msg !== undefined) setStatus(msg);
   renderFl(); draw();
 }
+// WHICH LINE TYPES ARE WALLS - a suggestion the operator can overrule with
+// the checkboxes. Two sources, in confidence order:
+//   1. CAD LAYER NAMES, when the sheet carries them (Wells Built / Seer
+//      Stone A2.1: A-wall, A-Exterior Wall Line, A-Wall Hatch, and
+//      A-Flooring - the drafter's own flooring boundaries, which is exactly
+//      where a room's floor stops at a doorway). Anything named wall,
+//      exterior or floor(ing) is in; door, window, dim, text, furniture,
+//      cabinet, border and everything else is out.
+//   2. otherwise WEIGHT: a legend label saying WALL, or a solid line type
+//      at least 1 pt wide with at least 3 lines (Belle A1.00: 17 / 0 / 31 /
+//      23 plus the two SHEAR WALL legend styles) - dimension strings and
+//      leaders are thin, hatches are dashed or dotted.
+// Returns {ids, by} so the status line can say which rule spoke.
+function flWallStyleIds(styles) {
+  const list = (styles || []).filter(s => s && Number.isInteger(s.style_id));
+  const layered = list.filter(s => s.layer && String(s.layer).trim());
+  if (layered.length >= 3) {
+    const ids = list.filter(s => /wall|exterior|floor/i.test(String(s.layer || ""))
+                                 && !/door|window|glaz/i.test(String(s.layer || "")))
+                    .map(s => s.style_id);
+    return { ids, by: "layer name" };
+  }
+  const ids = list.filter(s => /\bwall\b/i.test(String(s.suggested_label || ""))
+                            || (/^solid/.test(String(s.class || "")) && (s.width || 0) >= 1.0 && (s.n || 0) >= 3))
+                  .map(s => s.style_id);
+  return { ids, by: "line weight" };
+}
+function flShowWallsOnly() {
+  if (!state.result) return;
+  const { ids, by } = flWallStyleIds(state.result.styles);
+  if (!ids.length) return setStatus("no line type on this sheet reads as a wall by " + by + " \u2014 tick the walls yourself", "err");
+  const keep = new Set(ids);
+  for (const s of state.result.styles) setFamVis(s.style_id, keep.has(s.style_id));
+  if (state.isolate !== null) state.isolate = null;
+  renderStyles(); draw();
+  setStatus(`walls only: ${ids.length} of ${state.result.styles.length} line types kept, chosen by ${by} \u2014 adjust the checkboxes if a wall is missing, then Pick rooms`, "ok");
+}
 // the role assignment: what is showing is a wall
 function flVisibleStyles() {
   return (state.result.styles || []).map(s => s.style_id).filter(id => famShown(id));
@@ -21431,7 +21468,7 @@ function renderFl() {
 
   // floor types: colour, name, prices, what they hold
   const tbl = mk("div", "fl-types-tbl");
-  for (const h of ["floor type", "$/SF", "$/LF base", "on the sheet", ""]) tbl.appendChild(mk("div", "fl-th", h));
+  for (const h of ["floor type", "$/SF", "$/LF base", ""]) tbl.appendChild(mk("div", "fl-th", h));
   fl.types.forEach((t, i) => {
     const sw = document.createElement("input");
     sw.type = "color"; sw.value = t.color; sw.className = "fl-swatch";
@@ -21449,8 +21486,11 @@ function renderFl() {
       const c = mk("div", "fl-td"); c.appendChild(inp); return c;
     };
     const tt = tot[i];
-    const totc = mk("div", "fl-td ew-meta", tt.rooms
-      ? `${flFmt(tt.sf)} SF \u00b7 ${flFmt(tt.lf)} LF \u00b7 ${tt.rooms} room${tt.rooms === 1 ? "" : "s"}` : "\u2014");
+    // what this type holds, on its own line under the name: the name and
+    // the two prices already fill a 350 px panel, and squeezed into a
+    // fifth column the name read "Car" / "Har" (Belle capture, 2026-09-08)
+    const totc = mk("div", "fl-td fl-tot ew-meta", tt.rooms
+      ? `${flFmt(tt.sf)} SF \u00b7 ${flFmt(tt.lf)} LF base \u00b7 ${tt.rooms} room${tt.rooms === 1 ? "" : "s"}` : "no rooms yet");
     const rm = mk("button", "mini", "\u00d7");
     rm.title = "remove this floor type (its rooms become unassigned)";
     rm.onclick = () => {
@@ -21460,7 +21500,7 @@ function renderFl() {
       flApplyItems(); renderFl(); draw();
     };
     const rmc = mk("div", "fl-td"); rmc.appendChild(rm);
-    tbl.append(cell, num("sf_price"), num("lf_price"), totc, rmc);
+    tbl.append(cell, num("sf_price"), num("lf_price"), rmc, totc);
   });
   types.appendChild(tbl);
   const add = mk("button", "mini", "+ floor type");
@@ -21479,6 +21519,10 @@ function renderFl() {
     b.onclick = () => state.tool === tool ? flDisarm("") : flArm(tool);
     return b;
   };
+  const wallsBtn = mk("button", "mini", "Show walls only");
+  wallsBtn.title = "Tick the line types that read as walls (by CAD layer name when the sheet has them, else by line weight) and untick the rest. A suggestion: the checkboxes stay yours.";
+  wallsBtn.onclick = () => { flShowWallsOnly(); renderFl(); };
+  modes.appendChild(wallsBtn);
   modes.append(
     mode("Pick rooms", "fl-pick", "Click inside a room: the engine fills to the walls of the line types you have showing, bridging the doors it detected"),
     mode("Close a gap", "fl-close", "Two clicks across an opening the sheet leaves open; the fill treats that line as wall"),

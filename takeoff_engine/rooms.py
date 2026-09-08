@@ -70,6 +70,9 @@ CAVITY_PX = 9
 # bearing: a 90-degree door puts its endpoints at +-45, a 45-degree door at
 # +-22.5, a 135-degree one at +-67.5 - the sweep is not in the record
 _JAMB_OFFSETS = tuple(range(20, 71, 5))
+_LEAF_OFFSETS = (0, 10, 20, 30, 40, 45, 50, 60, 70, 80, 90)
+
+_DOOR_LAYER = re.compile(r"door|swing|opng|openin|dr\b", re.I)
 
 _CACHE: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
 _CACHE_MAX = 6
@@ -91,7 +94,18 @@ def _bearing_ink(mask: np.ndarray, x: float, y: float, ang: float,
     return n
 
 
-def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float) -> list:
+def _disk_ink(mask: np.ndarray, x: float, y: float, rad: int) -> int:
+    """Ink pixels within `rad` px of (x, y)."""
+    h, w = mask.shape
+    px, py = int(round(x)), int(round(y))
+    if not (0 <= px < w and 0 <= py < h):
+        return 0
+    sub = mask[max(0, py - rad):py + rad + 1, max(0, px - rad):px + rad + 1]
+    return int((sub > 0).sum())
+
+
+def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float,
+                 wall: Optional[np.ndarray] = None) -> list:
     """For each detected door opening, the segment (in pt) that closes the
     gap in the wall: hinge -> strike jamb. Returns [{x0,y0,x1,y1,r,score}].
 
@@ -112,9 +126,15 @@ def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float) -> list:
         return out
     # The rays are one pixel wide and a hinge sits up to a few px off the
     # row its wall is drawn on (the fitted arc centre is not the line), so
-    # sample a raster fattened by 3 px each way - a miss by a row must not
-    # read as "no wall here"
-    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
+    # sample rasters fattened by 3 px each way - a miss by a row must not
+    # read as "no wall here". WALL evidence (behind the hinge, beyond the
+    # jamb) is read off the wall raster when one is given: on the full ink
+    # the bed drawn under a bedroom door counted as "wall behind" and the
+    # opening was bridged into the room (Seer Stone A2.1 bed 2). The leaf
+    # test stays on the full ink, where the leaf is.
+    ker = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    ink = cv2.dilate(ink, ker)
+    wall = ink if wall is None else cv2.dilate(wall, ker)
     for o in openings or []:
         try:
             cx, cy, r = float(o["cx"]), float(o["cy"]), float(o["r"])
@@ -127,22 +147,32 @@ def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float) -> list:
         hx, hy = cx * px_per_pt, cy * px_per_pt
         rp = r * px_per_pt
         best, best_score = None, None
-        for off in _JAMB_OFFSETS:
-            for sign in (1, -1):
-                ang = mid + sign * math.radians(off)
-                # the wall a door hangs in continues on BOTH sides of the
-                # opening: behind the hinge and beyond the strike jamb. The
-                # open-leaf direction has neither. The leaf term is only a
-                # tie-breaker: a threshold line drawn through the opening
-                # reads as "leaf ink" along the wall (Belle A1.00 storage
-                # door: 31 hits) and with a heavy weight it vetoed the right
-                # direction on every single-leaf door on the sheet.
-                behind = _bearing_ink(ink, hx, hy, ang + math.pi, rp * 0.3, rp * 1.5)
-                beyond = _bearing_ink(ink, hx, hy, ang, rp * 1.05, rp * 1.8)
-                leaf = _bearing_ink(ink, hx, hy, ang, rp * 0.15, rp * 0.9)
-                score = 2 * behind + 2 * beyond - leaf
-                if best_score is None or score > best_score:
-                    best_score, best = score, ang
+        # CANDIDATE BEARINGS. An arc door found from its chain carries its
+        # two arc-end bearings exactly (a0, a1): the opening is one of the
+        # two, no search. A unit-pass record has only the arc midpoint, so
+        # the ends are somewhere 20-70 degrees off it; a leaf's "mid" is
+        # the leaf tip and the opening lies 0-90 degrees off it.
+        if o.get("a0") is not None and o.get("a1") is not None:
+            cands = [float(o["a0"]), float(o["a1"])]
+        else:
+            offsets = _LEAF_OFFSETS if o.get("source") == "leaf" else _JAMB_OFFSETS
+            cands = [mid + sign * math.radians(off) for off in offsets for sign in (1, -1)]
+        rad = max(3, int(round(6.0 * px_per_pt)))
+        for ang in cands:
+            # THE STRIKE JAMB IS ON THE WALL. The far end of the opening
+            # sits on the wall line; the far end of the open leaf stands in
+            # the room. That disk test decides; the wall continuing behind
+            # the hinge and beyond the jamb corroborates; leaf ink along the
+            # bearing is a tie-breaker only (a threshold line through the
+            # opening reads as leaf ink, Belle A1.00 storage door: 31 hits).
+            sx, sy = hx + rp * math.cos(ang), hy + rp * math.sin(ang)
+            strike = _disk_ink(wall, sx, sy, rad)
+            behind = _bearing_ink(wall, hx, hy, ang + math.pi, rp * 0.3, rp * 1.5)
+            beyond = _bearing_ink(wall, hx, hy, ang, rp * 1.05, rp * 1.8)
+            leaf = _bearing_ink(ink, hx, hy, ang, rp * 0.15, rp * 0.9)
+            score = 3 * strike + 2 * behind + 2 * beyond - leaf
+            if best_score is None or score > best_score:
+                best_score, best = score, ang
         if best is None:
             continue
         x1, y1 = cx + r * math.cos(best), cy + r * math.sin(best)
@@ -150,6 +180,183 @@ def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float) -> list:
                     "x1": round(x1, 2), "y1": round(y1, 2), "r": round(r, 2),
                     "score": int(best_score)})
     return out
+
+
+def doors_from_chains(chains: list, scale_ft_per_in: Optional[float] = None,
+                      known: Optional[list] = None, ink: Optional[np.ndarray] = None,
+                      px_per_pt: float = 1.0) -> list:
+    """Door swings the detector's unit pass cannot see: a DASHED arc.
+
+    extract.door_swings works on stroke units and needs an arc that is one
+    polyline. A drafter who draws the swing dashed (Wells Built / Seer
+    Stone A2.1, layer A-Door: every door on the sheet) gives the unit pass
+    forty 2-point dashes and no arc, so that sheet reported 0 doors. The
+    chain builder, though, joins the dashed arc and its solid leaf into
+    ONE chain - measured there: 27 A-Door chains, bbox a square of side
+    r = 42 / 48 / 54 pt (2'-4", 2'-8", 3'-0" at 1/4"), length 2.57 r
+    (quarter arc 1.571 r + leaf 1.0 r), 40-88 points.
+
+    So: a chain whose bbox is square (within 12%), whose length is a
+    quarter arc plus a leaf (2.3-2.85 r) or a bare quarter arc (1.45-1.7
+    r), and whose points sit either on the circle of radius r about one
+    bbox corner or on the two bbox edges out of that corner (>= 85% of
+    them, 7% tolerance) is a door hinged at that corner. r is gated to
+    1.25-6 ft when the scale is known, 8-80 pt otherwise - the same window
+    door_swings uses. Emits the same {cx, cy, r, mx, my} record, skipping
+    any hinge the unit pass already reported within r/4."""
+    out = []
+    if scale_ft_per_in and scale_ft_per_in > 0:
+        ppf = 72.0 / scale_ft_per_in
+        r_lo, r_hi = 1.25 * ppf, 6.0 * ppf
+    else:
+        r_lo, r_hi = 8.0, 80.0
+    known_pts = [(float(o.get("cx", 0)), float(o.get("cy", 0)), float(o.get("r", 0)))
+                 for o in (known or []) if isinstance(o, dict)]
+    for ch in chains or []:
+        P = ch.get("points") or []
+        if len(P) < 8:
+            continue
+        # A LAYER NAME IS EVIDENCE. When the drafter named the layer, a door
+        # is on a door layer; a quarter-arc on SIT-TREE or North Arrow is a
+        # tree or an arrow (Approved Construction Set 3.0: 10 phantom doors
+        # by geometry alone, 0 with this gate). Unnamed chains (Belle's
+        # sheets carry no layers) are judged by geometry.
+        layer = str(ch.get("layer") or "").strip()
+        if layer and not _DOOR_LAYER.search(layer):
+            continue
+        xs = [p[0] for p in P]
+        ys = [p[1] for p in P]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        short = min(w, h)
+        if short <= 0 or short < r_lo * 0.8 or max(w, h) > 1.6 * r_hi:
+            continue
+        L = float(ch.get("length_pt") or 0)
+        fit = _fit_door(P, L, r_lo, r_hi)
+        if fit is None:
+            continue
+        hx, hy, r, mx, my, a0, a1 = fit
+        if any(math.hypot(hx - kx, hy - ky) <= max(kr, r) / 4.0 for kx, ky, kr in known_pts):
+            continue
+        out.append({"cx": round(hx, 1), "cy": round(hy, 1), "r": round(r, 1),
+                    "mx": round(mx, 1), "my": round(my, 1), "source": "chain",
+                    "a0": round(a0, 4), "a1": round(a1, 4),
+                    "chain_id": ch.get("chain_id")})
+    # THE LEAF PASS. A double door, a pair, a bi-fold run: several arcs in
+    # one chain, which no single circle fits (Seer Stone A2.1 bed 2: chain
+    # 721, two 45-degree arcs side by side; the foyer closet: three). Those
+    # doors still draw their LEAVES as plain 2-point strokes on the door
+    # layer, one per door, each exactly one door-width long. A leaf is a
+    # door whose hinge is the end that sits on wall ink; the far end stands
+    # in for the arc midpoint, and door_bridges tries bearings 0-90 degrees
+    # off it (a leaf drawn closed lies IN the opening, at 0). Needs the ink
+    # raster to tell the ends apart, and a named door layer - an unnamed
+    # 3 ft stroke is any short line on the sheet.
+    if ink is not None:
+        H, W = ink.shape
+        known_all = known_pts + [(o["cx"], o["cy"], o["r"]) for o in out]
+        # wall ink within ~8.5 pt of an end (12 px at 100 dpi). A hinge is
+        # drawn a few px off the wall's inner face (Seer Stone: 5-10 px), so
+        # a tight dilation read both ends as bare; a disk sees the wall.
+        rad = max(4, int(round(8.5 * px_per_pt)))
+
+        def _ink_at(x, y):
+            px, py = int(round(x * px_per_pt)), int(round(y * px_per_pt))
+            if not (0 <= px < W and 0 <= py < H):
+                return 0
+            sub = ink[max(0, py - rad):py + rad + 1, max(0, px - rad):px + rad + 1]
+            return int((sub > 0).sum())
+
+        for ch in chains or []:
+            P = ch.get("points") or []
+            layer = str(ch.get("layer") or "").strip()
+            if len(P) != 2 or not layer or not _DOOR_LAYER.search(layer):
+                continue
+            (x0, y0), (x1, y1) = P[0], P[1]
+            L = math.hypot(x1 - x0, y1 - y0)
+            if not (r_lo <= L <= r_hi):
+                continue
+            i0, i1 = _ink_at(x0, y0), _ink_at(x1, y1)
+            if max(i0, i1) < 2 * min(i0, i1) + 10:
+                continue                     # cannot tell the hinge: abstain
+            hx, hy, fx, fy = (x0, y0, x1, y1) if i0 > i1 else (x1, y1, x0, y0)
+            if any(math.hypot(hx - kx, hy - ky) <= max(kr, L) / 4.0 for kx, ky, kr in known_all):
+                continue
+            rec = {"cx": round(hx, 1), "cy": round(hy, 1), "r": round(L, 1),
+                   "mx": round(fx, 1), "my": round(fy, 1), "source": "leaf",
+                   "chain_id": ch.get("chain_id")}
+            out.append(rec)
+            known_all.append((hx, hy, L))
+    return out
+
+
+def _fit_circle(pts):
+    """Algebraic (Kasa) circle fit: x^2 + y^2 + a x + b y + c = 0."""
+    A = np.array([[p[0], p[1], 1.0] for p in pts], dtype=float)
+    b = -np.array([p[0] ** 2 + p[1] ** 2 for p in pts], dtype=float)
+    try:
+        (a, bb, c), *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    cx, cy = -a / 2.0, -bb / 2.0
+    r2 = cx * cx + cy * cy - c
+    if r2 <= 0:
+        return None
+    return cx, cy, math.sqrt(r2)
+
+
+def _fit_door(P, L, r_lo, r_hi):
+    """One door out of a chain: a circle fitted to the ARC points (hinge =
+    centre), the leaf tolerated as a straight run ending at the centre.
+
+    The first cut assumed a quarter arc hinged at a bbox corner; a swing
+    drawn past 90 degrees, or a leaf drawn outside the arc's quadrant,
+    puts the hinge inside the box's edge and failed it (Seer Stone A2.1:
+    chains 720/728/735, bbox 58 x 42 for a 42 pt door). Fitting the circle
+    on the points that are NOT on a straight run through the centre - two
+    passes: fit all, drop the leaf, refit - takes the hinge from the arc
+    itself. Accepts when >= 80% of the points sit on that circle (7%) or
+    on the leaf, the arc spans 35-135 degrees, r is a door, and the chain
+    is not much longer than arc + leaf (a wall stub can ride along)."""
+    fit = _fit_circle(P)
+    if fit is None:
+        return None
+    cx, cy, r = fit
+    for _ in range(2):
+        arc = [p for p in P if abs(math.hypot(p[0] - cx, p[1] - cy) - r) <= 0.07 * r]
+        if len(arc) < 5:
+            return None
+        fit = _fit_circle(arc)
+        if fit is None:
+            return None
+        cx, cy, r = fit
+    if not (r_lo <= r <= r_hi):
+        return None
+    arc = [p for p in P if abs(math.hypot(p[0] - cx, p[1] - cy) - r) <= 0.07 * r]
+    angs = sorted(math.atan2(p[1] - cy, p[0] - cx) for p in arc)
+    # angular span, handling the wrap: the largest gap between neighbours
+    gaps = [(angs[i + 1] - angs[i]) for i in range(len(angs) - 1)] + [angs[0] + 2 * math.pi - angs[-1]]
+    span = 2 * math.pi - max(gaps)
+    if not (math.radians(35) <= span <= math.radians(135)):
+        return None
+    # the arc's two ends, then the leaf = points on either radius to an end
+    gi = max(range(len(gaps)), key=lambda i: gaps[i])
+    a_end1 = angs[(gi + 1) % len(angs)]
+    a_end2 = angs[gi]
+    ok = len(arc)
+    for p in P:
+        d = math.hypot(p[0] - cx, p[1] - cy)
+        if abs(d - r) <= 0.07 * r or d > 1.07 * r or d < 1e-6:
+            continue
+        a = math.atan2(p[1] - cy, p[0] - cx)
+        if min(abs((a - a_end1 + math.pi) % (2 * math.pi) - math.pi),
+               abs((a - a_end2 + math.pi) % (2 * math.pi) - math.pi)) <= math.radians(4):
+            ok += 1
+    if ok < 0.8 * len(P):
+        return None
+    if L > 3.2 * r or L < 0.55 * r * span:
+        return None
+    a_mid = a_end1 + span / 2.0        # forward from the end after the gap
+    return cx, cy, r, cx + r * math.cos(a_mid), cy + r * math.sin(a_mid), a_end1, a_end2
 
 
 def wall_raster(chains: list, styles: Optional[set], w_pt: float, h_pt: float,
@@ -192,10 +399,31 @@ def sealed_walls(result: dict, styles: Optional[set], dpi: int, cache_key=None):
     # orientation evidence for the doors comes from EVERY chain (leaf, arc,
     # the wall behind the hinge), whatever the operator has visible
     ink = wall if styles is None else wall_raster(chains, None, w_pt, h_pt, dpi)
-    bridges = door_bridges(result.get("openings") or [], ink, k)
+    openings = list(result.get("openings") or [])
+    # the leaf pass tells a hinge from a free end by wall ink at each end -
+    # on a raster WITHOUT the door layer, or the leaf's own stroke makes
+    # both ends look like wall and every leaf abstains
+    door_layer = [ch for ch in chains if _DOOR_LAYER.search(str(ch.get("layer") or ""))]
+    ink_nodoor = ink
+    if door_layer:
+        keep = [ch for ch in chains if not _DOOR_LAYER.search(str(ch.get("layer") or ""))]
+        ink_nodoor = wall_raster(keep, None, w_pt, h_pt, dpi)
+    openings += doors_from_chains(chains, _scale(result), known=openings, ink=ink_nodoor, px_per_pt=k)
+    bridges = door_bridges(openings, ink, k, wall=wall)
     for b in bridges:
-        cv2.line(wall, (int(round(b["x0"] * k)), int(round(b["y0"] * k))),
-                 (int(round(b["x1"] * k)), int(round(b["y1"] * k))), 255,
+        # A fitted hinge sits a few pt INTO the opening (the arc centre is
+        # not the wall's end), so a bridge drawn hinge-to-jamb leaves a
+        # sliver between the wall's end and the hinge - Seer Stone A2.1
+        # bed 2: a 5 pt passage at the top of its door, and the room ran
+        # into the hall through it. Overshoot both ends by 0.15 r (8 pt at
+        # most); the overshoot lands on wall either way.
+        dx, dy = b["x1"] - b["x0"], b["y1"] - b["y0"]
+        L = math.hypot(dx, dy) or 1.0
+        ext = min(8.0, 0.15 * b["r"]) / L
+        x0, y0 = b["x0"] - dx * ext, b["y0"] - dy * ext
+        x1, y1 = b["x1"] + dx * ext, b["y1"] + dy * ext
+        cv2.line(wall, (int(round(x0 * k)), int(round(y0 * k))),
+                 (int(round(x1 * k)), int(round(y1 * k))), 255,
                  thickness=WALL_THICK_PX, lineType=cv2.LINE_8)
     if SEAL_PX > 1:
         ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (SEAL_PX, SEAL_PX))
@@ -214,9 +442,32 @@ _ALPHA = re.compile(r"[A-Za-z]{3,}")
 _DIMENSION = re.compile(r"(^.*['\"″′].*$)|(^\d{3,}$)|(^\d+[.,]\d+$)|(^[\d]+x[\d]+$)")
 
 
+# What a room is CALLED on a plan, and what is written inside a room that
+# is not its name. Measured 2026-09-08 on Seer Stone A2.1: the tallest text
+# inside a room was the wall note ("2x6 STUDS @ 16\" O.C.", "12'-6\" WALL
+# HT.", "INSULATED"), never the label - a label is a room word, short, and
+# near the middle of the room.
+_ROOM_WORDS = re.compile(
+    r"\b(BED(ROOM)?|BATH(ROOM)?|KITCHEN|GARAGE|ROOM|HALL(WAY)?|CLOSET|W\.?I\.?C\.?|PANTRY|FOYER|"
+    r"LAUNDRY|MUD(ROOM)?|DINING|LIVING|GREAT|FAMILY|OFFICE|STUDY|DEN|STORAGE|MECH(ANICAL)?|"
+    r"SHOP|PORCH|PATIO|ENTRY|NOOK|UTILITY|RESTROOM|TOILET|LINEN|MASTER|PRIMARY|LOBBY|"
+    r"CORRIDOR|VESTIBULE|STAIR(S)?|LOFT|BONUS|FLEX|MEDIA|THEATER|GYM|SAUNA|SUITE|POWDER|"
+    r"BREAK|CONFERENCE|RECEPTION|LOUNGE|CAFE|CLASSROOM|LAB|JANITOR|ELEC(TRICAL)?|"
+    r"DRESSING|SALON|SPA|WORK(SHOP)?|CRAWL|ATTIC|BASEMENT|CELLAR|BAR|WC)\b", re.I)
+_NOTE_WORDS = re.compile(
+    r"\b(STUDS?|DRYWALL|SLAB|CEILING|INSUL(ATION|ATED)?|CONC(RETE)?|O\.C\.|HT\.?|HEIGHT|SLOPE|"
+    r"BELOW|ABOVE|T\.O\.|FDN|COMMON|VAULTED|HIGH|LIFT|FUTURE|HEATER|ELECT|GAS|STUB|WATER|LINE|"
+    r"SHUT|OFF|ACCESS|SELF|CLOSING|MIN\.?|OPTIONAL|TYP\.?|SEE|SCHEDULE|R\.O\.|DOOR|WINDOW|"
+    r"STEEL|WALL|WALLS|PLATE|BEAM|HEADER|FLUSH|PROVIDED|OUTLET|R\d\d|VERIFY|NOTE|SHEAR)\b", re.I)
+
+
 def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
-    """The room's label: the tallest alphabetic text line whose centre is
-    inside the polygon. `words` are pymupdf 'words' tuples in pt."""
+    """The room's label: of the text lines whose centre is inside the
+    polygon, the one that reads like a room name. Scored: room words in,
+    note words out, short over long, nearer the room's centre over the
+    edge, taller as a last tie-break. Nothing that reads like a note is
+    returned - the caller names the room "Room N" instead, which is a
+    smaller lie than "INSULATED". `words` are pymupdf 'words' tuples."""
     inside = []
     for wd in words or []:
         try:
@@ -229,27 +480,49 @@ def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
         cx, cy = (x0 + x1) / 2 * k, (y0 + y1) / 2 * k
         if cv2.pointPolygonTest(poly_px, (float(cx), float(cy)), False) < 0:
             continue
-        inside.append((x0, y0, x1, y1, t))
+        key = (int(wd[5]), int(wd[6])) if len(wd) >= 7 else None
+        inside.append((x0, y0, x1, y1, t, key))
     if not inside:
         return None
-    # group into lines by vertical overlap
-    inside.sort(key=lambda w: (round((w[1] + w[3]) / 2 / 3), w[0]))
-    lines = []
+    m = cv2.moments(poly_px)
+    ccx = (m["m10"] / m["m00"]) / k if m["m00"] else 0.0
+    ccy = (m["m01"] / m["m00"]) / k if m["m00"] else 0.0
+    # group into lines: pymupdf's own (block, line) when present, else by
+    # vertical overlap
+    lines = {}
+    order = []
     for w in inside:
         cy, h = (w[1] + w[3]) / 2, (w[3] - w[1])
-        for ln in lines:
-            if abs(ln["cy"] - cy) <= 0.5 * max(h, ln["h"]):
-                ln["words"].append(w)
-                break
-        else:
-            lines.append({"cy": cy, "h": h, "words": [w]})
+        key = w[5]
+        if key is None:
+            for kk, ln in lines.items():
+                if abs(ln["cy"] - cy) <= 0.5 * max(h, ln["h"]):
+                    key = kk
+                    break
+            else:
+                key = ("v", len(lines))
+        if key not in lines:
+            lines[key] = {"cy": cy, "h": h, "words": []}
+            order.append(key)
+        lines[key]["words"].append(w)
     best = None
-    for ln in lines:
+    for key in order:
+        ln = lines[key]
         ws = sorted(ln["words"], key=lambda w: w[0])
         text = " ".join(w[4] for w in ws)
         if not _ALPHA.search(text):
             continue
-        score = (ln["h"], len(text))
+        n_room = len(_ROOM_WORDS.findall(text))
+        n_note = len(_NOTE_WORDS.findall(text))
+        if n_note and not n_room:
+            continue
+        lx = sum((w[0] + w[2]) / 2 for w in ws) / len(ws)
+        ly = sum((w[1] + w[3]) / 2 for w in ws) / len(ws)
+        dist = math.hypot(lx - ccx, ly - ccy)
+        score = (3.0 * n_room - 4.0 * n_note - 0.05 * max(0, len(text) - 20)
+                 - 0.002 * dist + 0.1 * ln["h"] + (0.5 if text.isupper() else 0.0))
+        if n_room == 0 and (len(ws) > 3 or not text.isupper()):
+            continue
         if best is None or score > best[0]:
             best = (score, text)
     return best[1][:60] if best else None
