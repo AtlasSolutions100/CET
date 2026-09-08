@@ -126,6 +126,21 @@ def pick_plan(files, want: int = -1) -> Optional[dict]:
     return max(files, key=lambda f: (f.get("size") or 0, -f["i"]))
 
 
+def pick_files(files) -> list[int]:
+    """Which of a bundle's PDFs the chooser pre-ticks: every file the sniper
+    profiled as drawings; if it profiled none that way, the single largest
+    file (the rule /pull uses when nothing is chosen). Text-only files -
+    the RFB, the agreement template, the schedule of work - are never
+    pre-ticked, which is the whole point of the chooser."""
+    files = [f for f in (files or []) if isinstance(f, dict)
+             and isinstance(f.get("i"), int) and (f.get("size") or 0) > 0]
+    draw = [f["i"] for f in files if f.get("hint") == "drawings"]
+    if draw:
+        return draw
+    best = pick_plan(files)
+    return [best["i"]] if best else []
+
+
 class Sniper:
     """A thin client over the sniper's HTTP API. `session` is anything with
     requests' get/post shape - the tests hand in a fake."""

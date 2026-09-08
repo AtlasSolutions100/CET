@@ -119,6 +119,21 @@ check(bids.pick_plan([{"i": 0, "name": "empty.pdf", "size": 0}]) is None,
 tie = [{"i": 0, "size": 5}, {"i": 1, "size": 5}]
 check(bids.pick_plan(tie)["i"] == 0, "equal sizes: the sniper's first (largest-first) wins")
 
+# ---- pick_files: what the chooser pre-ticks -----------------------------------
+print("pick_files")
+bundle = [{"i": 0, "name": "plans.pdf", "size": 6_500_000, "pages": 4, "hint": "drawings"},
+          {"i": 1, "name": "rfb.pdf", "size": 400_000, "pages": 13, "hint": "mixed"},
+          {"i": 2, "name": "schedule.pdf", "size": 260_000, "pages": 1, "hint": "text"},
+          {"i": 3, "name": "agreement.pdf", "size": 100_000, "pages": 13, "hint": "mixed"}]
+check(bids.pick_files(bundle) == [0], "only the file profiled as drawings is pre-ticked")
+two = bundle + [{"i": 4, "name": "details.pdf", "size": 900_000, "pages": 2, "hint": "drawings"}]
+check(bids.pick_files(two) == [0, 4], "every drawings file is pre-ticked, in list order")
+nodraw = [{"i": 0, "name": "a.pdf", "size": 100, "hint": "text"},
+          {"i": 1, "name": "b.pdf", "size": 900, "hint": "mixed"}]
+check(bids.pick_files(nodraw) == [1], "no drawings file: the largest is pre-ticked (the /pull default)")
+check(bids.pick_files([]) == [] and bids.pick_files(None) == [], "nothing: nothing ticked")
+check(bids.pick_files([{"i": 0, "size": 0, "hint": "drawings"}]) == [], "a zero-byte drawings file is not ticked")
+
 # ---- sniper_url --------------------------------------------------------------
 print("sniper_url")
 check(bids.sniper_url(hosted=True, env={}) == "", "hosted + unset = hidden")

@@ -122,10 +122,11 @@ check(card && /target = "_blank"/.test(card) && /rel = "noopener"/.test(card),
       "the portal link opens in a new tab without an opener");
 const pull = grab("bidPull");
 check(!!pull, "bidPull exists (shared by the card button and the #bid= boot hook)");
-check(pull && /"\/api\/bids\/" \+ encodeURIComponent\(id\) \+ "\/pull"/.test(pull),
+check(pull && /const enc = encodeURIComponent\(id\);/.test(pull)
+        && /"\/api\/bids\/" \+ enc \+ "\/pull\?file="/.test(pull),
       "the pull POSTs to /api/bids/{id}/pull with the id encoded (ids carry colons)");
 check(pull && /method: "POST"/.test(pull), "...as a POST");
-check(pull && /applyOpened\(j\)/.test(pull), "success goes through the same applyOpened as an upload");
+check(pull && /applyOpened\(first\)/.test(pull), "success goes through the same applyOpened as an upload");
 check(pull && /j\.detail/.test(pull), "failure prints the server's own words");
 const cardPull = grab("pvPullBid");
 check(cardPull && /await bidPull\(b\.id, b\.title\)/.test(cardPull), "the card button goes through bidPull");
@@ -171,6 +172,46 @@ check(/const PV_TAB_IDS = \{ demo: "pvTabDemo", mine: "pvTabMine", bids: "pvTabB
       "the tab strip is wired from PROJ_TABS, not two hard-coded ids");
 check(/\/\^#job=\(\[0-9a-f\]\{6,32\}\)\$\/\.exec\(BOOT_HASH/.test(SRC),
       "#job=<id> at boot opens that job (what the sniper's dashboard links to)");
+
+// ---- the file chooser -------------------------------------------------------
+// A bundle with several PDFs asks which are the plans. The pure lines are
+// evaluated; the chooser's behaviour is pinned from source: it appears only
+// for more than one file, cancel is a distinct answer from failure, and every
+// tick becomes its own pull.
+console.log("chooser");
+const C = new Function(grab("bidFileLine") + "\n" + grab("bidPickWhy")
+  + "\nreturn { bidFileLine, bidPickWhy };")();
+check(C.bidFileLine({ size: 6522825, pages: 4, sheet_pages: 4, text_pages: 0, hint: "drawings" })
+        === "6.2 MB · 4 pages · all drawing sheets", "file line: drawings");
+check(C.bidFileLine({ size: 260177, pages: 1, sheet_pages: 0, text_pages: 1, hint: "text" })
+        === "254 KB · 1 page · text only", "file line: text");
+check(C.bidFileLine({ size: 414505, pages: 13, sheet_pages: 1, text_pages: 12, hint: "mixed" })
+        === "405 KB · 13 pages · 1 drawing sheet, 12 text", "file line: mixed");
+check(C.bidFileLine({ size: 10, pages: null, hint: "unknown" }).includes("could not be read"),
+      "file line: unreadable says so");
+check(C.bidPickWhy({ files: [{ hint: "drawings" }, { hint: "text" }, { hint: "mixed" }] })
+        .includes("3 PDFs") , "why: counts the bundle");
+check(C.bidPickWhy({ files: [{ hint: "drawings" }, { hint: "text" }] }).includes("is ticked"),
+      "why: says the drawings file is ticked");
+check(C.bidPickWhy({ files: [{ hint: "text" }, { hint: "mixed" }] }).includes("the largest is ticked"),
+      "why: no drawings file = the largest");
+const bp = grab("bidPull");
+check(bp && /fetch\("\/api\/bids\/" \+ enc \+ "\/plans"\)/.test(bp), "bidPull asks for the file list first");
+check(bp && /files\.length === 1 \? \[files\[0\]\.i\] : await bidChoose\(plans\)/.test(bp),
+      "one file opens without asking; more than one asks");
+check(bp && /return "";\s*\/\/ cancelled/.test(bp), "cancel is an empty string, not an error");
+check(bp && /"\/pull\?file=" \+ picks\[k\]/.test(bp), "every ticked file is pulled by its index");
+check(bp && /applyOpened\(first\)/.test(bp), "the first pulled file is what opens on screen");
+check(bp && /added under Your projects/.test(bp), "the rest are announced, not lost");
+const bc = grab("bidChoose");
+check(bc && /suggest\.has\(f\.i\)/.test(bc), "the chooser pre-ticks the server's suggestion");
+check(bc && /e\.key === "Escape"/.test(bc) && /done\(null\)/.test(bc), "Esc cancels");
+const cp2 = grab("pvPullBid");
+check(cp2 && /if \(fail !== null\)/.test(cp2) && /if \(fail\) \{ note\.hidden = false/.test(cp2),
+      "the card re-arms on cancel and notes only a real failure");
+check(/id="bidPick" class="gz-modal" hidden/.test(HTML), "index.html: the chooser exists, hidden");
+check(/id="bidPickGo"/.test(HTML) && /id="bidPickCancel"/.test(HTML), "index.html: Open selected and Cancel");
+check(/\.bid-pick-row \{/.test(CSS), "style.css: chooser rows are styled");
 
 // ---- index.html and style.css -----------------------------------------------
 console.log("html/css");

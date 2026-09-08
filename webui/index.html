@@ -1083,6 +1083,23 @@
      the zone endpoint, debounced, on every input - but seeing a number is
      not consenting to it: nothing reaches the takeoff until the zone's own
      "Add to takeoff" button in the panel list. Esc always cancels. -->
+<!-- THE FILE CHOOSER for a bid whose bundle holds more than one PDF (see
+     bidChoose in app.js). Same frame as the grading-zone modal. Hidden and
+     empty until a Start takeoff / #bid= pull needs an answer. -->
+<div id="bidPick" class="gz-modal" hidden>
+  <div class="gz-m-card">
+    <div class="gz-m-head">
+      <h2 id="bidPickTitle">Which files are the plans?</h2>
+      <button id="bidPickClose" class="mini" title="Cancel (Esc)">&#10005;</button>
+    </div>
+    <div class="gz-m-exist" id="bidPickWhy"></div>
+    <div id="bidPickList" class="bid-pick-list"></div>
+    <div class="bid-pick-act">
+      <button id="bidPickGo" class="mini pv-bid-go">Open selected</button>
+      <button id="bidPickCancel" class="mini">Cancel</button>
+    </div>
+  </div>
+</div>
 <div id="gzModal" class="gz-modal" hidden>
   <div class="gz-m-card">
     <div class="gz-m-head">
@@ -1168,6 +1185,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=162"></script>
+<script src="app.js?v=163"></script>
 </body>
 </html>

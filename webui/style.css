@@ -2517,6 +2517,17 @@ header #pageSel { flex: none; max-width: 220px; }
   padding: 0 var(--t-sp-3, 12px) var(--t-sp-3, 12px);
   color: var(--t-danger, #c0392b); }
 .pv-from-bid { border-top: 0; margin-top: 0; padding-top: 4px; }
+/* the file chooser rows: tick, name, profile line */
+.bid-pick-list { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 12px; }
+.bid-pick-row { display: grid; grid-template-columns: auto 1fr; column-gap: 8px;
+  align-items: center; padding: 6px 8px; border: 1px solid var(--t-border, var(--line));
+  border-radius: 6px; cursor: pointer; font-size: var(--t-fs-sm, 13px); }
+.bid-pick-row:hover { border-color: var(--t-accent, var(--accent)); }
+.bid-pick-row input { grid-row: span 2; }
+.bid-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.bid-pick-line { font-size: var(--t-fs-xs, 12px); color: var(--t-text-dim, var(--dim));
+  font-family: var(--t-font-data, var(--mono)); }
+.bid-pick-act { display: flex; gap: 8px; }
 
 /* ---------- THE STATUS BAR ----------------------------------------------- */
 /* One 34px strip at the foot of the window, outside <main>, so it survives

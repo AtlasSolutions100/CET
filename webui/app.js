@@ -22828,6 +22828,34 @@ function projEmptyBids(info) {
   return "Bid Sniper has no open bids that look like our work right now. "
     + "Run a scan there (or let its loop run) and reload.";
 }
+// ---- THE FILE CHOOSER ------------------------------------------------------
+// A Bonfire bundle is a zip: the plan set, the RFB text, an agreement
+// template, a schedule of work. Pulling "the largest" was right on every
+// bundle looked at, but it is a guess, and a text file that opens as a
+// project is a project full of nothing. So a bundle with more than one PDF
+// asks. The sniper profiles each file (page count; how many pages are
+// large-format or text-free = "sheets"); drawing files come pre-ticked and
+// text-only files never do. Each ticked file becomes its own project.
+function bidFileLine(f) {
+  const size = (f && f.size) ? (f.size >= 1048576
+    ? (f.size / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(f.size / 1024)) + " KB") : "";
+  if (!f || !Number.isInteger(f.pages)) return size ? size + " \u00b7 could not be read" : "could not be read";
+  const p = f.pages + " page" + (f.pages === 1 ? "" : "s");
+  const what = f.hint === "text" ? "text only"
+    : f.hint === "drawings" ? (f.sheet_pages === f.pages ? "all drawing sheets" : f.sheet_pages + " drawing sheets")
+    : f.hint === "mixed" ? f.sheet_pages + " drawing sheet" + (f.sheet_pages === 1 ? "" : "s") + ", " + f.text_pages + " text"
+    : "unknown";
+  return [size, p, what].filter(Boolean).join(" \u00b7 ");
+}
+function bidPickWhy(plans) {
+  const n = (plans && plans.files || []).length;
+  const draw = (plans && plans.files || []).filter(f => f.hint === "drawings").length;
+  return "This bid's bundle holds " + n + " PDFs. "
+    + (draw ? (draw === 1 ? "The one that reads as drawing sheets is ticked" : draw + " read as drawing sheets and are ticked")
+            : "None reads as drawing sheets, so the largest is ticked")
+    + "; the RFB, agreements and schedules are text and are not. "
+    + "Each ticked file opens as its own project, and the first one opens on screen.";
+}
 // What the empty "Your projects" tab says on a box where nobody has uploaded
 // anything yet. It is the first thing a new account sees, so it says the one
 // action that works and where else there is something to look at.
@@ -23725,11 +23753,10 @@ async function pvPullBid(b, btn, card) {
   btn.disabled = true;
   btn.textContent = "fetching plans\u2026";
   const fail = await bidPull(b.id, b.title);
-  if (fail) {
-    note.hidden = false;
-    note.textContent = fail;
+  if (fail !== null) {               // "" is a cancel: re-arm, say nothing
     btn.disabled = false;
     btn.textContent = bidActionText(b);
+    if (fail) { note.hidden = false; note.textContent = fail; }
   }
 }
 
@@ -23740,25 +23767,112 @@ async function pvPullBid(b, btn, card) {
 // the status bar gets both.
 async function bidPull(id, title) {
   setStatus("fetching the plan set for \u201c" + (title || id) + "\u201d\u2026", "busy");
+  const enc = encodeURIComponent(id);
+  let plans;
   try {
-    const resp = await fetch("/api/bids/" + encodeURIComponent(id) + "/pull",
-                             { method: "POST" });
-    const j = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      const why = j.detail || ("could not start (" + resp.status + ")");
+    const r = await fetch("/api/bids/" + enc + "/plans");
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const why = j.detail || ("could not fetch the plans (" + r.status + ")");
       setStatus(why, "err");
       return why;
     }
-    applyOpened(j);
-    setStatus("opened " + (j.file || j.name) + " from the bid \u2014 detection "
-      + (j.detect === "off" ? "not started" : "queued on the pages that look like site work"),
-      "ok");
-    return null;
+    plans = j;
   } catch (e) {
     const why = "could not start \u2014 the server did not answer";
     setStatus(why, "err");
     return why;
   }
+  const files = (plans.files || []).filter(f => f && Number.isInteger(f.i));
+  if (!files.length) {
+    const why = "Bid Sniper could not fetch a plan PDF for this bid ("
+      + (plans.documents || 0) + " document link(s) listed). Download it from the "
+      + "portal in your browser and upload it here.";
+    setStatus(why, "err");
+    return why;
+  }
+  // one file: nothing to choose. More: ask, with the drawings pre-ticked.
+  const picks = files.length === 1 ? [files[0].i] : await bidChoose(plans);
+  if (!picks || !picks.length) {
+    setStatus("nothing pulled \u2014 no file was chosen", "");
+    return "";                       // cancelled: re-arm, no note
+  }
+  let first = null;
+  const extra = [], failed = [];
+  for (let k = 0; k < picks.length; k++) {
+    const f = files.find(x => x.i === picks[k]) || { name: "file " + picks[k] };
+    setStatus("pulling " + f.name + " (" + (k + 1) + " of " + picks.length + ")\u2026", "busy");
+    try {
+      const resp = await fetch("/api/bids/" + enc + "/pull?file=" + picks[k],
+                               { method: "POST" });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) { failed.push(f.name + ": " + (j.detail || resp.status)); continue; }
+      if (!first) first = j; else extra.push(j);
+    } catch (e) {
+      failed.push(f.name + ": the server did not answer");
+    }
+  }
+  if (!first) {
+    const why = "could not pull: " + failed.join("; ");
+    setStatus(why, "err");
+    return why;
+  }
+  applyOpened(first);
+  setStatus("opened " + (first.file || first.name) + " from the bid \u2014 detection "
+    + (first.detect === "off" ? "not started" : "queued on the pages that look like site work")
+    + (extra.length ? "; " + extra.length + " more file" + (extra.length === 1 ? "" : "s")
+                      + " added under Your projects" : "")
+    + (failed.length ? "; could not pull " + failed.join("; ") : ""),
+    failed.length ? "err" : "ok");
+  return null;
+}
+
+// THE CHOOSER. Resolves to the ticked file indices, or null on cancel /
+// Esc / the close button. Built each time from the plans reply so a stale
+// list can never be shown for a different bid.
+function bidChoose(plans) {
+  return new Promise((resolve) => {
+    const box = $("bidPick"), list = $("bidPickList");
+    if (!box || !list) return resolve(plans.suggest || []);
+    list.innerHTML = "";
+    $("bidPickTitle").textContent = "Which files are the plans? \u2014 " + (plans.title || plans.id);
+    $("bidPickWhy").textContent = bidPickWhy(plans);
+    const suggest = new Set(plans.suggest || []);
+    for (const f of plans.files) {
+      const row = document.createElement("label");
+      row.className = "bid-pick-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = String(f.i);
+      cb.checked = suggest.has(f.i);
+      const name = document.createElement("span");
+      name.className = "bid-pick-name";
+      name.textContent = f.name;
+      name.title = f.name;
+      const line = document.createElement("span");
+      line.className = "bid-pick-line";
+      line.textContent = bidFileLine(f);
+      row.append(cb, name, line);
+      list.appendChild(row);
+    }
+    const done = (val) => {
+      box.hidden = true;
+      removeEventListener("keydown", onKey, true);
+      resolve(val);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.stopImmediatePropagation(); e.preventDefault(); done(null); }
+    };
+    $("bidPickGo").onclick = () => done(
+      Array.from(list.querySelectorAll("input:checked")).map(i => Number(i.value)));
+    $("bidPickCancel").onclick = () => done(null);
+    $("bidPickClose").onclick = () => done(null);
+    box.onclick = (e) => { if (e.target === box) done(null); };
+    addEventListener("keydown", onKey, true);
+    box.hidden = false;
+    const firstBox = list.querySelector("input");
+    if (firstBox) firstBox.focus();
+  });
 }
 
 async function pvOpenJob(r) {

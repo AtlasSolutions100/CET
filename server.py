@@ -831,6 +831,29 @@ def _bid_detect_core(job_id: str) -> None:
                 pass
 
 
+@app.get("/api/bids/{lid}/plans")
+def bid_plans(lid: str):
+    """The PDFs the sniper holds for a bid, fetched first (a Bonfire bundle
+    is a zip of the plan set, the RFB text, the agreement template...), each
+    with page count and a drawings/text/mixed profile from the sniper. The
+    chooser in the UI is built from this; /pull?file=<i> takes one."""
+    if not BID_SNIPER_URL:
+        raise HTTPException(404, "Bid Sniper is not configured on this server")
+    try:
+        with _bids.Sniper(BID_SNIPER_URL) as s:
+            plan = s.plans(lid, fetch=True)
+    except requests.HTTPError as e:
+        raise HTTPException(502, "Bid Sniper answered %s for %s"
+                            % (getattr(e.response, "status_code", "?"), lid))
+    except Exception as e:
+        raise HTTPException(502, "Bid Sniper did not answer: %s: %s"
+                            % (e.__class__.__name__, str(e)[:160]))
+    files = [f for f in (plan.get("files") or []) if isinstance(f, dict)]
+    return {"id": lid, "title": plan.get("title"), "agency": plan.get("agency"),
+            "documents": int(plan.get("documents") or 0), "files": files,
+            "suggest": _bids.pick_files(files)}
+
+
 @app.post("/api/bids/{lid}/pull")
 def pull_bid(lid: str, request: Request, detect: int = 1, file: int = -1):
     """Make a job from a bid: have the sniper download the plan set, stream
