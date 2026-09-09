@@ -679,6 +679,202 @@ def _feet_of(m) -> Optional[float]:
     return v
 
 
+# THE OBJECTS INSIDE A ROOM, and whether flooring stops at them. A flooring
+# takeoff is wall to wall, through the doorway to the threshold, UNDER a
+# range, a fridge, a toilet and the furniture - and it stops at a tub, a
+# shower pan, a hearth, and (crew by crew) at built-in cabinets. So the
+# engine lists every closed, fixture-sized shape inside the fill, names it
+# from its CAD layer and its size, and says which kind is deducted by
+# default: tubs and showers. Cabinets are LISTED and kept (Koby, 2026-09-09:
+# "not cabinets"); the panel has the switch. On a sheet with no layer names
+# a shape is a shape - listed, never deducted on its own - and the operator
+# clicks it. Measured on Seer Stone A2.1: 6 plumbing loops, 12 cabinet, 4
+# appliance, 11 furniture, 6 mechanical, all 1-12 ft; Belle A1.00 has 7
+# closed fixture-sized loops and no names at all.
+_OBJ_SKIP_LAYER = re.compile(r"hatch|wall|dim|text|border|door|window|glaz|floor|grid|title|sheet|anno|note|roof|fdn|beam|slab", re.I)
+_OBJ_KIND_LAYER = (
+    (re.compile(r"plumb|fixt|sanit|bath", re.I), "plumbing"),
+    (re.compile(r"cabin|casework|millwork|island|counter", re.I), "cabinet"),
+    (re.compile(r"applian|equip|mech", re.I), "appliance"),
+    (re.compile(r"furn|chair|table|bed|sofa|desk", re.I), "furniture"),
+)
+OBJ_DEDUCT_DEFAULT = {"tub": True, "shower": True}
+OBJ_MIN_FT, OBJ_MAX_FT = 1.0, 12.0
+
+
+def _obj_kind(layer: str, w: float, h: float) -> tuple:
+    """(kind, guessed). Sizes in ft, from general practice: a tub is about
+    2.5 x 5 (30 x 60 in) to 3 x 6; a shower pan 3 x 3 to 5 x 5; a toilet
+    about 1.5 x 2.3; a lavatory under 2.5 ft on its long side."""
+    # sizes are the CELL's, a line width inside the drawn outline on every
+    # side (Seer Stone's 2'-6" x 5'-0" main-bath tub measures 2.19 x 4.7),
+    # so every floor is a few inches under the catalogue size
+    lo, hi = min(w, h), max(w, h)
+    tubby = 2.0 <= lo <= 3.4 and 4.0 <= hi <= 6.6
+    showery = 2.4 <= lo <= 6.0 and hi <= 6.0 and hi / max(lo, 1e-6) <= 1.6 and not tubby
+    fam = None
+    for rx, name in _OBJ_KIND_LAYER:
+        if layer and rx.search(layer):
+            fam = name
+            break
+    if fam == "plumbing":
+        if tubby:
+            return "tub", False
+        if showery:
+            return "shower", False
+        # a toilet is 28-30 in deep; a lavatory is under 2 ft either way
+        if 1.0 <= lo <= 2.0 and 2.0 <= hi <= 2.9:
+            return "toilet", False
+        if hi <= 2.8:
+            return "sink", False
+        return "plumbing", False
+    if fam:
+        return fam, False
+    if layer:
+        return "other", False
+    # no layer names: a tub-shaped loop is only ever a guess
+    if tubby:
+        return "tub", True
+    return "shape", True
+
+
+def room_objects(chains: list, region: np.ndarray, styles, k: float,
+                 fpp: Optional[float], room_px: int, openings: Optional[list] = None) -> list:
+    """The fixtures inside a room fill, as the CELLS the non-wall linework
+    encloses within it.
+
+    A tub is rarely one closed loop: Seer Stone draws it as a rim against
+    three walls plus an inner outline, a vanity as an open run of cabinet
+    lines against the wall. What every fixture has in common is that its
+    lines, together with the walls, ENCLOSE a piece of the room. So: raster
+    every chain that is not a wall style (and not on a hatch / dimension /
+    text / door layer) inside the fill, and every connected piece of the
+    fill they cut off - other than the biggest one, the open floor - is a
+    candidate. A candidate is fixture-sized (1-12 ft), is named by the
+    layer that owns most of the linework around it and by its size
+    (_obj_kind), and is dropped when a detected door swing sits in it (the
+    quarter-disc between a door arc and its wall is a cell too). Nested
+    cells of one fixture (the tub's rim and its inner outline) are merged
+    when one's box contains the other's.
+
+    `region` is the room's filled pixel mask at `k` px per pt; `styles` the
+    wall style ids (None = every chain is a wall, so nothing is an object)."""
+    out = []
+    if fpp is None or region is None or region.size == 0 or styles is None:
+        return out
+    H, W = region.shape
+    ys_, xs_ = np.nonzero(region)
+    if xs_.size == 0:
+        return out
+    rx0, rx1, ry0, ry1 = xs_.min() / k - 2, xs_.max() / k + 2, ys_.min() / k - 2, ys_.max() / k + 2
+    ink = np.zeros((H, W), dtype=np.uint8)
+    cand = []                                   # chains that can bound an object
+    for ch in chains or []:
+        if ch.get("style_id") in styles:
+            continue
+        layer = str(ch.get("layer") or "").strip()
+        if layer and _OBJ_SKIP_LAYER.search(layer):
+            continue
+        P = ch.get("points") or []
+        if len(P) < 2:
+            continue
+        xs = [p[0] for p in P]
+        ys = [p[1] for p in P]
+        if max(xs) < rx0 or min(xs) > rx1 or max(ys) < ry0 or min(ys) > ry1:
+            continue
+        pts = np.array([[int(round(p[0] * k)), int(round(p[1] * k))] for p in P], dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(ink, [pts], False, 1, thickness=2, lineType=cv2.LINE_8)
+        cand.append((layer, P))
+    if not cand:
+        return out
+    free = (region.astype(np.uint8) & (1 - ink)).astype(np.uint8)
+    n_lab, lab, stats, cents = cv2.connectedComponentsWithStats(free, connectivity=4)
+    if n_lab <= 2:
+        return out
+    order = sorted(range(1, n_lab), key=lambda i: -stats[i, cv2.CC_STAT_AREA])
+    door_pts = []
+    for o in openings or []:
+        try:
+            door_pts.append((float(o["mx"]) * k, float(o["my"]) * k))
+        except (KeyError, TypeError, ValueError):
+            pass
+    cells = []
+    for i in order[1:]:
+        area_px = int(stats[i, cv2.CC_STAT_AREA])
+        x, y, w, h = (int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP]),
+                      int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT]))
+        w_ft, h_ft = w / k * fpp, h / k * fpp
+        if min(w_ft, h_ft) < OBJ_MIN_FT or max(w_ft, h_ft) > OBJ_MAX_FT:
+            continue
+        if area_px < 0.4 * (k * k) / (fpp * fpp):       # under 0.4 SF: a line's own thickness
+            continue
+        if area_px >= 0.6 * max(room_px, 1):
+            continue
+        mask = (lab == i).astype(np.uint8)
+        # a door swing is a cell too: skip any cell holding a detected arc's midpoint
+        if any(0 <= int(round(py)) < H and 0 <= int(round(px)) < W and mask[int(round(py)), int(round(px))]
+               for px, py in door_pts):
+            continue
+        # who owns the linework around it: chain points within 3 px of the cell
+        ring = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7)))
+        votes = {}
+        for layer, P in cand:
+            n = 0
+            for p in P:
+                px, py = int(round(p[0] * k)), int(round(p[1] * k))
+                if 0 <= px < W and 0 <= py < H and ring[py, px]:
+                    n += 1
+            if n:
+                votes[layer] = votes.get(layer, 0) + n
+        layer = max(votes, key=votes.get) if votes else ""
+        cs, hier = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cs:
+            continue
+        c = max(cs, key=cv2.contourArea)
+        poly = cv2.approxPolyDP(c, 1.0, True).reshape(-1, 2)
+        cells.append({"box": (x, y, x + w, y + h), "area_px": area_px, "layer": layer,
+                      "w_ft": w_ft, "h_ft": h_ft,
+                      "poly": [[round(float(px) / k, 1), round(float(py) / k, 1)] for px, py in poly]})
+    # merge a cell whose box sits inside another's (the tub's inner outline
+    # inside its rim): the outer keeps its box and polygon, the areas add.
+    # Outer first by BOX, not by pixels - the rim's ring holds fewer pixels
+    # than the pan it surrounds.
+    cells.sort(key=lambda c: -((c["box"][2] - c["box"][0]) * (c["box"][3] - c["box"][1])))
+    merged = []
+    for c in cells:
+        host = None
+        for m in merged:
+            bx = m["box"]
+            if c["box"][0] >= bx[0] - 2 and c["box"][1] >= bx[1] - 2 and c["box"][2] <= bx[2] + 2 and c["box"][3] <= bx[3] + 2:
+                host = m
+                break
+        if host is not None:
+            host["area_px"] += c["area_px"]
+            if not host["layer"]:
+                host["layer"] = c["layer"]
+        else:
+            merged.append(c)
+    for c in merged:
+        kind, guessed = _obj_kind(c["layer"], c["w_ft"], c["h_ft"])
+        out.append({
+            "kind": kind, "guessed": guessed, "layer": c["layer"] or None,
+            "w_ft": round(c["w_ft"], 2), "h_ft": round(c["h_ft"], 2),
+            "area_sf": round(c["area_px"] / (k * k) * fpp * fpp, 1),
+            "deduct": bool(OBJ_DEDUCT_DEFAULT.get(kind)) and not guessed,
+            "polygon": c["poly"],
+        })
+    out.sort(key=lambda o: -o["area_sf"])
+    return out
+
+
+def _simplify(P: list, tol: float = 0.8) -> list:
+    if len(P) <= 8:
+        return list(P)
+    arr = np.array(P, dtype=np.float32).reshape(-1, 1, 2)
+    s = cv2.approxPolyDP(arr, tol, True).reshape(-1, 2)
+    return [list(map(float, p)) for p in s] if len(s) >= 3 else list(P)
+
+
 def _ft_in_text(v: float) -> str:
     """9.094 -> 9'-1 1/8\" (nearest sixteenth)."""
     ft = int(v)
@@ -832,6 +1028,17 @@ def pick_room(result: dict, words: list, x_pt: float, y_pt: float,
     """
     k = dpi / 72.0
     wall, bridges = sealed_walls(result, styles, dpi, cache_key)
+    # the door swings, for the object pass: a bridge keeps hinge and strike
+    # but not the arc midpoint, so the swing's midpoint is rebuilt 45
+    # degrees off the opening on either side (one of them is the swing);
+    # the unit-pass records carry mx/my already
+    bridges_src = []
+    for b in bridges:
+        dx, dy = b["x1"] - b["x0"], b["y1"] - b["y0"]
+        for sgn in (1, -1):
+            a = math.atan2(dy, dx) + sgn * math.pi / 4
+            bridges_src.append({"mx": b["x0"] + b["r"] * 0.7 * math.cos(a),
+                                "my": b["y0"] + b["r"] * 0.7 * math.sin(a)})
     if closures:
         wall = wall.copy()               # never draw into the cached raster
         for c in closures:
@@ -947,6 +1154,10 @@ def pick_room(result: dict, words: list, x_pt: float, y_pt: float,
         # the ceiling height written in the room, when the sheet prints one
         # (Seer Stone A2.1: every room), for wall area = perimeter x height
         "ceiling": ceiling_note(_lines_inside(words, poly_px.reshape(-1, 1, 2), k, drop_dims=False)),
+        # the fixtures inside the fill, each with the part of it the
+        # flooring would not cover; tubs and showers deducted by default
+        "objects": room_objects(result.get("chains") or [], region, styles, k, fpp, n_px,
+                                openings=list(result.get("openings") or []) + bridges_src),
         "bridges_used": [{k2: b[k2] for k2 in ("x0", "y0", "x1", "y1", "r")} for b in used],
         "bridges_total": len(bridges),
         "closures_used": len(closures or []),

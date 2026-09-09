@@ -195,7 +195,7 @@ const state = window.state = {
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
   "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
-  "gz-draw", "gz-box", "fl-pick", "fl-draw", "fl-close",
+  "gz-draw", "gz-box", "fl-pick", "fl-draw", "fl-close", "fl-deduct",
 ]);
 
 // The three polygons the operator draws corner by corner. One set, so the
@@ -21385,7 +21385,21 @@ const FL_DEFAULT_TYPES = ["Carpet", "LVP", "Tile", "Hardwood"];
 const FL_UNASSIGNED = "#9aa3b2";
 const FL_CLOSE_COLOR = "#ff5d3b";
 const FL_LABEL_RX = /^(Flooring|Base\/molding|Waste|Wall area|Transition strips|Walls) \u2014 /;
-const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close"];
+const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close", "fl-deduct"];
+// WHAT FLOORING STOPS AT. The engine lists every fixture-sized cell the
+// non-wall linework encloses inside a room (rooms.room_objects) and names
+// it from its CAD layer and size; this table says which kinds come out of
+// the flooring by default. Tubs and showers: yes - flooring stops at the
+// rim. Cabinets: NO (Koby, 2026-09-09: "not cabinets") - many crews run
+// the floor under base cabinets, and the switch is in the panel. Toilets,
+// appliances and furniture are floored under. A "shape" is a cell on a
+// sheet with no layer names - listed, never deducted on its own.
+const FL_DEDUCT_DEFAULTS = { tub: true, shower: true, cabinet: false, appliance: false,
+                             toilet: false, sink: false, plumbing: false, furniture: false,
+                             other: false, shape: false };
+const FL_KIND_GROUPS = [["tubs & showers", ["tub", "shower"]], ["cabinets & islands", ["cabinet"]],
+                        ["appliances & equipment", ["appliance"]], ["toilets & sinks", ["toilet", "sink", "plumbing"]],
+                        ["furniture", ["furniture"]], ["other shapes", ["other", "shape"]]];
 // 6'-8" is the standard residential door height - an INFERENCE from general
 // practice, not read off any sheet (the door schedule is the better source
 // when it prints heights). Used for one thing: taking a door opening out of
@@ -21417,7 +21431,9 @@ function flSync() {
                  // wall line types by class {style_id: class}; faces per wall
                  // (1 or 2, null = as measured); whether the centreline rows
                  // go into the takeoff
-                 wallClass: {}, wallFaces: null, wallRows: false, _faceCache: null };
+                 wallClass: {}, wallFaces: null, wallRows: false, _faceCache: null,
+                 // which kinds of object come out of the flooring by default
+                 deductDefaults: Object.assign({}, FL_DEDUCT_DEFAULTS) };
     if (FL_TOOLS.includes(state.tool)) state.tool = null;
     $("flPanel").hidden = true;
     $("flResult").textContent = "";
@@ -21427,6 +21443,26 @@ function flSync() {
   return state.fl;
 }
 // ---- pure ----
+// what comes out of a room's flooring: the objects ticked to deduct (tubs
+// and showers by default) plus anything the operator clicked out
+function flDeductSf(r) {
+  let s = 0;
+  for (const o of (r && r.objects) || []) if (o.deduct) s += +o.area_sf || 0;
+  for (const d of (r && r.deductions) || []) s += +d.area_sf || 0;
+  return s;
+}
+// the room's flooring area: wall to wall, less what the flooring stops at
+function flNetSf(r) {
+  if (!r || r.area_sf === null || r.area_sf === undefined) return null;
+  return Math.max(0, r.area_sf - flDeductSf(r));
+}
+// the deductions in words: "tub 10.8 SF, shower 9.2 SF"
+function flDeductText(r) {
+  const parts = [];
+  for (const o of (r && r.objects) || []) if (o.deduct) parts.push(`${o.kind} ${flFmt(o.area_sf, 1)} SF`);
+  for (const d of (r && r.deductions) || []) parts.push(`${d.name || "clicked out"} ${flFmt(d.area_sf, 1)} SF`);
+  return parts.join(", ");
+}
 // wall footage for the base: the ring less the door openings on it
 function flWallLf(r) {
   if (!r || r.perim_lf === null || r.perim_lf === undefined) return null;
@@ -21459,7 +21495,7 @@ function flTotals(types, rooms, fl) {
   const un = { i: -1, name: "unassigned", color: FL_UNASSIGNED, sf: 0, lf: 0, rooms: 0, waste_pct: 0, waste_sf: 0, wall_sf: 0, wall_rooms: 0 };
   for (const r of rooms || []) {
     const t = Number.isInteger(r.type) && out[r.type] ? out[r.type] : un;
-    t.rooms += 1; t.sf += r.area_sf || 0; t.lf += flWallLf(r) || 0;
+    t.rooms += 1; t.sf += flNetSf(r) || 0; t.lf += flWallLf(r) || 0;
     const w = flWallSf(r, fl);
     if (w) { t.wall_sf += w.net; t.wall_rooms += 1; }
   }
@@ -21509,7 +21545,11 @@ function flItems(types, rooms, fl) {
     const mine = rooms.map((r, i) => [r, i]).filter(([r]) => r.type === t.i);
     if (t.sf > 0) {
       items.push(Object.assign({ label: "Flooring \u2014 " + t.name, qty: Math.round(t.sf * 10) / 10, unit: "SF",
-                                 details: mine.map(([r, i]) => ({ name: named(r, i), qty: Math.round((r.area_sf || 0) * 10) / 10, unit: "SF" })) },
+                                 details: mine.map(([r, i]) => {
+                                   const ded = flDeductSf(r);
+                                   return { name: named(r, i), qty: Math.round((flNetSf(r) || 0) * 10) / 10, unit: "SF",
+                                            note: ded > 0 ? `${flFmt(r.area_sf, 1)} SF less ${flDeductText(r)}` : undefined };
+                                 }) },
                                +ty.sf_price > 0 ? { unit_price: +ty.sf_price } : {}));
       if (t.waste_pct > 0 && t.waste_sf > 0)
         items.push(Object.assign({ label: `Waste \u2014 ${t.name} (${flFmt(t.waste_pct, 1)}%)`, qty: Math.round(t.waste_sf * 10) / 10, unit: "SF",
@@ -21551,7 +21591,9 @@ function flItems(types, rooms, fl) {
 // one room's line: what it measures and what was done to get it
 function flRoomLine(r, fl) {
   if (r.area_sf === null || r.area_sf === undefined) return "no scale set \u2014 " + flFmt(r.area_pt2) + " pt\u00b2";
-  let s = flFmt(r.area_sf) + " SF \u00b7 walls " + flFmt(flWallLf(r)) + " LF";
+  const ded = flDeductSf(r);
+  let s = (ded > 0 ? `${flFmt(r.area_sf)} SF \u2212 ${flDeductText(r)} = ${flFmt(flNetSf(r))} SF` : flFmt(r.area_sf) + " SF")
+    + " \u00b7 walls " + flFmt(flWallLf(r)) + " LF";
   if (r.doors) s += " (" + r.doors + " door" + (r.doors === 1 ? "" : "s") + ", \u2212" + flFmt(r.openings_lf, 1) + " LF)";
   const w = flWallSf(r, fl);
   if (w) s += " \u00b7 wall area " + flFmt(w.net) + " SF at " + flFtIn(w.ft) + (w.by === "sheet" ? " (from the sheet)" : w.by === "typed" ? " (typed)" : " (default)");
@@ -21731,9 +21773,15 @@ function flSavePayload(fl) {
       ceiling_ft: Number.isFinite(+r.ceiling_ft) && +r.ceiling_ft > 0 ? +r.ceiling_ft : null,
       ceiling_text: r.ceiling_text || null, ceiling_by: r.ceiling_by || null,
       bridges: (r.bridges || []).map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, r: b.r })),
+      // the fixtures inside, with the decision on each, and the clicked-out shapes
+      objects: (r.objects || []).map(o => ({ kind: o.kind, layer: o.layer, area_sf: o.area_sf, w_ft: o.w_ft, h_ft: o.h_ft,
+                                              guessed: !!o.guessed, deduct: !!o.deduct, manual: !!o.manual,
+                                              pts: (o.pts || []).map(p => [p[0], p[1]]) })),
+      deductions: (r.deductions || []).map(d => ({ name: d.name, area_sf: d.area_sf, pts: (d.pts || []).map(p => [p[0], p[1]]) })),
     })),
     closures: fl.closures.map(c => c.map(v => Math.round(v * 100) / 100)),
     seq: fl.seq,
+    deductDefaults: Object.assign({}, fl.deductDefaults || {}),
     default_ceiling_ft: Number.isFinite(+fl.default_ceiling_ft) && +fl.default_ceiling_ft > 0 ? +fl.default_ceiling_ft : null,
     wallClass: Object.assign({}, fl.wallClass || {}),
     wallFaces: fl.wallFaces === 1 || fl.wallFaces === 2 ? fl.wallFaces : null,
@@ -21771,9 +21819,24 @@ function flApplySaved() {
           ? r.bridges.filter(b => b && ["x0", "y0", "x1", "y1", "r"].every(k => calcNum(b[k]) !== null))
                      .map(b => ({ x0: +b.x0, y0: +b.y0, x1: +b.x1, y1: +b.y1, r: +b.r }))
           : [],
+        objects: Array.isArray(r.objects)
+          ? r.objects.filter(o => o && calcNum(o.area_sf) !== null)
+                     .map(o => ({ kind: String(o.kind || "shape"), layer: o.layer || null, area_sf: +o.area_sf,
+                                  w_ft: calcNum(o.w_ft) || 0, h_ft: calcNum(o.h_ft) || 0, guessed: !!o.guessed,
+                                  deduct: !!o.deduct, manual: !!o.manual,
+                                  pts: Array.isArray(o.pts) ? o.pts.map(p => [+p[0], +p[1]]) : [] }))
+          : [],
+        deductions: Array.isArray(r.deductions)
+          ? r.deductions.filter(d => d && calcNum(d.area_sf) !== null)
+                        .map(d => ({ name: String(d.name || "clicked out"), area_sf: +d.area_sf,
+                                     pts: Array.isArray(d.pts) ? d.pts.map(p => [+p[0], +p[1]]) : [] }))
+          : [],
       });
     }
   }
+  if (sv.deductDefaults && typeof sv.deductDefaults === "object")
+    for (const k of Object.keys(FL_DEDUCT_DEFAULTS))
+      if (typeof sv.deductDefaults[k] === "boolean") fl.deductDefaults[k] = sv.deductDefaults[k];
   if (Array.isArray(sv.closures))
     fl.closures = sv.closures.filter(c => Array.isArray(c) && c.length === 4 && c.every(v => calcNum(v) !== null));
   if (calcNum(sv.seq) !== null) fl.seq = sv.seq;
@@ -21808,6 +21871,8 @@ function flArm(mode) {
     ? "flooring: click inside a room \u2014 only the line types you have showing count as walls (Esc exits)"
     : mode === "fl-close"
     ? "close a gap: click one side of the opening, then the other \u2014 the fill treats that line as wall"
+    : mode === "fl-deduct"
+    ? "deduct: click a fixture inside a picked room \u2014 a listed object toggles, anything else enclosed by lines comes out of that room's flooring (Esc exits)"
     : "flooring: click each corner of the room" + POLY_CLOSE_HINT, "busy");
   renderFl(); draw();
 }
@@ -21887,7 +21952,12 @@ async function flPickAt(px, py) {
                    // the ceiling note read inside the room, if the sheet prints one
                    ceiling_ft: cl && +cl.ft > 0 ? +cl.ft : null, ceiling_text: cl ? cl.text : null,
                    ceiling_by: cl && +cl.ft > 0 ? "sheet" : null,
-                   bridges: (j.bridges_used || []).map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, r: b.r })) };
+                   bridges: (j.bridges_used || []).map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, r: b.r })),
+                   // the fixtures the engine found inside the fill; whether
+                   // each comes out of the flooring is the panel's default
+                   // for its kind until the operator ticks it by hand
+                   objects: (j.objects || []).map(o => flObjFrom(o, fl)),
+                   deductions: [] };
     flAddRoom(room);
     setStatus(`${room.name}: ${flRoomLine(room, fl)} \u2014 pick its floor type in the panel, or click the next room`, "ok");
   } catch (e) {
@@ -21919,7 +21989,8 @@ function flFinishDraw() {
   const room = { name: null, pts, area_sf: fpp ? area_pt2 * fpp * fpp : null, area_pt2,
                  perim_lf: fpp ? perim_pt * fpp : null, perim_pt, openings_lf: 0, holes_sf: 0,
                  doors: 0, closures: 0, type: fl.lastType, source: "drawn", click: null,
-                 ceiling_ft: null, ceiling_text: null, ceiling_by: null, bridges: [] };
+                 ceiling_ft: null, ceiling_text: null, ceiling_by: null, bridges: [],
+                 objects: [], deductions: [] };
   fl.drawPts = []; fl.hover = null; polySnapClear(); state.tool = null;
   flAddRoom(room);
   setStatus(`${room.name}: ${flRoomLine(room, fl)}`, "ok");
@@ -21942,11 +22013,86 @@ function flCloseClick(px, py) {
   setStatus(`gap closed (${fl.closures.length} on this sheet) \u2014 now click inside the room`, "ok");
   renderFl(); draw();
 }
+// an object record as the panel keeps it: the engine's fixture, plus
+// whether it comes out (the panel default for its kind) and whether a
+// person decided that (a changed default then leaves it alone)
+function flObjFrom(o, fl) {
+  const kind = String(o.kind || "shape");
+  const dflt = fl && fl.deductDefaults ? fl.deductDefaults : FL_DEDUCT_DEFAULTS;
+  return { kind, layer: o.layer || null, area_sf: +o.area_sf || 0,
+           w_ft: +o.w_ft || 0, h_ft: +o.h_ft || 0, guessed: !!o.guessed,
+           pts: Array.isArray(o.polygon) ? o.polygon.map(p => [p[0], p[1]]) : [],
+           deduct: !!dflt[kind] && !o.guessed, manual: false };
+}
+// ray cast, pt space
+function flPointIn(pts, x, y) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+// a changed default reaches every object of that kind nobody ticked by hand
+function flApplyDeductDefaults(fl) {
+  for (const r of fl.rooms)
+    for (const o of (r.objects || []))
+      if (!o.manual) o.deduct = !!fl.deductDefaults[o.kind] && !o.guessed;
+}
+// DEDUCT BY CLICK. Inside a picked room: a listed object under the click
+// toggles; anything else is asked of the engine with EVERY line type as a
+// wall, so the cell the click sits in (a tub drawn on no layer, a hearth)
+// comes back as its own polygon and is taken out of that room. A cell
+// bigger than half the room is the room itself, and is refused.
+async function flDeductClick(px, py) {
+  const fl = flSync();
+  const ri = fl.rooms.findIndex(r => r.pts && r.pts.length >= 3 && flPointIn(r.pts, px, py));
+  if (ri < 0) return setStatus("deduct: click inside a room you have already picked", "err");
+  const r = fl.rooms[ri];
+  const oi = (r.objects || []).findIndex(o => o.pts && o.pts.length >= 3 && flPointIn(o.pts, px, py));
+  if (oi >= 0) {
+    const o = r.objects[oi];
+    o.deduct = !o.deduct; o.manual = true;
+    flApplyItems(); renderFl(); draw();
+    return setStatus(`${r.name}: ${o.kind} ${flFmt(o.area_sf, 1)} SF ${o.deduct ? "taken out of" : "back in"} the flooring — ${flRoomLine(r, fl)}`, "ok");
+  }
+  const di = (r.deductions || []).findIndex(d => d.pts && d.pts.length >= 3 && flPointIn(d.pts, px, py));
+  if (di >= 0) {
+    r.deductions.splice(di, 1);
+    flApplyItems(); renderFl(); draw();
+    return setStatus(`${r.name}: that deduction is back in the flooring — ${flRoomLine(r, fl)}`, "ok");
+  }
+  if (fl.busy) return;
+  fl.busy = true;
+  setStatus("finding the shape under the click…", "busy");
+  try {
+    const all = (state.result.styles || []).map(s => s.style_id);
+    const resp = await fetch(`/api/job/${state.job}/page/${state.page}/rooms/pick`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x: px, y: py, styles: all, closures: fl.closures }),
+    });
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok) return setStatus(j.detail || `lookup failed (${resp.status})`, "err");
+    if (!j.ok) return setStatus(j.why, "err");
+    if (!(j.area_sf > 0)) return setStatus("no scale set — nothing can be deducted in square feet", "err");
+    if (j.area_sf >= 0.5 * (r.area_sf || 0))
+      return setStatus(`that click is not inside a fixture — the lines around it enclose ${flFmt(j.area_sf)} SF, most of the room`, "err");
+    r.deductions = r.deductions || [];
+    r.deductions.push({ name: "clicked out", area_sf: j.area_sf, pts: j.polygon });
+    flApplyItems(); renderFl(); draw();
+    setStatus(`${r.name}: ${flFmt(j.area_sf, 1)} SF taken out of the flooring — ${flRoomLine(r, fl)}`, "ok");
+  } catch (e) {
+    setStatus("lookup failed — the server did not answer", "err");
+  } finally {
+    fl.busy = false;
+  }
+}
 function flCanvasClick(e) {
   const [px, py] = ptFromEvent(e);
   if (state.tool === "fl-pick") flPickAt(px, py);
   else if (state.tool === "fl-draw") flDrawClick(px, py);
   else if (state.tool === "fl-close") flCloseClick(px, py);
+  else if (state.tool === "fl-deduct") flDeductClick(px, py);
 }
 const _flClickBefore = handleCanvasClick;
 handleCanvasClick = function (e) {
@@ -22067,7 +22213,8 @@ function renderFl() {
   modes.append(
     mode("Pick rooms", "fl-pick", "Click inside a room: the engine fills to the walls of the line types you have showing, bridging the doors it detected"),
     mode("Close a gap", "fl-close", "Two clicks across an opening the sheet leaves open; the fill treats that line as wall"),
-    mode("Draw outline", "fl-draw", "Click each corner of the room yourself"));
+    mode("Draw outline", "fl-draw", "Click each corner of the room yourself"),
+    mode("Deduct", "fl-deduct", "Click a fixture inside a picked room: a listed object toggles in or out of the flooring; any other shape the lines enclose (a tub drawn on no layer, a hearth) comes out of that room"));
   modes.appendChild(mk("span", "ew-meta", fpp ? `scale ${state.result.scale.text}` : "NO SCALE SET \u2014 pt only"));
   body.appendChild(modes);
 
@@ -22086,6 +22233,33 @@ function renderFl() {
     const n = fl.rooms.filter(r => flWallSf(r, fl)).length;
     row.appendChild(mk("span", "ew-meta", n ? `${n} of ${fl.rooms.length} room${fl.rooms.length === 1 ? "" : "s"} have a height \u2192 wall area rows` : (fl.rooms.length ? "no room has a height yet" : "")));
     body.appendChild(row);
+  }
+
+  // WHAT COMES OUT OF THE FLOORING, by kind: the defaults for every object
+  // the engine lists inside a room. Tubs and showers on, cabinets off
+  // (crews differ; Koby's call), the rest floored under. A changed default
+  // reaches every object of that kind nobody ticked by hand.
+  {
+    const box = mk("div", "fl-deduct");
+    box.appendChild(mk("span", "ew-meta", "take out of the flooring by default:"));
+    for (const [label, kinds] of FL_KIND_GROUPS) {
+      const lab = document.createElement("label");
+      lab.className = "fl-deduct-k";
+      const ck = document.createElement("input"); ck.type = "checkbox";
+      ck.checked = kinds.every(k => !!fl.deductDefaults[k]);
+      ck.onchange = () => { for (const k of kinds) fl.deductDefaults[k] = ck.checked; flApplyDeductDefaults(fl); flApplyItems(); renderFl(); draw(); };
+      lab.append(ck, document.createTextNode(" " + label));
+      lab.title = kinds.includes("cabinet")
+        ? "Off by default: many crews run the floor under base cabinets. Turn it on if yours stops at the toe kick."
+        : kinds.includes("tub")
+        ? "On by default: flooring stops at a tub's rim and a shower pan."
+        : "Off by default: flooring runs under these (they are pulled or reset)." ;
+      box.appendChild(lab);
+    }
+    const n = fl.rooms.reduce((a, r) => a + (r.objects || []).length, 0);
+    const nd = fl.rooms.reduce((a, r) => a + (r.objects || []).filter(o => o.deduct).length + (r.deductions || []).length, 0);
+    box.appendChild(mk("span", "ew-meta", n || nd ? `${n} object${n === 1 ? "" : "s"} found inside the rooms, ${nd} taken out` : ""));
+    body.appendChild(box);
   }
 
   // WALLS BY TYPE: the wall line types, classed by CAD layer / legend name,
@@ -22212,6 +22386,42 @@ function renderFl() {
     top.append(dot, nm, sel, clg, rm);
     row.appendChild(top);
     row.appendChild(mk("div", "ew-meta", flRoomLine(r, fl)));
+    // the fixtures inside this room, each with its own tick: what the
+    // engine found, named from the sheet's layers and its size, and what
+    // the operator clicked out
+    const objs = r.objects || [], deds = r.deductions || [];
+    if (objs.length || deds.length) {
+      const det = document.createElement("details");
+      det.className = "fl-objs";
+      det.open = objs.some(o => o.deduct) || deds.length > 0;
+      const sm = document.createElement("summary");
+      sm.className = "ew-meta";
+      const nOut = objs.filter(o => o.deduct).length + deds.length;
+      sm.textContent = `${objs.length + deds.length} object${objs.length + deds.length === 1 ? "" : "s"} inside` + (nOut ? `, ${nOut} taken out` : "");
+      det.appendChild(sm);
+      objs.forEach((o, oi) => {
+        const lab = document.createElement("label");
+        lab.className = "fl-obj";
+        const ck = document.createElement("input"); ck.type = "checkbox"; ck.checked = !!o.deduct;
+        ck.title = "ticked = taken out of this room's flooring";
+        ck.onchange = () => { o.deduct = ck.checked; o.manual = true; flApplyItems(); renderFl(); draw(); };
+        const txt = `${o.kind}${o.guessed ? "?" : ""} ${flFmt(o.area_sf, 1)} SF · ${o.w_ft.toFixed(1)}×${o.h_ft.toFixed(1)} ft` + (o.layer ? ` · ${o.layer}` : "");
+        lab.append(ck, document.createTextNode(" " + txt));
+        lab.onmouseenter = () => { fl.hotObj = [k, oi]; draw(); };
+        lab.onmouseleave = () => { fl.hotObj = null; draw(); };
+        det.appendChild(lab);
+      });
+      deds.forEach((d, di) => {
+        const lab = document.createElement("div");
+        lab.className = "fl-obj";
+        lab.appendChild(document.createTextNode(`${d.name} ${flFmt(d.area_sf, 1)} SF `));
+        const x = mk("button", "mini", "×"); x.title = "put this back into the flooring";
+        x.onclick = () => { r.deductions.splice(di, 1); flApplyItems(); renderFl(); draw(); };
+        lab.appendChild(x);
+        det.appendChild(lab);
+      });
+      row.appendChild(det);
+    }
     row.onmouseenter = () => { fl.hot = k; draw(); };
     row.onmouseleave = () => { fl.hot = null; draw(); };
     rows.appendChild(row);
@@ -22269,6 +22479,47 @@ function drawFlooring(ctx, k) {
     ctx.strokeStyle = color;
     ctx.setLineDash([]);
     ctx.stroke();
+    // what comes out of this room's flooring: hatched, in the room's own
+    // colour, so a tub reads as a cut-out and not as another room. Objects
+    // still in the floor get a faint outline while the deduct tool is armed
+    // (that is what the click can hit) or when the row's line is hovered.
+    const hatch = (pts) => {
+      if (!pts || pts.length < 3) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+      for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j][0] * f, pts[j][1] * f);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255,255,255,0.55)";
+      ctx.fill();
+      ctx.clip();
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const p of pts) { x0 = Math.min(x0, p[0] * f); y0 = Math.min(y0, p[1] * f); x1 = Math.max(x1, p[0] * f); y1 = Math.max(y1, p[1] * f); }
+      ctx.strokeStyle = color; ctx.lineWidth = 1.2 / k; ctx.setLineDash([]);
+      const step = 7 / k;
+      ctx.beginPath();
+      for (let d = x0 - (y1 - y0); d < x1; d += step) { ctx.moveTo(d, y1); ctx.lineTo(d + (y1 - y0), y0); }
+      ctx.stroke();
+      ctx.restore();
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0] * f, pts[0][1] * f);
+      for (let j = 1; j < pts.length; j++) ctx.lineTo(pts[j][0] * f, pts[j][1] * f);
+      ctx.closePath();
+      ctx.lineWidth = 1.6 / k; ctx.strokeStyle = color; ctx.stroke();
+    };
+    (r.objects || []).forEach((o, oi) => {
+      const hot = fl.hotObj && fl.hotObj[0] === i && fl.hotObj[1] === oi;
+      if (o.deduct) hatch(o.pts);
+      else if ((armed && state.tool === "fl-deduct") || hot) {
+        if (!o.pts || o.pts.length < 3) return;
+        ctx.beginPath();
+        ctx.moveTo(o.pts[0][0] * f, o.pts[0][1] * f);
+        for (let j = 1; j < o.pts.length; j++) ctx.lineTo(o.pts[j][0] * f, o.pts[j][1] * f);
+        ctx.closePath();
+        ctx.lineWidth = (hot ? 2.2 : 1.2) / k; ctx.setLineDash([4 / k, 3 / k]); ctx.strokeStyle = color; ctx.stroke(); ctx.setLineDash([]);
+      }
+    });
+    for (const d of (r.deductions || [])) hatch(d.pts);
   });
   for (const c of fl.closures) {
     ctx.beginPath(); ctx.moveTo(c[0] * f, c[1] * f); ctx.lineTo(c[2] * f, c[3] * f);

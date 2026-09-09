@@ -3606,3 +3606,11 @@ header.no-doc #toolsWrap,
 header.view-open #docName, header.view-open #pageSel,
 header.view-open #detectBtn, header.view-open #toolsWrap { display: none !important; }
 
+/* ---- flooring: what comes out of the floor (fixtures) ---- */
+.fl-deduct { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin-top: 6px; }
+.fl-deduct-k { font-size: var(--t-fs-xs); color: var(--t-text); display: inline-flex; align-items: center; gap: 2px; cursor: pointer; }
+.fl-objs { margin: 2px 0 2px 18px; }
+.fl-objs summary { cursor: pointer; }
+.fl-obj { display: flex; align-items: center; gap: 4px; font-size: var(--t-fs-xs); color: var(--t-text-dim); padding: 1px 0 1px 10px; }
+.fl-obj input { margin: 0 2px 0 0; }
+

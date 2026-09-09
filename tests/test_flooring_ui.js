@@ -43,7 +43,7 @@ function grabConst(name) {
 }
 
 console.log("pure");
-const names = ["flWallLf", "flCeiling", "flWallSf", "flTotals", "flTransitions", "flItems", "flRoomLine"];
+const names = ["flDeductSf", "flNetSf", "flDeductText", "flWallLf", "flCeiling", "flWallSf", "flTotals", "flTransitions", "flItems", "flRoomLine"];
 const bodies = names.map(grab);
 check(bodies.every(Boolean), "helpers exist: " + names.join(", "));
 const P = new Function(
@@ -147,6 +147,47 @@ check(lab.join("|") === "Flooring — Carpet|Waste — Carpet (10%)|Base/molding
 const LRX = new Function("return " + grabConst("FL_LABEL_RX") + ";")();
 check(lab.every(l => LRX.test(l)) && LRX.test("Walls — interior (centreline)") && !LRX.test("Mass Excavation"),
       "FL_LABEL_RX owns every row kind the panel writes, so re-apply replaces them all");
+
+console.log("what the flooring stops at: objects and deductions");
+const namesD = ["flDeductSf", "flNetSf", "flDeductText"];
+const D = new Function("const flFmt = " + grabConst("flFmt") + ";\n" + namesD.map(grab).join("\n") + "\nreturn { " + namesD.join(", ") + " };")();
+const bath = { name: "MAIN BATH", area_sf: 53.1, perim_lf: 30, openings_lf: 2.7, doors: 1, type: 1,
+               objects: [{ kind: "tub", area_sf: 9.2, deduct: true }, { kind: "cabinet", area_sf: 2.2, deduct: false }, { kind: "toilet", area_sf: 1.9, deduct: false }],
+               deductions: [{ name: "clicked out", area_sf: 1.5 }] };
+check(Math.abs(D.flDeductSf(bath) - 10.7) < 1e-9, "deducted = ticked objects + clicked-out shapes (9.2 + 1.5)");
+check(Math.abs(D.flNetSf(bath) - 42.4) < 1e-9, "net flooring = area less the deductions (53.1 - 10.7)");
+check(D.flNetSf({ area_sf: null }) === null, "no scale: net is null, not 0");
+check(D.flNetSf({ area_sf: 5, objects: [{ kind: "tub", area_sf: 9, deduct: true }] }) === 0, "a deduction cannot make a room negative");
+check(D.flDeductText(bath) === "tub 9.2 SF, clicked out 1.5 SF", "the deductions in words: " + D.flDeductText(bath));
+const totD = P.flTotals(types2, [bath], flx);
+check(Math.abs(totD[1].sf - 42.4) < 1e-9, "the type total uses the NET area");
+const itD = P.flItems(types2, [bath], flx);
+const flRow = itD.find(it => it.label === "Flooring — Tile");
+check(flRow && flRow.qty === 42.4 && flRow.details[0].qty === 42.4 && /53\.1 SF less tub 9\.2 SF, clicked out 1\.5 SF/.test(flRow.details[0].note),
+      "the flooring row and its room line carry the net figure and say what came out: " + JSON.stringify(flRow && flRow.details[0]));
+check(/^53 SF − tub 9\.2 SF, clicked out 1\.5 SF = 42 SF · walls/.test(P.flRoomLine(bath, flx)), "room line: gross − deductions = net: " + P.flRoomLine(bath, flx));
+check(/base = ring/.test("base = ring") && P.flWallLf(bath) === 27.3, "base footage is untouched by a deduction");
+const DD = new Function("return " + grabConst("FL_DEDUCT_DEFAULTS") + ";")();
+check(DD.tub === true && DD.shower === true && DD.cabinet === false && DD.appliance === false && DD.toilet === false && DD.furniture === false && DD.shape === false,
+      "defaults: tubs and showers out, cabinets IN (Koby: not cabinets), everything else floored under");
+const of = grab("flObjFrom");
+check(of && /deduct: !!dflt\[kind\] && !o\.guessed, manual: false/.test(of), "a new object takes the panel default for its kind; a guessed kind is never deducted on its own");
+const dc = grab("flDeductClick");
+check(dc && /flPointIn\(o\.pts, px, py\)/.test(dc) && /o\.deduct = !o\.deduct; o\.manual = true;/.test(dc), "deduct click: a listed object under the click toggles, and is marked manual");
+check(dc && /styles: all, closures: fl\.closures/.test(dc) && /j\.area_sf >= 0\.5 \* \(r\.area_sf \|\| 0\)/.test(dc),
+      "...else the cell under the click is asked of the engine with EVERY line type as wall, and a cell that is most of the room is refused");
+const ad = grab("flApplyDeductDefaults");
+check(ad && /if \(!o\.manual\) o\.deduct = !!fl\.deductDefaults\[o\.kind\] && !o\.guessed;/.test(ad), "a changed default reaches every object nobody ticked by hand");
+check(/"fl-close", "fl-deduct",/.test(SRC) && /const FL_TOOLS = \["fl-pick", "fl-draw", "fl-close", "fl-deduct"\]/.test(SRC), "the deduct tool is a POINT_TOOL and a flooring tool");
+const dr2 = grab("drawFlooring");
+check(dr2 && /if \(o\.deduct\) hatch\(o\.pts\);/.test(dr2) && /for \(const d of \(r\.deductions \|\| \[\]\)\) hatch\(d\.pts\);/.test(dr2), "deducted objects and clicked-out shapes are hatched on the sheet");
+const rf3 = grab("renderFl");
+check(rf3 && /take out of the flooring by default:/.test(rf3) && /FL_KIND_GROUPS/.test(rf3) && /fl-objs/.test(rf3) && /mode\("Deduct", "fl-deduct"/.test(rf3),
+      "the panel has the per-kind defaults, a per-room object list with ticks, and the Deduct button");
+const sp2 = grab("flSavePayload");
+check(sp2 && /objects: \(r\.objects \|\| \[\]\)/.test(sp2) && /deductions: \(r\.deductions \|\| \[\]\)/.test(sp2) && /deductDefaults: Object\.assign/.test(sp2), "objects, deductions and the defaults persist");
+const sv2 = grab("flApplySaved");
+check(sv2 && /r\.objects/.test(sv2) && /r\.deductions/.test(sv2) && /sv\.deductDefaults/.test(sv2), "...and restore");
 
 console.log("walls by type, from source");
 const wc = grab("flWallClassOf");

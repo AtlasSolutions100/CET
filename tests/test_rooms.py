@@ -329,6 +329,65 @@ cg = rooms.pick_room(res, words_stacked(), *P(26, 4), styles={0}, dpi=100)
 check(cg["ok"] and cg.get("ceiling") == {"ft": None, "text": "VAULTED CEILING"},
       "a dimension merely next in reading order (not stacked on the label) is NOT a ceiling height: %s" % cg.get("ceiling"))
 
+# ---- THE OBJECTS INSIDE A ROOM: what the flooring stops at ---------------------------
+print("objects inside a room")
+
+
+def plan_objects():
+    """Room B gains: a TUB drawn the way drafters draw one - an open rim
+    against the top wall (three sides, 2'-6" x 5'-0") plus an inner outline,
+    on a plumbing layer; a VANITY as an open run of cabinet lines against the
+    right wall (2 ft x 4 ft); a TOILET as a closed loop (1.5 x 2.3 ft); and a
+    door swing arc from the party door (a cell that must NOT be an object).
+    Room A gains a closed 2.5 x 5 loop with no layer name - a guess."""
+    p = plan()
+    ch = p["chains"]
+    nid = 100
+    def add(pts, layer, style=9):
+        nonlocal nid
+        c = chain(nid, pts, style); c["layer"] = layer; ch.append(c); nid += 1
+    # tub rim: left side, bottom, right side (top is the wall), x 21..26, y 0..2.5
+    add([P(21, 0), P(21, 2.5), P(26, 2.5), P(26, 0)], "A-Plumbing")
+    add([P(21.4, 0.4), P(21.4, 2.1), P(25.6, 2.1), P(25.6, 0.4), P(21.4, 0.4)], "A-Plumbing")   # inner outline
+    # vanity against the right wall: x 30..32, y 5..9 (open toward the wall)
+    add([P(32, 5), P(30, 5), P(30, 9), P(32, 9)], "A-Cabinet")
+    # toilet: closed loop
+    add([P(28, 12), P(29.5, 12), P(29.5, 14.3), P(28, 14.3), P(28, 12)], "A-Plumbing")
+    # a door swing quarter arc from the party door hinge (20,6), r 3, into room B
+    import math as _mm
+    arc = [P(20 + 3 * _mm.cos(_mm.radians(a)), 6 + 3 * _mm.sin(_mm.radians(a))) for a in range(0, 91, 10)]
+    add(arc, "A-Door")
+    # room A: an unnamed closed 2.5 x 5 loop
+    add([P(8, 1), P(13, 1), P(13, 3.5), P(8, 3.5), P(8, 1)], "")
+    return p
+
+
+po = plan_objects()
+ob = rooms.pick_room(po, words(), *P(26, 8), styles={0}, dpi=100)
+check(ob["ok"], "room B still fills with the fixtures drawn in it: " + str(ob.get("why")))
+objs = ob.get("objects", [])
+kinds = sorted(o["kind"] for o in objs)
+check(kinds == ["cabinet", "toilet", "tub"], "three objects, named tub / cabinet / toilet from layer + size: %s" % [(o["kind"], o["area_sf"], o["w_ft"], o["h_ft"]) for o in objs])
+tub = next((o for o in objs if o["kind"] == "tub"), None)
+check(tub is not None and tub["deduct"] is True, "the tub comes out of the flooring by default")
+check(tub is not None and 9.5 <= tub["area_sf"] <= 12.6, "tub area: the 12.5 SF drawn box less its own line widths (2 px at 100 dpi each side), rim and inner outline merged into one: %s" % (tub and tub["area_sf"]))
+van = next((o for o in objs if o["kind"] == "cabinet"), None)
+check(van is not None and van["deduct"] is False and 6.5 <= van["area_sf"] <= 8.2, "the vanity is listed at ~8 SF and KEPT (cabinets stay in by default): %s" % (van and van["area_sf"]))
+toi = next((o for o in objs if o["kind"] == "toilet"), None)
+check(toi is not None and toi["deduct"] is False, "the toilet is listed and kept")
+check(not any(o["kind"] == "other" and abs(o["w_ft"] - 3) < 0.6 and abs(o["h_ft"] - 3) < 0.6 for o in objs),
+      "the door swing's quarter-disc is not an object")
+check(all(len(o["polygon"]) >= 3 for o in objs), "every object carries its polygon for the sheet")
+oa = rooms.pick_room(po, words(), *P(10, 10), styles={0}, dpi=100)
+ga = [o for o in oa.get("objects", []) if o["guessed"]]
+check(len(ga) == 1 and ga[0]["kind"] == "tub" and ga[0]["deduct"] is False,
+      "an unnamed 2.5 x 5 loop is a GUESSED tub: listed, never deducted on its own: %s" % [(o["kind"], o["guessed"], o["deduct"]) for o in oa.get("objects", [])])
+check(rooms.pick_room(po, words(), *P(26, 8), styles=None, dpi=100).get("objects") == [],
+      "with every line a wall there are no objects to list")
+check(rooms._obj_kind("A-Plumbing", 2.19, 4.7) == ("tub", False) and rooms._obj_kind("A-Plumbing", 1.4, 1.7) == ("sink", False)
+      and rooms._obj_kind("P-FIXT", 3.0, 3.2) == ("shower", False) and rooms._obj_kind("I-Furn", 6, 5) == ("furniture", False)
+      and rooms._obj_kind("", 1.5, 1.5) == ("shape", True), "kinds by layer family and size")
+
 # ---- cache -----------------------------------------------------------------------
 print("cache")
 rooms._CACHE.clear()

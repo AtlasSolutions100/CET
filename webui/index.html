@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=2">
-<link rel="stylesheet" href="style.css?v=81">
+<link rel="stylesheet" href="style.css?v=82">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -718,7 +718,10 @@
         the rooms behind each row listed under it in the takeoff, the CSV and the report. A <b>waste %</b> on a type adds
         its own row; a ceiling height read in the room (or typed) gives a <b>wall area</b> row (perimeter &times; height,
         door openings out); a doorway shared by two rooms of different types counts a <b>transition strip</b>; and
-        <b>Walls by type</b> classes the wall line types by their CAD layer or legend name.</div>
+        <b>Walls by type</b> classes the wall line types by their CAD layer or legend name. Every fixture the lines
+        enclose inside a room is listed under it, named from its layer and size: <b>tubs and showers come out of the
+        flooring</b>, cabinets and everything else stay in unless you tick them, and <b>Deduct</b> takes out any other
+        shape by a click.</div>
       <div id="flTypes" class="fl-types"></div>
       <div id="flBody" class="tr-body"></div>
       <div id="flRows" class="ew-rows"></div>
@@ -1205,6 +1208,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=175"></script>
+<script src="app.js?v=176"></script>
 </body>
 </html>
