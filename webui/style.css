@@ -3594,3 +3594,15 @@ button:hover { border-color: var(--t-accent); }
 /* focus: the accent, always visible on the table */
 :focus-visible { outline-color: var(--t-accent); }
 
+/* ==========================================================================
+   THE MASTHEAD CARRIES DOCUMENT CONTEXT ONLY WHILE A DOCUMENT IS ON SCREEN.
+   Two defects (Koby, 2026-09-09): the Tools menu showed with no project
+   open, and the name / sheet picker / Detect of the last project stayed in
+   the header after going back to Projects. headerSync() in app.js sets the
+   two classes; the elements keep their own `hidden` bookkeeping underneath,
+   so nothing about which sheet is open changes when the view comes back.
+   ========================================================================== */
+header.no-doc #toolsWrap,
+header.view-open #docName, header.view-open #pageSel,
+header.view-open #detectBtn, header.view-open #toolsWrap { display: none !important; }
+

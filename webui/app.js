@@ -608,6 +608,7 @@ function applyOpened(j, landOn) {
   // has to stay readable on hover now that the name is the header's subject
   $("docName").title = j.name;
   state.docName = j.name;
+  headerSync();                      // a document is on screen: show its context
   const sel = $("pageSel");
   sel.innerHTML = "";
   state.kinds.forEach((k, i) => {
@@ -24504,6 +24505,19 @@ function pvDupeNotes(rows) {
 }
 // PROJECTS-PURE-END ----------------------------------------------------------
 
+// THE MASTHEAD SHOWS DOCUMENT CONTEXT ONLY WHILE A DOCUMENT IS ON SCREEN.
+// Two defects (Koby, 2026-09-09): the Tools menu sat in the header with no
+// project open, and after opening a project and going back to Projects the
+// project's name, sheet picker and Detect stayed up there, stuck. The name
+// and the pickers keep their own `hidden` bookkeeping (which sheet is open
+// does not change); these two classes only say whether the header is
+// fronting a document right now. style.css hides the four elements on them.
+function headerSync() {
+  const h = document.querySelector("header");
+  if (!h) return;
+  h.classList.toggle("no-doc", !state.job);
+  h.classList.toggle("view-open", pvIsOpen() || svIsOpen());
+}
 function pvIsOpen() { return !$("projectsView").hidden; }
 
 function showProjects(on) {
@@ -24520,6 +24534,7 @@ function showProjects(on) {
   $("projectsView").hidden = !on;
   document.querySelector("main").classList.toggle("pv-open", on);
   $("pvBack").hidden = !(on && state.job);
+  headerSync();
   if (on) {
     loadProjects();
   } else {
@@ -25896,6 +25911,7 @@ function svIsOpen() { return !$("settingsView").hidden; }
 function svHide() {
   $("settingsView").hidden = true;
   document.querySelector("main").classList.remove("sv-open");
+  headerSync();
 }
 
 function showSettings(on) {
@@ -25909,6 +25925,7 @@ function showSettings(on) {
   $("settingsView").hidden = !on;
   document.querySelector("main").classList.toggle("sv-open", on);
   $("svBack").hidden = !(on && state.job);
+  headerSync();
   if (on) {
     // A failed branding read is retried on the next OPEN, not on every
     // render: renderSettings() also runs on every price keystroke, and a
