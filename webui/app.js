@@ -1166,6 +1166,7 @@ function pageReset() {
   // the toolkit: an active tool and its half-taken measurement belong to the
   // sheet they were started on
   state.tool = null; state.measurePts = []; state.vScale = null;
+  state.dimShow = false;        // the dimension-span overlay is per sheet
   $("measureBtn").classList.remove("active"); $("measureInfo").hidden = true;
   $("restoreBtn").hidden = true;
   // the analyzer
@@ -1769,6 +1770,11 @@ function renderSheetHead() {
       // second source ever agreed with it, and the machine that read it is
       // the least trustworthy reader this app has.
       meta.append(chip(sc.text + " — YOU PICKED AN UNCHECKED READING", "warn"));
+    } else if (sc.from_dimensions) {
+      // The reviewer accepted what the sheet's own dimension strings
+      // measure. A human decision still (amber), but one with N printed
+      // numbers behind it rather than a typed guess.
+      meta.append(chip(sc.text + " — FROM THE SHEET'S DIMENSIONS", "warn"));
     } else if (sc.typed_by_reviewer) {
       // A number a person typed has nothing behind it but their word. It can
       // never wear the corroborated colour, and it says whose it is
@@ -1779,11 +1785,43 @@ function renderSheetHead() {
       meta.append(chip(`drawn bar says ${sc.bar_ft_per_paper_inch} ft/in` +
         ` · ${sc.delta_pct}% apart — CHECK`, "bad"));
     } else if (sc.agrees === true) {
-      meta.append(chip(sc.text + " ✓ matches drawn bar", "ok"));
+      // green only while the sheet's own dimensions do not refute it
+      const ddc = confDimCheck();
+      const refuted = !!(ddc && ddc.implied && ddc.cmp && !ddc.cmp.agrees);
+      meta.append(chip(sc.text + (refuted ? " · matches drawn bar, not the dimensions" : " ✓ matches drawn bar"),
+                       refuted ? "warn" : "ok"));
     } else {
       // one source only: honest, but not corroborated
       meta.append(chip(sc.text + (sc.source === "ocr" ? " (read off a scan)" : ""),
         sc.source === "ocr" ? "warn" : "ok"));
+    }
+  }
+  // The dimension strings' reading, beside the caption's. Click toggles the
+  // measured spans on the sheet; "use it" puts the reading in force when
+  // nothing is, or replaces a reading the dimensions contradict.
+  if (state.result) {
+    dimCheckEnsure();
+    const d = confDimCheck();
+    const txt = dimCheckChipText(d);
+    if (d && txt) {
+      const cls = !d.implied ? "warn" : !d.cmp ? "warn" : d.cmp.agrees ? "ok" : "bad";
+      const c = chip(txt, cls);
+      c.classList.add("dim-chip");
+      c.title = (d.implied
+        ? `${d.nAgree} of ${d.nPrinted} printed dimensions, measured between their extension lines, agree on 1 in = ${confFt(d.implied)} ft (${d.nMeasured} measured in all).`
+        : `${d.nMeasured} of ${d.nPrinted} printed dimensions were measured and they do not agree on one scale.`)
+        + (state.dimShow ? " Click to hide the measured spans." : " Click to draw the measured spans on the sheet.");
+      c.style.cursor = "pointer";
+      c.onclick = dimCheckToggle;
+      meta.append(c);
+      if (d.implied && (!sc || (d.cmp && !d.cmp.agrees)) && !(sc && sc.from_dimensions)) {
+        const b = document.createElement("button");
+        b.className = "mini dim-use";
+        b.textContent = `use 1" = ${confFt(d.implied)}'`;
+        b.title = "Put the dimensions' reading in force for this sheet. Recorded as your decision - the export and the report say so.";
+        b.onclick = scaleFromDimensions;
+        meta.append(b);
+      }
     }
   }
   // THE RUN CHIP NOW COMES FROM runStateOf(), the one place that decides what
@@ -2028,6 +2066,8 @@ function scaleMemApply() {
   catch (e) { typed = null; }
   if (typed && scaleSane(typed.ft) !== null) {
     state.result.scale = scaleTypedObj(sc, typed.ft, typed.text);
+    // a reading adopted from the sheet's dimensions comes back as that
+    if (typed.fd) state.result.scale.from_dimensions = true;
     return;
   }
   let want;
@@ -2114,6 +2154,8 @@ function scaleTypedObj(sc, ft, text) {
     // number the reviewer has since typed themselves - the same trap the
     // typed_by_reviewer reset in renderScalePick exists for.
     from_suggestion: false,
+    // same trap: a number typed over a dimensions-derived one is typed
+    from_dimensions: false,
   });
 }
 
@@ -2793,6 +2835,80 @@ function confTagCheck() {
            ratio: Math.pow(tc.implied_ft_per_paper_inch / sc.ft_per_paper_inch, 2) };
 }
 
+// THE SHEET'S OWN DIMENSION STRINGS are a fourth reading of the scale, and
+// the only one that measures the LINEWORK: the engine pairs every printed
+// "20'-6\"" with the extension lines it sits between and divides
+// (takeoff_engine/dimcheck.py; result.dimension_check). Belle A1.00: caption
+// 4 ft/in, drawn bar agrees, and six of the seven printed dimensions measure
+// at 8 - every square foot the flooring panel showed was 4x low. Like the
+// printed-sf check it is compared against the scale in force RIGHT NOW, so a
+// reviewer's pick re-runs it.
+const DIM_AGREE_PCT = 2.5;
+function confDimCheck() {
+  const res = state.result;
+  const dc = res && res.dimension_check;
+  if (!dc || !dc.n_printed) return null;
+  const sc = res.scale;
+  const imp = +dc.implied_ft_per_paper_inch;
+  const out = { dc, implied: isFinite(imp) && imp > 0 ? imp : null,
+                nPrinted: dc.n_printed || 0, nMeasured: dc.n_measured || 0,
+                nAgree: dc.n_agree || 0, why: dc.why || "", cmp: null };
+  if (out.implied && sc && +sc.ft_per_paper_inch > 0) {
+    const ft = +sc.ft_per_paper_inch;
+    const d = Math.abs(out.implied - ft) / ft * 100;
+    out.cmp = { agrees: d <= DIM_AGREE_PCT, deltaPct: d,
+                ratioLen: out.implied / ft, ratioArea: Math.pow(out.implied / ft, 2) };
+  }
+  return out;
+}
+// A result detected before the reader existed carries no check at all;
+// ask the server once per result and repaint when it answers.
+function dimCheckEnsure() {
+  const res = state.result;
+  if (!res || res.dimension_check !== undefined || res._dimFetching) return;
+  if (!state.job && state.job !== 0) return;
+  res._dimFetching = true;
+  fetch(`/api/job/${state.job}/page/${state.page}/dimcheck`, { method: "POST" })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => { if (state.result === res) { res.dimension_check = j; scaleRepaint(); } })
+    .catch(() => { if (state.result === res) res.dimension_check = null; });
+}
+// The dimensions' reading put in force by a click. It travels the typed
+// path (one entrance for every human-set scale: undo, sidecar, export all
+// say a reviewer set it) and is flagged so the banner can say WHICH human
+// decision this was - accepting what the sheet measured, not typing.
+function scaleFromDimensions() {
+  const d = confDimCheck();
+  if (!d || !d.implied) return;
+  const text = `1" = ${confFt(d.implied)}' (from ${d.nAgree} printed dimension${d.nAgree === 1 ? "" : "s"})`;
+  applyTypedScale(d.implied, text);
+  // the flag goes on AFTER the typed path built the object and BEFORE the
+  // screen is painted again; it also rides the session record so a reload
+  // or a re-detect restores "from the dimensions", not "typed"
+  state.result.scale.from_dimensions = true;
+  try { store.setItem(scaleTypedKey(), JSON.stringify({ ft: d.implied, text, fd: true })); } catch (e) {}
+  scaleRepaint();
+  setStatus(`scale set from the sheet's dimensions: 1 inch = ${confFt(d.implied)} ft (${d.nAgree} of ${d.nPrinted} printed dimensions measure so)`, "ok");
+}
+// the overlay toggle lives here, not in the header painter: per-page state
+// has one writer and the painters stay read-only (tests/test_page_reset.js)
+function dimCheckToggle() {
+  state.dimShow = !state.dimShow;
+  renderSheetHead(); draw();
+}
+function dimCheckChipText(d) {
+  if (!d) return "";
+  if (!d.implied) {
+    if (d.why === "split" && d.dc.clusters && d.dc.clusters.length > 1)
+      return `dimensions disagree: ${d.dc.clusters.slice(0, 2).map(c => `${c.n} at ${confFt(c.ft_per_paper_inch)} ft/in`).join(", ")}`;
+    return d.nMeasured ? `dimensions: ${d.nMeasured} measured, no single reading` : "";
+  }
+  const who = `${d.nAgree} dimension${d.nAgree === 1 ? "" : "s"}`;
+  if (!d.cmp) return `${who} say 1 in = ${confFt(d.implied)} ft`;
+  if (d.cmp.agrees) return `✓ ${who} agree`;
+  return `${who} say 1 in = ${confFt(d.implied)} ft · ${d.cmp.deltaPct.toFixed(1)}% apart — CHECK`;
+}
+
 // Why the engine used the scale it used - READ from what the engine reports,
 // not replayed from the candidate list.
 //
@@ -3004,6 +3120,20 @@ function confLines() {
       + `Every length, area and volume below is computed from it, and the `
       + `exported takeoff and the report PDF both say on their face that you `
       + `set it from a reading the engine did not trust.`);
+  } else if (sc.from_dimensions) {
+    // AMBER: a human decision, but the number came off the drawing itself -
+    // N printed dimensions measured between their extension lines - and
+    // the sentence says exactly that, not "you typed".
+    const dd = confDimCheck();
+    say("warn", `<b>Scale set from the sheet's own dimensions: <span class="conf-num">`
+      + `${confScale(sc.ft_per_paper_inch)}</span></b>`
+      + (dd && dd.implied
+        ? ` — ${dd.nAgree} of ${dd.nPrinted} printed dimension${confPlural(dd.nPrinted, "")} on this `
+          + `sheet, measured between their extension lines, agree on it`
+        : ``)
+      + `. You accepted that reading; the exported takeoff and the report PDF both `
+      + `say the reviewer set the scale. No caption or drawn bar has been matched `
+      + `against it.`);
   } else if (sc.typed_by_reviewer) {
     // AMBER, and FIRST of the branches that can be reached with a scale in
     // force - before the two that can print green. Green's contract is a
@@ -3034,10 +3164,24 @@ function confLines() {
       + `${confFt(sc.delta_pct)}% apart. One of them is wrong, and every `
       + `length, area and volume below is wrong with it. We used the caption.`);
   } else if (sc.agrees === true) {
-    say("ok", `<b>Scale confirmed two ways: <span class="conf-num">`
-      + `${confScale(sc.ft_per_paper_inch)}</span>.</b> The sheet prints it `
-      + `in words (${confQuote(sc.text)}) and the ruler drawn on the sheet `
-      + `measures the same thing. Two independent readings agree.`);
+    // GREEN only while nothing else on the sheet refutes it. Belle A1.00:
+    // caption and bar agree with each other at 4 and the dimension strings
+    // measure 8 - the bar is a paper-space block that says what the caption
+    // says, and "two independent readings agree" above a red contradiction
+    // is the sentence a reader would trust. Amber, and it points down.
+    const ddc = confDimCheck();
+    if (ddc && ddc.implied && ddc.cmp && !ddc.cmp.agrees) {
+      say("warn", `<b>The caption and the drawn bar agree with each other: <span class="conf-num">`
+        + `${confScale(sc.ft_per_paper_inch)}</span></b> (${confQuote(sc.text)}) — `
+        + `<b>but the sheet's own dimensions do not</b>; see the next line. A scale bar `
+        + `is drawn beside its caption and says what the caption says, so the two `
+        + `agreeing is one reading, not two.`);
+    } else {
+      say("ok", `<b>Scale confirmed two ways: <span class="conf-num">`
+        + `${confScale(sc.ft_per_paper_inch)}</span>.</b> The sheet prints it `
+        + `in words (${confQuote(sc.text)}) and the ruler drawn on the sheet `
+        + `measures the same thing. Two independent readings agree.`);
+    }
   } else if (sc.picked_by_reviewer) {
     say("warn", `<b>You set this sheet to <span class="conf-num">`
       + `${confScale(sc.ft_per_paper_inch)}</span></b> (${confQuote(sc.text)}). `
@@ -3179,6 +3323,42 @@ function confLines() {
         + `out of what this sheet gave us, so treat that as unchecked: `
         + `confirm the scale that governs the drawing you are taking off, `
         + `with the buttons just above.`);
+    }
+  }
+
+  // ---- the sheet's own dimension strings, measured against that scale ---
+  // The one reading that measures the LINEWORK. Belle A1.00: caption and
+  // bar both said 4 ft/in; the seven printed dimensions measure at 8.
+  {
+    const d = confDimCheck();
+    if (d && d.implied && d.cmp && d.cmp.agrees) {
+      say("ok", `<b>Checked against the sheet's own dimensions.</b> `
+        + `${d.nAgree} of the ${d.nPrinted} printed dimension${confPlural(d.nPrinted, "")} on this `
+        + `page, measured between their extension lines, come out at `
+        + `<span class="conf-num">${confScale(d.implied)}</span> — within `
+        + `${DIM_AGREE_PCT}% of the scale in force.`);
+    } else if (d && d.implied && d.cmp && !sc.from_dimensions) {
+      const rl = d.cmp.ratioLen, ra = d.cmp.ratioArea;
+      const fmt = (v) => v >= 10 ? String(Math.round(v)) : v.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+      say("stop", `<b>The sheet's own dimensions contradict the scale.</b> `
+        + `${d.nAgree} of the ${d.nPrinted} printed dimension${confPlural(d.nPrinted, "")} on this page `
+        + `(the “20'-6″” strings, measured between their extension lines) `
+        + `imply <span class="conf-num">${confScale(d.implied)}</span>, not the `
+        + `<span class="conf-num">${confFt(sc.ft_per_paper_inch)} ft</span> in force — `
+        + `${confFt(d.cmp.deltaPct)}% apart. If the dimensions are right, every length `
+        + `below is off by ${fmt(rl)}× and every square foot by ${fmt(ra)}×. `
+        + `The “use” button in the sheet header puts the dimensions' reading in force; `
+        + `the chip beside it draws every measured span on the sheet so you can see them.`);
+    } else if (d && d.implied && !sc) {
+      say("warn", `<b>The sheet's own dimensions measure at <span class="conf-num">`
+        + `${confScale(d.implied)}</span>.</b> ${d.nAgree} of ${d.nPrinted} printed `
+        + `dimension${confPlural(d.nPrinted, "")} agree on it. Nothing is in force yet: `
+        + `the “use” button in the sheet header adopts that reading.`);
+    } else if (d && !d.implied && d.why === "split" && d.dc.clusters && d.dc.clusters.length > 1) {
+      say("warn", `<b>This sheet's dimensions do not agree with each other</b> — `
+        + d.dc.clusters.slice(0, 3).map(c => `${c.n} at <span class="conf-num">${confScale(c.ft_per_paper_inch)}</span>`).join(", ")
+        + `. More than one drawing at more than one scale is on this page, or a detail sits `
+        + `among the plans. Nothing was taken from them.`);
     }
   }
 
@@ -9448,7 +9628,11 @@ function computeTakeoffRows() {
         qtyText: null, priced: !!ftPerIn });
   for (const it of state.extraItems)
     items.push({ label: it.label, cnt: it.unit, unit: it.unit, qty: it.qty,
-                 qtyText: it.qty.toLocaleString(), priced: true, isCalc: true });
+                 qtyText: it.qty.toLocaleString(), priced: true, isCalc: true,
+                 // the parts behind a calculator row (the rooms under a
+                 // flooring row): shown under it, listed in the CSV and the
+                 // report, never added into any figure
+                 details: Array.isArray(it.details) ? it.details : null });
   const byTrade = new Map();
   const trLayers = tradeLayerMap();
   for (const it of items) {
@@ -10581,6 +10765,23 @@ function subPaint(box, it, u) {
   box.appendChild(subAddEl(it, u));
 }
 
+// One line under a calculator row naming what it is made of: "3 rooms:
+// BED #2 135.5 SF · BED #3 123.3 SF · FOYER 147.9 SF". Nothing here is a
+// figure of its own; it is how a client checks the row against the plan.
+function detailNote(it) {
+  const d = document.createElement("div");
+  d.className = "detail-note";
+  const parts = it.details.map(x => {
+    const q = +x.qty;
+    const qs = isFinite(q) ? q.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "?";
+    // a part may carry its own unit, or none at all (a count of faces)
+    const un = x.unit !== undefined && x.unit !== null ? x.unit : it.unit;
+    return `${x.name} ${qs}${un ? " " + un : ""}` + (x.note ? ` (${x.note})` : "");
+  });
+  d.textContent = `${it.details.length} part${it.details.length === 1 ? "" : "s"}: ${parts.join(" · ")}`;
+  d.title = "Reference for checking the row against the plan. These are listed under the row in the CSV and on the report; they are not added into any figure.";
+  return d;
+}
 function renderItemized() {
   const box = $("itemized");
   const keepFocus = panelFocus(box);
@@ -10755,6 +10956,10 @@ function renderItemized() {
       // a screenshot review, a theme swap, or a colour-blind reader.
       if (it.ov) box.appendChild(ovNote(it, u));
       if (it.dupQty > 0.05) box.appendChild(dupNote(it, u));
+      // THE PARTS BEHIND A CALCULATOR ROW - the rooms under a flooring
+      // row - one line each, so the row can be checked against the plan.
+      // Reference only: the row's quantity is the row's quantity.
+      if (it.details && it.details.length) box.appendChild(detailNote(it));
       // SUB-ITEMS: the components this line item carries, nested under it,
       // each tagged declared, each rolled into the ext cell above.
       subPaint(box, it, u);
@@ -11202,6 +11407,12 @@ function takeoffCsv() {
       ]);
       for (const s of (it.subs || []))
         rows.push(subCsvCells(it.label, g.trade, s, ftPerIn ? "ft" : "pt"));
+      // the rooms (parts) behind a calculator row: one line each, named
+      // as a part of the row above, engine-measured, no cost of their own
+      for (const dt of (it.details || []))
+        rows.push([`  part: ${dt.name}`, g.trade,
+                   `${dt.qty} ${dt.unit !== undefined && dt.unit !== null ? dt.unit : it.unit}`.trim(),
+                   "", "", "", "", "", "engine", `part of ${it.label}`]);
     }
   }
   if (subN)
@@ -17048,6 +17259,7 @@ function draw() {
   }
   drawStructural(ctx, k);
   drawFlooring(ctx, k);
+  drawDimCheck(ctx, k);
   ctx.restore();
   // the card rides the sheet: a pan or a zoom moves the line under it, so its
   // anchor is recomputed on the same frame rather than drifting off the line
@@ -21171,19 +21383,40 @@ const FL_PALETTE = ["#4e9af1", "#f2a33a", "#4fc27a", "#e05c8a", "#b58cf5", "#e8d
 const FL_DEFAULT_TYPES = ["Carpet", "LVP", "Tile", "Hardwood"];
 const FL_UNASSIGNED = "#9aa3b2";
 const FL_CLOSE_COLOR = "#ff5d3b";
-const FL_LABEL_RX = /^(Flooring|Base\/molding) \u2014 /;
+const FL_LABEL_RX = /^(Flooring|Base\/molding|Waste|Wall area|Transition strips|Walls) \u2014 /;
 const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close"];
+// 6'-8" is the standard residential door height - an INFERENCE from general
+// practice, not read off any sheet (the door schedule is the better source
+// when it prints heights). Used for one thing: taking a door opening out of
+// a wall's area, so the wall over the door still counts as wall.
+const FL_DOOR_HT_FT = 6.667;
+// What a wall line type is, from its CAD layer name or legend label. The
+// operator can overrule any of these from the panel (fl.wallClass).
+const FL_WALL_CLASSES = ["exterior", "interior", "shear", "wall (unclassified)", "not a wall"];
 const flFmt = (v, d = 0) => (v === null || v === undefined || !Number.isFinite(v))
   ? "?" : v.toLocaleString(undefined, { maximumFractionDigits: d });
+const flFtIn = (ft) => {
+  if (!Number.isFinite(ft)) return "?";
+  const f = Math.floor(ft), i = Math.round((ft - f) * 12 * 8) / 8;
+  const w = Math.floor(i), fr = i - w;
+  const frs = fr ? { 0.125: " 1/8", 0.25: " 1/4", 0.375: " 3/8", 0.5: " 1/2", 0.625: " 5/8", 0.75: " 3/4", 0.875: " 7/8" }[fr] || "" : "";
+  return `${f}'-${w}${frs}"`;
+};
 
 function flNewType(name, i, extra) {
-  return Object.assign({ name, color: FL_PALETTE[i % FL_PALETTE.length], sf_price: 0, lf_price: 0 }, extra || {});
+  return Object.assign({ name, color: FL_PALETTE[i % FL_PALETTE.length], sf_price: 0, lf_price: 0, waste_pct: 0 }, extra || {});
 }
 function flSync() {
   if (!state.fl || state.fl.result !== state.result) {
     state.fl = { result: state.result, types: FL_DEFAULT_TYPES.map((n, i) => flNewType(n, i)),
                  rooms: [], closures: [], seq: 1, hot: null, busy: false, drawPts: [],
-                 hover: null, closeDraft: null, lastType: 0 };
+                 hover: null, closeDraft: null, lastType: 0,
+                 // a ceiling height for rooms whose label carries none (typed)
+                 default_ceiling_ft: null,
+                 // wall line types by class {style_id: class}; faces per wall
+                 // (1 or 2, null = as measured); whether the centreline rows
+                 // go into the takeoff
+                 wallClass: {}, wallFaces: null, wallRows: false, _faceCache: null };
     if (FL_TOOLS.includes(state.tool)) state.tool = null;
     $("flPanel").hidden = true;
     $("flResult").textContent = "";
@@ -21198,38 +21431,130 @@ function flWallLf(r) {
   if (!r || r.perim_lf === null || r.perim_lf === undefined) return null;
   return Math.max(0, r.perim_lf - (r.openings_lf || 0));
 }
-// per floor type: SF, base LF, room count; rooms with no type are their own
-// row at the end so they are never silently outside the takeoff
-function flTotals(types, rooms) {
-  const out = (types || []).map((t, i) => ({ i, name: t.name, color: t.color, sf: 0, lf: 0, rooms: 0 }));
-  const un = { i: -1, name: "unassigned", color: FL_UNASSIGNED, sf: 0, lf: 0, rooms: 0 };
+// the ceiling height in force for a room, and where it came from: the
+// note in the room's own label ("9'-1 1/8\" CEILING"), a height the operator
+// typed on the row, or the panel's default for rooms with no note
+function flCeiling(r, fl) {
+  if (r && Number.isFinite(+r.ceiling_ft) && +r.ceiling_ft > 0) return { ft: +r.ceiling_ft, by: r.ceiling_by || "sheet" };
+  if (fl && Number.isFinite(+fl.default_ceiling_ft) && +fl.default_ceiling_ft > 0) return { ft: +fl.default_ceiling_ft, by: "default" };
+  return null;
+}
+// wall area for drywall / paint: perimeter x ceiling height, less each door
+// opening at door height (the wall above a door is still wall). null when
+// there is no height or no scale.
+function flWallSf(r, fl) {
+  const c = flCeiling(r, fl);
+  if (!c || !r || r.perim_lf === null || r.perim_lf === undefined) return null;
+  const gross = r.perim_lf * c.ft;
+  const doors = Math.min(gross, (r.openings_lf || 0) * Math.min(c.ft, FL_DOOR_HT_FT));
+  return { gross, net: gross - doors, doors, ft: c.ft, by: c.by };
+}
+// per floor type: SF, base LF, room count, waste SF at the type's
+// percentage, wall SF of its rooms; rooms with no type are their own row
+// at the end so they are never silently outside the takeoff
+function flTotals(types, rooms, fl) {
+  const out = (types || []).map((t, i) => ({ i, name: t.name, color: t.color, sf: 0, lf: 0, rooms: 0,
+                                             waste_pct: +t.waste_pct || 0, waste_sf: 0, wall_sf: 0, wall_rooms: 0 }));
+  const un = { i: -1, name: "unassigned", color: FL_UNASSIGNED, sf: 0, lf: 0, rooms: 0, waste_pct: 0, waste_sf: 0, wall_sf: 0, wall_rooms: 0 };
   for (const r of rooms || []) {
     const t = Number.isInteger(r.type) && out[r.type] ? out[r.type] : un;
     t.rooms += 1; t.sf += r.area_sf || 0; t.lf += flWallLf(r) || 0;
+    const w = flWallSf(r, fl);
+    if (w) { t.wall_sf += w.net; t.wall_rooms += 1; }
   }
+  for (const t of out) t.waste_sf = t.sf * t.waste_pct / 100;
   if (un.rooms) out.push(un);
   return out;
 }
-// the takeoff rows: one SF row and one LF row per type that has rooms
-function flItems(types, rooms) {
+// TRANSITION STRIPS: a doorway two picked rooms share, where the floor
+// changes type. Each room's boundary carries the door bridges the fill
+// used (hinge -> strike, r = the door width); the same bridge on two rooms
+// of different types is one transition, its width the door's. A doorway
+// whose other side is not picked yet is counted separately and said.
+function flTransitions(rooms, types) {
+  const out = [];
+  let open = 0;
+  const key = (b) => [b.x0, b.y0, b.x1, b.y1].map(v => Math.round(v * 2) / 2).join(",");
+  const seen = new Map();   // bridge key -> [{room index, type}]
+  (rooms || []).forEach((r, i) => {
+    if (!Number.isInteger(r.type) || !types[r.type]) return;
+    for (const b of (r.bridges || [])) {
+      const k = key(b), k2 = [b.x1, b.y1, b.x0, b.y0].map(v => Math.round(v * 2) / 2).join(",");
+      const hit = seen.get(k) || seen.get(k2);
+      if (hit) hit.push({ i, type: r.type, r: b.r }); else seen.set(k, [{ i, type: r.type, r: b.r }]);
+    }
+  });
+  for (const list of seen.values()) {
+    if (list.length < 2) { open += 1; continue; }
+    const a = list[0], b = list.find(x => x.type !== a.type);
+    if (!b) continue;
+    const ta = Math.min(a.type, b.type), tb = Math.max(a.type, b.type);
+    out.push({ a: a.i, b: b.i, ta, tb, width_pt: a.r });
+  }
+  return { transitions: out, open };
+}
+// the takeoff rows, each with the rooms behind it: per type one SF row
+// (+ a waste row when a percentage is set) and one base LF row; one wall
+// area row for every room with a ceiling height; one transition-strip row
+// per pair of types that meet at a doorway
+function flItems(types, rooms, fl) {
   const items = [];
-  for (const t of flTotals(types, rooms)) {
+  const fpp = fl && fl.result && fl.result.scale ? fl.result.scale.ft_per_paper_inch / 72 : null;
+  const named = (r, i) => r.name || ("Room " + (i + 1));
+  const tot = flTotals(types, rooms, fl);
+  for (const t of tot) {
     if (t.i < 0 || !t.rooms) continue;
     const ty = types[t.i];
-    if (t.sf > 0)
-      items.push(Object.assign({ label: "Flooring \u2014 " + t.name, qty: Math.round(t.sf * 10) / 10, unit: "SF" },
+    const mine = rooms.map((r, i) => [r, i]).filter(([r]) => r.type === t.i);
+    if (t.sf > 0) {
+      items.push(Object.assign({ label: "Flooring \u2014 " + t.name, qty: Math.round(t.sf * 10) / 10, unit: "SF",
+                                 details: mine.map(([r, i]) => ({ name: named(r, i), qty: Math.round((r.area_sf || 0) * 10) / 10, unit: "SF" })) },
                                +ty.sf_price > 0 ? { unit_price: +ty.sf_price } : {}));
+      if (t.waste_pct > 0 && t.waste_sf > 0)
+        items.push(Object.assign({ label: `Waste \u2014 ${t.name} (${flFmt(t.waste_pct, 1)}%)`, qty: Math.round(t.waste_sf * 10) / 10, unit: "SF",
+                                   details: [{ name: `${flFmt(t.waste_pct, 1)}% of ${flFmt(t.sf, 1)} SF measured`, qty: Math.round(t.waste_sf * 10) / 10, unit: "SF" }] },
+                                 +ty.sf_price > 0 ? { unit_price: +ty.sf_price } : {}));
+    }
     if (t.lf > 0)
-      items.push(Object.assign({ label: "Base/molding \u2014 " + t.name, qty: Math.round(t.lf * 10) / 10, unit: "LF" },
+      items.push(Object.assign({ label: "Base/molding \u2014 " + t.name, qty: Math.round(t.lf * 10) / 10, unit: "LF",
+                                 details: mine.map(([r, i]) => ({ name: named(r, i), qty: Math.round((flWallLf(r) || 0) * 10) / 10, unit: "LF",
+                                                                 note: r.doors ? `${r.doors} door${r.doors === 1 ? "" : "s"} out` : undefined })) },
                                +ty.lf_price > 0 ? { unit_price: +ty.lf_price } : {}));
+  }
+  // wall area: every room that has a height, whatever its floor type
+  const walls = rooms.map((r, i) => [r, i, flWallSf(r, fl)]).filter(([, , w]) => w && w.net > 0);
+  if (walls.length) {
+    const sum = walls.reduce((a, [, , w]) => a + w.net, 0);
+    items.push({ label: "Wall area \u2014 perimeter \u00d7 ceiling", qty: Math.round(sum * 10) / 10, unit: "SF",
+                 details: walls.map(([r, i, w]) => ({ name: named(r, i), qty: Math.round(w.net * 10) / 10, unit: "SF",
+                                                     note: `${flFmt(flWallLf(r) + (r.openings_lf || 0), 1)} LF \u00d7 ${flFtIn(w.ft)}`
+                                                       + (w.by === "sheet" ? " from the sheet" : w.by === "typed" ? " typed" : " default")
+                                                       + (w.doors > 0 ? `, \u2212${flFmt(w.doors)} SF of doors` : "") })) });
+  }
+  // transition strips per pair of floor types
+  const tr = flTransitions(rooms, types);
+  const byPair = new Map();
+  for (const t of tr.transitions) {
+    const k = t.ta + ":" + t.tb;
+    if (!byPair.has(k)) byPair.set(k, []);
+    byPair.get(k).push(t);
+  }
+  for (const [k, list] of byPair) {
+    const [ta, tb] = k.split(":").map(Number);
+    items.push({ label: `Transition strips \u2014 ${types[ta].name} / ${types[tb].name}`, qty: list.length, unit: "EA",
+                 details: list.map(t => ({ name: `${named(rooms[t.a], t.a)} \u2194 ${named(rooms[t.b], t.b)}`, qty: 1, unit: "EA",
+                                           note: fpp ? `door ${flFtIn(t.width_pt * fpp)} wide` : `door ${flFmt(t.width_pt)} pt wide` })) });
   }
   return items;
 }
 // one room's line: what it measures and what was done to get it
-function flRoomLine(r) {
+function flRoomLine(r, fl) {
   if (r.area_sf === null || r.area_sf === undefined) return "no scale set \u2014 " + flFmt(r.area_pt2) + " pt\u00b2";
   let s = flFmt(r.area_sf) + " SF \u00b7 walls " + flFmt(flWallLf(r)) + " LF";
   if (r.doors) s += " (" + r.doors + " door" + (r.doors === 1 ? "" : "s") + ", \u2212" + flFmt(r.openings_lf, 1) + " LF)";
+  const w = flWallSf(r, fl);
+  if (w) s += " \u00b7 wall area " + flFmt(w.net) + " SF at " + flFtIn(w.ft) + (w.by === "sheet" ? " (from the sheet)" : w.by === "typed" ? " (typed)" : " (default)");
+  else if (r.ceiling_text) s += " \u00b7 " + r.ceiling_text + " \u2014 no height read, type one";
   if (r.holes_sf > 0) s += " \u00b7 " + flFmt(r.holes_sf) + " SF inside it not counted";
   if (r.closures) s += " \u00b7 " + r.closures + " gap" + (r.closures === 1 ? "" : "s") + " closed by hand";
   if (r.source === "drawn") s += " \u00b7 outline drawn by hand";
@@ -21238,7 +21563,9 @@ function flRoomLine(r) {
 function flApplyItems() {
   const fl = flSync();
   state.extraItems = state.extraItems.filter(it => !FL_LABEL_RX.test(it.label));
-  for (const it of flItems(fl.types, fl.rooms)) {
+  const rows = flItems(fl.types, fl.rooms, fl);
+  if (fl.wallRows) for (const it of flWallRows(fl)) rows.push(it);
+  for (const it of rows) {
     state.extraItems.push(it);
     // THE PRICE TRAVELS THROUGH THE PRICE BOOK. The approve payload prices
     // every extra item from store "price:<label>" (the itemized panel's
@@ -21252,17 +21579,164 @@ function flApplyItems() {
   state.calcFlApplied = true;
   calcStateDirty();
 }
+// ---- WALLS BY TYPE ----
+// The CAD layers (Seer Stone: A-wall, A-Exterior Wall Line) or the legend
+// (Belle: SHEAR WALL) already separate the wall kinds a builder prices
+// differently. Class by name; the operator can overrule per line type.
+function flWallClassOf(s, fl) {
+  const o = fl && fl.wallClass && fl.wallClass[s.style_id];
+  if (o && FL_WALL_CLASSES.includes(o)) return o;
+  const L = String(s.layer || "") + " | " + String(s.suggested_label || "");
+  // in the wall SET (it encloses rooms) but not a wall LINE: the hatch
+  // drawn between a wall's two faces, and the drafter's flooring
+  // boundaries (Seer Stone A-Wall Hatch 1,956 LF of hatch strokes, A-Flooring
+  // 1,257 LF of floor edges - neither is framing)
+  if (/hatch|floor/i.test(L)) return "not a wall";
+  if (/shear/i.test(L)) return "shear";
+  if (/ext(erior)?\b|exterior/i.test(L)) return "exterior";
+  if (/\bint(erior)?\b|partition/i.test(L)) return "interior";
+  if (/wall/i.test(L) && s.layer) return "interior";       // a layered sheet names its exterior walls
+  return "wall (unclassified)";
+}
+// The wall line types this panel reasons about: the "walls only" suggestion
+// plus anything the operator classified by hand.
+function flWallStyles(fl) {
+  if (!state.result) return [];
+  const { ids } = flWallStyleIds(state.result.styles);
+  const set = new Set(ids);
+  for (const k of Object.keys(fl.wallClass || {})) if (fl.wallClass[k] !== "not a wall") set.add(+k);
+  return state.result.styles.filter(s => set.has(s.style_id));
+}
+// HOW MANY FACES. A CAD wall is usually TWO parallel lines a few pt apart
+// (Seer Stone: the A-wall pair with A-Wall Hatch between), so its line
+// footage is twice its length. Measured on the sheet, never assumed: the
+// share of wall-segment length that has a parallel partner 2-14 pt away
+// overlapping it by half. Over 50% = drawn as two faces.
+function flFaceShare(chains) {
+  const segs = [];
+  for (const ch of chains) {
+    const P = ch.points || [];
+    for (let i = 0; i + 1 < P.length; i++) {
+      const dx = P[i + 1][0] - P[i][0], dy = P[i + 1][1] - P[i][1];
+      const L = Math.hypot(dx, dy);
+      if (L < 10) continue;
+      const ang = Math.round((Math.atan2(dy, dx) * 180 / Math.PI + 180) % 180 / 5) * 5 % 180;
+      segs.push({ x0: P[i][0], y0: P[i][1], x1: P[i + 1][0], y1: P[i + 1][1], L, ang, ux: dx / L, uy: dy / L });
+    }
+  }
+  if (!segs.length) return { share: 0, n: 0 };
+  const byAng = new Map();
+  for (const s of segs) { if (!byAng.has(s.ang)) byAng.set(s.ang, []); byAng.get(s.ang).push(s); }
+  let paired = 0, total = 0;
+  for (const s of segs) {
+    total += s.L;
+    let hit = false;
+    for (const t of byAng.get(s.ang)) {
+      if (t === s) continue;
+      // perpendicular offset of t's midpoint from s's line
+      const mx = (t.x0 + t.x1) / 2 - s.x0, my = (t.y0 + t.y1) / 2 - s.y0;
+      const off = Math.abs(mx * s.uy - my * s.ux);
+      if (off < 2 || off > 14) continue;
+      // overlap along s
+      const a0 = (t.x0 - s.x0) * s.ux + (t.y0 - s.y0) * s.uy, a1 = (t.x1 - s.x0) * s.ux + (t.y1 - s.y0) * s.uy;
+      const lo = Math.max(0, Math.min(a0, a1)), hi = Math.min(s.L, Math.max(a0, a1));
+      if (hi - lo >= 0.5 * s.L) { hit = true; break; }
+    }
+    if (hit) paired += s.L;
+  }
+  return { share: total ? paired / total : 0, n: segs.length };
+}
+// per class: line footage (as measured), the face evidence, and the
+// centreline estimate the operator can put in the takeoff
+function flWallTypes(fl) {
+  if (!state.result) return [];
+  const sc = state.result.scale;
+  const fpp = sc && +sc.ft_per_paper_inch > 0 ? +sc.ft_per_paper_inch / 72 : null;
+  const styles = flWallStyles(fl);
+  const cls = new Map();
+  for (const s of styles) {
+    const c = flWallClassOf(s, fl);
+    if (c === "not a wall") continue;
+    if (!cls.has(c)) cls.set(c, { cls: c, styles: [], chains: [], pt: 0 });
+    const g = cls.get(c);
+    g.styles.push(s);
+  }
+  const bySid = new Map(styles.map(s => [s.style_id, flWallClassOf(s, fl)]));
+  for (const ch of state.result.chains) {
+    const c = bySid.get(ch.style_id);
+    if (!c || c === "not a wall" || state.excluded.has(ch.chain_id)) continue;
+    const g = cls.get(c);
+    g.chains.push(ch); g.pt += chainLenPt(ch);
+  }
+  const key = [...bySid].map(([a, b]) => a + ":" + b).join("|") + "#" + state.excluded.size;
+  if (!fl._faceCache || fl._faceCache.key !== key) {
+    const faces = {};
+    for (const [c, g] of cls) faces[c] = flFaceShare(g.chains);
+    fl._faceCache = { key, faces };
+  }
+  const out = [];
+  for (const [c, g] of cls) {
+    const fs = fl._faceCache.faces[c] || { share: 0, n: 0 };
+    const faces = fl.wallFaces || (fs.share > 0.5 ? 2 : 1);
+    out.push({ cls: c, styles: g.styles, n: g.chains.length, line_pt: g.pt,
+               line_lf: fpp ? g.pt * fpp : null, faces, face_share: fs.share,
+               wall_lf: fpp ? g.pt * fpp / faces : null });
+  }
+  const order = { exterior: 0, interior: 1, shear: 2, "wall (unclassified)": 3 };
+  out.sort((a, b) => (order[a.cls] ?? 9) - (order[b.cls] ?? 9));
+  return out;
+}
+// the centreline rows, only when the operator ticked them in: the measured
+// line rows above still list the same linework, and two priced rows for
+// one wall is a double count
+function flWallRows(fl) {
+  const items = [];
+  for (const w of flWallTypes(fl)) {
+    if (!w.wall_lf || w.wall_lf <= 0) continue;
+    items.push({ label: `Walls \u2014 ${w.cls} (centreline)`, qty: Math.round(w.wall_lf * 10) / 10, unit: "LF",
+                 details: [{ name: "line footage measured on the sheet", qty: Math.round(w.line_lf * 10) / 10, unit: "LF" },
+                           { name: "faces per wall", qty: w.faces, unit: "",
+                             note: `${Math.round(w.face_share * 100)}% of the linework has a parallel partner` }] });
+  }
+  return items;
+}
+// relabel the wall line types by class, so the measured rows themselves
+// read "Wall - exterior" / "Wall - interior" / "Wall - shear"
+function flLabelWalls(fl) {
+  let n = 0;
+  for (const s of flWallStyles(fl)) {
+    const c = flWallClassOf(s, fl);
+    if (c === "not a wall") continue;
+    const name = "Wall \u2014 " + c;
+    if (state.labels.get(s.style_id) === name) continue;
+    state.labels.set(s.style_id, name);
+    memSave(s); n += 1;
+  }
+  colorBust();
+  renderStyles(); renderItemized(); renderMiniLegend();
+  setStatus(n ? `${n} wall line type${n === 1 ? "" : "s"} relabelled by class \u2014 the footage rows now read Wall \u2014 exterior / interior / shear` : "the wall line types already carry their class names", "ok");
+}
 // ---- persistence (calcstate sidecar, additive key "fl") ----
 function flSavePayload(fl) {
   return {
-    types: fl.types.map(t => ({ name: t.name, color: t.color, sf_price: +t.sf_price || 0, lf_price: +t.lf_price || 0 })),
+    types: fl.types.map(t => ({ name: t.name, color: t.color, sf_price: +t.sf_price || 0, lf_price: +t.lf_price || 0,
+                                waste_pct: +t.waste_pct || 0 })),
     rooms: fl.rooms.map(r => ({
       name: r.name, pts: r.pts.map(p => [p[0], p[1]]), area_sf: r.area_sf, area_pt2: r.area_pt2,
       perim_lf: r.perim_lf, perim_pt: r.perim_pt, openings_lf: r.openings_lf, holes_sf: r.holes_sf,
       doors: r.doors || 0, closures: r.closures || 0, type: r.type, source: r.source, click: r.click || null,
+      // the ceiling height and where it came from; the door bridges on the
+      // ring (for transitions: two rooms sharing one bridge)
+      ceiling_ft: Number.isFinite(+r.ceiling_ft) && +r.ceiling_ft > 0 ? +r.ceiling_ft : null,
+      ceiling_text: r.ceiling_text || null, ceiling_by: r.ceiling_by || null,
+      bridges: (r.bridges || []).map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, r: b.r })),
     })),
     closures: fl.closures.map(c => c.map(v => Math.round(v * 100) / 100)),
     seq: fl.seq,
+    default_ceiling_ft: Number.isFinite(+fl.default_ceiling_ft) && +fl.default_ceiling_ft > 0 ? +fl.default_ceiling_ft : null,
+    wallClass: Object.assign({}, fl.wallClass || {}),
+    wallFaces: fl.wallFaces === 1 || fl.wallFaces === 2 ? fl.wallFaces : null,
+    wallRows: !!fl.wallRows,
   };
 }
 function flApplySaved() {
@@ -21275,10 +21749,12 @@ function flApplySaved() {
   if (Array.isArray(sv.types) && sv.types.length)
     fl.types = sv.types.map((t, i) => flNewType(String((t && t.name) || ("Type " + (i + 1))), i, {
       color: (t && t.color) || FL_PALETTE[i % FL_PALETTE.length],
-      sf_price: calcNum(t && t.sf_price) || 0, lf_price: calcNum(t && t.lf_price) || 0 }));
+      sf_price: calcNum(t && t.sf_price) || 0, lf_price: calcNum(t && t.lf_price) || 0,
+      waste_pct: Math.max(0, calcNum(t && t.waste_pct) || 0) }));
   if (Array.isArray(sv.rooms) && !fl.rooms.length) {
     for (const r of sv.rooms) {
       if (!r || !Array.isArray(r.pts) || r.pts.length < 3) continue;
+      const cf = calcNum(r.ceiling_ft);
       fl.rooms.push({
         name: String(r.name || ("Room " + (fl.rooms.length + 1))), pts: r.pts.map(p => [p[0], p[1]]),
         area_sf: calcNum(r.area_sf), area_pt2: calcNum(r.area_pt2) || 0,
@@ -21287,12 +21763,29 @@ function flApplySaved() {
         doors: calcNum(r.doors) || 0, closures: calcNum(r.closures) || 0,
         type: Number.isInteger(r.type) ? r.type : null,
         source: r.source === "drawn" ? "drawn" : "click", click: Array.isArray(r.click) ? r.click : null,
+        ceiling_ft: cf !== null && cf > 0 ? cf : null,
+        ceiling_text: r.ceiling_text ? String(r.ceiling_text) : null,
+        ceiling_by: r.ceiling_by === "typed" ? "typed" : (cf !== null && cf > 0 ? "sheet" : null),
+        bridges: Array.isArray(r.bridges)
+          ? r.bridges.filter(b => b && ["x0", "y0", "x1", "y1", "r"].every(k => calcNum(b[k]) !== null))
+                     .map(b => ({ x0: +b.x0, y0: +b.y0, x1: +b.x1, y1: +b.y1, r: +b.r }))
+          : [],
       });
     }
   }
   if (Array.isArray(sv.closures))
     fl.closures = sv.closures.filter(c => Array.isArray(c) && c.length === 4 && c.every(v => calcNum(v) !== null));
   if (calcNum(sv.seq) !== null) fl.seq = sv.seq;
+  {
+    const dc = calcNum(sv.default_ceiling_ft);
+    fl.default_ceiling_ft = dc !== null && dc > 0 ? dc : null;
+    fl.wallClass = {};
+    if (sv.wallClass && typeof sv.wallClass === "object")
+      for (const k of Object.keys(sv.wallClass))
+        if (FL_WALL_CLASSES.includes(sv.wallClass[k]) && Number.isInteger(+k)) fl.wallClass[k] = sv.wallClass[k];
+    fl.wallFaces = sv.wallFaces === 1 || sv.wallFaces === 2 ? sv.wallFaces : null;
+    fl.wallRows = !!sv.wallRows;
+  }
   if (fl.rooms.length) {
     flApplyItems();
     if (!$("flPanel").hidden) renderFl();
@@ -21385,12 +21878,17 @@ async function flPickAt(px, py) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { setStatus(j.detail || `room lookup failed (${r.status})`, "err"); return; }
     if (!j.ok) { setStatus(j.why, "err"); return; }
+    const cl = j.ceiling || null;
     const room = { name: j.name || null, pts: j.polygon, area_sf: j.area_sf, area_pt2: j.area_pt2,
                    perim_lf: j.perim_lf, perim_pt: j.perim_pt, openings_lf: j.openings_lf || 0,
                    holes_sf: j.holes_sf || 0, doors: (j.bridges_used || []).length,
-                   closures: j.closures_used || 0, type: fl.lastType, source: "click", click: [px, py] };
+                   closures: j.closures_used || 0, type: fl.lastType, source: "click", click: [px, py],
+                   // the ceiling note read inside the room, if the sheet prints one
+                   ceiling_ft: cl && +cl.ft > 0 ? +cl.ft : null, ceiling_text: cl ? cl.text : null,
+                   ceiling_by: cl && +cl.ft > 0 ? "sheet" : null,
+                   bridges: (j.bridges_used || []).map(b => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, r: b.r })) };
     flAddRoom(room);
-    setStatus(`${room.name}: ${flRoomLine(room)} \u2014 pick its floor type in the panel, or click the next room`, "ok");
+    setStatus(`${room.name}: ${flRoomLine(room, fl)} \u2014 pick its floor type in the panel, or click the next room`, "ok");
   } catch (e) {
     setStatus("room lookup failed \u2014 the server did not answer", "err");
   } finally {
@@ -21419,10 +21917,11 @@ function flFinishDraw() {
   const area_pt2 = stPolyArea(pts), perim_pt = stPolyPerim(pts);
   const room = { name: null, pts, area_sf: fpp ? area_pt2 * fpp * fpp : null, area_pt2,
                  perim_lf: fpp ? perim_pt * fpp : null, perim_pt, openings_lf: 0, holes_sf: 0,
-                 doors: 0, closures: 0, type: fl.lastType, source: "drawn", click: null };
+                 doors: 0, closures: 0, type: fl.lastType, source: "drawn", click: null,
+                 ceiling_ft: null, ceiling_text: null, ceiling_by: null, bridges: [] };
   fl.drawPts = []; fl.hover = null; polySnapClear(); state.tool = null;
   flAddRoom(room);
-  setStatus(`${room.name}: ${flRoomLine(room)}`, "ok");
+  setStatus(`${room.name}: ${flRoomLine(room, fl)}`, "ok");
 }
 function flCloseClick(px, py) {
   const fl = flSync();
@@ -21499,11 +21998,11 @@ function renderFl() {
   if (!state.result) { body.textContent = "run Detect first"; return; }
   const mk = (tag, cls, txt) => { const d = document.createElement(tag); if (cls) d.className = cls; if (txt !== undefined) d.textContent = txt; return d; };
   const fpp = stFtPerPt();
-  const tot = flTotals(fl.types, fl.rooms);
+  const tot = flTotals(fl.types, fl.rooms, fl);
 
-  // floor types: colour, name, prices, what they hold
+  // floor types: colour, name, prices, waste, what they hold
   const tbl = mk("div", "fl-types-tbl");
-  for (const h of ["floor type", "$/SF", "$/LF base", ""]) tbl.appendChild(mk("div", "fl-th", h));
+  for (const h of ["floor type", "$/SF", "$/LF base", "waste %", ""]) tbl.appendChild(mk("div", "fl-th", h));
   fl.types.forEach((t, i) => {
     const sw = document.createElement("input");
     sw.type = "color"; sw.value = t.color; sw.className = "fl-swatch";
@@ -21525,7 +22024,10 @@ function renderFl() {
     // the two prices already fill a 350 px panel, and squeezed into a
     // fifth column the name read "Car" / "Har" (Belle capture, 2026-09-08)
     const totc = mk("div", "fl-td fl-tot ew-meta", tt.rooms
-      ? `${flFmt(tt.sf)} SF \u00b7 ${flFmt(tt.lf)} LF base \u00b7 ${tt.rooms} room${tt.rooms === 1 ? "" : "s"}` : "no rooms yet");
+      ? `${flFmt(tt.sf)} SF \u00b7 ${flFmt(tt.lf)} LF base \u00b7 ${tt.rooms} room${tt.rooms === 1 ? "" : "s"}`
+        + (tt.waste_pct > 0 ? ` \u00b7 +${flFmt(tt.waste_sf)} SF waste` : "")
+        + (tt.wall_rooms ? ` \u00b7 ${flFmt(tt.wall_sf)} SF wall area` : "")
+      : "no rooms yet");
     const rm = mk("button", "mini", "\u00d7");
     rm.title = "remove this floor type (its rooms become unassigned)";
     rm.onclick = () => {
@@ -21535,7 +22037,10 @@ function renderFl() {
       flApplyItems(); renderFl(); draw();
     };
     const rmc = mk("div", "fl-td"); rmc.appendChild(rm);
-    tbl.append(cell, num("sf_price"), num("lf_price"), rmc, totc);
+    const waste = num("waste_pct");
+    waste.firstChild.step = "0.5"; waste.firstChild.max = "50";
+    waste.firstChild.title = "Waste allowance for this floor type, as a percentage of the measured square feet. Becomes its own row (\"Waste \u2014 Carpet (10%)\") so the measured figure stays visible. Typical allowances run 5-15% by material and layout; this panel does not assume one.";
+    tbl.append(cell, num("sf_price"), num("lf_price"), waste, rmc, totc);
   });
   types.appendChild(tbl);
   const add = mk("button", "mini", "+ floor type");
@@ -21564,6 +22069,97 @@ function renderFl() {
     mode("Draw outline", "fl-draw", "Click each corner of the room yourself"));
   modes.appendChild(mk("span", "ew-meta", fpp ? `scale ${state.result.scale.text}` : "NO SCALE SET \u2014 pt only"));
   body.appendChild(modes);
+
+  // CEILING HEIGHT for rooms whose label carries none: one typed default.
+  // Rooms with a note on the sheet keep the sheet's number (each row says
+  // which); wall area = perimeter x height, door openings out at 6'-8".
+  {
+    const row = mk("div", "fl-ceil");
+    row.appendChild(mk("span", "ew-meta", "ceiling height for rooms with no note on the sheet:"));
+    const inp = document.createElement("input");
+    inp.type = "number"; inp.step = "0.25"; inp.min = "0"; inp.className = "fl-num";
+    inp.placeholder = "ft"; inp.value = fl.default_ceiling_ft || "";
+    inp.title = "Feet. Applies only to rooms whose label prints no ceiling height; a room's own note (\"9'-1 1/8\\\" CEILING\") always wins, and each room's line says which was used.";
+    inp.oninput = () => { const v = +inp.value; fl.default_ceiling_ft = v > 0 ? v : null; flApplyItems(); renderFl(); };
+    row.appendChild(inp);
+    const n = fl.rooms.filter(r => flWallSf(r, fl)).length;
+    row.appendChild(mk("span", "ew-meta", n ? `${n} of ${fl.rooms.length} room${fl.rooms.length === 1 ? "" : "s"} have a height \u2192 wall area rows` : (fl.rooms.length ? "no room has a height yet" : "")));
+    body.appendChild(row);
+  }
+
+  // WALLS BY TYPE: the wall line types, classed by CAD layer / legend name,
+  // their line footage, the face evidence, and the centreline estimate.
+  {
+    const wt = flWallTypes(fl);
+    const box = mk("div", "fl-walls");
+    const head = mk("div", "fl-walls-head");
+    head.appendChild(mk("b", null, "Walls by type"));
+    const lab = mk("button", "mini", "Label wall lines by type");
+    lab.title = "Rename the wall line types to Wall \u2014 exterior / interior / shear, so the measured footage rows in the takeoff split the same way.";
+    lab.onclick = () => { flLabelWalls(fl); renderFl(); };
+    head.appendChild(lab);
+    box.appendChild(head);
+    if (!wt.length) {
+      box.appendChild(mk("div", "ew-meta", "no line type on this sheet reads as a wall \u2014 tick the walls, then classify them here"));
+    } else {
+      const t = mk("div", "fl-walls-tbl");
+      for (const h of ["class", "lines", "line LF", "faces", "wall LF"]) t.appendChild(mk("div", "fl-th", h));
+      for (const w of wt) {
+        t.appendChild(mk("div", "fl-td", w.cls));
+        t.appendChild(mk("div", "fl-td", String(w.n)));
+        t.appendChild(mk("div", "fl-td", w.line_lf !== null ? flFmt(w.line_lf) : flFmt(w.line_pt) + " pt"));
+        const fc = mk("div", "fl-td");
+        fc.textContent = `${w.faces} (${Math.round(w.face_share * 100)}% paired)`;
+        fc.title = `${Math.round(w.face_share * 100)}% of this class's linework has a parallel partner 2-14 pt away: ${w.face_share > 0.5 ? "drawn as two face lines, so the line footage is twice the wall length" : "mostly single lines"}. Override below.`;
+        t.appendChild(fc);
+        t.appendChild(mk("div", "fl-td", w.wall_lf !== null ? flFmt(w.wall_lf) : "\u2014"));
+      }
+      box.appendChild(t);
+      // which line type is which class - one row per line type in the wall
+      // set (the "walls only" suggestion plus anything classed by hand),
+      // folded away by default: a sheet has a dozen of them
+      const det = document.createElement("details");
+      det.className = "fl-walls-classify";
+      const sm = document.createElement("summary");
+      sm.className = "ew-meta";
+      sm.textContent = `classify the ${flWallStyles(fl).length} wall line types`;
+      det.appendChild(sm);
+      for (const s of flWallStyles(fl)) {
+        const row = mk("div", "fl-walls-style");
+        row.appendChild(mk("span", "ew-meta", (s.layer || s.suggested_label || ("style " + s.style_id)).slice(0, 26)));
+        const sel = document.createElement("select");
+        sel.className = "fl-sel fl-wall-sel";
+        for (const c of FL_WALL_CLASSES) {
+          const o = document.createElement("option"); o.value = c; o.textContent = c;
+          if (flWallClassOf(s, fl) === c) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.onchange = () => { fl.wallClass[s.style_id] = sel.value; fl._faceCache = null; flApplyItems(); renderFl(); };
+        row.appendChild(sel);
+        det.appendChild(row);
+      }
+      box.appendChild(det);
+      const opts = mk("div", "fl-walls-opts");
+      const faces = document.createElement("select");
+      faces.className = "fl-sel";
+      for (const [v, txt] of [["", "faces: as measured"], ["1", "faces: 1 (single lines)"], ["2", "faces: 2 (double lines)"]]) {
+        const o = document.createElement("option"); o.value = v; o.textContent = txt;
+        if (String(fl.wallFaces || "") === v) o.selected = true;
+        faces.appendChild(o);
+      }
+      faces.onchange = () => { fl.wallFaces = faces.value ? +faces.value : null; flApplyItems(); renderFl(); };
+      opts.appendChild(faces);
+      const cb = document.createElement("label");
+      cb.className = "ew-meta";
+      const ck = document.createElement("input"); ck.type = "checkbox"; ck.checked = !!fl.wallRows;
+      ck.onchange = () => { fl.wallRows = ck.checked; flApplyItems(); renderFl(); };
+      cb.append(ck, document.createTextNode(" add centreline wall LF rows to the takeoff"));
+      cb.title = "Off by default: the measured line rows already list this linework, and a priced centreline row beside a priced line row is the same wall twice. Tick it when the line rows are unpriced.";
+      opts.appendChild(cb);
+      box.appendChild(opts);
+    }
+    body.appendChild(box);
+  }
   if (fl.closures.length) {
     const c = mk("div", "ew-meta", `${fl.closures.length} gap${fl.closures.length === 1 ? "" : "s"} closed by hand on this sheet `);
     const clr = mk("button", "mini", "clear");
@@ -21597,16 +22193,36 @@ function renderFl() {
     const rm = mk("button", "mini", "\u00d7");
     rm.title = "remove this room";
     rm.onclick = () => { fl.rooms.splice(k, 1); flApplyItems(); renderFl(); draw(); };
-    top.append(dot, nm, sel, rm);
+    // the ceiling height: the sheet's note prefilled, a typed number wins
+    const clg = document.createElement("input");
+    clg.type = "number"; clg.step = "0.01"; clg.min = "0"; clg.className = "fl-num fl-clg";
+    clg.placeholder = "clg ft";
+    clg.value = r.ceiling_ft ? String(Math.round(r.ceiling_ft * 100) / 100) : "";
+    clg.classList.toggle("from-sheet", r.ceiling_by === "sheet");
+    clg.title = (r.ceiling_by === "sheet" ? `Ceiling height read in this room: ${r.ceiling_text}. ` : r.ceiling_text ? `The room says "${r.ceiling_text}" but prints no height. ` : "No ceiling note read in this room. ")
+      + "Feet; type to override. Wall area = perimeter \u00d7 height, door openings out.";
+    clg.oninput = () => {
+      const v = +clg.value;
+      if (v > 0) { r.ceiling_ft = v; r.ceiling_by = "typed"; }
+      else { r.ceiling_ft = null; r.ceiling_by = null; }
+      clg.classList.remove("from-sheet");
+      flApplyItems(); renderFl();
+    };
+    top.append(dot, nm, sel, clg, rm);
     row.appendChild(top);
-    row.appendChild(mk("div", "ew-meta", flRoomLine(r)));
+    row.appendChild(mk("div", "ew-meta", flRoomLine(r, fl)));
     row.onmouseenter = () => { fl.hot = k; draw(); };
     row.onmouseleave = () => { fl.hot = null; draw(); };
     rows.appendChild(row);
   });
   const assigned = tot.filter(t => t.i >= 0 && t.rooms);
+  const tr = flTransitions(fl.rooms, fl.types);
+  const wallSf = fl.rooms.reduce((a, r) => { const w = flWallSf(r, fl); return a + (w ? w.net : 0); }, 0);
   $("flResult").textContent = fl.rooms.length
     ? `${fl.rooms.length} room${fl.rooms.length === 1 ? "" : "s"} \u00b7 ` + assigned.map(t => `${t.name} ${flFmt(t.sf)} SF / ${flFmt(t.lf)} LF`).join(" \u00b7 ")
+      + (wallSf > 0 ? ` \u00b7 wall area ${flFmt(wallSf)} SF` : "")
+      + (tr.transitions.length ? ` \u00b7 ${tr.transitions.length} transition${tr.transitions.length === 1 ? "" : "s"}` : "")
+      + (tr.open ? ` \u00b7 ${tr.open} doorway${tr.open === 1 ? "" : "s"} to rooms not picked yet` : "")
     : "";
 }
 $("flBtn").onclick = () => {
@@ -21680,6 +22296,52 @@ function drawFlooring(ctx, k) {
     }
     if (state.polySnap) drawPolyCloseRing(P[0], ST_DRAFT_COLOR);
   }
+}
+
+// The measured dimension spans, drawn on the sheet when the header chip is
+// toggled: each printed dimension's extension-line pair as a bar with end
+// ticks and the implied scale beside it. Green = agrees with the reading in
+// force (or with the dominant cluster when nothing is), red = does not.
+// Evidence for the eye - the reviewer can check any one against the sheet.
+function drawDimCheck(ctx, k) {
+  if (!state.dimShow || !state.result) return;
+  const d = confDimCheck();
+  if (!d || !d.dc.samples || !d.dc.samples.length) return;
+  const f = IMG_DPI / 72;
+  const ref = (state.result.scale && +state.result.scale.ft_per_paper_inch > 0)
+    ? +state.result.scale.ft_per_paper_inch : d.implied;
+  ctx.save();
+  ctx.font = `${Math.max(10, 11 / k)}px system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  for (const s of d.dc.samples) {
+    const e = s.ends;
+    if (!e || e.length !== 4) continue;
+    const v = +s.implied_ft_per_paper_inch;
+    const ok = ref ? Math.abs(v - ref) / ref * 100 <= DIM_AGREE_PCT : (s.cluster === 0);
+    const col = ok ? "#1f9d55" : "#e0304e";
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.lineWidth = 2.5 / k; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(e[0] * f, e[1] * f); ctx.lineTo(e[2] * f, e[3] * f); ctx.stroke();
+    const horiz = Math.abs(e[2] - e[0]) >= Math.abs(e[3] - e[1]);
+    const t = 6 / k;
+    ctx.lineWidth = 2 / k;
+    for (const [x, y] of [[e[0], e[1]], [e[2], e[3]]]) {
+      ctx.beginPath();
+      if (horiz) { ctx.moveTo(x * f, y * f - t); ctx.lineTo(x * f, y * f + t); }
+      else { ctx.moveTo(x * f - t, y * f); ctx.lineTo(x * f + t, y * f); }
+      ctx.stroke();
+    }
+    const label = `${s.text} → 1"=${confFt(v)}'`;
+    const lx = (horiz ? (e[0] + e[2]) / 2 : e[0]) * f + (horiz ? 0 : 8 / k);
+    const ly = (horiz ? e[1] : (e[1] + e[3]) / 2) * f - (horiz ? 4 / k : 0);
+    const w = ctx.measureText(label).width;
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(lx - (horiz ? w / 2 : 0) - 2 / k, ly - 13 / k, w + 4 / k, 14 / k);
+    ctx.fillStyle = col;
+    ctx.textAlign = horiz ? "center" : "left";
+    ctx.fillText(label, lx, ly);
+  }
+  ctx.restore();
 }
 
 // ---------- structure calculator: footprint dig + perimeter layback ----------

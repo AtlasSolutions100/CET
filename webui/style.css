@@ -3379,3 +3379,27 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
   border: 1px dashed var(--line); border-radius: var(--t-r-sm, 4px);
   background: transparent; color: var(--dim); cursor: pointer; }
 .ew-more:hover { color: var(--t-text); border-color: var(--t-text); }
+
+/* ---- dimension-string scale check (sheet header) ---- */
+.dim-chip { cursor: pointer; }
+.dim-use { margin-left: 4px; }
+/* ---- parts behind a calculator row (rooms under a flooring row) ---- */
+.detail-note { color: var(--dim); font-size: var(--t-fs-xs); padding: 0 8px 6px 18px; line-height: 1.35; }
+/* ---- flooring: ceiling, waste, walls by type ---- */
+.fl-types-tbl { grid-template-columns: minmax(0, 1fr) 54px 54px 48px 26px; }
+.fl-clg { width: 54px; }
+.fl-clg.from-sheet { border-style: dashed; }
+.fl-ceil { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.fl-ceil .fl-num { width: 54px; }
+.fl-walls { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.fl-walls-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: var(--t-fs-xs); }
+.fl-walls-tbl { display: grid; grid-template-columns: minmax(58px, auto) minmax(0, 1fr) 52px 78px 52px; gap: 3px 6px;
+  align-items: center; font-size: var(--t-fs-xs); margin-top: 4px; }
+.fl-walls-styles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fl-wall-sel { max-width: 100%; }
+.fl-walls-opts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.fl-walls-tbl { grid-template-columns: minmax(64px, auto) 36px 56px 86px 56px; }
+.fl-walls-classify { margin-top: 4px; }
+.fl-walls-classify summary { cursor: pointer; }
+.fl-walls-style { display: flex; gap: 6px; align-items: center; justify-content: space-between; padding: 1px 0 1px 10px; }
+.fl-walls-style .ew-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

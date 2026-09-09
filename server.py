@@ -2959,11 +2959,54 @@ def _scale_name(det: dict) -> str:
 # ASCII pair for PRINTING only - never for the stored value, the export or
 # the record, all of which keep the caption exactly as it was read.
 _MARK_FOLD = {0x201C: '"', 0x201D: '"', 0x2033: '"', 0x2032: "'",
-              0x2018: "'", 0x2019: "'", 0x2014: "-", 0x2013: "-"}
+              0x2018: "'", 0x2019: "'", 0x2014: "-", 0x2013: "-",
+              # the flooring rows' typography: "Wall area - perimeter x
+              # ceiling", "-51 SF of doors", "BED #2 <-> FOYER" - the
+              # report's base font draws each of these as an empty box
+              0x00D7: "x", 0x2212: "-", 0x2194: "<->", 0x00B7: "."}
 
 
 def _ascii_marks(s) -> str:
     return str(s or "?").translate(_MARK_FOLD)
+
+
+def _dim_check_export(check: dict | None, ft_per_paper_inch) -> dict | None:
+    """The dimension check as the export records it: the engine's counts
+    and implied value, plus the comparison against the scale THIS export was
+    computed at. None when the page has no check at all (a scan, or a
+    result written before the reader existed) - a reader must be able to
+    tell "not checked" from "checked and silent"."""
+    if not isinstance(check, dict):
+        return None
+    from takeoff_engine import dimcheck as _dc
+    cmp_ = _dc.compare(check, ft_per_paper_inch)
+    out = {
+        "nPrinted": int(check.get("n_printed") or 0),
+        "nMeasured": int(check.get("n_measured") or 0),
+        "nAgree": int(check.get("n_agree") or 0),
+        "impliedFtPerPaperInch": check.get("implied_ft_per_paper_inch"),
+        "why": check.get("why"),
+        "clusters": [{"ftPerPaperInch": c.get("ft_per_paper_inch"), "n": c.get("n")}
+                     for c in (check.get("clusters") or [])[:4]],
+        "checkedAgainstFtPerPaperInch": ft_per_paper_inch,
+        "agrees": None if cmp_ is None else cmp_["agrees"],
+        "deltaPct": None if cmp_ is None else cmp_["delta_pct"],
+        "ratioLen": None if cmp_ is None else cmp_["ratio_len"],
+        "ratioArea": None if cmp_ is None else cmp_["ratio_area"],
+        "sentence": _dc.describe(check, ft_per_paper_inch),
+    }
+    return out
+
+
+def _dimcheck_report_lines(dc: dict | None) -> list[str]:
+    """The dimension-check statement for the face of the report, wrapped.
+    An export with no check says so in one line rather than nothing."""
+    if not dc:
+        return ["Dimension check: not run on this sheet."]
+    s = str(dc.get("sentence") or "")
+    if dc.get("agrees") is False:
+        s = "CHECK THE SCALE - " + s
+    return textwrap.wrap(s, 116) or [s]
 
 
 def _scale_report_lines(sc: dict | None, image_dpi=None) -> list[str]:
@@ -3294,6 +3337,14 @@ def approve(job_id: str, page: int, body: ApproveBody):
                     "suggestionOrigin": det.get("suggestion_origin"),
                     "engineSource": det.get("engine_source"),
                 })
+    # THE DIMENSION CHECK travels with the export: what the sheet's own
+    # printed dimensions say the scale is, compared against the scale this
+    # export was computed at - whichever of the engine's reading and the
+    # reviewer's pick that is. The report prints the sentence under the
+    # scale statement (see _dimcheck_report_lines): a PDF that leaves the
+    # building must carry the one reading that could refute its own scale.
+    export["dimension_check"] = _dim_check_export(
+        res.get("dimension_check"), det["ft_per_paper_inch"] if det else None)
     # itemization: per-label count + footage (when scale known) + pricing
     ft_per_in = det["ft_per_paper_inch"] if det else None
     totals: dict = {}
@@ -3384,6 +3435,27 @@ def approve(job_id: str, page: int, body: ApproveBody):
         if o:
             qty = round(float(o.qty), 1)
             ov_used.add(("qty" if unit == "EA" else "ft", raw_label))
+        # THE ROOMS BEHIND A FLOORING ROW. "Flooring - Carpet 371.1 SF" is
+        # one number a client cannot check; "BED #2 135.5 SF, BED #3 123.3
+        # SF, ..." under it is a list they can walk with the plan. Carried
+        # verbatim (bounded), printed as sub-lines on the report, never
+        # added into any figure - the row's qty is the row's qty.
+        details = []
+        for dt in (ex.get("details") or [])[:200]:
+            if not isinstance(dt, dict):
+                continue
+            try:
+                dq = round(float(dt.get("qty")), 1)
+            except (TypeError, ValueError):
+                continue
+            dn = str(dt.get("name") or "").strip()[:60]
+            if not dn:
+                continue
+            # a part's own unit when given (an empty one is a count of
+            # something with no unit, e.g. faces per wall), else the row's
+            details.append({"name": dn, "qty": dq,
+                            "unit": str(dt["unit"] if dt.get("unit") is not None else unit)[:8],
+                            **({"note": str(dt.get("note"))[:80]} if dt.get("note") else {})})
         items.append({
             "label": label, "count": 1, "length_ft": None,
             "trade": body.trades.get(label),
@@ -3391,6 +3463,7 @@ def approve(job_id: str, page: int, body: ApproveBody):
             "unit_price": price,
             "extended": round(qty * price, 2) if price else None,
             **({"qty_set_by": _BY_REVIEWER, "engine_qty": eng_qty} if o else {}),
+            **({"details": details} if details else {}),
         })
     # Mirrors TRADES in webui/app.js, in the same order, so the report and
     # the panel group and sort identically. Keep the two in step.
@@ -4100,6 +4173,13 @@ def report_pdf(job_id: str, request: Request):
         for _ln in _scale_report_lines(exp.get("scale"), exp.get("imageDpi")):
             tp.insert_text((50, y), _ln[:118], fontsize=8)
             y += 11
+        # What the sheet's own dimension strings say the scale is, against
+        # the scale every number below was computed at. Directly under the
+        # scale statement, because it is the one printed reading that can
+        # refute it (Belle A1.00: caption 4 ft/in, dimensions 8).
+        for _ln in _dimcheck_report_lines(exp.get("dimension_check")):
+            tp.insert_text((50, y), _ln[:118], fontsize=8)
+            y += 11
         # Caveats the reviewer's calculators attached to their own rows. They
         # sit ABOVE the table on purpose: a reader who stops at the first
         # number has already passed them.
@@ -4138,8 +4218,10 @@ def report_pdf(job_id: str, request: Request):
                 _letterhead(tp)
                 y = 60
             _ov = it.get("qty_set_by") == _BY_REVIEWER
-            tp.insert_text((50, y), (str(it["label"])[:50] + " *") if _ov
-                           else str(it["label"])[:52], fontsize=9)
+            # folded to ASCII: the base font draws an em dash or a times
+            # sign as an empty box (the flooring rows carry both)
+            _lab = _ascii_marks(it["label"])
+            tp.insert_text((50, y), (_lab[:50] + " *") if _ov else _lab[:52], fontsize=9)
             tp.insert_text((300, y), str(it["count"]), fontsize=9)
             # Choose the column by the row's UNIT, not by whether length_ft
             # happens to be populated. An EA row keeps its footage as a
@@ -4184,6 +4266,23 @@ def report_pdf(job_id: str, request: Request):
                                f"{it.get('unit') or 'ft'}"
                                + (f". Measured on this sheet: {_e:,} {_eu}."
                                   if _e is not None else "."),
+                               fontsize=8)
+            # The rooms (or other parts) behind a calculator row, one
+            # sub-line each, so the client can check the row against the
+            # plan. Reference only: nothing here is added to any total.
+            for _dt in (it.get("details") or []):
+                y += 11
+                if y > 752:
+                    tp = out.new_page(width=612, height=792)
+                    _letterhead(tp)
+                    y = 60
+                _dq = _dt.get("qty")
+                _dq = int(_dq) if isinstance(_dq, float) and _dq.is_integer() else _dq
+                _du = _dt.get("unit") or ""
+                tp.insert_text((60, y),
+                               _ascii_marks(f'- {str(_dt.get("name", ""))[:44]}: {_dq:,}'
+                                            + (f" {_du}" if _du else "")
+                                            + (f'  ({_dt["note"]})' if _dt.get("note") else ""))[:118],
                                fontsize=8)
             # Keyed by (label, UNIT). Footage-only accumulation printed an EA
             # row's REFERENCE footage into the project footage total, and gave
@@ -6112,6 +6211,46 @@ def rooms_pick(job_id: str, page: int, body: RoomPickBody):
                                 closures=body.closures or None)
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+
+@app.post("/api/job/{job_id}/page/{page}/dimcheck")
+def dimcheck_page(job_id: str, page: int):
+    """The dimension-string scale check for a page detected before the
+    reader existed (takeoff_engine/dimcheck.py). Detect writes it into the
+    result as `dimension_check`; this computes it for a result that lacks
+    the key, stores it there so the next load has it, and returns it. It
+    changes NOTHING else in the result - not the scale, not a chain - and
+    the chain fingerprint (engine_sig) is untouched by design."""
+    job = JOBS.get(job_id) or _404()
+    f = _job_dir(job_id) / f"p{page}_result.json"
+    if not f.exists():
+        raise HTTPException(409, "run Detect on this page first")
+    try:
+        res = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(500, "could not read this page's detection result")
+    if isinstance(res.get("dimension_check"), dict):
+        return JSONResponse(res["dimension_check"])
+    from takeoff_engine import dimcheck as _dc
+    check = None
+    try:
+        doc = pymupdf.open(job["path"])
+        try:
+            pg = doc[page]
+            if (res.get("page") or {}).get("kind") != "raster":
+                check = _dc.read_dimensions(pg, extract_strokes(pg))
+        finally:
+            doc.close()
+    except Exception as e:
+        raise HTTPException(500, f"dimension check failed: {e}")
+    res["dimension_check"] = check
+    tmp = f.with_name(f"{f.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(res), encoding="utf-8")
+        os.replace(tmp, f)
+    except OSError:
+        pass                         # best-effort persistence; still reply
+    return JSONResponse(check)
 
 
 @app.post("/api/job/{job_id}/page/{page}/structure")

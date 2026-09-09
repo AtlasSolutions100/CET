@@ -158,6 +158,7 @@ def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float,
             offsets = _LEAF_OFFSETS if o.get("source") == "leaf" else _JAMB_OFFSETS
             cands = [mid + sign * math.radians(off) for off in offsets for sign in (1, -1)]
         rad = max(3, int(round(6.0 * px_per_pt)))
+        scored = []
         for ang in cands:
             # THE STRIKE JAMB IS ON THE WALL. The far end of the opening
             # sits on the wall line; the far end of the open leaf stands in
@@ -170,7 +171,24 @@ def door_bridges(openings: list, ink: np.ndarray, px_per_pt: float,
             behind = _bearing_ink(wall, hx, hy, ang + math.pi, rp * 0.3, rp * 1.5)
             beyond = _bearing_ink(wall, hx, hy, ang, rp * 1.05, rp * 1.8)
             leaf = _bearing_ink(ink, hx, hy, ang, rp * 0.15, rp * 0.9)
-            score = 3 * strike + 2 * behind + 2 * beyond - leaf
+            scored.append((3 * strike + 2 * behind + 2 * beyond - leaf, ang, leaf))
+        # A DRAWN LEAF IS DECISIVE when only one bearing carries one. A
+        # pair meeting mid-opening (Seer Stone A2.1 bed 2 closet, 5/0) has
+        # no wall at either end, and the ray behind the hinge along the
+        # open leaf ran through the closet's wall hatch: 50 hits against 8
+        # along the real opening, so the bridge was drawn down the leaf
+        # into the room. Leaf ink of 60% of the ray on one bearing and
+        # under 25% on the other says which is the door drawn open; the
+        # threshold-line case has ink on BOTH and falls through to the
+        # score as before.
+        full = max(1.0, 0.75 * rp)
+        if len(scored) == 2:
+            (_, ang_a, leaf_a), (_, ang_b, leaf_b) = scored
+            if leaf_a >= 0.6 * full and leaf_b <= 0.25 * full:
+                scored = [scored[1]]
+            elif leaf_b >= 0.6 * full and leaf_a <= 0.25 * full:
+                scored = [scored[0]]
+        for score, ang, _ in scored:
             if best_score is None or score > best_score:
                 best_score, best = score, ang
         if best is None:
@@ -232,15 +250,27 @@ def doors_from_chains(chains: list, scale_ft_per_in: Optional[float] = None,
             continue
         L = float(ch.get("length_pt") or 0)
         fit = _fit_door(P, L, r_lo, r_hi)
-        if fit is None:
-            continue
-        hx, hy, r, mx, my, a0, a1 = fit
-        if any(math.hypot(hx - kx, hy - ky) <= max(kr, r) / 4.0 for kx, ky, kr in known_pts):
-            continue
-        out.append({"cx": round(hx, 1), "cy": round(hy, 1), "r": round(r, 1),
-                    "mx": round(mx, 1), "my": round(my, 1), "source": "chain",
-                    "a0": round(a0, 4), "a1": round(a1, 4),
-                    "chain_id": ch.get("chain_id")})
+        # A MULTI-LEAF RUN. A pair, a bi-fold, two doors sharing a wall
+        # stub: several arcs in one chain. Split the polyline into its arcs
+        # and fit each on its own; two or more arcs beat the single fit,
+        # which on a pair either fails or passes one big circle through
+        # both 45-degree arcs (a 4'-4" door hinged in mid-air, measured on
+        # the synthetic pair in tests/test_rooms.py).
+        split = _split_arcs(P, r_lo, r_hi, bool(layer))
+        if len(split) >= 2:
+            fits, source = split, "chain-split"
+        elif fit is not None:
+            fits, source = [fit], "chain"
+        else:
+            fits, source = split, "chain-split"
+        for hx, hy, r, mx, my, a0, a1 in fits:
+            if any(math.hypot(hx - kx, hy - ky) <= max(kr, r) / 4.0 for kx, ky, kr in known_pts):
+                continue
+            out.append({"cx": round(hx, 1), "cy": round(hy, 1), "r": round(r, 1),
+                        "mx": round(mx, 1), "my": round(my, 1), "source": source,
+                        "a0": round(a0, 4), "a1": round(a1, 4),
+                        "chain_id": ch.get("chain_id")})
+            known_pts.append((hx, hy, r))
     # THE LEAF PASS. A double door, a pair, a bi-fold run: several arcs in
     # one chain, which no single circle fits (Seer Stone A2.1 bed 2: chain
     # 721, two 45-degree arcs side by side; the foyer closet: three). Those
@@ -279,13 +309,119 @@ def doors_from_chains(chains: list, scale_ft_per_in: Optional[float] = None,
             if max(i0, i1) < 2 * min(i0, i1) + 10:
                 continue                     # cannot tell the hinge: abstain
             hx, hy, fx, fy = (x0, y0, x1, y1) if i0 > i1 else (x1, y1, x0, y0)
-            if any(math.hypot(hx - kx, hy - ky) <= max(kr, L) / 4.0 for kx, ky, kr in known_all):
+            # EITHER end at a known hinge: this stroke is that door's own
+            # leaf (a leaf drawn as two parallel strokes, or the second
+            # line of a pair found from its arcs) and must not become a
+            # second door hinged at its tip - Seer Stone A2.1 bed 2 closet:
+            # two phantom hinges at the meeting point, bridged into the
+            # room.
+            if any(math.hypot(hx - kx, hy - ky) <= max(kr, L) / 4.0
+                   or math.hypot(fx - kx, fy - ky) <= max(kr, L) / 4.0
+                   for kx, ky, kr in known_all):
                 continue
             rec = {"cx": round(hx, 1), "cy": round(hy, 1), "r": round(L, 1),
                    "mx": round(fx, 1), "my": round(fy, 1), "source": "leaf",
                    "chain_id": ch.get("chain_id")}
             out.append(rec)
             known_all.append((hx, hy, L))
+    return out
+
+
+def _arc_of(pts, r_lo, r_hi):
+    """One arc out of a run of points, or None: a fitted circle with at
+    least 85% of the points within 7% of r, r a door width, the ends
+    35-135 degrees apart. Returns (cx, cy, r, mx, my, a_end1, a_end2)."""
+    fit = _fit_circle(pts)
+    if fit is None:
+        return None
+    cx, cy, r = fit
+    on = [p for p in pts if abs(math.hypot(p[0] - cx, p[1] - cy) - r) <= 0.07 * r]
+    if len(on) < 5 or len(on) < 0.85 * len(pts):
+        return None
+    fit = _fit_circle(on)
+    if fit is None:
+        return None
+    cx, cy, r = fit
+    if not (r_lo <= r <= r_hi):
+        return None
+    angs = sorted(math.atan2(p[1] - cy, p[0] - cx) for p in on)
+    gaps = [(angs[i + 1] - angs[i]) for i in range(len(angs) - 1)] + [angs[0] + 2 * math.pi - angs[-1]]
+    span = 2 * math.pi - max(gaps)
+    if not (math.radians(35) <= span <= math.radians(135)):
+        return None
+    gi = max(range(len(gaps)), key=lambda i: gaps[i])
+    a1 = angs[(gi + 1) % len(angs)]
+    a2 = angs[gi]
+    a_mid = a1 + span / 2.0
+    return cx, cy, r, cx + r * math.cos(a_mid), cy + r * math.sin(a_mid), a1, a2
+
+
+def _split_arcs(P, r_lo, r_hi, layered):
+    """The doors in a chain that carries SEVERAL arcs (a pair, a bi-fold, two
+    doors either side of a wall stub - Seer Stone A2.1 chains 721, 725, 729:
+    leaf + arc + arc + leaf, or arc + leaf + stub + leaf + arc).
+
+    Cut the polyline into STRAIGHT pieces (a segment at least 4x the chain's
+    median segment and 6 pt - a leaf or a wall stub; a dashed arc's own
+    segments are 2-2.5 pt) and CURVED pieces (everything between, split
+    again at any turn over 40 degrees - the cusp where two arcs of a pair
+    meet). Each curved piece is fitted on its own (_arc_of). An arc is a
+    door when a straight piece of about its radius runs from the arc to its
+    centre (the leaf), or when a second arc of the same radius sits one
+    diameter away (its partner in a pair); on a NAMED door layer a bare arc
+    is enough, as it is for the single-arc fit. Measured on Seer Stone A2.1:
+    the 7 door-layer chains the single fit rejected are 4 multi-arc runs (7
+    doors) and 3 dashed rectangles (overhead doors, no arc, none found)."""
+    pts = [P[0]]
+    for p in P[1:]:
+        if math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1]) > 1e-6:
+            pts.append(p)
+    if len(pts) < 8:
+        return []
+    segs = []
+    for i in range(len(pts) - 1):
+        (x0, y0), (x1, y1) = pts[i], pts[i + 1]
+        segs.append((math.hypot(x1 - x0, y1 - y0), math.atan2(y1 - y0, x1 - x0)))
+    med = sorted(s[0] for s in segs)[len(segs) // 2]
+    long_thr = max(6.0, 4.0 * med)
+    straights = []           # (length, (x0, y0), (x1, y1))
+    curves = []              # [points]
+    cur = [pts[0]]
+    for i, (L, ang) in enumerate(segs):
+        if L >= long_thr:
+            if len(cur) >= 5:
+                curves.append(cur)
+            straights.append((L, pts[i], pts[i + 1]))
+            cur = [pts[i + 1]]
+            continue
+        if i > 0 and segs[i - 1][0] < long_thr:
+            turn = abs((ang - segs[i - 1][1] + math.pi) % (2 * math.pi) - math.pi)
+            if turn > math.radians(40):
+                if len(cur) >= 5:
+                    curves.append(cur)
+                cur = [pts[i]]
+        cur.append(pts[i + 1])
+    if len(cur) >= 5:
+        curves.append(cur)
+    cands = []
+    for c in curves:
+        chord = math.hypot(c[-1][0] - c[0][0], c[-1][1] - c[0][1])
+        if chord < 0.5 * r_lo:
+            continue
+        a = _arc_of(c, r_lo, r_hi)
+        if a is not None:
+            cands.append(a)
+    out = []
+    for i, a in enumerate(cands):
+        cx, cy, r = a[0], a[1], a[2]
+        leaf = any(0.8 * r <= L <= 1.25 * r
+                   and min(math.hypot(p[0] - cx, p[1] - cy), math.hypot(q[0] - cx, q[1] - cy)) <= 0.2 * r
+                   for L, p, q in straights)
+        pair = any(j != i and abs(b[2] - r) <= 0.15 * r
+                   and abs(math.hypot(b[0] - cx, b[1] - cy) - (b[2] + r)) <= 0.15 * (b[2] + r)
+                   for j, b in enumerate(cands))
+        if leaf or pair or layered:
+            out.append(a)
     return out
 
 
@@ -461,13 +597,12 @@ _NOTE_WORDS = re.compile(
     r"STEEL|WALL|WALLS|PLATE|BEAM|HEADER|FLUSH|PROVIDED|OUTLET|R\d\d|VERIFY|NOTE|SHEAR)\b", re.I)
 
 
-def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
-    """The room's label: of the text lines whose centre is inside the
-    polygon, the one that reads like a room name. Scored: room words in,
-    note words out, short over long, nearer the room's centre over the
-    edge, taller as a last tie-break. Nothing that reads like a note is
-    returned - the caller names the room "Room N" instead, which is a
-    smaller lie than "INSULATED". `words` are pymupdf 'words' tuples."""
+def _lines_inside(words: list, poly_px: np.ndarray, k: float, drop_dims: bool) -> list:
+    """The text LINES whose words sit inside the polygon, in reading order:
+    [{text, words, h, cy}], grouped by pymupdf's own (block, line) when the
+    words carry it, else by vertical overlap. `drop_dims` leaves dimension
+    strings out (the room namer never wants one); the ceiling reader needs
+    them, its whole subject is a dimension."""
     inside = []
     for wd in words or []:
         try:
@@ -475,20 +610,13 @@ def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
         except (IndexError, TypeError, ValueError):
             continue
         t = txt.strip()
-        if not t or _DIMENSION.match(t):
+        if not t or (drop_dims and _DIMENSION.match(t)):
             continue
         cx, cy = (x0 + x1) / 2 * k, (y0 + y1) / 2 * k
         if cv2.pointPolygonTest(poly_px, (float(cx), float(cy)), False) < 0:
             continue
         key = (int(wd[5]), int(wd[6])) if len(wd) >= 7 else None
         inside.append((x0, y0, x1, y1, t, key))
-    if not inside:
-        return None
-    m = cv2.moments(poly_px)
-    ccx = (m["m10"] / m["m00"]) / k if m["m00"] else 0.0
-    ccy = (m["m01"] / m["m00"]) / k if m["m00"] else 0.0
-    # group into lines: pymupdf's own (block, line) when present, else by
-    # vertical overlap
     lines = {}
     order = []
     for w in inside:
@@ -505,13 +633,147 @@ def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
             lines[key] = {"cy": cy, "h": h, "words": []}
             order.append(key)
         lines[key]["words"].append(w)
-    best = None
-    cands = []
+    out = []
     for key in order:
         ln = lines[key]
         ws = sorted(ln["words"], key=lambda w: w[0])
-        text = " ".join(w[4] for w in ws)
-        if not _ALPHA.search(text):
+        out.append({"text": " ".join(w[4] for w in ws), "words": ws, "h": ln["h"], "cy": ln["cy"]})
+    return out
+
+
+# A CEILING HEIGHT written in the room. Seer Stone A2.1 prints one in every
+# room ("9'-1 1/8\" CEILING", the fraction as half-size glyphs that arrive
+# as "9'-118\""); other sets write "CLG. HT. 9'-0\"" or "9' CEILING". The
+# reader wants a feet-and-inches value on a line that says ceiling; a
+# "VAULTED CEILING" line is reported with no height so the panel asks for
+# one instead of pretending. "8\" DRYWALL ON CEILING" carries inches only
+# and is not a height.
+_CEIL = re.compile(r"\b(CEIL(ING)?S?|CLG)\b", re.I)
+_FT_IN = re.compile(r"""(\d{1,2})\s*['’′]\s*-?\s*(?:(\d{1,4})(?:\s*(\d{1,2})/(\d{1,2}))?\s*["”″])?""")
+_FRAC_CODE = {"12": 0.5, "14": 0.25, "34": 0.75, "18": 0.125, "38": 0.375, "58": 0.625, "78": 0.875,
+              "116": 1 / 16, "316": 3 / 16, "516": 5 / 16, "716": 7 / 16, "916": 9 / 16,
+              "1116": 11 / 16, "1316": 13 / 16, "1516": 15 / 16}
+
+
+def _feet_of(m) -> Optional[float]:
+    ft = int(m.group(1))
+    inch = m.group(2)
+    if inch is None:
+        return float(ft)
+    if len(inch) <= 2 and int(inch) < 12:
+        v = ft + int(inch) / 12.0
+    else:
+        # a stacked fraction folded into the digits: "118" = 1 1/8
+        for cut in (1, 2):
+            a, b = inch[:cut], inch[cut:]
+            if a and int(a) < 12 and b in _FRAC_CODE:
+                v = ft + (int(a) + _FRAC_CODE[b]) / 12.0
+                break
+        else:
+            return None
+    if m.group(3) and m.group(4):
+        try:
+            v += int(m.group(3)) / int(m.group(4)) / 12.0
+        except ZeroDivisionError:
+            return None
+    return v
+
+
+def _ft_in_text(v: float) -> str:
+    """9.094 -> 9'-1 1/8\" (nearest sixteenth)."""
+    ft = int(v)
+    inches = (v - ft) * 12.0
+    whole = int(inches)
+    six = int(round((inches - whole) * 16))
+    if six == 16:
+        whole, six = whole + 1, 0
+    if whole == 12:
+        ft, whole = ft + 1, 0
+    frac = ""
+    if six:
+        n, d = six, 16
+        while n % 2 == 0:
+            n //= 2
+            d //= 2
+        frac = " %d/%d" % (n, d)
+    return "%d'-%d%s\"" % (ft, whole, frac)
+
+
+def _line_box(ln: dict):
+    """(x0, y0, x1, y1) of a _lines_inside line, from its words."""
+    ws = ln.get("words") or []
+    if not ws:
+        return None
+    return (min(w[0] for w in ws), min(w[1] for w in ws), max(w[2] for w in ws), max(w[3] for w in ws))
+
+
+def ceiling_note(lines: list) -> Optional[dict]:
+    """{"ft": 9.09, "text": "9'-1 1/8\" CEILING"} from the room's own lines,
+    {"ft": None, "text": "VAULTED CEILING"} when the sheet says a ceiling is
+    there but not how high, None when nothing mentions one. A height must
+    be 6-30 ft. The first line with a height wins; a vaulted note only
+    stands when no line has one."""
+    vaulted = None
+    lines = list(lines or [])
+    for i, ln in enumerate(lines):
+        t = ln["text"]
+        if not _CEIL.search(t):
+            continue
+        # a narrow room stacks the label: "9'-1 1/8\"" on one line and
+        # "CEILING" on the next (Seer Stone A2.1 W.I.C.), so the height may
+        # sit on the line before or after the ceiling word
+        cands = [t]
+        bb = _line_box(ln)
+        for j in (i - 1, i + 1):
+            if not (0 <= j < len(lines)) or not _FT_IN.fullmatch(lines[j]["text"].strip()):
+                continue
+            # STACKED, not merely next in reading order: directly above or
+            # below within 1.6 text heights and overlapping sideways. The
+            # great room's "VAULTED CEILING" had a 12'-10 1/4" wall
+            # dimension as its next line and read a 12'-10" ceiling.
+            ob = _line_box(lines[j])
+            if bb is None or ob is None:
+                continue
+            gap = min(abs(ob[1] - bb[3]), abs(bb[1] - ob[3]))
+            if gap > 1.6 * max(bb[3] - bb[1], 1.0) or ob[2] < bb[0] or ob[0] > bb[2]:
+                continue
+            other = lines[j]["text"].strip()
+            cands.append(other + " " + t if j < i else t + " " + other)
+        for tt in cands:
+            for m in _FT_IN.finditer(tt):
+                v = _feet_of(m)
+                if v is not None and 6.0 <= v <= 30.0:
+                    # the text as printed, with a folded fraction unfolded
+                    # ("9'-118\"" back to 9'-1 1/8\"): what the operator reads
+                    shown = tt[:m.start()] + _ft_in_text(v) + tt[m.end():]
+                    return {"ft": round(v, 3), "text": shown.strip()[:60]}
+        if vaulted is None and re.search(r"\bVAULT|\bSLOPED|\bCATHEDRAL", t, re.I):
+            vaulted = {"ft": None, "text": t.strip()[:60]}
+    return vaulted
+
+
+def room_name(words: list, poly_px: np.ndarray, k: float) -> Optional[str]:
+    """The room's label: of the text lines whose centre is inside the
+    polygon, the one that reads like a room name. Scored: room words in,
+    note words out, short over long, nearer the room's centre over the
+    edge, taller as a last tie-break. Nothing that reads like a note is
+    returned - the caller names the room "Room N" instead, which is a
+    smaller lie than "INSULATED". `words` are pymupdf 'words' tuples."""
+    lines = _lines_inside(words, poly_px, k, drop_dims=True)
+    if not lines:
+        return None
+    m = cv2.moments(poly_px)
+    ccx = (m["m10"] / m["m00"]) / k if m["m00"] else 0.0
+    ccy = (m["m01"] / m["m00"]) / k if m["m00"] else 0.0
+    best = None
+    cands = []
+    for ln in lines:
+        ws = ln["words"]
+        text = ln["text"]
+        # three letters in a row, or a room word: "W.I.C." has the room
+        # word and no run of letters, and lost its name to the run test
+        # (Seer Stone A2.1: "Room 8")
+        if not (_ALPHA.search(text) or _ROOM_WORDS.search(text)):
             continue
         n_room = len(_ROOM_WORDS.findall(text))
         n_note = len(_NOTE_WORDS.findall(text))
@@ -682,6 +944,9 @@ def pick_room(result: dict, words: list, x_pt: float, y_pt: float,
         "openings_lf": round(openings_pt * fpp, 1) if fpp else None,
         "holes_sf": round(holes_pt2 * fpp * fpp, 1) if fpp else None,
         "name": room_name(words, poly_px.reshape(-1, 1, 2), k),
+        # the ceiling height written in the room, when the sheet prints one
+        # (Seer Stone A2.1: every room), for wall area = perimeter x height
+        "ceiling": ceiling_note(_lines_inside(words, poly_px.reshape(-1, 1, 2), k, drop_dims=False)),
         "bridges_used": [{k2: b[k2] for k2 in ("x0", "y0", "x1", "y1", "r")} for b in used],
         "bridges_total": len(bridges),
         "closures_used": len(closures or []),

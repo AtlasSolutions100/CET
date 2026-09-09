@@ -243,6 +243,92 @@ plan_f["chains"].append({"chain_id": 909, "style_id": 7, "layer": "A-Door", "len
 w_f, br_f = rooms.sealed_walls(plan_f, {0}, 100)
 check(len(br_f) == 0, "a door-layer stroke with neither end on a wall abstains")
 
+# ---- MULTI-LEAF RUNS: several arcs in one chain (a pair, a bi-fold) ---------------
+print("doors from a multi-arc chain")
+
+
+def pair_chain(cid, hx, hy, r, layer="A-Door"):
+    """Two 45-degree doors meeting in the middle, drawn as ONE chain: leaf 1
+    (down from hinge 1), arc 1 sweeping to the meeting point, arc 2 back
+    from the meeting point to hinge 2's swing, leaf 2. Hinge 1 at (hx, hy),
+    hinge 2 at (hx + 2r, hy). No single circle fits it."""
+    pts = [[hx, hy + r]]
+    for i in range(25 + 1):                       # arc 1: 90 -> 45 degrees
+        a = _m.radians(90 - 45 * i / 25)
+        pts.append([hx + r * _m.cos(a), hy + r * _m.sin(a)])
+    for i in range(25 + 1):                       # arc 2 about hinge 2: 135 -> 90
+        a = _m.radians(135 - 45 * i / 25)
+        pts.append([hx + 2 * r + r * _m.cos(a), hy + r * _m.sin(a)])
+    pts.append([hx + 2 * r, hy])                  # leaf 2 back to hinge 2? no: leaf runs hinge -> arc end
+    L = sum(_m.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1))
+    return {"chain_id": cid, "style_id": 5, "points": pts, "length_pt": L, "layer": layer}
+
+
+pc = pair_chain(950, 400.0, 300.0, 45.0)
+_one = rooms._fit_door(pc["points"], pc["length_pt"], 22.5, 108.0)
+check(_one is not None and _one[2] > 60,
+      "the single-circle fit passes ONE circle through both 45-degree arcs (r ~78 pt, a 4'-4\" door "
+      "hinged in mid-air) - which is why two split arcs take precedence over it: got %s" % (_one and round(_one[2], 1)))
+fp = rooms.doors_from_chains([pc], 4.0)
+check(len(fp) == 2, "a pair drawn as one chain is TWO doors, got %d" % len(fp))
+if len(fp) == 2:
+    hx = sorted(o["cx"] for o in fp)
+    check(abs(hx[0] - 400) < 2 and abs(hx[1] - 490) < 2 and all(abs(o["r"] - 45) < 2 for o in fp),
+          "hinged at the two jambs, 2r apart, each r = 45 pt: %s" % [(o["cx"], o["cy"], o["r"]) for o in fp])
+    check(all(o["source"] == "chain-split" and o.get("a0") is not None for o in fp),
+          "each carries its exact arc-end bearings (no jamb search)")
+# unnamed sheet: an arc with a leaf beside it is still a door; a bare arc pair is too
+fp_un = rooms.doors_from_chains([pair_chain(951, 400.0, 300.0, 45.0, layer="")], 4.0)
+check(len(fp_un) == 2, "without a layer name the two arcs corroborate each other as a pair (%d)" % len(fp_un))
+# a lone arc with no leaf and no layer name: not a door by geometry alone
+lone = door_chain(952, 500.0, 300.0, 54.0, leaf=False)
+lone["points"] = lone["points"] + [[560.0, 300.0], [560.0, 240.0]]     # a stub so the single fit fails
+lone["length_pt"] += 120.0
+lone["layer"] = ""
+check(all(o["source"] != "chain-split" for o in rooms.doors_from_chains([lone], 4.0)),
+      "the splitter does not invent a door from a bare arc on an unnamed chain")
+
+# ---- CEILING HEIGHT written in the room --------------------------------------------
+print("ceiling note")
+def words_ceiling():
+    def w(xf, yf, txt, h=4.0, blk=0, wn=0):
+        x, y = P(xf, yf)
+        return (x, y, x + 3.0 * len(txt), y + h, txt, blk, 0, wn)
+    return [w(9, 8, "LIVING", 6.0, 1, 0), w(12, 8, "ROOM", 6.0, 1, 1),
+            w(9, 10, "9'-118\"", 4.0, 2, 0), w(12, 10, "CEILING", 4.0, 2, 1),   # the stacked fraction as it arrives
+            w(2, 13, "8\"", 4.0, 3, 0), w(3, 13, "DRYWALL", 4.0, 3, 1), w(6, 13, "ON", 4.0, 3, 2), w(7, 13, "CEILING", 4.0, 3, 3),
+            w(24, 8, "BEDROOM", 6.0, 4, 0), w(28, 8, "2", 6.0, 4, 1), w(24, 10, "VAULTED", 4.0, 5, 0), w(27, 10, "CEILING", 4.0, 5, 1)]
+ca = rooms.pick_room(res, words_ceiling(), *P(10, 10), styles={0}, dpi=100)
+check(ca["ok"] and ca["name"] == "LIVING ROOM", "the ceiling line does not steal the room name: %r" % ca.get("name"))
+check(ca["ok"] and ca.get("ceiling") and abs(ca["ceiling"]["ft"] - (9 + 1.125 / 12)) < 1e-3,
+      "9'-1 1/8\" CEILING read as 9.094 ft (the half-size fraction glyphs unfolded): %s" % ca.get("ceiling"))
+check(ca["ok"] and ca["ceiling"]["text"] == "9'-1 1/8\" CEILING", "...and shown unfolded: %r" % (ca.get("ceiling") or {}).get("text"))
+cb = rooms.pick_room(res, words_ceiling(), *P(26, 4), styles={0}, dpi=100)
+check(cb["ok"] and cb.get("ceiling") == {"ft": None, "text": "VAULTED CEILING"},
+      "a vaulted note is reported with no height, never a guess: %s" % cb.get("ceiling"))
+check(rooms.ceiling_note([{"text": "8\" DRYWALL ON CEILING"}]) is None, "inches-only on a ceiling line is not a height")
+check(rooms.ceiling_note([{"text": "CLG. HT. 10'-0\""}]) == {"ft": 10.0, "text": "CLG. HT. 10'-0\""}, "CLG. HT. 10'-0\" reads 10 ft")
+check(rooms.ceiling_note([{"text": "40'-0\" CEILING"}]) is None, "a 40 ft ceiling is refused as implausible (6-30 ft)")
+check(rooms.ceiling_note([{"text": "2x6 STUDS"}]) is None, "no ceiling word: nothing")
+
+# a narrow room stacks its label: W.I.C. / 9'-1 1/8" / CEILING on three lines
+def words_stacked():
+    def w(xf, yf, txt, h=3.0, blk=0, ln=0, wn=0):
+        x, y = P(xf, yf)
+        return (x, y, x + 3.0 * len(txt), y + h, txt, blk, ln, wn)
+    return [w(9, 8, "W.I.C.", 3.0, 1, 0), w(9, 8.3, "9'-118\"", 3.0, 1, 1), w(9, 8.6, "CEILING", 3.0, 1, 2),
+            # a dimension string elsewhere in the room, next in reading order but not stacked
+            w(3, 12, "12'-10", 3.0, 2, 0, 0), w(6, 12, "1/4\"", 3.0, 2, 0, 1),
+            w(24, 8, "GREAT", 6.0, 3, 0, 0), w(28, 8, "ROOM", 6.0, 3, 0, 1), w(24, 10, "VAULTED", 4.0, 4, 0, 0), w(27, 10, "CEILING", 4.0, 4, 0, 1),
+            w(24, 11, "12'-10", 3.0, 5, 0, 0), w(27, 11, "1/4\"", 3.0, 5, 0, 1)]
+cs = rooms.pick_room(res, words_stacked(), *P(10, 10), styles={0}, dpi=100)
+check(cs["ok"] and cs["name"] == "W.I.C.", "W.I.C. is a room name (a room word with no three-letter run): %r" % cs.get("name"))
+check(cs["ok"] and cs.get("ceiling") and abs(cs["ceiling"]["ft"] - 9.094) < 1e-3,
+      "a height on the line directly above CEILING is the ceiling: %s" % cs.get("ceiling"))
+cg = rooms.pick_room(res, words_stacked(), *P(26, 4), styles={0}, dpi=100)
+check(cg["ok"] and cg.get("ceiling") == {"ft": None, "text": "VAULTED CEILING"},
+      "a dimension merely next in reading order (not stacked on the label) is NOT a ceiling height: %s" % cg.get("ceiling"))
+
 # ---- cache -----------------------------------------------------------------------
 print("cache")
 rooms._CACHE.clear()

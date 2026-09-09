@@ -8,7 +8,7 @@
 <link rel="apple-touch-icon" href="/favicon-180.png?v=1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="tokens.css?v=1">
-<link rel="stylesheet" href="style.css?v=77">
+<link rel="stylesheet" href="style.css?v=78">
 </head>
 <body>
 <!-- THE MASTHEAD, after CRITIQUE fix 4.
@@ -714,7 +714,11 @@
         line types you have <i>showing</i> (hide dimension strings and fixtures first; keep the walls) and bridges the
         doors the engine found. If a room runs into the next one as drawn, <b>Close a gap</b> with two clicks across
         the opening, or <b>Draw outline</b> yourself. Give each room a floor type; its colour paints the room on the
-        sheet. Each type becomes one square-foot row and one base/molding row (walls less the door openings).</div>
+        sheet. Each type becomes one square-foot row and one base/molding row (walls less the door openings), with
+        the rooms behind each row listed under it in the takeoff, the CSV and the report. A <b>waste %</b> on a type adds
+        its own row; a ceiling height read in the room (or typed) gives a <b>wall area</b> row (perimeter &times; height,
+        door openings out); a doorway shared by two rooms of different types counts a <b>transition strip</b>; and
+        <b>Walls by type</b> classes the wall line types by their CAD layer or legend name.</div>
       <div id="flTypes" class="fl-types"></div>
       <div id="flBody" class="tr-body"></div>
       <div id="flRows" class="ew-rows"></div>
@@ -1201,6 +1205,6 @@
 </div>
 <datalist id="legendVocab"></datalist>
 <script src="ew_defaults.js?v=1"></script>
-<script src="app.js?v=171"></script>
+<script src="app.js?v=172"></script>
 </body>
 </html>

@@ -383,6 +383,19 @@ def detect_page(pdf_path: str, page: int) -> dict:
             units, (scale or {}).get("ft_per_paper_inch"), words)
     except Exception:
         openings = []
+    # THE SHEET'S OWN DIMENSIONS as a scale check (dimcheck.py). A second
+    # opinion in the same sense the drawn bar is: it never touches `scale`.
+    # Belle A1.00 read 4 ft/in from its caption, the bar agreed, and every
+    # dimension string on the plan measures 8 - which no caption reader can
+    # see. Vector pages only: a scan has no text layer to pair with strokes.
+    dimension_check = None
+    if pc.kind != "raster":
+        try:
+            from .dimcheck import read_dimensions
+
+            dimension_check = read_dimensions(pg, units)
+        except Exception:
+            dimension_check = None
     # texture styles: a shading fill is MANY parallel chains at a tight
     # regular pitch. Measured: GCHC 'SHADING ASPHALT' strips pitch
     # 1-4pt; real parallel features sit far wider (contours 20-40pt,
@@ -443,5 +456,8 @@ def detect_page(pdf_path: str, page: int) -> dict:
         "fills": fills,
         "areas": areas,
         "openings": openings,
+        # what the printed dimensions say the scale is - see dimcheck.py.
+        # None on a scan; a dict with n_printed 0 on a sheet without any.
+        "dimension_check": dimension_check,
         "legend_samples": legend_samples,
     }
