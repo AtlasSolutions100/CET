@@ -12,10 +12,18 @@ original repo; the two share the detection engine and nothing else.
 **How the split works.** `TAKEOFF_PRODUCT=construction` (the default in
 `run-service.sh` here) makes `/api/config` say so, and `webui/app.js`
 `applyProduct` hides the excavation calculators - Earthwork, Trench,
-Structure - from the Tools menu and names the product CET. The code for
-those panels is still in the tree on purpose: the regress gates and the
-shared detection path do not fork, and a change to `chain.py` here should
-be able to land there. Delete nothing that the gates hash.
+Structure - from the Tools menu. The code for those panels is still in the
+tree: the regress gates hash the engine files, so delete nothing they hash.
+
+**Independent, not shared (Koby, 2026-09-09).** The two apps are completely
+independent of each other. Nothing in CET is scoped, toggled or themed
+"for the construction product" against a shared base - CET's `tokens.css`,
+`style.css`, `index.html`, the login and legal pages, the favicon and the
+lockup are CET's own files and carry CET's own look (the plan room: dark
+graphite table, drafting grid, title-block mono caps, safety-orange
+accent, go / caution / stop verdicts - `FINDINGS-2026-09-09.md`). When
+something from the engine repo is needed here, copy it in and make it
+CET's; do not reach across, and do not keep a switch for the other product.
 
 **Its own everything.** Port **8300**, job store `C:/Users/kobys/cet-jobs`,
 its own `.venv` (built with `uv venv .venv --python 3.12`), no git remote

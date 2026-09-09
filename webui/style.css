@@ -3403,3 +3403,194 @@ canvas.swatch-line.recoloured[role="button"]:focus-visible {
 .fl-walls-classify summary { cursor: pointer; }
 .fl-walls-style { display: flex; gap: 6px; align-items: center; justify-content: space-between; padding: 1px 0 1px 10px; }
 .fl-walls-style .ew-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ==========================================================================
+   THE PLAN ROOM — CET's component rules on top of tokens.css (2026-09-09).
+   The palette is in tokens.css; these are the places the title-block idea
+   needs more than a token: the drafting grid under the sheet, the hatch on
+   the masthead, mono caps section labels numbered in the gutter, orange
+   primaries, ruled chips and thumbnails. Nothing here changes a number.
+   ========================================================================== */
+/* ==========================================================================
+   THE TABLE. A drafting grid behind the sheet: 24px minor, 120px major.
+   The grid sits on #stage, under the canvas, so it never touches the
+   raster or a click.
+   ========================================================================== */
+#stage {
+  background-color: var(--t-stage);
+  background-image:
+    linear-gradient(var(--t-grid-strong) 1px, transparent 1px),
+    linear-gradient(90deg, var(--t-grid-strong) 1px, transparent 1px),
+    linear-gradient(var(--t-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--t-grid) 1px, transparent 1px);
+  background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+  background-position: -1px -1px;
+}
+
+/* ==========================================================================
+   THE MASTHEAD as a title block: a hatch rule along the top, the wordmark
+   heavy with an orange marker, the product line in caps mono beneath.
+   ========================================================================== */
+header {
+  position: relative;
+  border-bottom: 1px solid var(--t-border-strong);
+  padding-top: 13px;
+}
+header::before {
+  /* the one authored moment: a 3px hatch stripe, orange on the table */
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  background: repeating-linear-gradient(135deg, var(--t-hatch) 0 7px, transparent 7px 14px);
+  pointer-events: none;
+}
+.brand {
+  /* the wordmark keeps style.css's inline layout (the sub-line is a block
+     under it, the Projects / Settings links sit beside); only the face,
+     weight and marker change */
+  font-family: var(--t-font-ui); font-weight: 700; font-size: 17px;
+  letter-spacing: .10em; margin-right: 10px;
+}
+.brand .brand-mark { color: var(--t-text); }
+.brand .brand-mark::before {
+  /* the marker: a filled orange square, the revision-triangle's plainer
+     cousin, sized to the cap height */
+  content: ""; display: inline-block; width: 10px; height: 10px;
+  background: var(--t-accent); margin-right: 8px; vertical-align: 0;
+}
+.brand .brand-o { color: inherit; }
+.brand .brand-sub {
+  font-family: var(--t-font-data); font-size: 11px; font-weight: 500;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--t-text-dim);
+  margin-top: 2px;
+}
+.projects-link { color: var(--t-accent); }
+
+/* ==========================================================================
+   SECTION HEADS as title-block labels: mono caps, ruled beneath. (A first
+   cut numbered them 01, 02 in the gutter; only the top card ever showed a
+   number because the tool panels are not direct children of the scroll,
+   and one numbered card among unnumbered ones reads as an accident.)
+   ========================================================================== */
+.side-head {
+  border-bottom: 1px solid var(--t-border); padding: 9px 12px 6px;
+}
+.side-head h2,
+.takeoff-head h2,
+.pv-head h1 {
+  font-family: var(--t-font-data); font-size: 11px; font-weight: 500;
+  letter-spacing: .10em; text-transform: uppercase; color: var(--t-text-dim);
+}
+.side-head h2::before,
+.takeoff-head h2::before { color: var(--t-text-faint); }
+
+/* ==========================================================================
+   CONTROLS. Primary = orange with dark ink; everything else keeps the
+   ruled field look. Approve is an ACTION, so it leaves the verdict green.
+   ========================================================================== */
+select,
+input,
+button { border-radius: var(--t-r-2); }
+button:hover { border-color: var(--t-accent); }
+#detectBtn,
+.pv-new,
+#approveBtn {
+  background: var(--t-accent); border-color: var(--t-accent-deep);
+  color: var(--t-accent-ink); font-weight: 700;
+}
+#detectBtn:hover,
+.pv-new:hover,
+#approveBtn:hover:not(:disabled) {
+  background: var(--t-accent-deep); color: var(--t-surface-3); border-color: var(--t-accent-deep);
+}
+#approveBtn:disabled {
+  background: var(--t-field); color: var(--t-text-faint); border-color: var(--t-border);
+}
+.status.busy { color: var(--t-accent); }
+#toolsBtn[aria-expanded="true"] {
+  background: var(--t-surface-3); border-color: var(--t-accent);
+}
+
+/* header chips: the caption and its second opinions read as stamps */
+.sh-chip {
+  border-radius: var(--t-r-1); letter-spacing: .03em;
+  border: 1px solid var(--t-border);
+}
+.sh-chip.ok {
+  background: var(--t-ok-bg); color: var(--t-ok); border-color: transparent;
+}
+.sh-chip.warn {
+  background: var(--t-warn-bg); color: var(--t-warn); border-color: transparent;
+}
+.sh-chip.bad {
+  background: var(--t-stop-bg); color: var(--t-stop); border-color: transparent;
+}
+
+/* ==========================================================================
+   SHEETS. Page thumbnails are drawings pinned to the table: square corners,
+   the current one held by the orange rule. Project cards the same, with a
+   paper-white plate for the thumbnail.
+   ========================================================================== */
+.thumb { border-radius: 2px; }
+.thumb.current { outline-color: var(--t-accent); }
+.thumb:hover { border-color: var(--t-accent); }
+.pv-card { border-radius: var(--t-r-3); }
+.pv-thumb { background: var(--t-surface-3); }
+.pv-card.pv-current { border-color: var(--t-accent); }
+.pv-name { font-weight: 600; }
+.pv-meta { font-family: var(--t-font-data); letter-spacing: .02em; }
+.pv-tab[aria-selected="true"] {
+  color: var(--t-text); border-bottom-color: var(--t-accent);
+}
+
+/* ==========================================================================
+   TAKEOFF ROWS. Trade heads as ruled labels, the totals line as a title-
+   block sum. The money number stays the largest thing in the sidebar.
+   ========================================================================== */
+.trade-head {
+  color: var(--t-text); font-family: var(--t-font-data); font-size: 11px;
+  letter-spacing: .08em; text-transform: uppercase;
+  border-top: 1px solid var(--t-border-strong); padding-top: 6px;
+}
+.trade-head .t-sub { text-transform: none; letter-spacing: .02em; }
+.item-row input.qty-in.ov { border-color: var(--t-accent); }
+.item-row select.trade-pick:hover { color: var(--t-accent); }
+.approve-bar { border-top: 2px solid var(--t-border-strong); }
+
+/* the verdict banner: the badge words wear the sign colours, the rule on
+   the left is the stripe on a sign post */
+.conf-badge { border-radius: 2px; letter-spacing: .08em; }
+.conf.warn { border-left-color: var(--t-warn); }
+
+/* menus and floating toolbars: ruled cards */
+.tools-menu,
+.toolkit,
+.mini-legend,
+.canvas-status { border-radius: var(--t-r-3); }
+.tools-menu button.t-on::before { background: var(--t-accent); }
+.tm-group {
+  font-family: var(--t-font-data); letter-spacing: .10em; text-transform: uppercase; font-size: 10px;
+}
+
+/* the status bar: the drawing's bottom margin - mono, quiet */
+.status-bar { border-top: 1px solid var(--t-border-strong); }
+.status-bar .status { font-family: var(--t-font-data); font-size: var(--t-fs-xs); }
+.beta-chip {
+  border-radius: 2px; letter-spacing: .06em; text-transform: uppercase; font-size: 11px;
+  font-family: var(--t-font-data);
+}
+
+/* the flooring panel's colour swatches and the wall class table inherit
+   the ruled look */
+.fl-swatch { border-radius: 2px; }
+.fl-dot { border-radius: 2px; }
+.fl-walls { border-top-color: var(--t-border-strong); }
+.fl-walls-head b {
+  font-family: var(--t-font-data); font-size: 11px; letter-spacing: .10em;
+  text-transform: uppercase; color: var(--t-text-dim); font-weight: 500;
+}
+.fl-th {
+  font-family: var(--t-font-data); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+}
+
+/* focus: the accent, always visible on the table */
+:focus-visible { outline-color: var(--t-accent); }
+

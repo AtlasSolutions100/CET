@@ -517,10 +517,6 @@ const PRODUCT_HIDE = { construction: ["ewBtn", "trBtn", "stBtn"], excavation: []
 function applyProduct(cfg) {
   if (!cfg || !cfg.product) return;
   window.PRODUCT = cfg.product;
-  // the product's own theme: webui/construction.css is scoped to
-  // html[data-product="construction"] (index.html sets it statically too,
-  // so there is no flash of the shared engine's green on load)
-  document.documentElement.dataset.product = cfg.product;
   for (const id of PRODUCT_HIDE[cfg.product] || []) {
     const el = $(id);
     if (el) { el.hidden = true; el.dataset.productHidden = "1"; }

@@ -2,19 +2,19 @@
    both pages must render for somebody who is NOT signed in, so every asset
    they need is on the public allowlist, and that list should stay short. */
 :root {
-  --bg: #131511; --panel: #1b1e1a; --line: #2b2f2a; --text: #e8ebe6;
-  --dim: #98a29a; --accent: #3fa873; --chip: #262a32;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --bg: #0d1013; --panel: #1a1d1f; --line: #343a3e; --text: #ecece8;
+  --dim: #a3a9a6; --accent: #f0862c; --chip: #262b2e;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
-  font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.65 "IBM Plex Sans", "Segoe UI", -apple-system, system-ui, sans-serif;
 }
 .beta {
   position: sticky; top: 0; z-index: 5;
-  padding: 5px 12px; font-size: 11px; font-weight: 600; letter-spacing: .02em;
-  color: #3b2600; background: #f5d67e; border-bottom: 1px solid #c9a227;
+  padding: 5px 12px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  font-family: var(--mono); color: #241a03; background: #e7b83a; border-bottom: 1px solid #b8901f;
   text-align: center;
 }
 main {
@@ -32,6 +32,7 @@ h2 {
   font-size: 15px; margin: 30px 0 8px; padding-top: 14px;
   border-top: 1px solid var(--line);
 }
+h2::before { content: ""; display: inline-block; width: 8px; height: 8px; background: var(--accent); margin-right: 10px; vertical-align: 1px; }
 .meta { color: var(--dim); font-size: 12.5px; margin: 0 0 22px; }
 p { margin: 0 0 12px; }
 ul { margin: 0 0 12px; padding-left: 20px; }
@@ -41,7 +42,7 @@ strong { color: #fff; }
 .callout {
   background: var(--chip); border: 1px solid var(--line);
   border-left: 3px solid var(--accent);
-  border-radius: 6px; padding: 14px 16px; margin: 20px 0 8px;
+  border-radius: 4px; padding: 14px 16px; margin: 20px 0 8px;
   font-size: 14.5px;
 }
 /* The bits a human still has to fill in. Loud on purpose - shipping a policy
@@ -57,8 +58,8 @@ th { background: var(--chip); font-size: 12px; text-transform: uppercase; letter
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f2f3ef; --panel: #fff; --line: #e0e3dc; --text: #28292c;
-    --dim: #6f7873; --accent: #1f5c3e; --chip: #eef0ea;
+    --bg: #f4f1e9; --panel: #fbfaf6; --line: #d8d3c7; --text: #24262a;
+    --dim: #6f7873; --accent: #c9560f; --chip: #eef0ea;
   }
   strong { color: #000; }
   .fill { background: #ffe9b0; color: #6b4a00; }
