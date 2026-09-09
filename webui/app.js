@@ -517,6 +517,10 @@ const PRODUCT_HIDE = { construction: ["ewBtn", "trBtn", "stBtn"], excavation: []
 function applyProduct(cfg) {
   if (!cfg || !cfg.product) return;
   window.PRODUCT = cfg.product;
+  // the product's own theme: webui/construction.css is scoped to
+  // html[data-product="construction"] (index.html sets it statically too,
+  // so there is no flash of the shared engine's green on load)
+  document.documentElement.dataset.product = cfg.product;
   for (const id of PRODUCT_HIDE[cfg.product] || []) {
     const el = $(id);
     if (el) { el.hidden = true; el.dataset.productHidden = "1"; }
@@ -22002,7 +22006,7 @@ function renderFl() {
 
   // floor types: colour, name, prices, waste, what they hold
   const tbl = mk("div", "fl-types-tbl");
-  for (const h of ["floor type", "$/SF", "$/LF base", "waste %", ""]) tbl.appendChild(mk("div", "fl-th", h));
+  for (const h of ["floor type", "$/SF", "$/LF", "waste %", ""]) tbl.appendChild(mk("div", "fl-th", h));
   fl.types.forEach((t, i) => {
     const sw = document.createElement("input");
     sw.type = "color"; sw.value = t.color; sw.className = "fl-swatch";
