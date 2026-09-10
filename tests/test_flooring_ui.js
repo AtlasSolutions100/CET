@@ -178,7 +178,7 @@ check(dc && /styles: all, closures: fl\.closures/.test(dc) && /j\.area_sf >= 0\.
       "...else the cell under the click is asked of the engine with EVERY line type as wall, and a cell that is most of the room is refused");
 const ad = grab("flApplyDeductDefaults");
 check(ad && /if \(!o\.manual\) o\.deduct = !!fl\.deductDefaults\[o\.kind\] && !o\.guessed;/.test(ad), "a changed default reaches every object nobody ticked by hand");
-check(/"fl-close", "fl-deduct",/.test(SRC) && /const FL_TOOLS = \["fl-pick", "fl-draw", "fl-close", "fl-deduct"\]/.test(SRC), "the deduct tool is a POINT_TOOL and a flooring tool");
+check(/"fl-close", "fl-deduct",/.test(SRC) && /const FL_TOOLS = \["fl-pick", "fl-draw", "fl-close", "fl-deduct"(, "fl-edit")?\]/.test(SRC), "the deduct tool is a POINT_TOOL and a flooring tool");
 const dr2 = grab("drawFlooring");
 check(dr2 && /if \(o\.deduct\) hatch\(o\.pts\);/.test(dr2) && /for \(const d of \(r\.deductions \|\| \[\]\)\) hatch\(d\.pts\);/.test(dr2), "deducted objects and clicked-out shapes are hatched on the sheet");
 const rf3 = grab("renderFl");
@@ -312,6 +312,80 @@ for (const id of ["flHead", "flClose", "flHint", "flTypes", "flBody", "flRows", 
 const v = /app\.js\?v=(\d+)/.exec(HTML);
 check(v && Number(v[1]) >= 166, "index.html: cache-buster moved (got " + (v && v[1]) + ")");
 check(/\.fl-types-tbl \{/.test(CSS) && /\.fl-swatch \{/.test(CSS) && /\.fl-row-top \{/.test(CSS), "style.css: the panel's rules");
+
+// ---- THE POINT EDITOR and THE 3D VIEW (2026-09-09) ----
+console.log("point editor");
+check(/"fl-edit"/.test(grabConst("POINT_TOOLS") || "") , "fl-edit is a point tool (crosshair cursor)");
+check(/const FL_TOOLS = \[[^\]]*"fl-edit"/.test(SRC), "fl-edit is in FL_TOOLS (Esc releases it, the click dispatcher routes it)");
+const edgeAt = new Function(grab("flEditEdgeAt") + "; return flEditEdgeAt;")();
+const vertAt = new Function(grab("flEditVertexAt") + "; return flEditVertexAt;")();
+const sq = [[0, 0], [10, 0], [10, 10], [0, 10]];
+let ed = edgeAt(sq, 5, 0.4, 1.5);
+check(ed && ed.i === 0 && Math.abs(ed.at[0] - 5) < 1e-9 && Math.abs(ed.at[1]) < 1e-9, "a press near the top edge lands ON the edge at the projection (5,0)");
+ed = edgeAt(sq, 10.3, 7, 1.5);
+check(ed && ed.i === 1 && Math.abs(ed.at[0] - 10) < 1e-9 && Math.abs(ed.at[1] - 7) < 1e-9, "the right edge: index 1, projection (10,7)");
+check(edgeAt(sq, 5, 5, 1.5) === null, "the middle of the room is on no edge");
+check(edgeAt(sq, 0.5, 9.5, 1.5) && edgeAt(sq, 0.5, 9.5, 1.5).i === 3 || edgeAt(sq, 0.5, 9.5, 1.5).i === 2, "a corner-adjacent press still finds an edge");
+check(vertAt(sq, 9.6, 10.3, 1.5) === 2 && vertAt(sq, 5, 5, 1.5) === -1, "the nearest corner within tolerance, or -1");
+const recompute = new Function(grab("stPolyArea") + ";" + grab("stPolyPerim") + ";" + grab("flEditRecompute") + "; return flEditRecompute;")();
+const rr = recompute({ pts: [[0, 0], [10, 0], [10, 10], [0, 10]], openings_lf: 3, ceiling_ft: 9, objects: [{ deduct: true, area_sf: 1 }] }, 0.5);
+check(rr.area_pt2 === 100 && rr.perim_pt === 40 && rr.area_sf === 25 && rr.perim_lf === 20, "recompute: area and perimeter from the polygon at the scale (100 pt² → 25 SF, 40 pt → 20 LF)");
+check(rr.source === "edited" && rr.openings_lf === 3 && rr.ceiling_ft === 9 && rr.objects.length === 1, "the source becomes 'edited'; door openings, ceiling and objects stay as picked");
+check(recompute({ pts: sq }, null).area_sf === null, "no scale: area_sf stays null, never 0");
+const md = /addEventListener\("mousedown", \(e\) => \{\n  if \(state\.tool !== "fl-edit" \|\| e\.target !== cv \|\| e\.button !== 0\) return;[\s\S]*?\n\}, true\);/.exec(SRC);
+check(!!md, "the editor's mousedown runs in the CAPTURE phase on the window");
+check(md && /r\.pts\.splice\(ed\.i \+ 1, 0, ed\.at\)/.test(md[0]), "a press on an edge inserts a corner at the projection, right after the edge's first point");
+check(md && /e\.preventDefault\(\); e\.stopImmediatePropagation\(\);/.test(md[0]), "and stops the sheet's own pan / vertex-drag from seeing it");
+check(md && /if \(!ed\) return;/.test(md[0]), "a press off the outline is left to the pan (and the click that selects another room)");
+const mu = /addEventListener\("mouseup", \(e\) => \{\n  if \(state\.tool !== "fl-edit"\) return;[\s\S]*?\n\}, true\);/.exec(SRC);
+check(mu && /flEditRecompute\(r, stFtPerPt\(\)\)/.test(mu[0]) && /flApplyItems\(\); renderFl\(\); draw\(\);/.test(mu[0]), "mouseup recomputes the room and re-applies the takeoff rows");
+const rmv = grab("flEditRemoveVertex");
+check(rmv && /if \(r\.pts\.length <= 3\) return setStatus\("a room keeps at least 3 corners"/.test(rmv), "a corner cannot be removed below 3");
+check(/if \(\(e\.key === "Delete" \|\| e\.key === "Backspace"\) && state\.tool === "fl-edit"\)/.test(SRC), "Delete / Backspace removes the hovered corner while editing");
+check(/if \(state\.tool !== "fl-edit"\) return;\n  const r = flEditRoom\(\);[\s\S]{0,200}flEditRemoveVertex\(vi\)/.test(SRC), "double-click on a corner removes it");
+const rl = grab("flRoomLine");
+check(rl && /r\.source === "edited"\) s \+= " \\u00b7 shape edited by hand"/.test(rl), "the room line says 'shape edited by hand'");
+const asv = grab("flApplySaved");
+check(asv && /r\.source === "drawn" \|\| r\.source === "edited" \? r\.source : "click"/.test(asv), "a restored room keeps 'edited'");
+const rfe = grab("renderFl");
+check(rfe && /mode\("Edit shape", "fl-edit"/.test(rfe), "the panel has the Edit shape mode");
+check(rfe && /mk\("button", "mini", "edit"\)/.test(rfe) && /flEditSelect\(k\)/.test(rfe), "each room row has its own edit button that selects that room");
+check(rfe && /top\.append\(dot, nm, sel, clg, ed, rm\)/.test(rfe), "placed before the remove button");
+const dis = grab("flDisarm");
+check(dis && /fl\.edit = null/.test(dis), "disarming forgets the edited room");
+const dfe = grab("drawFlooring");
+check(dfe && /state\.tool === "fl-edit" && fl\.edit && fl\.edit\.room !== null/.test(dfe) && /CV_VERTEX_ON/.test(dfe), "the canvas draws a handle on every corner of the selected room in the sheet's own vertex colours");
+check(dfe && /hv\.e !== undefined && hv\.at/.test(dfe), "and marks the spot on a hovered edge where a press would add one");
+
+console.log("3D view");
+const FL3D = fs.readFileSync(path.join(__dirname, "..", "webui", "fl3d.js"), "utf8");
+check(rfe && /mk\("button", "mini", "3D view"\)/.test(rfe) && /b3\.onclick = flOpen3d/.test(rfe), "the panel has the 3D view button");
+check(rfe && /b3\.disabled = !fl\.rooms\.length/.test(rfe), "disabled until a room exists");
+const o3 = grab("flOpen3d");
+check(o3 && /s\.src = "fl3d\.js\?v=\d+"/.test(o3) && /window\.fl3dOpen\(fl, \{/.test(o3), "flOpen3d loads fl3d.js on first press, then hands it the flooring state");
+check(o3 && /fpp: stFtPerPt\(\)/.test(o3) && /wallH: fl\.default_ceiling_ft \|\| 9/.test(o3), "with the sheet scale and the panel's default ceiling height");
+check(/VENDOR = \["vendor\/three\.min\.js", "vendor\/OrbitControls\.js"\]/.test(FL3D), "fl3d.js loads the VENDORED three.js and OrbitControls, on demand");
+check(!/https?:\/\/(cdn|unpkg|jsdelivr)/.test(FL3D), "no CDN: the field office renders it offline");
+for (const f of ["three.min.js", "OrbitControls.js", "THREE-LICENSE"])
+  check(fs.existsSync(path.join(__dirname, "..", "webui", "vendor", f)), "webui/vendor/" + f + " is in the tree");
+const texKind = new Function(FL3D.slice(FL3D.indexOf("function texKind("), FL3D.indexOf("// ---- the view")) + "; return texKind;")();
+check(texKind("Carpet") === "carpet" && texKind("Tile") === "tile" && texKind("Hardwood") === "wood" && texKind("LVP") === "lvp"
+      && texKind("Laminate") === "lvp" && texKind("Porcelain tile") === "tile" && texKind("Type 3") === "plain" && texKind(null) === "plain",
+      "a floor type's NAME picks its texture: carpet / tile / wood / LVP, else plain");
+check(/TEX = \{\n    carpet\(hex\)/.test(FL3D) && /tile\(hex\)/.test(FL3D) && /wood\(hex\)/.test(FL3D) && /lvp\(hex\)/.test(FL3D) && /plain\(hex\)/.test(FL3D),
+      "the five textures are drawn procedurally on a canvas, tinted with the type's colour");
+check(/tex\.repeat\.set\(1 \/ t\.sizeFt, 1 \/ t\.sizeFt\)/.test(FL3D), "texture repeat is in FEET (a 1 ft tile is 1 ft on the floor)");
+check(/for \(const o of \(r\.objects \|\| \[\]\)\) if \(o\.deduct && o\.pts && o\.pts\.length >= 3\) holes\.push\(o\.pts\);/.test(FL3D)
+      && /for \(const d of \(r\.deductions \|\| \[\]\)\) if \(d\.pts && d\.pts\.length >= 3\) holes\.push\(d\.pts\);/.test(FL3D),
+      "deducted fixtures and clicked-out shapes are holes in the floor slab");
+check(/const hFt = \(r\.ceiling_ft > 0 \? r\.ceiling_ft : \(fl\.default_ceiling_ft > 0 \? fl\.default_ceiling_ft : opts\.wallH\)\) \|\| 9;/.test(FL3D),
+      "wall height: the room's own ceiling, else the panel default, else the bar's number, else 9 ft");
+check(/new THREE\.Vector2\(w\[0\], -w\[1\]\)/.test(FL3D) && /floor\.rotation\.x = -Math\.PI \/ 2/.test(FL3D), "page y runs down; the floor is laid so the plan reads the right way round from above");
+check(/id="fl3dClose"/.test(FL3D) && /window\.fl3dClose = close/.test(FL3D) && /view\.dispose\(\)/.test(FL3D), "close disposes the renderer");
+check(/#fl3d \{ position: fixed; inset: 0; z-index: 60/.test(CSS) && /#fl3dStage \{ flex: 1/.test(CSS), "style.css: the overlay");
+check(/<b>Edit shape<\/b>/.test(HTML) && /<b>3D view<\/b>/.test(HTML), "index.html: the hint names both");
+const v2 = /app\.js\?v=(\d+)/.exec(HTML);
+check(v2 && Number(v2[1]) >= 177, "index.html: cache-buster moved for the editor (got " + (v2 && v2[1]) + ")");
 
 console.log(fails ? "\n" + fails + " FAILURE(S)" : "\nall green");
 process.exit(fails ? 1 : 0);

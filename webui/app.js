@@ -195,7 +195,7 @@ const state = window.state = {
 const POINT_TOOLS = new Set([
   "measure", "extend", "cutspan", "drawline", "merge", "reclass",
   "ew-bound", "ew-bound-draw", "ew-pick", "st-pick", "st-draw", "wz-draw",
-  "gz-draw", "gz-box", "fl-pick", "fl-draw", "fl-close", "fl-deduct",
+  "gz-draw", "gz-box", "fl-pick", "fl-draw", "fl-close", "fl-deduct", "fl-edit",
 ]);
 
 // The three polygons the operator draws corner by corner. One set, so the
@@ -21385,7 +21385,7 @@ const FL_DEFAULT_TYPES = ["Carpet", "LVP", "Tile", "Hardwood"];
 const FL_UNASSIGNED = "#9aa3b2";
 const FL_CLOSE_COLOR = "#ff5d3b";
 const FL_LABEL_RX = /^(Flooring|Base\/molding|Waste|Wall area|Transition strips|Walls) \u2014 /;
-const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close", "fl-deduct"];
+const FL_TOOLS = ["fl-pick", "fl-draw", "fl-close", "fl-deduct", "fl-edit"];
 // WHAT FLOORING STOPS AT. The engine lists every fixture-sized cell the
 // non-wall linework encloses inside a room (rooms.room_objects) and names
 // it from its CAD layer and size; this table says which kinds come out of
@@ -21426,6 +21426,8 @@ function flSync() {
     state.fl = { result: state.result, types: FL_DEFAULT_TYPES.map((n, i) => flNewType(n, i)),
                  rooms: [], closures: [], seq: 1, hot: null, busy: false, drawPts: [],
                  hover: null, closeDraft: null, lastType: 0,
+                 // the outline being reshaped by hand: {room, drag, hover}
+                 edit: null,
                  // a ceiling height for rooms whose label carries none (typed)
                  default_ceiling_ft: null,
                  // wall line types by class {style_id: class}; faces per wall
@@ -21601,6 +21603,7 @@ function flRoomLine(r, fl) {
   if (r.holes_sf > 0) s += " \u00b7 " + flFmt(r.holes_sf) + " SF inside it not counted";
   if (r.closures) s += " \u00b7 " + r.closures + " gap" + (r.closures === 1 ? "" : "s") + " closed by hand";
   if (r.source === "drawn") s += " \u00b7 outline drawn by hand";
+  else if (r.source === "edited") s += " \u00b7 shape edited by hand";
   return s;
 }
 function flApplyItems() {
@@ -21811,7 +21814,7 @@ function flApplySaved() {
         openings_lf: calcNum(r.openings_lf) || 0, holes_sf: calcNum(r.holes_sf) || 0,
         doors: calcNum(r.doors) || 0, closures: calcNum(r.closures) || 0,
         type: Number.isInteger(r.type) ? r.type : null,
-        source: r.source === "drawn" ? "drawn" : "click", click: Array.isArray(r.click) ? r.click : null,
+        source: r.source === "drawn" || r.source === "edited" ? r.source : "click", click: Array.isArray(r.click) ? r.click : null,
         ceiling_ft: cf !== null && cf > 0 ? cf : null,
         ceiling_text: r.ceiling_text ? String(r.ceiling_text) : null,
         ceiling_by: r.ceiling_by === "typed" ? "typed" : (cf !== null && cf > 0 ? "sheet" : null),
@@ -21866,8 +21869,14 @@ function flArm(mode) {
   else if (state.tool === "reclass") $("reclassBtn").onclick();
   else if (state.tool === "st-pick" || state.tool === "st-draw") stDisarm("");
   state.tool = mode; fl.drawPts = []; fl.hover = null; fl.closeDraft = null;
+  if (mode !== "fl-edit") fl.edit = null;
+  else if (!fl.edit) fl.edit = { room: null, drag: null, hover: null };
   polySnapClear();
-  setStatus(mode === "fl-pick"
+  setStatus(mode === "fl-edit"
+    ? (fl.edit.room !== null
+        ? `edit shape: ${fl.rooms[fl.edit.room].name} \u2014 drag a corner, press on an edge to add one there, double-click or Delete removes a corner (Esc exits)`
+        : "edit shape: click inside a picked room to select it, then drag its corners; press on an edge to add a corner there (Esc exits)")
+    : mode === "fl-pick"
     ? "flooring: click inside a room \u2014 only the line types you have showing count as walls (Esc exits)"
     : mode === "fl-close"
     ? "close a gap: click one side of the opening, then the other \u2014 the fill treats that line as wall"
@@ -21878,7 +21887,7 @@ function flArm(mode) {
 }
 function flDisarm(msg) {
   const fl = flSync();
-  state.tool = null; fl.drawPts = []; fl.hover = null; fl.closeDraft = null;
+  state.tool = null; fl.drawPts = []; fl.hover = null; fl.closeDraft = null; fl.edit = null;
   polySnapClear();
   if (msg !== undefined) setStatus(msg);
   renderFl(); draw();
@@ -22087,12 +22096,148 @@ async function flDeductClick(px, py) {
     fl.busy = false;
   }
 }
+
+// ---- THE POINT EDITOR (2026-09-09) ----
+// Rooms the engine cannot fill right - a bay the walls-only fill missed, a
+// closet the sheet leaves open, a fireplace jog - get fixed by hand on the
+// outline itself instead of redrawn: drag any corner, press on an edge to
+// put a new corner there, double-click (or Delete) a corner to remove it.
+// Area and perimeter are recomputed from the polygon on every change; the
+// door openings, the ceiling note and the fixtures inside stay as picked,
+// and the room line says "shape edited by hand". The handlers run in the
+// CAPTURE phase on the window so the sheet's own pan / vertex-drag never
+// sees a press the editor took.
+function flEditTolPt() { return 7 / state.view.k / (IMG_DPI / 72) + 1.5; }
+// nearest corner of pts within tol, or -1
+function flEditVertexAt(pts, x, y, tol) {
+  let best = -1, bd = tol;
+  pts.forEach((q, i) => { const d = Math.hypot(x - q[0], y - q[1]); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+// nearest edge within tol: {i, at:[x,y], t} for the edge pts[i]->pts[i+1], or null
+function flEditEdgeAt(pts, x, y, tol) {
+  let best = null, bd = tol;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    const dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+    if (L2 < 1e-9) continue;
+    let t = ((x - a[0]) * dx + (y - a[1]) * dy) / L2;
+    t = Math.max(0, Math.min(1, t));
+    const px = a[0] + t * dx, py = a[1] + t * dy;
+    const d = Math.hypot(x - px, y - py);
+    if (d < bd) { bd = d; best = { i, at: [px, py], t }; }
+  }
+  return best;
+}
+// the room's numbers from its polygon; everything else stays as picked
+function flEditRecompute(r, fpp) {
+  r.area_pt2 = stPolyArea(r.pts);
+  r.perim_pt = stPolyPerim(r.pts);
+  r.area_sf = fpp ? r.area_pt2 * fpp * fpp : null;
+  r.perim_lf = fpp ? r.perim_pt * fpp : null;
+  r.source = "edited";
+  return r;
+}
+function flEditSelect(k) {
+  const fl = flSync();
+  if (state.tool !== "fl-edit") flArm("fl-edit");
+  fl.edit = { room: k, drag: null, hover: null };
+  fl.hot = k;
+  setStatus(`edit shape: ${fl.rooms[k].name} — drag a corner, press on an edge to add one there, double-click or Delete removes a corner (Esc exits)`, "busy");
+  renderFl(); draw();
+}
+function flEditRoom() {
+  const fl = state.fl;
+  if (!fl || !fl.edit || fl.edit.room === null) return null;
+  const r = fl.rooms[fl.edit.room];
+  return r && r.pts && r.pts.length >= 3 ? r : null;
+}
+function flEditRemoveVertex(i) {
+  const fl = flSync();
+  const r = flEditRoom();
+  if (!r || i < 0 || i >= r.pts.length) return;
+  if (r.pts.length <= 3) return setStatus("a room keeps at least 3 corners", "err");
+  r.pts.splice(i, 1);
+  flEditRecompute(r, stFtPerPt());
+  fl.edit.hover = null;
+  flApplyItems(); renderFl(); draw();
+  setStatus(`${r.name}: corner removed — ${flRoomLine(r, fl)}`, "ok");
+}
+addEventListener("mousedown", (e) => {
+  if (state.tool !== "fl-edit" || e.target !== cv || e.button !== 0) return;
+  const fl = flSync();
+  const r = flEditRoom();
+  if (!r) return;                      // no room selected yet: the click selects one
+  const [x, y] = ptFromEvent(e);
+  const tol = flEditTolPt();
+  let vi = flEditVertexAt(r.pts, x, y, tol);
+  if (vi < 0) {
+    const ed = flEditEdgeAt(r.pts, x, y, tol);
+    if (!ed) return;                   // off the outline: pan, or select another room
+    r.pts.splice(ed.i + 1, 0, ed.at);  // a new corner on the edge, under the cursor
+    vi = ed.i + 1;
+  }
+  fl.edit.drag = { i: vi, moved: false };
+  e.preventDefault(); e.stopImmediatePropagation();
+  draw();
+}, true);
+addEventListener("mousemove", (e) => {
+  if (state.tool !== "fl-edit") return;
+  const fl = flSync();
+  const r = flEditRoom();
+  if (!r) return;
+  if (fl.edit.drag) {
+    r.pts[fl.edit.drag.i] = ptFromEvent(e);
+    fl.edit.drag.moved = true;
+    e.stopImmediatePropagation();
+    draw();
+    return;
+  }
+  if (e.target !== cv) return;
+  const [x, y] = ptFromEvent(e);
+  const tol = flEditTolPt();
+  const vi = flEditVertexAt(r.pts, x, y, tol);
+  let hover = null;
+  if (vi >= 0) hover = { v: vi };
+  else { const ed = flEditEdgeAt(r.pts, x, y, tol); if (ed) hover = { e: ed.i, at: ed.at }; }
+  const was = fl.edit.hover;
+  fl.edit.hover = hover;
+  if (JSON.stringify(was) !== JSON.stringify(hover)) draw();
+}, true);
+addEventListener("mouseup", (e) => {
+  if (state.tool !== "fl-edit") return;
+  const fl = flSync();
+  const r = flEditRoom();
+  if (!r || !fl.edit.drag) return;
+  const d = fl.edit.drag;
+  fl.edit.drag = null;
+  e.stopImmediatePropagation();
+  flEditRecompute(r, stFtPerPt());
+  flApplyItems(); renderFl(); draw();
+  setStatus(`${r.name}: ${d.moved ? "corner moved" : "corner set"} — ${flRoomLine(r, fl)}`, "ok");
+}, true);
+cv.addEventListener("dblclick", (e) => {
+  if (state.tool !== "fl-edit") return;
+  const r = flEditRoom();
+  if (!r) return;
+  const [x, y] = ptFromEvent(e);
+  const vi = flEditVertexAt(r.pts, x, y, flEditTolPt());
+  if (vi >= 0) { e.preventDefault(); flEditRemoveVertex(vi); }
+});
+function flEditClick(px, py) {
+  const fl = flSync();
+  const k = fl.rooms.findIndex(r => r.pts && r.pts.length >= 3 && flPointIn(r.pts, px, py));
+  if (k < 0) return setStatus("edit shape: click inside a room you have picked or drawn", "err");
+  if (fl.edit && fl.edit.room === k) return;
+  flEditSelect(k);
+}
 function flCanvasClick(e) {
   const [px, py] = ptFromEvent(e);
   if (state.tool === "fl-pick") flPickAt(px, py);
   else if (state.tool === "fl-draw") flDrawClick(px, py);
   else if (state.tool === "fl-close") flCloseClick(px, py);
   else if (state.tool === "fl-deduct") flDeductClick(px, py);
+  else if (state.tool === "fl-edit") flEditClick(px, py);
 }
 const _flClickBefore = handleCanvasClick;
 handleCanvasClick = function (e) {
@@ -22114,6 +22259,14 @@ cv.addEventListener("dblclick", () => { if (state.tool === "fl-draw") flFinishDr
 addEventListener("keydown", (e) => {
   if (typing()) return;
   if (!FL_TOOLS.includes(state.tool)) return;
+  if ((e.key === "Delete" || e.key === "Backspace") && state.tool === "fl-edit") {
+    const fl = flSync();
+    if (fl.edit && fl.edit.hover && fl.edit.hover.v !== undefined) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      flEditRemoveVertex(fl.edit.hover.v);
+    }
+    return;
+  }
   if (e.key === "Enter" && state.tool === "fl-draw") {
     e.preventDefault(); e.stopImmediatePropagation();
     flFinishDraw();
@@ -22214,7 +22367,13 @@ function renderFl() {
     mode("Pick rooms", "fl-pick", "Click inside a room: the engine fills to the walls of the line types you have showing, bridging the doors it detected"),
     mode("Close a gap", "fl-close", "Two clicks across an opening the sheet leaves open; the fill treats that line as wall"),
     mode("Draw outline", "fl-draw", "Click each corner of the room yourself"),
-    mode("Deduct", "fl-deduct", "Click a fixture inside a picked room: a listed object toggles in or out of the flooring; any other shape the lines enclose (a tub drawn on no layer, a hearth) comes out of that room"));
+    mode("Deduct", "fl-deduct", "Click a fixture inside a picked room: a listed object toggles in or out of the flooring; any other shape the lines enclose (a tub drawn on no layer, a hearth) comes out of that room"),
+    mode("Edit shape", "fl-edit", "Fix an outline by hand: click a room, then drag its corners; press on an edge to add a corner there; double-click or Delete removes one. Area and walls follow the new shape."));
+  const b3 = mk("button", "mini", "3D view");
+  b3.title = "Stand the picked rooms up: floors in each type's material and colour, walls to the ceiling height, fixtures cut out. Orbit with the mouse.";
+  b3.disabled = !fl.rooms.length;
+  b3.onclick = flOpen3d;
+  modes.appendChild(b3);
   modes.appendChild(mk("span", "ew-meta", fpp ? `scale ${state.result.scale.text}` : "NO SCALE SET \u2014 pt only"));
   body.appendChild(modes);
 
@@ -22365,9 +22524,13 @@ function renderFl() {
       if (Number.isInteger(r.type)) fl.lastType = r.type;
       flApplyItems(); renderFl(); draw();
     };
+    const ed = mk("button", "mini", "edit");
+    ed.title = "reshape this room's outline by hand: drag corners, add one on an edge, remove with a double-click";
+    ed.classList.toggle("active", state.tool === "fl-edit" && !!fl.edit && fl.edit.room === k);
+    ed.onclick = () => (state.tool === "fl-edit" && fl.edit && fl.edit.room === k) ? flDisarm("edit shape: done") : flEditSelect(k);
     const rm = mk("button", "mini", "\u00d7");
     rm.title = "remove this room";
-    rm.onclick = () => { fl.rooms.splice(k, 1); flApplyItems(); renderFl(); draw(); };
+    rm.onclick = () => { if (fl.edit && fl.edit.room === k) fl.edit = null; fl.rooms.splice(k, 1); flApplyItems(); renderFl(); draw(); };
     // the ceiling height: the sheet's note prefilled, a typed number wins
     const clg = document.createElement("input");
     clg.type = "number"; clg.step = "0.01"; clg.min = "0"; clg.className = "fl-num fl-clg";
@@ -22383,7 +22546,7 @@ function renderFl() {
       clg.classList.remove("from-sheet");
       flApplyItems(); renderFl();
     };
-    top.append(dot, nm, sel, clg, rm);
+    top.append(dot, nm, sel, clg, ed, rm);
     row.appendChild(top);
     row.appendChild(mk("div", "ew-meta", flRoomLine(r, fl)));
     // the fixtures inside this room, each with its own tick: what the
@@ -22454,6 +22617,27 @@ $("flClose").onclick = () => {
   if (FL_TOOLS.includes(state.tool)) flDisarm("");
   draw();
 };
+// THE 3D VIEW. webui/fl3d.js (and the vendored three.js under it) load on
+// the first press, not with the page; the view reads the rooms' polygons,
+// types and ceiling heights and draws them - nothing in the takeoff moves.
+let _fl3dLoading = null;
+function flOpen3d() {
+  const fl = flSync();
+  if (!fl.rooms.length) return setStatus("3D: pick or draw a room first", "err");
+  const go = () => window.fl3dOpen(fl, {
+    fpp: stFtPerPt(),
+    dark: document.documentElement.dataset.theme !== "light",
+    wallH: fl.default_ceiling_ft || 9,
+  });
+  if (window.fl3dOpen) return go();
+  if (!_fl3dLoading) _fl3dLoading = new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "fl3d.js?v=5"; s.onload = res; s.onerror = () => rej(new Error("fl3d.js did not load"));
+    document.head.appendChild(s);
+  });
+  setStatus("loading the 3D view\u2026", "busy");
+  _fl3dLoading.then(() => { setStatus(""); go(); }).catch(e => { _fl3dLoading = null; setStatus(e.message, "err"); });
+}
 // canvas: every room filled in its type's colour, closures as short bars,
 // the draft outline / gap while drawing
 function drawFlooring(ctx, k) {
@@ -22524,6 +22708,31 @@ function drawFlooring(ctx, k) {
   for (const c of fl.closures) {
     ctx.beginPath(); ctx.moveTo(c[0] * f, c[1] * f); ctx.lineTo(c[2] * f, c[3] * f);
     ctx.lineWidth = 3 / k; ctx.strokeStyle = FL_CLOSE_COLOR; ctx.setLineDash([]); ctx.stroke();
+  }
+  // the editor: every corner of the selected room as a handle, the hovered
+  // corner lit, the spot on a hovered edge where a press would add one
+  if (state.tool === "fl-edit" && fl.edit && fl.edit.room !== null && fl.rooms[fl.edit.room]) {
+    const r = fl.rooms[fl.edit.room];
+    const P = r.pts, hv = fl.edit.hover, dg = fl.edit.drag;
+    ctx.beginPath();
+    ctx.moveTo(P[0][0] * f, P[0][1] * f);
+    for (let j = 1; j < P.length; j++) ctx.lineTo(P[j][0] * f, P[j][1] * f);
+    ctx.closePath();
+    ctx.lineWidth = 2.2 / k; ctx.setLineDash([]); ctx.strokeStyle = CV_VERTEX_ON; ctx.stroke();
+    P.forEach((q, j) => {
+      const on = (dg && dg.i === j) || (hv && hv.v === j);
+      ctx.beginPath(); ctx.arc(q[0] * f, q[1] * f, (on ? 5.5 : 4) / k, 0, Math.PI * 2);
+      ctx.fillStyle = on ? CV_VERTEX_ON : CV_VERTEX; ctx.fill();
+      ctx.lineWidth = 1.4 / k; ctx.strokeStyle = on ? CV_VERTEX_ON_RG : "#333"; ctx.stroke();
+    });
+    if (!dg && hv && hv.e !== undefined && hv.at) {
+      ctx.beginPath(); ctx.arc(hv.at[0] * f, hv.at[1] * f, 4.5 / k, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,212,0,0.45)"; ctx.fill();
+      ctx.lineWidth = 1.4 / k; ctx.setLineDash([3 / k, 2 / k]); ctx.strokeStyle = CV_VERTEX_ON_RG; ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(hv.at[0] * f - 3 / k, hv.at[1] * f); ctx.lineTo(hv.at[0] * f + 3 / k, hv.at[1] * f);
+      ctx.moveTo(hv.at[0] * f, hv.at[1] * f - 3 / k); ctx.lineTo(hv.at[0] * f, hv.at[1] * f + 3 / k);
+      ctx.lineWidth = 1.2 / k; ctx.strokeStyle = CV_VERTEX_ON_RG; ctx.stroke();
+    }
   }
   if (state.tool === "fl-close" && fl.closeDraft) {
     ctx.beginPath(); ctx.arc(fl.closeDraft[0] * f, fl.closeDraft[1] * f, 4 / k, 0, Math.PI * 2);

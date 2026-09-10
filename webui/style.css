@@ -3614,3 +3614,18 @@ header.view-open #detectBtn, header.view-open #toolsWrap { display: none !import
 .fl-obj { display: flex; align-items: center; gap: 4px; font-size: var(--t-fs-xs); color: var(--t-text-dim); padding: 1px 0 1px 10px; }
 .fl-obj input { margin: 0 2px 0 0; }
 
+
+/* THE 3D VIEW (2026-09-09): a full-window overlay over the sheet, its bar in
+   the title-block voice; the stage is three.js's canvas. */
+#fl3d { position: fixed; inset: 0; z-index: 60; background: var(--t-bg); display: flex; flex-direction: column; }
+#fl3d[hidden] { display: none; }
+.fl3d-bar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 6px 12px;
+  border-bottom: 1px solid var(--t-border-strong); background: var(--t-surface-1); font-size: var(--t-fs-xs); color: var(--t-text); }
+.fl3d-title { font-family: var(--t-font-data); text-transform: uppercase; letter-spacing: .08em; color: var(--t-text-dim); }
+.fl3d-bar label { display: inline-flex; gap: 4px; align-items: center; }
+.fl3d-bar input[type="number"] { width: 54px; font-size: var(--t-fs-xs); padding: 2px 4px; }
+.fl3d-note { color: var(--t-text-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fl3dStage { flex: 1; min-height: 0; position: relative; }
+#fl3dStage canvas { display: block; width: 100% !important; height: 100% !important; }
+/* the point editor's per-room button lights like a mode */
+.fl-row-top button.active { background: var(--t-select); border-color: var(--t-select); color: var(--t-accent-ink); }
